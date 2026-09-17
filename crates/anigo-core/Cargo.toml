@@ -1,0 +1,13 @@
+[package]
+name = "anigo-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core geometry, math, scene graph, and data structures for ANIGO"
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }
