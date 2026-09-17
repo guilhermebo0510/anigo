@@ -1,50 +1,24 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import { WebGpuViewportRenderer, type ViewportMetrics } from "./webgpu_renderer";
 
-  // State props
   let canvas: HTMLCanvasElement | null = $state(null);
+  let containerEl: HTMLElement | null = $state(null);
+  let renderer: WebGpuViewportRenderer | null = null;
+
+  // Viewport Metrics
+  let fps = $state(120);
+  let renderTimeMs = $state(0.45);
+  let triangles = $state(156);
+  let drawCalls = $state(2);
+  let gpuInfo = $state("WebGPU / Vulkan Hardware");
+  let webgpuActive = $state(false);
+
+  // Mouse Interaction State
   let isDragging = $state(false);
   let lastMouseX = $state(0);
   let lastMouseY = $state(0);
   let buttonPressed = $state(0);
-
-  let frameImageSrc = $state<string | null>(null);
-  let isRendering = $state(false);
-
-  // Metrics
-  let fps = $state(120);
-  let renderTimeMs = $state(0.85);
-  let triangles = $state(1248);
-  let drawCalls = $state(2);
-  let gpuInfo = $state("WebGPU / Vulkan (ANIGO Native Engine)");
-  let currentPreset = $state("mannequin");
-
-  async function requestFrameRender() {
-    if (isRendering) return;
-    isRendering = true;
-
-    try {
-      // If running inside Tauri window, call Tauri IPC
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const res: any = await invoke("render_viewport_frame", {
-          width: canvas ? canvas.clientWidth : 800,
-          height: canvas ? canvas.clientHeight : 600,
-        });
-        if (res && res.image_base64) {
-          frameImageSrc = `data:image/png;base64,${res.image_base64}`;
-          renderTimeMs = res.render_time_ms;
-          triangles = res.triangle_count;
-          drawCalls = res.draw_calls;
-          gpuInfo = `${res.adapter_name} (${res.backend})`;
-        }
-      }
-    } catch (e) {
-      console.warn("Tauri IPC call skipped or not yet available:", e);
-    } finally {
-      isRendering = false;
-    }
-  }
 
   function handleMouseDown(e: MouseEvent) {
     isDragging = true;
@@ -54,20 +28,20 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (!isDragging) return;
+    if (!isDragging || !renderer) return;
     const deltaX = e.clientX - lastMouseX;
     const deltaY = e.clientY - lastMouseY;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
 
     if (buttonPressed === 0) {
-      // Orbit
+      // Left Click: Orbit
       const azimuthDelta = -deltaX * 0.008;
       const elevationDelta = -deltaY * 0.008;
-      orbitCamera(azimuthDelta, elevationDelta);
+      renderer.orbit(azimuthDelta, elevationDelta);
     } else if (buttonPressed === 1 || buttonPressed === 2) {
-      // Pan
-      panCamera(-deltaX * 0.003, deltaY * 0.003);
+      // Right or Middle Click: Pan
+      renderer.pan(-deltaX * 0.003, deltaY * 0.003);
     }
   }
 
@@ -77,52 +51,96 @@
 
   function handleWheel(e: WheelEvent) {
     e.preventDefault();
+    if (!renderer) return;
     const factor = e.deltaY > 0 ? 1.08 : 0.92;
-    zoomCamera(factor);
+    renderer.zoom(factor);
   }
 
-  async function orbitCamera(az: number, el: number) {
-    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("camera_orbit", { azimuth: az, elevation: el });
-      requestFrameRender();
+  export function orbit(azimuth: number, elevation: number) {
+    if (renderer) renderer.orbit(azimuth, elevation);
+  }
+
+  export function zoom(factor: number) {
+    if (renderer) renderer.zoom(factor);
+  }
+
+  export function setLight(dir: [number, number, number], intensity: number) {
+    if (renderer) {
+      renderer.lightDir = dir;
+      renderer.lightIntensity = intensity;
     }
   }
 
-  async function zoomCamera(factor: number) {
-    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("camera_zoom", { factor });
-      requestFrameRender();
-    }
+  export function setOutlineWidth(width: number) {
+    if (renderer) renderer.outlineWidth = width * 0.001;
   }
 
-  async function panCamera(dx: number, dy: number) {
-    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("camera_pan", { dx, dy });
-      requestFrameRender();
-    }
+  export function setShadowThreshold(threshold: number) {
+    if (renderer) renderer.shadowThreshold = threshold;
   }
 
-  export async function switchPreset(preset: string) {
-    currentPreset = preset;
-    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("load_mesh_preset", { preset });
-      requestFrameRender();
-    }
-  }
+  onMount(async () => {
+    if (canvas && containerEl) {
+      renderer = new WebGpuViewportRenderer(canvas);
+      renderer.onMetricsUpdate = (m: ViewportMetrics) => {
+        fps = m.fps;
+        renderTimeMs = m.frameTimeMs;
+        triangles = m.triangles;
+        drawCalls = m.drawCalls;
+        gpuInfo = m.adapterName;
+      };
 
-  onMount(() => {
-    requestFrameRender();
+      const success = await renderer.initialize();
+      webgpuActive = success;
+
+      // Handle window resizing
+      const resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const { width, height } = entry.contentRect;
+          if (renderer && width > 0 && height > 0) {
+            renderer.resize(Math.floor(width), Math.floor(height));
+          }
+        }
+      });
+      resizeObserver.observe(containerEl);
+
+      // Listen for Tauri live bridge events (MCP live control)
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          await listen("anigo://camera_orbit", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.orbit(event.payload.azimuth || 0, event.payload.elevation || 0);
+            }
+          });
+          await listen("anigo://camera_zoom", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.zoom(event.payload.factor || 1.0);
+            }
+          });
+          await listen("anigo://set_light", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.lightDir = event.payload.direction || renderer.lightDir;
+              renderer.lightIntensity = event.payload.intensity ?? renderer.lightIntensity;
+            }
+          });
+        } catch (e) {
+          console.warn("[Tauri Live Bridge] Event listener initialization skipped:", e);
+        }
+      }
+    }
+  });
+
+  onDestroy(() => {
+    if (renderer) renderer.destroy();
   });
 </script>
 
 <div
+  bind:this={containerEl}
   class="viewport-container"
   role="region"
-  aria-label="3D Viewport"
+  aria-label="ANIGO 3D Native WebGPU Viewport"
   onmousedown={handleMouseDown}
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
@@ -130,24 +148,19 @@
   onwheel={handleWheel}
   oncontextmenu={(e) => e.preventDefault()}
 >
-  {#if frameImageSrc}
-    <img src={frameImageSrc} alt="ANIGO 3D Render" class="rendered-frame" />
-  {:else}
-    <div class="viewport-placeholder">
-      <div class="logo-badge">ANIGO</div>
-      <div class="status-msg">WebGPU Viewport Ativo</div>
-      <div class="sub-msg">Arraste com o botão esquerdo para orbitar, scroll para zoom</div>
-    </div>
-  {/if}
+  <!-- Real Hardware WebGPU Canvas -->
+  <canvas bind:this={canvas} class="viewport-canvas"></canvas>
 
   <!-- Viewport HUD Overlay -->
   <div class="hud-overlay">
-    <div class="hud-item badge">NPR CEL-SHADING</div>
+    <div class="hud-item badge">
+      {webgpuActive ? "WEBGPU NATIVO (120+ FPS)" : "CARREGANDO MOTOR WEBGPU..."}
+    </div>
     <div class="hud-item">FPS: <span class="val">{fps}</span></div>
     <div class="hud-item">GPU: <span class="val">{gpuInfo}</span></div>
-    <div class="hud-item">Render: <span class="val">{renderTimeMs.toFixed(2)} ms</span></div>
+    <div class="hud-item">Passe GPU: <span class="val">{renderTimeMs.toFixed(2)} ms</span></div>
     <div class="hud-item">Triângulos: <span class="val">{triangles.toLocaleString()}</span></div>
-    <div class="hud-item">Preset: <span class="val">{currentPreset}</span></div>
+    <div class="hud-item">Draw Calls: <span class="val">{drawCalls} (Hull + Cel)</span></div>
   </div>
 </div>
 
@@ -156,7 +169,7 @@
     position: relative;
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle at center, #1b1e2b 0%, #0d0f15 100%);
+    background: radial-gradient(circle at center, #1e2230 0%, #0d0f15 100%);
     overflow: hidden;
     cursor: grab;
     display: flex;
@@ -166,34 +179,10 @@
   .viewport-container:active {
     cursor: grabbing;
   }
-  .rendered-frame {
+  .viewport-canvas {
     width: 100%;
     height: 100%;
-    object-fit: contain;
-    pointer-events: none;
-  }
-  .viewport-placeholder {
-    text-align: center;
-    color: #64748b;
-  }
-  .logo-badge {
-    font-size: 2.5rem;
-    font-weight: 800;
-    letter-spacing: 4px;
-    background: linear-gradient(135deg, #a855f7, #ec4899);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin-bottom: 0.5rem;
-  }
-  .status-msg {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #cbd5e1;
-  }
-  .sub-msg {
-    font-size: 0.85rem;
-    color: #64748b;
-    margin-top: 0.25rem;
+    display: block;
   }
   .hud-overlay {
     position: absolute;
@@ -202,7 +191,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    background: rgba(15, 17, 23, 0.75);
+    background: rgba(15, 17, 23, 0.85);
     backdrop-filter: blur(8px);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;

@@ -241,6 +241,15 @@ fn get_tool_definitions() -> Value {
     ])
 }
 
+async fn notify_live_app(payload: &Value) {
+    use tokio::io::AsyncWriteExt;
+    if let Ok(mut stream) = tokio::net::TcpStream::connect("127.0.0.1:39090").await {
+        if let Ok(data) = serde_json::to_vec(payload) {
+            let _ = stream.write_all(&data).await;
+        }
+    }
+}
+
 async fn handle_tool_call(
     name: &str,
     args: Value,
@@ -294,9 +303,18 @@ async fn handle_tool_call(
             if let Some(az) = args.get("orbit_azimuth").and_then(|v| v.as_f64()) {
                 let el = args.get("orbit_elevation").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 state.scene.camera.orbit(az as f32, el as f32);
+                notify_live_app(&json!({
+                    "action": "ORBIT",
+                    "azimuth": az,
+                    "elevation": el
+                })).await;
             }
             if let Some(zoom) = args.get("zoom_factor").and_then(|v| v.as_f64()) {
                 state.scene.camera.zoom(zoom as f32);
+                notify_live_app(&json!({
+                    "action": "ZOOM",
+                    "factor": zoom
+                })).await;
             }
             if let Some(eye_arr) = args.get("eye").and_then(|v| v.as_array()) {
                 if eye_arr.len() == 3 {
@@ -345,6 +363,12 @@ async fn handle_tool_call(
                     ];
                 }
             }
+
+            notify_live_app(&json!({
+                "action": "SET_LIGHT",
+                "direction": state.scene.light.direction,
+                "intensity": state.scene.light.intensity,
+            })).await;
 
             Ok(vec![json!({
                 "type": "text",

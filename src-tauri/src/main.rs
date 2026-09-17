@@ -5,7 +5,9 @@ use std::sync::Arc;
 use base64::Engine;
 use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use anigo_core::mesh::Mesh;
@@ -121,8 +123,62 @@ async fn set_light_params(
     Ok(())
 }
 
+async fn start_live_bridge_server(app_handle: tauri::AppHandle) {
+    if let Ok(listener) = TcpListener::bind("127.0.0.1:39090").await {
+        eprintln!("[ANIGO Live Bridge] Listening on 127.0.0.1:39090 for MCP automation commands");
+        let mut buf = vec![0u8; 4096];
+        while let Ok((mut socket, _)) = listener.accept().await {
+            while let Ok(n) = socket.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(cmd) = serde_json::from_slice::<serde_json::Value>(&buf[..n]) {
+                    if let Some(action) = cmd.get("action").and_then(|v| v.as_str()) {
+                        match action {
+                            "ORBIT" => {
+                                let az = cmd.get("azimuth").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                let el = cmd.get("elevation").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                let _ = app_handle.emit(
+                                    "anigo://camera_orbit",
+                                    serde_json::json!({
+                                        "azimuth": az,
+                                        "elevation": el
+                                    }),
+                                );
+                            }
+                            "ZOOM" => {
+                                let factor = cmd.get("factor").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                                let _ = app_handle.emit(
+                                    "anigo://camera_zoom",
+                                    serde_json::json!({
+                                        "factor": factor
+                                    }),
+                                );
+                            }
+                            "SET_LIGHT" => {
+                                let dir = cmd
+                                    .get("direction")
+                                    .cloned()
+                                    .unwrap_or(serde_json::json!([0.577, 0.577, 0.577]));
+                                let intensity = cmd.get("intensity").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                                let _ = app_handle.emit(
+                                    "anigo://set_light",
+                                    serde_json::json!({
+                                        "direction": dir,
+                                        "intensity": intensity
+                                    }),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn main() {
-    // Initialize WebGPU renderer synchronously at startup
     let renderer = pollster::block_on(async {
         HeadlessRenderer::new()
             .await
@@ -137,6 +193,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                start_live_bridge_server(app_handle).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             render_viewport_frame,
             camera_orbit,

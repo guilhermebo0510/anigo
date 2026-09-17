@@ -1,5 +1,13 @@
 <script lang="ts">
   import Viewport from "./components/viewport/Viewport.svelte";
+  import UserIcon from "./components/icons/UserIcon.svelte";
+  import BoneIcon from "./components/icons/BoneIcon.svelte";
+  import ScissorsIcon from "./components/icons/ScissorsIcon.svelte";
+  import SmileIcon from "./components/icons/SmileIcon.svelte";
+  import ShirtIcon from "./components/icons/ShirtIcon.svelte";
+  import BrushIcon from "./components/icons/BrushIcon.svelte";
+  import BotIcon from "./components/icons/BotIcon.svelte";
+  import SunIcon from "./components/icons/SunIcon.svelte";
 
   let viewportRef: any = $state(null);
   let activeTab = $state("personagem");
@@ -62,14 +70,14 @@
   <div class="workspace-body">
     <!-- Left Navigation Toolbar -->
     <aside class="left-toolbar">
-      <button class="tool-btn active" title="Manequim e Proporções">🧍</button>
-      <button class="tool-btn" title="Posing e Cinemática Inversa">🤸</button>
-      <button class="tool-btn" title="Cabelo Procedural Spline">💇</button>
-      <button class="tool-btn" title="Expressões Faciais e Decalques">😊</button>
-      <button class="tool-btn" title="Vestuário e Alfaiataria">👗</button>
-      <button class="tool-btn" title="Pintura de Textura 3D">🎨</button>
+      <button class="tool-btn active" title="Manequim e Proporções"><UserIcon /></button>
+      <button class="tool-btn" title="Posing e Cinemática Inversa"><BoneIcon /></button>
+      <button class="tool-btn" title="Cabelo Procedural Spline"><ScissorsIcon /></button>
+      <button class="tool-btn" title="Expressões Faciais e Decalques"><SmileIcon /></button>
+      <button class="tool-btn" title="Vestuário e Alfaiataria"><ShirtIcon /></button>
+      <button class="tool-btn" title="Pintura de Textura 3D"><BrushIcon /></button>
       <div class="tool-spacer"></div>
-      <button class="tool-btn mcp-indicator" title="Servidor anigo-mcp Nativo Ativo">🤖</button>
+      <button class="tool-btn mcp-indicator" title="Servidor anigo-mcp Nativo Ativo"><BotIcon /></button>
     </aside>
 
     <!-- Center 3D Viewport -->
