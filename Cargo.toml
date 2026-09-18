@@ -3,6 +3,11 @@ members = [
     "crates/anigo-core",
     "crates/anigo-renderer",
     "crates/anigo-mcp",
+    "crates/anigo-ik",
+    "crates/anigo-hair",
+    "crates/anigo-cloth",
+    "crates/anigo-vrm",
+    "crates/anigo-ai",
     "src-tauri",
 ]
 resolver = "2"

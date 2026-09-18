@@ -1,0 +1,212 @@
+export const en_US: Record<string, string> = {
+  // Titlebar & 8 Canonical Workspaces
+  "app.title": "ANIGO STUDIO",
+  "workspace.personagem": "Character",
+  "workspace.posing": "Posing",
+  "workspace.shading": "Shading",
+  "workspace.iluminacao": "Lighting",
+  "workspace.cenario": "Scene",
+  "workspace.animacao": "Animation",
+  "workspace.render": "Render",
+  "workspace.biblioteca": "Library",
+
+  // Window Controls
+  "window.minimize": "Minimize",
+  "window.maximize": "Maximize / Restore",
+  "window.close": "Close",
+
+  // Toolbar Tools — 1. Personagem
+  "tool.body": "Anatomy & Body",
+  "tool.body.desc": "Anatomical proportions and head canons",
+  "tool.face": "Face & Eyes",
+  "tool.face.desc": "Facial features and anime expressions",
+  "tool.hair": "3D Hair",
+  "tool.hair.desc": "Procedural anime hair ribbons and splines",
+  "tool.cloth": "Clothing & Outfits",
+  "tool.cloth.desc": "Anime garments, tailoring, and layering",
+  "tool.accessories": "3D Accessories",
+  "tool.accessories.desc": "Props, armor, and bone attachments",
+  "tool.paint": "Texture Paint",
+  "tool.paint.desc": "Direct 3D mesh painting and masks",
+
+  // Toolbar Tools — 2. Posing
+  "tool.rig": "Skeletal Rig",
+  "tool.rig.desc": "Bone hierarchy and 3D joint rotations",
+  "tool.ik": "Inverse Kinematics",
+  "tool.ik.desc": "Two-bone IK and FABRIK pose solvers",
+  "tool.poses_preset": "Mannequin Poses",
+  "tool.poses_preset.desc": "Predefined action and standing poses",
+
+  // Toolbar Tools — 3. Shading
+  "tool.cel_shader": "Toon Ramp & Cel-Shading",
+  "tool.cel_shader.desc": "Cel-shader threshold bands and step control",
+  "tool.rim": "Rim Light",
+  "tool.rim.desc": "Fresnel rim lighting for anime silhouette",
+  "tool.outline": "Inverted Hull Outlines",
+  "tool.outline.desc": "Line weight extrusion and outline coloring",
+  "tool.palette": "Anime Shadow Palette",
+  "tool.palette.desc": "Harmonic hue shift and colored anime shadows",
+  "tool.shader_ball": "Shader Ball & Preview",
+  "tool.shader_ball.desc": "Real-time NPR material preview sphere",
+
+  // Toolbar Tools — 4. Iluminação
+  "tool.sun": "Sun Lighting",
+  "tool.sun.desc": "Solar azimuth, elevation, and intensity",
+  "tool.shadows": "Anime Shadows",
+  "tool.shadows.desc": "Crisp cel shadow thresholds and cast shadows",
+  "tool.ambient": "Ambient & Sky Light",
+  "tool.ambient.desc": "Hemisphere ambient fill light and sky tint",
+
+  // Toolbar Tools — 5. Cenário
+  "tool.stage": "Greybox Stage",
+  "tool.stage.desc": "Modular stage blocking, grid snaps, and floor",
+  "tool.props": "Scene Props",
+  "tool.props.desc": "Background props, furniture, and dressing",
+  "tool.environment": "Anime Sky & Atmosphere",
+  "tool.environment.desc": "Stylized sky dome presets and fog density",
+
+  // Toolbar Tools — 6. Animação
+  "tool.timeline": "Timeline",
+  "tool.timeline.desc": "Keyframes, playback transport, and frame cadence",
+  "tool.curves": "Interpolation Curves",
+  "tool.curves.desc": "Linear, Bezier, and stepped anime curves",
+  "tool.lipsync": "Lip Sync & Visemes",
+  "tool.lipsync.desc": "Phoneme visemes [A, I, U, E, O] and sliders",
+
+  // Toolbar Tools — 7. Render
+  "tool.camera": "Scene Camera & Lens",
+  "tool.camera.desc": "Focal length (24mm/50mm/85mm), FOV, and DOF",
+  "tool.passes": "NPR Render Passes",
+  "tool.passes.desc": "Beauty, Inverted Hull lines, Flat Shadow, and Z-Depth",
+  "tool.export": "Composition & Export",
+  "tool.export.desc": "Render resolutions (FHD/2K/4K) and image/video",
+
+  // Toolbar Tools — 8. Biblioteca
+  "tool.browser": "Asset Browser",
+  "tool.browser.desc": "Studio asset catalog, models, and materials",
+  "tool.search": "Search & Tags",
+  "tool.search.desc": "Instant keyword and tag-based filtering",
+  "tool.filters": "Category Filters",
+  "tool.filters.desc": "Filter by character, clothing, poses, and props",
+
+  // Utility & Legacy Aliases
+  "tool.focus": "Focus Camera on Target (F)",
+  "tool.settings": "Studio Settings (Ctrl+,)",
+  "tool.clothing": "Tailoring & Outfit",
+  "tool.morphs": "Expressions & Morphs",
+  "tool.shading": "Anime NPR Shader",
+  "tool.lights": "Toon Sun Lighting",
+  "tool.outlines": "Inverted Hull Outlines",
+  "tool.presets": "Model Library",
+  "tool.materials": "Color Palette",
+  "tool.render": "Final Render",
+
+  // Asset Browser Interface (Milestone 1 & 3)
+  "asset.search_placeholder": "Search assets by name, tag, or category...",
+  "asset.all_categories": "All Categories",
+  "asset.cat_characters": "Characters",
+  "asset.cat_clothes": "Clothes",
+  "asset.cat_hair": "Hair",
+  "asset.cat_accessories": "Accessories",
+  "asset.cat_poses": "Poses",
+  "asset.cat_materials": "Materials",
+  "asset.cat_environments": "Environments",
+  "asset.cat_scenery": "Scenery",
+  "asset.action_use": "Use in Scene",
+  "asset.action_inspect": "Inspect",
+  "asset.count_label": "assets found",
+  "asset.no_results": "No assets found matching the selected filters.",
+
+  // Status Bar
+  "status.project": "Project",
+  "status.untitled": "Untitled.anigo",
+  "status.model": "Model",
+  "status.ready": "Ready",
+  "status.autosave": "Autosave",
+  "status.saved_at": "Saved at",
+
+  // Settings Modal Tabs
+  "settings.modal_title": "Studio Settings",
+  "settings.modal_subtitle": "Global Preferences, WebGPU Engine & Directories",
+  "settings.tab_general": "General",
+  "settings.tab_graphics": "Graphics",
+  "settings.tab_storage": "Folders & Storage",
+  "settings.tab_shortcuts": "Shortcuts",
+  "settings.tab_about": "Help & Updates",
+
+  // Settings - General
+  "settings.theme_title": "INTERFACE THEME",
+  "settings.theme_dark": "Dark (Obsidian Black)",
+  "settings.theme_light": "Light (Studio Light)",
+  "settings.theme_system": "System (Auto)",
+  "settings.lang_title": "SOFTWARE LANGUAGE",
+  "settings.autosave_title": "PERIODIC AUTOSAVE (REAL ON DISK)",
+  "settings.autosave_enable": "Enable periodic automatic saving to disk",
+  "settings.autosave_interval": "Autosave Interval",
+  "settings.autosave_minutes": "minutes",
+  "settings.autosave_now": "Save Project to Disk Now",
+  "settings.autosave_success": "Project successfully saved to disk!",
+
+  // Settings - Graphics
+  "settings.gpu_backend": "RENDER BACKEND",
+  "settings.gpu_active": "Native WebGPU (Active Dedicated GPU)",
+  "settings.fps_cap_title": "FRAME RATE LIMIT (FPS CAP)",
+  "settings.fps_60": "60 FPS (Balanced)",
+  "settings.fps_120": "120 FPS (High Smoothness)",
+  "settings.fps_unlimited": "Unlimited (Maximum Rate)",
+  "settings.dpi_scale_title": "DPI SCALE & INTERNAL RESOLUTION",
+  "settings.dpi_10": "1.0x (Standard Native)",
+  "settings.dpi_15": "1.5x (Super-Sampled)",
+  "settings.dpi_20": "2.0x (Retina 4K / Ultra Sharp)",
+  "settings.vsync_title": "VERTICAL SYNCHRONIZATION (VSYNC)",
+  "settings.vsync_desc": "Prevents screen tearing and stabilizes frame pacing",
+  "settings.aa_title": "ANTI-ALIASING (EDGE SMOOTHING)",
+  "settings.aa_msaa4x": "MSAA 4x (Maximum Silhouette Quality)",
+  "settings.aa_fxaa": "FXAA (Fast Post-Processing)",
+  "settings.aa_none": "None (Maximum Performance)",
+
+  // Settings - Storage
+  "settings.paths_title": "DEFAULT STUDIO DIRECTORIES",
+  "settings.path_projects": "Projects Directory (.anigo)",
+  "settings.path_assets": "Library & Assets Directory",
+  "settings.path_autosave": "Autosave Directory",
+  "settings.path_renders": "Renders & Exports Directory",
+  "settings.btn_open_folder": "Open in Explorer",
+  "settings.render_presets_title": "EXPORT PRESETS",
+  "settings.image_format": "Default Still Format",
+  "settings.video_format": "Default Video Format",
+  "settings.default_resolution": "Default Output Resolution",
+
+  // Settings - Shortcuts
+  "settings.nav_shortcuts_title": "3D NAVIGATION SHORTCUTS",
+  "settings.nav_orbit": "360° continuous camera orbit around model",
+  "settings.nav_pan": "Screen-space pan translation (Shift+RMB, RMB or MMB)",
+  "settings.nav_zoom": "Progressive zoom targeted directly at mouse cursor",
+  "settings.nav_focus": "Recenter camera on target model",
+  "settings.app_shortcuts_title": "STUDIO & SYSTEM SHORTCUTS",
+  "settings.sc_settings": "Open or close this settings dialog",
+  "settings.sc_inspector": "Collapse or expand inspector panel",
+  "settings.sc_workspaces": "Switch directly between the 8 workspaces",
+  "settings.sc_play": "Play or pause timeline animation",
+
+  // Settings - About & Updates
+  "settings.about_title": "ABOUT ANIGO STUDIO",
+  "settings.version_label": "Current Version",
+  "settings.engine_label": "Graphics Engine",
+  "settings.updates_title": "AUTOMATIC UPDATE SYSTEM",
+  "settings.updates_desc": "Automatically checks for stable releases and bug fixes",
+  "settings.btn_check_updates": "Check for Updates Now",
+  "settings.checking_updates": "Checking update servers...",
+  "settings.latest_version_ok": "You are running the latest version of ANIGO Studio!",
+  "settings.update_auto_check": "Check for updates automatically on startup",
+  "settings.doc_links_title": "DOCUMENTATION & HELP",
+  "settings.link_manual": "ANIGO User Manual (PDF / Online)",
+  "settings.link_shortcuts": "Visual Guide to Shortcuts and Gestures",
+  "settings.link_community": "Discord Community and Support",
+
+  // Common Buttons
+  "btn.save": "Save Preferences",
+  "btn.saved": "Preferences Saved!",
+  "btn.defaults": "Restore Defaults",
+  "btn.close": "Close",
+};

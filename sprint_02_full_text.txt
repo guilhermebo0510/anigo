@@ -1,0 +1,74 @@
+ANIGO — Sprint 02: Pipeline Cel-Shading NPR Avançado e Sistema de Luzes Toon
+1. Topologia de Arquivos e Arquitetura
+shaders/cel_shading.wgsl: Vertex e fragment shaders com modelo Toon.
+src-tauri/crates/anigo-renderer: Uniform buffers para luz direcional e ambiente.
+src/components/character/LightingControls.svelte: Slider de direção e intensidade da luz.
+2. Implementação de Shader WGSL (Cel-Shading)
+
+//
+ 
+Implementar
+ 
+amostragem
+ 
+de
+ 
+textura
+ 
+1D/2D
+ 
+para
+ 
+Toon
+ 
+Ramp
+//
+ 
+Separação
+ 
+de
+ 
+área
+ 
+iluminada
+ 
+e
+ 
+sombra
+//
+ 
+Lógica
+ 
+matemática
+ 
+de
+ 
+rotação
+ 
+de
+ 
+matiz
+ 
+(hue
+ 
+shifting)
+ 
+nas
+ 
+áreas
+ 
+sombreadas
+3. Estruturas de Dados Rust (anigo-renderer)
+
+// LightUniform e MaterialUniform com alinhamento WebGPU
+// Buffers uniformes de parâmetros lumínicos atualizáveis via IPC
+4. Comandos IPC Tauri 2.0 e Componente Svelte
+O componente LightingControls.svelte gerencia o controle orbital de iluminação, enviando atualizações instantâneas via IPC sem recriar pipelines gráficos.
+5. Checklist de Engenharia (Antigravity)
+Configurar amostragem Toon Ramp (1D/2D).
+Aplicar Hue Shifting matemático nas sombras.
+Integrar buffers uniformes de luz atualizáveis.
+Validar performance com anigo-test-mcp.
+6. Critérios de Aceite (Definition of Done)
+A malha exibe visual plano de anime com transição nítida entre luz e sombra em tempo real.
+Ajustar o controle de luz na interface atualiza instantaneamente o modelo a 60+ FPS.

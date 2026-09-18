@@ -1,0 +1,212 @@
+export const pt_BR: Record<string, string> = {
+  // Titlebar & 8 Canonical Workspaces
+  "app.title": "ANIGO STUDIO",
+  "workspace.personagem": "Personagem",
+  "workspace.posing": "Posing",
+  "workspace.shading": "Shading",
+  "workspace.iluminacao": "Iluminação",
+  "workspace.cenario": "Cenário",
+  "workspace.animacao": "Animação",
+  "workspace.render": "Render",
+  "workspace.biblioteca": "Biblioteca",
+
+  // Window Controls
+  "window.minimize": "Minimizar",
+  "window.maximize": "Maximizar / Restaurar",
+  "window.close": "Fechar",
+
+  // Toolbar Tools — 1. Personagem
+  "tool.body": "Anatomia & Corpo",
+  "tool.body.desc": "Proporções anatômicas e cânone de cabeças",
+  "tool.face": "Rosto & Olhos",
+  "tool.face.desc": "Proporções faciais e expressões anime",
+  "tool.hair": "Cabelo 3D",
+  "tool.hair.desc": "Cabelo procedural e mechas de fita",
+  "tool.cloth": "Vestuário & Roupas",
+  "tool.cloth.desc": "Alfaiataria e camadas de roupas anime",
+  "tool.accessories": "Acessórios 3D",
+  "tool.accessories.desc": "Adereços, armaduras e pontos de ancoragem",
+  "tool.paint": "Pintura de Textura",
+  "tool.paint.desc": "Pintura direta sobre malha 3D e máscaras",
+
+  // Toolbar Tools — 2. Posing
+  "tool.rig": "Estrutura Óssea",
+  "tool.rig.desc": "Hierarquia de juntas e rotação 3D de ossos",
+  "tool.ik": "Cinemática Inversa",
+  "tool.ik.desc": "Controladores de cinemática inversa (IK/FK)",
+  "tool.poses_preset": "Poses do Manequim",
+  "tool.poses_preset.desc": "Biblioteca de poses rápidas canônicas",
+
+  // Toolbar Tools — 3. Shading
+  "tool.cel_shader": "Toon Ramp & Cel-Shading",
+  "tool.cel_shader.desc": "Limiar de corte cel-shader e bandas NPR",
+  "tool.rim": "Luz de Borda (Rim Light)",
+  "tool.rim.desc": "Reflexos Fresnel de silhueta de material",
+  "tool.outline": "Contorno Inverted Hull",
+  "tool.outline.desc": "Espessura de traço e extrusão de bordas",
+  "tool.palette": "Paleta de Sombras Anime",
+  "tool.palette.desc": "Desvio harmônico de matiz e sombras tingidas",
+  "tool.shader_ball": "Shader Ball & Preview",
+  "tool.shader_ball.desc": "Esfera NPR em tempo real para calibração",
+
+  // Toolbar Tools — 4. Iluminação
+  "tool.sun": "Iluminação Solar",
+  "tool.sun.desc": "Azimute, elevação solar e intensidade da luz",
+  "tool.shadows": "Sombras Anime",
+  "tool.shadows.desc": "Ponto de corte, nitidez e projeção de sombras",
+  "tool.ambient": "Luz Ambiente & Céu",
+  "tool.ambient.desc": "Iluminação difusa de hemisfério e céu",
+
+  // Toolbar Tools — 5. Cenário
+  "tool.stage": "Blocagem Greybox",
+  "tool.stage.desc": "Composição de palco modular e snaps de grade",
+  "tool.props": "Elementos de Cenário",
+  "tool.props.desc": "Posicionamento de adereços e blocos de cena",
+  "tool.environment": "Céu Anime & Atmosfera",
+  "tool.environment.desc": "Doma de céu estilizado e densidade de névoa",
+
+  // Toolbar Tools — 6. Animação
+  "tool.timeline": "Linha do Tempo",
+  "tool.timeline.desc": "Controle de frames, reprodução e cadência FPS",
+  "tool.curves": "Curvas de Interpolação",
+  "tool.curves.desc": "Curvas Lineares, Bezier e Step/Hold anime",
+  "tool.lipsync": "Sincronia Labial & Visemas",
+  "tool.lipsync.desc": "Morfemas labiais [A, I, U, E, O] e visemas",
+
+  // Toolbar Tools — 7. Render
+  "tool.camera": "Câmera de Cena & Lente",
+  "tool.camera.desc": "Distância focal (24mm, 50mm, 85mm) e FOV",
+  "tool.passes": "Passes de Render NPR",
+  "tool.passes.desc": "Passes Beauty Toon, Linhas, Sombras e Z-Depth",
+  "tool.export": "Composição & Exportação",
+  "tool.export.desc": "Resoluções FHD/2K/4K e exportação final",
+
+  // Toolbar Tools — 8. Biblioteca
+  "tool.browser": "Navegador de Ativos",
+  "tool.browser.desc": "Grade de cards, busca rápida e catálogo de assets",
+  "tool.search": "Busca & Tags",
+  "tool.search.desc": "Busca instantânea por nome e tags de ativos",
+  "tool.filters": "Filtros de Categoria",
+  "tool.filters.desc": "Filtros por personagens, roupas, poses e cenários",
+
+  // Utility & Legacy Aliases
+  "tool.focus": "Focar Câmera no Alvo (F)",
+  "tool.settings": "Configurações do Studio (Ctrl+,)",
+  "tool.clothing": "Alfaiataria & Roupas",
+  "tool.morphs": "Expressões & Morphs",
+  "tool.shading": "Shader NPR Anime",
+  "tool.lights": "Iluminação Solar Toon",
+  "tool.outlines": "Linhas Inverted Hull",
+  "tool.presets": "Biblioteca de Modelos",
+  "tool.materials": "Paleta de Cores",
+  "tool.render": "Renderização Final",
+
+  // Asset Browser Interface (Milestone 1 & 3)
+  "asset.search_placeholder": "Buscar ativos por nome, tag ou categoria...",
+  "asset.all_categories": "Todas as Categorias",
+  "asset.cat_characters": "Personagens",
+  "asset.cat_clothes": "Roupas",
+  "asset.cat_hair": "Penteados",
+  "asset.cat_accessories": "Acessórios",
+  "asset.cat_poses": "Poses",
+  "asset.cat_materials": "Materiais",
+  "asset.cat_environments": "Ambientes",
+  "asset.cat_scenery": "Cenários",
+  "asset.action_use": "Usar no Cenário",
+  "asset.action_inspect": "Inspecionar",
+  "asset.count_label": "ativos encontrados",
+  "asset.no_results": "Nenhum ativo encontrado para os filtros selecionados.",
+
+  // Status Bar
+  "status.project": "Projeto",
+  "status.untitled": "Sem Título.anigo",
+  "status.model": "Modelo",
+  "status.ready": "Pronto",
+  "status.autosave": "Autosave",
+  "status.saved_at": "Salvo às",
+
+  // Settings Modal Tabs
+  "settings.modal_title": "Configurações do Studio",
+  "settings.modal_subtitle": "Preferências Globais, Engine WebGPU & Diretórios",
+  "settings.tab_general": "Geral",
+  "settings.tab_graphics": "Gráficos",
+  "settings.tab_storage": "Pastas & Armazenamento",
+  "settings.tab_shortcuts": "Atalhos",
+  "settings.tab_about": "Ajuda & Atualizações",
+
+  // Settings - General
+  "settings.theme_title": "TEMA DA INTERFACE",
+  "settings.theme_dark": "Escuro (Dark Obsidian)",
+  "settings.theme_light": "Claro (Studio Light)",
+  "settings.theme_system": "Sistema (Automático)",
+  "settings.lang_title": "IDIOMA DO SOFTWARE",
+  "settings.autosave_title": "SALVAMENTO AUTOMÁTICO (AUTOSAVE REAL)",
+  "settings.autosave_enable": "Ativar salvamento automático periódico no disco",
+  "settings.autosave_interval": "Intervalo de Salvamento",
+  "settings.autosave_minutes": "minutos",
+  "settings.autosave_now": "Salvar Projeto Agora no Disco",
+  "settings.autosave_success": "Projeto salvo com sucesso em disco!",
+
+  // Settings - Graphics
+  "settings.gpu_backend": "BACKEND DE RENDERIZAÇÃO",
+  "settings.gpu_active": "WebGPU Nativo (GPU Dedicada Ativa)",
+  "settings.fps_cap_title": "LIMITE DA TAXA DE QUADROS (FPS CAP)",
+  "settings.fps_60": "60 FPS (Econômico)",
+  "settings.fps_120": "120 FPS (Alta Fluidez)",
+  "settings.fps_unlimited": "Ilimitado (Taxa Máxima)",
+  "settings.dpi_scale_title": "ESCALA DE DPI & RESOLUÇÃO INTERNA",
+  "settings.dpi_10": "1.0x (Nativo Padrão)",
+  "settings.dpi_15": "1.5x (Super-Amostrado)",
+  "settings.dpi_20": "2.0x (Retina 4K / Ultra Nítido)",
+  "settings.vsync_title": "SINCRONIZAÇÃO VERTICAL (VSYNC)",
+  "settings.vsync_desc": "Evita screen tearing e estabiliza o tempo de frame no monitor",
+  "settings.aa_title": "ANTI-ALIASING (SUAVIZAÇÃO DE BORDAS)",
+  "settings.aa_msaa4x": "MSAA 4x (Qualidade Máxima de Silhueta)",
+  "settings.aa_fxaa": "FXAA (Pós-processamento Rápido)",
+  "settings.aa_none": "Nenhum (Máximo Desempenho)",
+
+  // Settings - Storage
+  "settings.paths_title": "DIRETÓRIOS PADRÃO DO ESTÚDIO",
+  "settings.path_projects": "Pasta de Projetos (.anigo)",
+  "settings.path_assets": "Pasta de Biblioteca & Assets",
+  "settings.path_autosave": "Pasta de Salvamento Automático",
+  "settings.path_renders": "Pasta de Renders & Exportações",
+  "settings.btn_open_folder": "Abrir no Explorer",
+  "settings.render_presets_title": "PADRÕES DE EXPORTAÇÃO",
+  "settings.image_format": "Formato Padrão de Fotografia",
+  "settings.video_format": "Formato Padrão de Vídeo",
+  "settings.default_resolution": "Resolução Padrão de Saída",
+
+  // Settings - Shortcuts
+  "settings.nav_shortcuts_title": "ATALHOS DE NAVEGAÇÃO 3D",
+  "settings.nav_orbit": "Giro orbital 360° da câmera ao redor do modelo",
+  "settings.nav_pan": "Translação lateral da visão (Shift+RMB, RMB ou MMB)",
+  "settings.nav_zoom": "Zoom progressivo direcionado ao cursor do mouse",
+  "settings.nav_focus": "Recentraliza a câmera no modelo",
+  "settings.app_shortcuts_title": "ATALHOS DO SISTEMA & STUDIO",
+  "settings.sc_settings": "Abre ou fecha este painel de configurações",
+  "settings.sc_inspector": "Recolhe ou expande o painel de propriedades",
+  "settings.sc_workspaces": "Alterna diretamente entre os 8 workspaces",
+  "settings.sc_play": "Reproduz ou pausa animações de timeline",
+
+  // Settings - About & Updates
+  "settings.about_title": "SOBRE O ANIGO STUDIO",
+  "settings.version_label": "Versão Atual",
+  "settings.engine_label": "Motor Gráfico",
+  "settings.updates_title": "SISTEMA DE ATUALIZAÇÃO AUTOMÁTICA",
+  "settings.updates_desc": "Verifica novas versões estáveis e correções de bugs automaticamente",
+  "settings.btn_check_updates": "Verificar Atualizações Agora",
+  "settings.checking_updates": "Verificando servidores de atualização...",
+  "settings.latest_version_ok": "Você está usando a versão mais recente do ANIGO Studio!",
+  "settings.update_auto_check": "Verificar atualizações automaticamente ao iniciar",
+  "settings.doc_links_title": "DOCUMENTAÇÃO & AJUDA",
+  "settings.link_manual": "Manual do Usuário ANIGO (PDF / Online)",
+  "settings.link_shortcuts": "Guia Visual de Atalhos e Gestos",
+  "settings.link_community": "Comunidade Discord e Suporte",
+
+  // Common Buttons
+  "btn.save": "Salvar Preferências",
+  "btn.saved": "Preferências Salvas!",
+  "btn.defaults": "Restaurar Padrões",
+  "btn.close": "Fechar",
+};

@@ -1,0 +1,10 @@
+[package]
+name = "anigo-vrm"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO VRM, glTF, and BlendShape Management Engine"
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true }
+anigo-core = { workspace = true }

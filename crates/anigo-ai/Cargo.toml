@@ -1,0 +1,10 @@
+[package]
+name = "anigo-ai"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO Autonomous AI Agent and Studio Automation Engine"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anigo-core = { workspace = true }

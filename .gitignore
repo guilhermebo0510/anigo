@@ -1,7 +1,12 @@
 # Rust
 target/
+target_check/
 **/*.rs.bk
 Cargo.lock
+
+# Binaries
+*.exe
+*.pdb
 
 # Node / Frontend
 node_modules/
@@ -17,3 +22,12 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+
+# Root debug screenshots & temporary files
+/*.png
+debug_eval.json
+test_project.anigo
+script.py
+
+# Agents scratchpad
+.agents/

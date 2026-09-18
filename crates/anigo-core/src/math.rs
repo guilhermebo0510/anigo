@@ -119,3 +119,58 @@ impl Camera {
         self.target += shift;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transform_matrix() {
+        let t = Transform {
+            translation: Vec3::new(1.0, 2.0, 3.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::new(2.0, 2.0, 2.0),
+        };
+        let mat = t.to_matrix();
+        let transformed = mat.transform_point3(Vec3::new(1.0, 0.0, 0.0));
+        assert!((transformed.x - 3.0).abs() < 1e-5);
+        assert!((transformed.y - 2.0).abs() < 1e-5);
+        assert!((transformed.z - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_camera_projection_and_view() {
+        let cam = Camera::default();
+        let view = cam.build_view_matrix();
+        let proj = cam.build_projection_matrix();
+        let vp = cam.build_view_projection_matrix();
+        assert_eq!(vp, proj * view);
+    }
+
+    #[test]
+    fn test_camera_orbit_preserves_radius() {
+        let mut cam = Camera::default();
+        let initial_radius = (cam.eye - cam.target).length();
+        cam.orbit(0.5, 0.2);
+        let new_radius = (cam.eye - cam.target).length();
+        assert!((initial_radius - new_radius).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_camera_zoom() {
+        let mut cam = Camera::default();
+        let initial_dist = (cam.eye - cam.target).length();
+        cam.zoom(1.5);
+        let zoomed_dist = (cam.eye - cam.target).length();
+        assert!((zoomed_dist - initial_dist * 1.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_camera_pan_preserves_distance() {
+        let mut cam = Camera::default();
+        let initial_dist = (cam.eye - cam.target).length();
+        cam.pan(1.0, 2.0);
+        let new_dist = (cam.eye - cam.target).length();
+        assert!((new_dist - initial_dist).abs() < 1e-4);
+    }
+}

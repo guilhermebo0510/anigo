@@ -18,7 +18,8 @@
         "minWidth": 1024,
         "minHeight": 720,
         "resizable": true,
-        "decorations": true
+        "decorations": false,
+        "additionalBrowserArgs": "--enable-features=Vulkan,UseSkiaRenderer,WebGPU --enable-unsafe-webgpu --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
       }
     ],
     "security": {
@@ -26,6 +27,13 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
   }
 }

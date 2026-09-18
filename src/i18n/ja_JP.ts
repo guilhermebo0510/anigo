@@ -1,0 +1,212 @@
+export const ja_JP: Record<string, string> = {
+  // Titlebar & 8 Canonical Workspaces
+  "app.title": "ANIGO STUDIO",
+  "workspace.personagem": "キャラクター",
+  "workspace.posing": "ポージング",
+  "workspace.shading": "シェーディング",
+  "workspace.iluminacao": "照明",
+  "workspace.cenario": "シーン",
+  "workspace.animacao": "アニメーション",
+  "workspace.render": "レンダリング",
+  "workspace.biblioteca": "ライブラリ",
+
+  // Window Controls
+  "window.minimize": "最小化",
+  "window.maximize": "最大化 / 元に戻す",
+  "window.close": "閉じる",
+
+  // Toolbar Tools — 1. Personagem
+  "tool.body": "解剖学＆体型",
+  "tool.body.desc": "人体のプロポーションと頭身比率",
+  "tool.face": "顔＆瞳",
+  "tool.face.desc": "顔の輪郭、目とアニメ風表情",
+  "tool.hair": "3Dヘアー",
+  "tool.hair.desc": "プロシージャル髪型とリボンメッシュ",
+  "tool.cloth": "衣装＆仕立て",
+  "tool.cloth.desc": "アニメ衣装のモデリングと仕立て",
+  "tool.accessories": "3Dアクセサリー",
+  "tool.accessories.desc": "小道具、防具、アタッチメント",
+  "tool.paint": "テクスチャペイント",
+  "tool.paint.desc": "3Dメッシュ直接ペイントとマスク",
+
+  // Toolbar Tools — 2. Posing
+  "tool.rig": "ボーン構造",
+  "tool.rig.desc": "骨格階層とジョイント回転",
+  "tool.ik": "インバースキネマティクス",
+  "tool.ik.desc": "ポージング用IKコントローラー",
+  "tool.poses_preset": "マネキンポーズ",
+  "tool.poses_preset.desc": "標準アニメポーズプリセット",
+
+  // Toolbar Tools — 3. Shading
+  "tool.cel_shader": "トゥーンランプ＆セルシェーディング",
+  "tool.cel_shader.desc": "セルルックの階調と境界調整",
+  "tool.rim": "リムライト",
+  "tool.rim.desc": "シルエット強調のフレネル照明",
+  "tool.outline": "反転輪郭線",
+  "tool.outline.desc": "インバーテッドハル法のアウトライン",
+  "tool.palette": "アニメ影カラーパレット",
+  "tool.palette.desc": "アニメ風の色相シフトと影の色調",
+  "tool.shader_ball": "シェーダーボール＆プレビュー",
+  "tool.shader_ball.desc": "球体によるリアルタイム質感検証",
+
+  // Toolbar Tools — 4. Iluminação
+  "tool.sun": "太陽光照明",
+  "tool.sun.desc": "太陽の方位角・仰角と光量",
+  "tool.shadows": "アニメシャドウ",
+  "tool.shadows.desc": "シャープなセル影と落ち影調整",
+  "tool.ambient": "環境光＆スカイライト",
+  "tool.ambient.desc": "半球環境光とアンビエントカラー",
+
+  // Toolbar Tools — 5. Cenário
+  "tool.stage": "グレーボックス配置",
+  "tool.stage.desc": "モジュール式ステージと空間設計",
+  "tool.props": "シーン小道具",
+  "tool.props.desc": "配置可能な背景アセットとオブジェクト",
+  "tool.environment": "アニメ空＆環境",
+  "tool.environment.desc": "スタイライズドスカイドームと大気フォグ",
+
+  // Toolbar Tools — 6. Animação
+  "tool.timeline": "タイムライン",
+  "tool.timeline.desc": "キーフレーム、再生とフレームレート",
+  "tool.curves": "補間カーブ",
+  "tool.curves.desc": "リニア・ベジェ・コマ打ちステップ補間",
+  "tool.lipsync": "リップシンク＆口形状",
+  "tool.lipsync.desc": "AI母音モーフィングと口パク同期",
+
+  // Toolbar Tools — 7. Render
+  "tool.camera": "シーンカメラ＆レンズ",
+  "tool.camera.desc": "画角・焦点距離と被写界深度",
+  "tool.passes": "NPRレンダーパス",
+  "tool.passes.desc": "ビューティー、線画、影、Z深度の分離",
+  "tool.export": "コンポジション＆書き出し",
+  "tool.export.desc": "画像・動画の最終レンダリング出力",
+
+  // Toolbar Tools — 8. Biblioteca
+  "tool.browser": "アセットブラウザ",
+  "tool.browser.desc": "モデル、衣装、小道具の統合カタログ",
+  "tool.search": "検索＆タグ",
+  "tool.search.desc": "キーワードとタグによる瞬時絞り込み",
+  "tool.filters": "カテゴリフィルター",
+  "tool.filters.desc": "アセットタイプごとの分類フィルタリング",
+
+  // Utility & Legacy Aliases
+  "tool.focus": "カメラフォーカス (F)",
+  "tool.settings": "スタジオ設定 (Ctrl+,)",
+  "tool.clothing": "衣装＆仕立て",
+  "tool.morphs": "表情＆モーフ",
+  "tool.shading": "アニメNPRシェーダー",
+  "tool.lights": "トゥーン太陽光",
+  "tool.outlines": "反転輪郭線",
+  "tool.presets": "モデルライブラリ",
+  "tool.materials": "カラーパレット",
+  "tool.render": "最終レンダリング",
+
+  // Asset Browser Interface (Milestone 1 & 3)
+  "asset.search_placeholder": "名前、タグ、カテゴリでアセットを検索...",
+  "asset.all_categories": "すべてのカテゴリ",
+  "asset.cat_characters": "キャラクター",
+  "asset.cat_clothes": "衣装",
+  "asset.cat_hair": "髪型",
+  "asset.cat_accessories": "アクセサリー",
+  "asset.cat_poses": "ポーズ",
+  "asset.cat_materials": "マテリアル",
+  "asset.cat_environments": "環境",
+  "asset.cat_scenery": "シーン",
+  "asset.action_use": "シーンで使用",
+  "asset.action_inspect": "詳細確認",
+  "asset.count_label": "個のアセットが見つかりました",
+  "asset.no_results": "選択したフィルターに一致するアセットが見つかりません。",
+
+  // Status Bar
+  "status.project": "プロジェクト",
+  "status.untitled": "無題.anigo",
+  "status.model": "モデル",
+  "status.ready": "準備完了",
+  "status.autosave": "自動保存",
+  "status.saved_at": "保存時刻",
+
+  // Settings Modal Tabs
+  "settings.modal_title": "スタジオ設定",
+  "settings.modal_subtitle": "環境設定、WebGPUエンジン＆保存フォルダ",
+  "settings.tab_general": "一般",
+  "settings.tab_graphics": "グラフィックス",
+  "settings.tab_storage": "保存先＆ストレージ",
+  "settings.tab_shortcuts": "ショートカット",
+  "settings.tab_about": "ヘルプ＆更新",
+
+  // Settings - General
+  "settings.theme_title": "UIテーマ",
+  "settings.theme_dark": "ダーク (Dark Obsidian)",
+  "settings.theme_light": "ライト (Studio Light)",
+  "settings.theme_system": "システム連動 (自動)",
+  "settings.lang_title": "言語設定",
+  "settings.autosave_title": "定期自動保存 (ディスク直接保存)",
+  "settings.autosave_enable": "ディスクへの定期自動保存を有効化する",
+  "settings.autosave_interval": "保存間隔",
+  "settings.autosave_minutes": "分",
+  "settings.autosave_now": "今すぐディスクに保存",
+  "settings.autosave_success": "プロジェクトがディスクに保存されました！",
+
+  // Settings - Graphics
+  "settings.gpu_backend": "描画バックエンド",
+  "settings.gpu_active": "ネイティブWebGPU (専用GPU有効)",
+  "settings.fps_cap_title": "フレームレート制限 (FPS上限)",
+  "settings.fps_60": "60 FPS (標準・省電力)",
+  "settings.fps_120": "120 FPS (高滑らかさ)",
+  "settings.fps_unlimited": "無制限 (最大レート)",
+  "settings.dpi_scale_title": "DPIスケール＆内部解像度",
+  "settings.dpi_10": "1.0x (標準ネイティブ)",
+  "settings.dpi_15": "1.5x (スーパーサンプリング)",
+  "settings.dpi_20": "2.0x (Retina 4K / 超高精細)",
+  "settings.vsync_title": "垂直同期 (VSYNC)",
+  "settings.vsync_desc": "画面のテアリングを防ぎ、フレームレートを安定させます",
+  "settings.aa_title": "アンチエイリアス (輪郭滑らか化)",
+  "settings.aa_msaa4x": "MSAA 4x (最高シルエット品質)",
+  "settings.aa_fxaa": "FXAA (高速ポストプロセス)",
+  "settings.aa_none": "なし (最高パフォーマンス)",
+
+  // Settings - Storage
+  "settings.paths_title": "標準スタジオフォルダ",
+  "settings.path_projects": "プロジェクトフォルダ (.anigo)",
+  "settings.path_assets": "ライブラリ＆アセットフォルダ",
+  "settings.path_autosave": "自動保存フォルダ",
+  "settings.path_renders": "レンダリング出力先フォルダ",
+  "settings.btn_open_folder": "エクスプローラーで開く",
+  "settings.render_presets_title": "出力プリセット",
+  "settings.image_format": "標準静止画フォーマット",
+  "settings.video_format": "標準動画フォーマット",
+  "settings.default_resolution": "標準出力解像度",
+
+  // Settings - Shortcuts
+  "settings.nav_shortcuts_title": "3D操作ショートカット",
+  "settings.nav_orbit": "モデル周りの360度カメラオービット",
+  "settings.nav_pan": "視点の画面空間移動 (Shift+右クリック、右クリックまたは中クリック)",
+  "settings.nav_zoom": "マウスカーソル方向への連続ズーム",
+  "settings.nav_focus": "モデルへのカメラリセット",
+  "settings.app_shortcuts_title": "スタジオ＆システムショートカット",
+  "settings.sc_settings": "設定ダイアログの開閉",
+  "settings.sc_inspector": "プロパティパネルの折りたたみ / 展開",
+  "settings.sc_workspaces": "8つのワークスペースを直接切り替え",
+  "settings.sc_play": "タイムラインアニメーションの再生 / 一時停止",
+
+  // Settings - About & Updates
+  "settings.about_title": "ANIGO STUDIO について",
+  "settings.version_label": "現在のバージョン",
+  "settings.engine_label": "グラフィックスエンジン",
+  "settings.updates_title": "自動アップデートシステム",
+  "settings.updates_desc": "安定版の更新とバグ修正を自動的に確認します",
+  "settings.btn_check_updates": "今すぐ更新を確認",
+  "settings.checking_updates": "アップデートサーバーを確認中...",
+  "settings.latest_version_ok": "ANIGO Studio の最新バージョンを使用しています！",
+  "settings.update_auto_check": "起動時に自動的に更新を確認する",
+  "settings.doc_links_title": "ドキュメント＆ヘルプ",
+  "settings.link_manual": "ANIGO ユーザーマニュアル (PDF / オンライン)",
+  "settings.link_shortcuts": "操作ガイドとジェスチャー一覧",
+  "settings.link_community": "Discord コミュニティ＆サポート",
+
+  // Common Buttons
+  "btn.save": "設定を保存",
+  "btn.saved": "設定を保存しました！",
+  "btn.defaults": "初期設定に戻す",
+  "btn.close": "閉じる",
+};

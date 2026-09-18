@@ -1,5 +1,14 @@
-// ANIGO Native WebGPU Real-Time Renderer
-// Directly runs WGSL Cel-Shading & Inverted Hull pipelines on GPU canvas at 120+ FPS
+// ANIGO Native 3D Viewport Renderer
+// Real-time NPR Cel-Shading & Inverted Hull Outlines with WebGPU and WebGL2 Fallback
+
+import {
+  createCameraRay,
+  raycastTactileHulls,
+  projectTactileDrag,
+  type AnatomicalSegment,
+  type RaycastHit,
+  type TactileDragResult
+} from "./tactile";
 
 export interface ViewportMetrics {
   fps: number;
@@ -7,56 +16,192 @@ export interface ViewportMetrics {
   triangles: number;
   drawCalls: number;
   adapterName: string;
+  backend: string;
+}
+
+export type MeshPreset = "mannequin" | "sphere" | "cube";
+
+export interface VertexData {
+  pos: [number, number, number];
+  normal: [number, number, number];
+  uv: [number, number];
+  color: [number, number, number, number];
+  joints?: [number, number, number, number];
+  weights?: [number, number, number, number];
+}
+
+export function packVertices(vertices: VertexData[]): Float32Array {
+  const buffer = new ArrayBuffer(vertices.length * 72);
+  const f32 = new Float32Array(buffer);
+  const u16 = new Uint16Array(buffer);
+
+  for (let i = 0; i < vertices.length; i++) {
+    const v = vertices[i];
+    const fIdx = i * 18;
+    const uIdx = i * 36;
+
+    // 0..12: pos (3 floats)
+    f32[fIdx + 0] = v.pos[0];
+    f32[fIdx + 1] = v.pos[1];
+    f32[fIdx + 2] = v.pos[2];
+
+    // 12..24: normal (3 floats)
+    f32[fIdx + 3] = v.normal[0];
+    f32[fIdx + 4] = v.normal[1];
+    f32[fIdx + 5] = v.normal[2];
+
+    // 24..32: uv (2 floats)
+    f32[fIdx + 6] = v.uv[0];
+    f32[fIdx + 7] = v.uv[1];
+
+    // 32..48: color (4 floats)
+    f32[fIdx + 8] = v.color[0];
+    f32[fIdx + 9] = v.color[1];
+    f32[fIdx + 10] = v.color[2];
+    f32[fIdx + 11] = v.color[3];
+
+    // 48..56: joints (4 u16 at byte offset 48 = 24 u16 elements)
+    const j = v.joints || [0, 0, 0, 0];
+    u16[uIdx + 24] = j[0];
+    u16[uIdx + 25] = j[1];
+    u16[uIdx + 26] = j[2];
+    u16[uIdx + 27] = j[3];
+
+    // 56..72: weights (4 floats at byte offset 56 = 14 f32 elements)
+    const w = v.weights || [1.0, 0.0, 0.0, 0.0];
+    f32[fIdx + 14] = w[0];
+    f32[fIdx + 15] = w[1];
+    f32[fIdx + 16] = w[2];
+    f32[fIdx + 17] = w[3];
+  }
+
+  return f32;
 }
 
 export class WebGpuViewportRenderer {
   private canvas: HTMLCanvasElement;
+  private backend: "webgpu" | "webgl2" = "webgpu";
+
+  // WebGPU Handles
   private adapter: GPUAdapter | null = null;
   private device: GPUDevice | null = null;
   private context: GPUCanvasContext | null = null;
   private format: GPUTextureFormat = "bgra8unorm";
-
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
-
   private celPipeline: GPURenderPipeline | null = null;
   private outlinePipeline: GPURenderPipeline | null = null;
-
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
-  private indexCount: number = 0;
-
   private cameraBuffer: GPUBuffer | null = null;
   private lightBuffer: GPUBuffer | null = null;
   private materialBuffer: GPUBuffer | null = null;
   private outlineBuffer: GPUBuffer | null = null;
-
   private celBindGroup: GPUBindGroup | null = null;
   private outlineBindGroup: GPUBindGroup | null = null;
+  private toonRampTexture: GPUTexture | null = null;
+  private toonRampSampler: GPUSampler | null = null;
+
+  // WebGPU Sparse Morph Compute Pipeline
+  private morphPipeline: GPUComputePipeline | null = null;
+  private morphBindGroupLayout: GPUBindGroupLayout | null = null;
+  private morphHeaderBuffer: GPUBuffer | null = null;
+  private morphBaseBuffer: GPUBuffer | null = null;
+  private morphDeltasBuffer: GPUBuffer | null = null;
+  private morphChannelsBuffer: GPUBuffer | null = null;
+  private morphedVertexBuffer: GPUBuffer | null = null;
+  private morphBindGroup: GPUBindGroup | null = null;
+  private morphVertexCount: number = 0;
+
+  // Somatotype & Morphs State (Sub-Sprint 3.3 & 3.5)
+  public somatotypeEndo: number = 0.33;
+  public somatotypeMeso: number = 0.34;
+  public somatotypeEcto: number = 0.33;
+  public genderDimorphism: number = 1.0;
+  public activeMorphWeights: Map<string, number> = new Map();
+
+  // WebGL2 Fallback Handles
+  private gl: WebGL2RenderingContext | null = null;
+  private glCelProgram: WebGLProgram | null = null;
+  private glOutlineProgram: WebGLProgram | null = null;
+  private glVao: WebGLVertexArrayObject | null = null;
+  private glVbo: WebGLBuffer | null = null;
+  private glIbo: WebGLBuffer | null = null;
+
+  private indexCount: number = 0;
+
+  private canonicalVertices: Float32Array | null = null;
+  private canonicalIndices: Uint32Array | null = null;
+  private canonicalBaseVertices: VertexData[] | null = null;
+  public canonicalGender: "male" | "female" = "male";
+
+  // Preset & Proportions State (BOND Skeletal Sync)
+  public currentPreset: MeshPreset = "mannequin";
+  public headScale: number = 1.0;
+  public headRatio: number = 6.5;
+  public shoulderWidth: number = 1.0;
+  public legLength: number = 1.0;
+  public armLength: number = 1.0;
+  public neckLength: number = 1.0;
+  public torsoLength: number = 1.0;
+  public heightOverall: number = 1.0;
 
   // Camera State
   public eye: [number, number, number] = [0.0, 1.5, 3.5];
   public target: [number, number, number] = [0.0, 1.0, 0.0];
   public up: [number, number, number] = [0.0, 1.0, 0.0];
   public fov: number = (45.0 * Math.PI) / 180.0;
+  private recenterAnim: {
+    startEye: [number, number, number];
+    startTarget: [number, number, number];
+    startUp: [number, number, number];
+    endEye: [number, number, number];
+    endTarget: [number, number, number];
+    endUp: [number, number, number];
+    startTime: number;
+    duration: number;
+  } | null = null;
 
   // Light State
   public lightDir: [number, number, number] = [0.577, 0.577, 0.577];
   public lightColor: [number, number, number] = [1.0, 0.98, 0.95];
   public lightIntensity: number = 1.0;
+  public ambientIntensity: number = 0.35;
   public shadowColor: [number, number, number] = [0.65, 0.68, 0.85];
+  public shadowSaturation: number = 1.15;
 
   // Material State
   public baseColor: [number, number, number, number] = [0.98, 0.92, 0.85, 1.0];
   public shadeColor: [number, number, number, number] = [0.82, 0.73, 0.78, 1.0];
   public outlineColor: [number, number, number, number] = [0.25, 0.15, 0.20, 1.0];
   public outlineWidth: number = 0.0035;
+  public outlineOpacity: number = 1.0;
+  public outlineSmoothness: number = 0.0;
+  public outlineDepthBias: number = 0.0;
   public shadowThreshold: number = 0.50;
+  public toonSmoothness: number = 0.02;
+  public specIntensity: number = 0.40;
+  public specExponent: number = 32.0;
+  public specSoftness: number = 0.05;
+  public specOffset: number = 0.0;
+  public specColor: [number, number, number, number] = [1.0, 1.0, 1.0, 1.0];
+  public rimIntensity: number = 0.80;
+  public rimSpread: number = 0.40;
+  public hueShift: number = -15.0; // degrees (-60 to +60)
+  public toonSteps: number = 1.0; // 1.0 = hard anime cel, 2.0 = 2-tier Ghibli, 0.0 = continuous
+
+  // Graphics Pipeline Settings
+  public targetFps: number = 120;
+  private lastFrameTimestamp: number = 0;
+  public dpiMultiplier: number = 1.0;
+  private cssWidth: number = 800;
+  private cssHeight: number = 600;
+  public vsyncEnabled: boolean = true;
 
   private animationFrameId: number | null = null;
-  private lastTime: number = performance.now();
   private frameCounter: number = 0;
-  private fpsTimer: number = 0;
+  private fpsTimer: number = performance.now();
+  private isRendering: boolean = false;
   public onMetricsUpdate?: (metrics: ViewportMetrics) => void;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -64,41 +209,63 @@ export class WebGpuViewportRenderer {
   }
 
   public async initialize(): Promise<boolean> {
-    if (!navigator.gpu) {
-      console.warn("[WebGPU] navigator.gpu not available in this webview context.");
-      return false;
-    }
-
+    // 0. Pre-load canonical humanoid model
     try {
-      this.adapter = await navigator.gpu.requestAdapter({
-        powerPreference: "high-performance",
-      });
-      if (!this.adapter) return false;
-
-      this.device = await this.adapter.requestDevice();
-      this.context = this.canvas.getContext("webgpu");
-      if (!this.context) return false;
-
-      this.format = navigator.gpu.getPreferredCanvasFormat();
-      this.context.configure({
-        device: this.device,
-        format: this.format,
-        alphaMode: "premultiplied",
-      });
-
-      this.buildShadersAndPipelines();
-      this.buildGeometryBuffers();
-      this.buildUniformBuffers();
-      this.resize(this.canvas.clientWidth, this.canvas.clientHeight);
-      this.startRenderLoop();
-
-      return true;
+      await this.loadCanonicalModel("male");
     } catch (e) {
-      console.error("[WebGPU] Initialization error:", e);
-      return false;
+      console.warn("[ANIGO 3D] Pre-loading canonical model warning:", e);
     }
+
+    // 1. Attempt Native WebGPU
+    if (typeof navigator !== "undefined" && navigator.gpu) {
+      try {
+        this.adapter = await navigator.gpu.requestAdapter({
+          powerPreference: "high-performance",
+        });
+        if (this.adapter) {
+          this.device = await this.adapter.requestDevice();
+          this.context = this.canvas.getContext("webgpu");
+          if (this.context) {
+            this.format = navigator.gpu.getPreferredCanvasFormat();
+            this.context.configure({
+              device: this.device,
+              format: this.format,
+              alphaMode: "premultiplied",
+              presentMode: this.vsyncEnabled ? "fifo" : "immediate",
+            });
+
+            this.buildShadersAndPipelines();
+            this.buildGeometryBuffers();
+            this.buildUniformBuffers();
+
+            const initW = this.canvas.clientWidth > 50 ? this.canvas.clientWidth : 800;
+            const initH = this.canvas.clientHeight > 50 ? this.canvas.clientHeight : 600;
+            this.resize(initW, initH);
+
+            this.backend = "webgpu";
+            this.startRenderLoop();
+            console.log("[ANIGO 3D] Native WebGPU initialized successfully at 120+ FPS.");
+            return true;
+          }
+        }
+      } catch (e) {
+        console.warn("[ANIGO 3D] WebGPU initialization failed, switching to WebGL2 fallback:", e);
+      }
+    }
+
+    // 2. Graceful WebGL2 Fallback (ensures scene is NEVER a black screen)
+    console.log("[ANIGO 3D] Initializing WebGL2 hardware fallback renderer...");
+    const success = this.initWebGL2();
+    if (success) {
+      this.backend = "webgl2";
+      this.startRenderLoop();
+    }
+    return success;
   }
 
+  // ==========================================
+  // WebGPU Shaders & Pipelines
+  // ==========================================
   private buildShadersAndPipelines() {
     if (!this.device) return;
 
@@ -115,18 +282,25 @@ export class WebGpuViewportRenderer {
       struct MaterialUniform {
           base_color: vec4<f32>,
           shade_color: vec4<f32>,
+          specular_color: vec4<f32>,
           params: vec4<f32>,
+          params2: vec4<f32>,
+          params3: vec4<f32>,
       };
 
       @group(0) @binding(0) var<uniform> camera: CameraUniform;
       @group(0) @binding(1) var<uniform> light: LightUniform;
       @group(0) @binding(2) var<uniform> material: MaterialUniform;
+      @group(0) @binding(3) var toon_ramp_tex: texture_2d<f32>;
+      @group(0) @binding(4) var toon_ramp_sampler: sampler;
 
       struct VertexInput {
           @location(0) position: vec3<f32>,
           @location(1) normal: vec3<f32>,
           @location(2) uv: vec2<f32>,
           @location(3) color: vec4<f32>,
+          @location(4) joints: vec4<u32>,
+          @location(5) weights: vec4<f32>,
       };
       struct VertexOutput {
           @builtin(position) clip_position: vec4<f32>,
@@ -148,25 +322,132 @@ export class WebGpuViewportRenderer {
           return out;
       }
 
+      fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
+          let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+          let p = select(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), c.b < c.g);
+          let q = select(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), p.x < c.r);
+          let d = q.x - min(q.w, q.y);
+          let e = 1.0e-10;
+          return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+      }
+
+      fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
+          let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+          let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+          return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+      }
+
+      fn apply_hue_shift(rgb: vec3<f32>, shift_radians: f32, sat_mult: f32) -> vec3<f32> {
+          var hsv = rgb_to_hsv(rgb);
+          hsv.x = fract(fract(hsv.x + shift_radians / 6.28318530718) + 1.0);
+          hsv.y = clamp(hsv.y * sat_mult, 0.0, 1.0);
+          return hsv_to_rgb(hsv);
+      }
+
       @fragment
       fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
           let N = normalize(in.world_normal);
           let L = normalize(light.direction.xyz);
+          let V = normalize(camera.camera_pos.xyz - in.world_position);
+
+          // 1. Half-Lambert Remapping (0..1)
           let n_dot_l = dot(N, L);
           let half_lambert = n_dot_l * 0.5 + 0.5;
 
+          // 2. Vertex Attribute Shadow Bias (G channel = shadow shift) & Smoothness
           let shadow_shift = (in.anime_attr.g - 0.5) * 0.3;
           let threshold = material.params.x + shadow_shift;
           let smoothness = max(material.params.y, 0.001);
 
-          let toon_factor = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
+          // 3. Toon Ramp 1D/2D Texture Sampling with Analytical Fallback
+          let toon_steps = material.params2.w;
+          let ramp_v = select(
+              select(0.125, 0.375, toon_steps >= 0.5),
+              select(0.625, 0.875, toon_steps >= 2.5),
+              toon_steps >= 1.5
+          );
+          let u_coord = clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
+          let ramp_sample = textureSample(toon_ramp_tex, toon_ramp_sampler, vec2<f32>(u_coord, ramp_v));
+
+          var analytical_toon: f32;
+          if (toon_steps < 0.5) {
+              // Continuous / Smooth anime gradient
+              analytical_toon = smoothstep(threshold - 0.35 - smoothness, threshold + 0.35 + smoothness, half_lambert);
+          } else if (toon_steps < 1.5) {
+              // 1 Degrau (Hard Anime Cel)
+              analytical_toon = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
+          } else if (toon_steps < 2.5) {
+              // 2 Degraus (Ghibli Soft)
+              let s1 = smoothstep(threshold - 0.14 - smoothness, threshold - 0.14 + smoothness, half_lambert);
+              let s2 = smoothstep(threshold + 0.14 - smoothness, threshold + 0.14 + smoothness, half_lambert);
+              analytical_toon = s1 * 0.45 + s2 * 0.55;
+          } else {
+              // 3 Degraus (High-Key Multi-band)
+              let s1 = smoothstep(threshold - 0.20 - smoothness, threshold - 0.20 + smoothness, half_lambert);
+              let s2 = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
+              let s3 = smoothstep(threshold + 0.20 - smoothness, threshold + 0.20 + smoothness, half_lambert);
+              analytical_toon = (s1 + s2 + s3) / 3.0;
+          }
+
+          let toon_factor = mix(ramp_sample.r, analytical_toon, clamp((smoothness - 0.015) * 15.0, 0.0, 1.0));
+
+          // 4. Stylized Ambient Occlusion (R channel)
           let ao = in.anime_attr.r;
 
-          let lit_color = material.base_color.rgb * light.color.rgb;
-          let shadow_tint = material.shade_color.rgb * light.shadow_color.rgb;
-          let ambient_light = material.shade_color.rgb * light.color.w * ao;
+          // 5. Mathematical Hue-Shifting in Shadows & Saturation
+          let hue_shift_rad = material.params2.z;
+          let raw_shadow_color = material.shade_color.rgb * light.shadow_color.rgb;
+          let shadow_sat = max(light.shadow_color.w, 0.0);
+          let hue_shifted_shadow = apply_hue_shift(raw_shadow_color, hue_shift_rad, shadow_sat);
 
-          let final_rgb = mix(shadow_tint + ambient_light, lit_color, toon_factor) * ao;
+          // 6. Base Lit and Shadow Blending (Chromaticity-Preserving)
+          let intensity = light.direction.w;
+          var lit_color = material.base_color.rgb * light.color.rgb * intensity;
+          let max_lit = max(max(lit_color.r, lit_color.g), lit_color.b);
+          if (max_lit > 1.0) {
+              lit_color = lit_color / max_lit;
+          }
+
+          let ambient_term = clamp(0.2 + light.color.w * 0.8, 0.05, 1.5);
+          let shadow_color = hue_shifted_shadow * ambient_term;
+          let base_cel = mix(shadow_color, lit_color, toon_factor);
+
+          // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")
+          let H = normalize(L + V);
+          let n_dot_h = max(dot(N, H), 0.0);
+          let spec_power = max(material.params.w, 1.0);
+          let spec_intensity = material.params.z;
+          let spec_softness = material.params3.x;
+          let spec_offset = material.params3.y;
+          let spec_rgb = material.specular_color.rgb;
+
+          let up_vec = vec3<f32>(0.0, 1.0, 0.0);
+          let tangent = normalize(cross(N, select(up_vec, vec3<f32>(1.0, 0.0, 0.0), abs(N.y) > 0.99)));
+          let t_dot_h = dot(tangent, H);
+          let aniso_factor = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
+
+          let jitter_pos = in.world_position.y * 35.0 + in.uv.x * 20.0 + spec_offset * 10.0;
+          let jitter = sin(jitter_pos) * 0.08;
+          let spec_base = max(mix(n_dot_h, aniso_factor * n_dot_h, 0.35), 0.0);
+          let spec_term = pow(spec_base, spec_power);
+          let spec_cutoff = clamp(0.65 - (spec_intensity * 0.12), 0.30, 0.65);
+          
+          let spec_soft_clamped = max(spec_softness, 0.001);
+          let spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * spec_intensity * in.anime_attr.a * toon_factor;
+
+          // 8. Stylized Fresnel Rim Lighting
+          let rim_intensity = material.params2.x;
+          let rim_spread = clamp(material.params2.y, 0.05, 0.95);
+          let rim_dot = 1.0 - max(dot(V, N), 0.0);
+          let rim_fresnel = smoothstep(1.0 - rim_spread, 1.0, rim_dot);
+          let rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
+          let rim_term = rim_fresnel * rim_backlight * rim_intensity * in.anime_attr.a;
+
+          // 9. Final Color Composition
+          let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
+          let with_rim = lit_highlighted + (light.shadow_color.rgb * rim_term);
+          let final_rgb = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0)) * ao;
+
           return vec4<f32>(final_rgb, material.base_color.a);
       }
     `;
@@ -189,6 +470,8 @@ export class WebGpuViewportRenderer {
           @location(1) normal: vec3<f32>,
           @location(2) uv: vec2<f32>,
           @location(3) color: vec4<f32>,
+          @location(4) joints: vec4<u32>,
+          @location(5) weights: vec4<f32>,
       };
       struct VertexOutput {
           @builtin(position) clip_position: vec4<f32>,
@@ -197,15 +480,24 @@ export class WebGpuViewportRenderer {
       @vertex
       fn vs_main(in: VertexInput) -> VertexOutput {
           var out: VertexOutput;
+          if (in.color.b <= 0.001) {
+              out.clip_position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+              return out;
+          }
           let world_pos = vec4<f32>(in.position, 1.0);
           var clip_pos = camera.view_proj * world_pos;
 
           let normal_vec4 = camera.view_proj * vec4<f32>(in.normal, 0.0);
-          let normal_clip = normalize(normal_vec4.xy);
+          let len = length(normal_vec4.xy);
+          let normal_clip = select(vec2<f32>(0.0, 0.0), normal_vec4.xy / len, len > 1e-5);
 
           let thickness = outline.params.x * in.color.b;
-          clip_pos.x += normal_clip.x * thickness * clip_pos.w;
+          let aspect = outline.params.y;
+          let depth_bias = outline.params.z;
+
+          clip_pos.x += (normal_clip.x / aspect) * thickness * clip_pos.w;
           clip_pos.y += normal_clip.y * thickness * clip_pos.w;
+          clip_pos.z += depth_bias * clip_pos.w;
 
           out.clip_position = clip_pos;
           return out;
@@ -213,7 +505,8 @@ export class WebGpuViewportRenderer {
 
       @fragment
       fn fs_main() -> @location(0) vec4<f32> {
-          return outline.color;
+          let opacity = outline.params.w;
+          return vec4<f32>(outline.color.rgb, outline.color.a * opacity);
       }
     `;
 
@@ -221,12 +514,14 @@ export class WebGpuViewportRenderer {
     const outlineModule = this.device.createShaderModule({ code: outlineShaderCode });
 
     const vertexBufferLayout: GPUVertexBufferLayout = {
-      arrayStride: 48, // 12 floats * 4 bytes
+      arrayStride: 72,
       attributes: [
-        { shaderLocation: 0, offset: 0, format: "float32x3" },  // position
-        { shaderLocation: 1, offset: 12, format: "float32x3" }, // normal
-        { shaderLocation: 2, offset: 24, format: "float32x2" }, // uv
-        { shaderLocation: 3, offset: 32, format: "float32x4" }, // anime attributes (AO, shadow, outline, spec)
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32x3" },
+        { shaderLocation: 2, offset: 24, format: "float32x2" },
+        { shaderLocation: 3, offset: 32, format: "float32x4" },
+        { shaderLocation: 4, offset: 48, format: "uint16x4" },
+        { shaderLocation: 5, offset: 56, format: "float32x4" },
       ],
     };
 
@@ -240,7 +535,13 @@ export class WebGpuViewportRenderer {
       fragment: {
         module: celModule,
         entryPoint: "fs_main",
-        targets: [{ format: this.format }],
+        targets: [{ 
+            format: this.format,
+            blend: {
+                color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+            }
+        }],
       },
       primitive: {
         topology: "triangle-list",
@@ -263,11 +564,17 @@ export class WebGpuViewportRenderer {
       fragment: {
         module: outlineModule,
         entryPoint: "fs_main",
-        targets: [{ format: this.format }],
+        targets: [{ 
+            format: this.format,
+            blend: {
+                color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+            }
+        }],
       },
       primitive: {
         topology: "triangle-list",
-        cullMode: "front", // Inverted Hull: cull front, draw back
+        cullMode: "front", // Backfaces extruded for inverted hull
       },
       depthStencil: {
         format: "depth24plus",
@@ -275,48 +582,706 @@ export class WebGpuViewportRenderer {
         depthCompare: "less-equal",
       },
     });
+
+    // Sub-Sprint 3.3: WebGPU Sparse Morph Target Compute Pipeline
+    const morphComputeCode = `
+      struct SparseMorphHeader {
+        active_channel_count: u32,
+        total_vertex_count: u32,
+        total_delta_count: u32,
+        _pad: u32,
+      };
+
+      struct MorphChannel {
+        weight: f32,
+        start_offset: u32,
+        delta_count: u32,
+        _pad: u32,
+      };
+
+      struct SparseMorphDelta {
+        vertex_index: u32,
+        delta_px: f32,
+        delta_py: f32,
+        delta_pz: f32,
+        delta_nx: f32,
+        delta_ny: f32,
+        delta_nz: f32,
+        _pad: f32,
+      };
+
+      struct VertexRaw {
+        pos_x: f32,
+        pos_y: f32,
+        pos_z: f32,
+        norm_x: f32,
+        norm_y: f32,
+        norm_z: f32,
+        uv_u: f32,
+        uv_v: f32,
+        col_r: f32,
+        col_g: f32,
+        col_b: f32,
+        col_a: f32,
+        joints_0_1: u32,
+        joints_2_3: u32,
+        weight_0: f32,
+        weight_1: f32,
+        weight_2: f32,
+        weight_3: f32,
+      };
+
+      @group(0) @binding(0) var<uniform> header: SparseMorphHeader;
+      @group(0) @binding(1) var<storage, read> base_vertices: array<VertexRaw>;
+      @group(0) @binding(2) var<storage, read> morph_deltas: array<SparseMorphDelta>;
+      @group(0) @binding(3) var<storage, read> active_channels: array<MorphChannel>;
+      @group(0) @binding(4) var<storage, read_write> out_vertices: array<VertexRaw>;
+
+      @compute @workgroup_size(64)
+      fn cs_accumulate_morphs(@builtin(global_invocation_id) global_id: vec3<u32>) {
+        let vert_idx = global_id.x;
+        if (vert_idx >= header.total_vertex_count) {
+          return;
+        }
+
+        var base_v = base_vertices[vert_idx];
+        var p = vec3<f32>(base_v.pos_x, base_v.pos_y, base_v.pos_z);
+        var n = vec3<f32>(base_v.norm_x, base_v.norm_y, base_v.norm_z);
+
+        for (var c: u32 = 0u; c < header.active_channel_count; c = c + 1u) {
+          let ch = active_channels[c];
+          if (abs(ch.weight) > 1e-6 && ch.delta_count > 0u) {
+            let start = ch.start_offset;
+            let count = ch.delta_count;
+
+            var low: u32 = 0u;
+            var high: u32 = count;
+            var found_idx: u32 = 0xFFFFFFFFu;
+
+            while (low < high) {
+              let mid = low + (high - low) / 2u;
+              let delta_vert = morph_deltas[start + mid].vertex_index;
+              if (delta_vert == vert_idx) {
+                found_idx = start + mid;
+                break;
+              } else if (delta_vert < vert_idx) {
+                low = mid + 1u;
+              } else {
+                high = mid;
+              }
+            }
+
+            if (found_idx != 0xFFFFFFFFu) {
+              let delta = morph_deltas[found_idx];
+              p = p + ch.weight * vec3<f32>(delta.delta_px, delta.delta_py, delta.delta_pz);
+              n = n + ch.weight * vec3<f32>(delta.delta_nx, delta.delta_ny, delta.delta_nz);
+            }
+          }
+        }
+
+        let n_sq = dot(n, n);
+        if (n_sq > 1e-12) {
+          n = normalize(n);
+        }
+
+        base_v.pos_x = p.x;
+        base_v.pos_y = p.y;
+        base_v.pos_z = p.z;
+        base_v.norm_x = n.x;
+        base_v.norm_y = n.y;
+        base_v.norm_z = n.z;
+
+        out_vertices[vert_idx] = base_v;
+      }
+    `;
+
+    try {
+      const morphModule = this.device.createShaderModule({
+        label: "Sparse Morph Compute Module",
+        code: morphComputeCode,
+      });
+
+      this.morphBindGroupLayout = this.device.createBindGroupLayout({
+        label: "Sparse Morph Bind Group Layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 3,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 4,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "storage" },
+          },
+        ],
+      });
+
+      const morphPipelineLayout = this.device.createPipelineLayout({
+        label: "Sparse Morph Pipeline Layout",
+        bindGroupLayouts: [this.morphBindGroupLayout],
+      });
+
+      this.morphPipeline = this.device.createComputePipeline({
+        layout: morphPipelineLayout,
+        compute: {
+          module: morphModule,
+          entryPoint: "cs_accumulate_morphs",
+        },
+      });
+    } catch (e) {
+      console.warn("[ANIGO 3D] Compute pipeline initialization fallback:", e);
+    }
+  }
+
+  // ==========================================
+  // WebGL2 Fallback Implementation
+  // ==========================================
+  private initWebGL2(): boolean {
+    const gl = this.canvas.getContext("webgl2", { antialias: true, alpha: false });
+    if (!gl) {
+      console.error("[ANIGO 3D] WebGL2 not supported in this environment.");
+      return false;
+    }
+    this.gl = gl;
+
+    const vsCel = `#version 300 es
+      layout(location = 0) in vec3 a_pos;
+      layout(location = 1) in vec3 a_normal;
+      layout(location = 2) in vec2 a_uv;
+      layout(location = 3) in vec4 a_color;
+      layout(location = 4) in uvec4 a_joints;
+      layout(location = 5) in vec4 a_weights;
+
+      uniform mat4 u_view_proj;
+      out vec3 v_normal;
+      out vec3 v_pos;
+      out vec4 v_color;
+
+      void main() {
+        v_pos = a_pos;
+        v_normal = a_normal;
+        v_color = a_color;
+        gl_Position = u_view_proj * vec4(a_pos, 1.0);
+      }
+    `;
+
+    const fsCel = `#version 300 es
+      precision highp float;
+      in vec3 v_normal;
+      in vec3 v_pos;
+      in vec4 v_color;
+
+      uniform vec3 u_light_dir;
+      uniform float u_light_intensity;
+      uniform vec3 u_light_color;
+      uniform vec3 u_shadow_color;
+      uniform float u_ambient_intensity;
+      uniform float u_shadow_saturation;
+      uniform vec4 u_base_color;
+      uniform vec4 u_shade_color;
+      uniform float u_shadow_threshold;
+      uniform float u_shadow_smoothness;
+      uniform float u_hue_shift;
+      uniform float u_toon_steps;
+      uniform vec3 u_camera_pos;
+      uniform float u_spec_intensity;
+      uniform float u_spec_power;
+      uniform float u_spec_softness;
+      uniform float u_spec_offset;
+      uniform vec4 u_spec_color;
+      uniform float u_rim_intensity;
+      uniform float u_rim_spread;
+
+      out vec4 fragColor;
+
+      vec3 rgb2hsv(vec3 c) {
+        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+        float d = q.x - min(q.w, q.y);
+        float e = 1.0e-10;
+        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+      }
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+      }
+
+      void main() {
+        vec3 N = normalize(v_normal);
+        vec3 L = normalize(u_light_dir);
+        vec3 V = normalize(u_camera_pos - v_pos);
+        float n_dot_l = dot(N, L);
+        float half_lambert = n_dot_l * 0.5 + 0.5;
+        float shift = (v_color.g - 0.5) * 0.3;
+        float threshold = u_shadow_threshold + shift;
+        float smoothness = max(u_shadow_smoothness, 0.001);
+
+        float u_coord = clamp((half_lambert - threshold) + 0.5, 0.0, 1.0);
+        float toon = u_coord;
+        if (u_toon_steps < 0.5) {
+          toon = smoothstep(threshold - 0.35 - smoothness, threshold + 0.35 + smoothness, half_lambert);
+        } else if (u_toon_steps >= 0.5 && u_toon_steps < 1.5) {
+          toon = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
+        } else if (u_toon_steps >= 1.5 && u_toon_steps < 2.5) {
+          float s1 = smoothstep(threshold - 0.14 - smoothness, threshold - 0.14 + smoothness, half_lambert);
+          float s2 = smoothstep(threshold + 0.14 - smoothness, threshold + 0.14 + smoothness, half_lambert);
+          toon = s1 * 0.45 + s2 * 0.55;
+        } else {
+          float s1 = smoothstep(threshold - 0.20 - smoothness, threshold - 0.20 + smoothness, half_lambert);
+          float s2 = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
+          float s3 = smoothstep(threshold + 0.20 - smoothness, threshold + 0.20 + smoothness, half_lambert);
+          toon = (s1 + s2 + s3) / 3.0;
+        }
+
+        vec3 lit = u_base_color.rgb * u_light_color * u_light_intensity;
+        float max_lit = max(max(lit.r, lit.g), lit.b);
+        if (max_lit > 1.0) {
+          lit = lit / max_lit;
+        }
+
+        vec3 raw_shadow = u_shade_color.rgb * u_shadow_color;
+        vec3 hsv = rgb2hsv(raw_shadow);
+        hsv.x = fract(fract(hsv.x + u_hue_shift / 360.0) + 1.0);
+        hsv.y = clamp(hsv.y * u_shadow_saturation, 0.0, 1.0);
+        float ambient = clamp(0.2 + u_ambient_intensity * 0.8, 0.05, 1.5);
+        vec3 shadow = hsv2rgb(hsv) * ambient;
+
+        vec3 base_cel = mix(shadow, lit, toon);
+
+        vec3 H = normalize(L + V);
+        float n_dot_h = max(dot(N, H), 0.0);
+        vec3 up_vec = vec3(0.0, 1.0, 0.0);
+        vec3 tangent = normalize(cross(N, mix(up_vec, vec3(1.0, 0.0, 0.0), step(0.99, abs(N.y)))));
+        float t_dot_h = dot(tangent, H);
+        float aniso = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
+        float jitter_pos = v_pos.y * 35.0 + v_pos.x * 20.0 + u_spec_offset * 10.0;
+        float jitter = sin(jitter_pos) * 0.08;
+        float spec_base = max(mix(n_dot_h, aniso * n_dot_h, 0.35), 0.0);
+        float spec_term = pow(spec_base, max(u_spec_power, 1.0));
+        float spec_cutoff = clamp(0.65 - (u_spec_intensity * 0.12), 0.30, 0.65);
+        float spec_soft_clamped = max(u_spec_softness, 0.001);
+        float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity * v_color.a * toon;
+
+        float rim_dot = 1.0 - max(dot(V, N), 0.0);
+        float rim_fresnel = smoothstep(1.0 - u_rim_spread, 1.0, rim_dot);
+        float rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
+        float rim_term = rim_fresnel * rim_backlight * u_rim_intensity * v_color.a;
+
+        vec3 lit_highlighted = mix(base_cel, u_spec_color.rgb, clamp(spec_step, 0.0, 1.0));
+        vec3 with_rim = lit_highlighted + (u_shadow_color * rim_term);
+        vec3 col = clamp(with_rim, 0.0, 1.0) * v_color.r;
+
+        fragColor = vec4(col, u_base_color.a);
+      }
+    `;
+
+    const vsOutline = `#version 300 es
+      layout(location = 0) in vec3 a_pos;
+      layout(location = 1) in vec3 a_normal;
+      layout(location = 3) in vec4 a_color;
+      layout(location = 4) in uvec4 a_joints;
+      layout(location = 5) in vec4 a_weights;
+
+      uniform mat4 u_view_proj;
+      uniform float u_outline_width;
+      uniform float u_aspect;
+      uniform float u_outline_depth_bias;
+
+      void main() {
+        if (a_color.b <= 0.001) {
+          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+          return;
+        }
+        vec4 clip = u_view_proj * vec4(a_pos, 1.0);
+        vec4 norm = u_view_proj * vec4(a_normal, 0.0);
+        float len = length(norm.xy);
+        vec2 norm_clip = mix(vec2(0.0), norm.xy / len, step(1e-5, len));
+        clip.x += (norm_clip.x / u_aspect) * u_outline_width * a_color.b * clip.w;
+        clip.y += norm_clip.y * u_outline_width * a_color.b * clip.w;
+        clip.z += u_outline_depth_bias * clip.w;
+        gl_Position = clip;
+      }
+    `;
+
+    const fsOutline = `#version 300 es
+      precision highp float;
+      uniform vec4 u_outline_color;
+      uniform float u_outline_opacity;
+      out vec4 fragColor;
+
+      void main() {
+        fragColor = vec4(u_outline_color.rgb, u_outline_color.a * u_outline_opacity);
+      }
+    `;
+
+    const compileShader = (type: number, src: string) => {
+      const s = gl.createShader(type)!;
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.error("[WebGL2 Shader Error]", gl.getShaderInfoLog(s));
+        gl.deleteShader(s);
+        return null;
+      }
+      return s;
+    };
+
+    const linkProgram = (vsSrc: string, fsSrc: string) => {
+      const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+      const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+      if (!vs || !fs) return null;
+      const prog = gl.createProgram()!;
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error("[WebGL2 Link Error]", gl.getProgramInfoLog(prog));
+        return null;
+      }
+      return prog;
+    };
+
+    this.glCelProgram = linkProgram(vsCel, fsCel);
+    this.glOutlineProgram = linkProgram(vsOutline, fsOutline);
+
+    this.buildGeometryBuffers();
+    const initW = this.canvas.clientWidth > 50 ? this.canvas.clientWidth : 800;
+    const initH = this.canvas.clientHeight > 50 ? this.canvas.clientHeight : 600;
+    this.resize(initW, initH);
+
+    return !!(this.glCelProgram && this.glOutlineProgram);
+  }
+
+  // ==========================================
+  // Geometry Generation & Buffers
+  // ==========================================
+  public switchPreset(preset: MeshPreset, headScale?: number, headRatio?: number) {
+    this.currentPreset = preset;
+    if (headScale !== undefined) this.headScale = headScale;
+    if (headRatio !== undefined) this.headRatio = headRatio;
+    this.buildGeometryBuffers();
+  }
+
+  public setHeadProportions(headScale: number, headRatio: number) {
+    this.setProportions({ headScale, headRatio });
+  }
+
+  public setProportions(params: {
+    headScale?: number;
+    headRatio?: number;
+    shoulderWidth?: number;
+    legLength?: number;
+    armLength?: number;
+    neckLength?: number;
+    torsoLength?: number;
+    heightOverall?: number;
+  }) {
+    if (params.headScale !== undefined) this.headScale = params.headScale;
+    if (params.headRatio !== undefined) this.headRatio = params.headRatio;
+    if (params.shoulderWidth !== undefined) this.shoulderWidth = params.shoulderWidth;
+    if (params.legLength !== undefined) this.legLength = params.legLength;
+    if (params.armLength !== undefined) this.armLength = params.armLength;
+    if (params.neckLength !== undefined) this.neckLength = params.neckLength;
+    if (params.torsoLength !== undefined) this.torsoLength = params.torsoLength;
+    if (params.heightOverall !== undefined) this.heightOverall = params.heightOverall;
+
+    if (this.currentPreset === "mannequin") {
+      this.buildGeometryBuffers();
+    }
+  }
+
+  public dispatchSparseMorphs(encoder: GPUCommandEncoder, vertexCount: number): boolean {
+    if (!this.morphPipeline || !this.morphBindGroup) return false;
+    const computePass = encoder.beginComputePass({ label: "Sparse Morph Compute Pass" });
+    computePass.setPipeline(this.morphPipeline);
+    computePass.setBindGroup(0, this.morphBindGroup);
+    const workgroups = Math.ceil(vertexCount / 64);
+    computePass.dispatchWorkgroups(workgroups, 1, 1);
+    computePass.end();
+    return true;
+  }
+
+  public uploadSparseMorphData(
+    header: { activeChannels: number; totalVertices: number; totalDeltas: number },
+    baseVertices: Float32Array,
+    deltas: Float32Array,
+    channels: Float32Array
+  ) {
+    if (!this.device || !this.morphPipeline || !this.morphBindGroupLayout) return;
+
+    this.morphHeaderBuffer?.destroy();
+    this.morphBaseBuffer?.destroy();
+    this.morphDeltasBuffer?.destroy();
+    this.morphChannelsBuffer?.destroy();
+    this.morphedVertexBuffer?.destroy();
+
+    this.morphVertexCount = header.totalVertices;
+
+    const headerData = new Uint32Array([
+      header.activeChannels,
+      header.totalVertices,
+      header.totalDeltas,
+      0,
+    ]);
+    this.morphHeaderBuffer = this.device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.morphHeaderBuffer, 0, headerData);
+
+    this.morphBaseBuffer = this.device.createBuffer({
+      size: baseVertices.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.morphBaseBuffer, 0, baseVertices);
+
+    const deltasData = deltas.byteLength > 0 ? deltas : new Float32Array(8);
+    this.morphDeltasBuffer = this.device.createBuffer({
+      size: deltasData.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.morphDeltasBuffer, 0, deltasData);
+
+    const channelsData = channels.byteLength > 0 ? channels : new Float32Array(4);
+    this.morphChannelsBuffer = this.device.createBuffer({
+      size: channelsData.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.morphChannelsBuffer, 0, channelsData);
+
+    this.morphedVertexBuffer = this.device.createBuffer({
+      size: baseVertices.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC,
+    });
+
+    this.morphBindGroup = this.device.createBindGroup({
+      layout: this.morphBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.morphHeaderBuffer } },
+        { binding: 1, resource: { buffer: this.morphBaseBuffer } },
+        { binding: 2, resource: { buffer: this.morphDeltasBuffer } },
+        { binding: 3, resource: { buffer: this.morphChannelsBuffer } },
+        { binding: 4, resource: { buffer: this.morphedVertexBuffer } },
+      ],
+    });
+  }
+
+  public setSomatotype(endo: number, meso: number, ecto: number) {
+    this.somatotypeEndo = endo;
+    this.somatotypeMeso = meso;
+    this.somatotypeEcto = ecto;
+    if (this.currentPreset === "mannequin") {
+      this.buildGeometryBuffers();
+    }
+  }
+
+  public setGenderDimorphism(gender: number) {
+    this.genderDimorphism = Math.max(0.0, Math.min(1.0, gender));
+    if (this.currentPreset === "mannequin") {
+      this.buildGeometryBuffers();
+    }
+  }
+
+  public setMorphSlider(name: string, weight: number) {
+    this.activeMorphWeights.set(name, weight);
+    if (this.currentPreset === "mannequin") {
+      this.buildGeometryBuffers();
+    }
+  }
+
+  public setLight(
+    dir: [number, number, number],
+    intensity: number,
+    shadowColor?: [number, number, number],
+    lightColor?: [number, number, number],
+    ambientIntensity?: number,
+    shadowSaturation?: number
+  ) {
+    this.lightDir = dir;
+    this.lightIntensity = intensity;
+    if (shadowColor) this.shadowColor = shadowColor;
+    if (lightColor) this.lightColor = lightColor;
+    if (ambientIntensity !== undefined) this.ambientIntensity = ambientIntensity;
+    if (shadowSaturation !== undefined) this.shadowSaturation = shadowSaturation;
+  }
+
+  public setOutlineWidth(width: number) {
+    this.outlineWidth = width > 0.05 ? width * 0.001 : width;
+  }
+
+  public setOutlineColor(color: [number, number, number, number]) {
+    this.outlineColor = color;
+  }
+
+  public setShadowThreshold(threshold: number) {
+    this.shadowThreshold = threshold;
+  }
+
+  public setToonSmoothness(smoothness: number) {
+    this.toonSmoothness = smoothness;
+  }
+
+  public setSpecular(intensity: number, exponent: number) {
+    this.specIntensity = intensity;
+    this.specExponent = exponent;
+  }
+
+  public setRimLight(intensity: number, spread: number) {
+    this.rimIntensity = intensity;
+    this.rimSpread = spread;
+  }
+
+  public setHueShift(degrees: number) {
+    this.hueShift = degrees;
+  }
+
+  public setToonSteps(steps: number) {
+    this.toonSteps = steps;
+  }
+
+  public setMaterialParams(params: {
+    baseColor?: [number, number, number, number];
+    shadeColor?: [number, number, number, number];
+    shadowThreshold?: number;
+    toonSmoothness?: number;
+    specIntensity?: number;
+    specExponent?: number;
+    specSoftness?: number;
+    specOffset?: number;
+    specColor?: [number, number, number, number];
+    rimIntensity?: number;
+    rimSpread?: number;
+    hueShift?: number;
+    toonSteps?: number;
+    outlineWidth?: number;
+    outlineColor?: [number, number, number, number];
+    outlineOpacity?: number;
+    outlineSmoothness?: number;
+    outlineDepthBias?: number;
+    shadowSaturation?: number;
+  }) {
+    if (params.baseColor) this.baseColor = params.baseColor;
+    if (params.shadeColor) this.shadeColor = params.shadeColor;
+    if (params.shadowThreshold !== undefined) this.shadowThreshold = params.shadowThreshold;
+    if (params.toonSmoothness !== undefined) this.toonSmoothness = params.toonSmoothness;
+    if (params.specIntensity !== undefined) this.specIntensity = params.specIntensity;
+    if (params.specExponent !== undefined) this.specExponent = params.specExponent;
+    if (params.specSoftness !== undefined) this.specSoftness = params.specSoftness;
+    if (params.specOffset !== undefined) this.specOffset = params.specOffset;
+    if (params.specColor) this.specColor = params.specColor;
+    if (params.rimIntensity !== undefined) this.rimIntensity = params.rimIntensity;
+    if (params.rimSpread !== undefined) this.rimSpread = params.rimSpread;
+    if (params.hueShift !== undefined) this.hueShift = params.hueShift;
+    if (params.toonSteps !== undefined) this.toonSteps = params.toonSteps;
+    if (params.outlineWidth !== undefined) this.outlineWidth = params.outlineWidth;
+    if (params.outlineColor) this.outlineColor = params.outlineColor;
+    if (params.outlineOpacity !== undefined) this.outlineOpacity = params.outlineOpacity;
+    if (params.outlineSmoothness !== undefined) this.outlineSmoothness = params.outlineSmoothness;
+    if (params.outlineDepthBias !== undefined) this.outlineDepthBias = params.outlineDepthBias;
+    if (params.shadowSaturation !== undefined) this.shadowSaturation = params.shadowSaturation;
   }
 
   private buildGeometryBuffers() {
-    if (!this.device) return;
+    let data: { vertices: Float32Array; indices: Uint32Array };
 
-    // Procedural Anime Mannequin
-    const { vertices, indices } = this.generateMannequinData();
+    switch (this.currentPreset) {
+      case "sphere":
+        data = this.generateSphereData(0.85, 36, 72);
+        break;
+      case "cube":
+        data = this.generateCubeData(1.2);
+        break;
+      case "mannequin":
+      default:
+        data = this.generateMannequinData(this.headScale, this.headRatio);
+        break;
+    }
 
-    this.vertexBuffer = this.device.createBuffer({
-      size: vertices.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    this.device.queue.writeBuffer(this.vertexBuffer, 0, vertices);
+    this.indexCount = data.indices.length;
 
-    this.indexBuffer = this.device.createBuffer({
-      size: indices.byteLength,
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    });
-    this.device.queue.writeBuffer(this.indexBuffer, 0, indices);
-    this.indexCount = indices.length;
+    // WebGPU Buffers
+    if (this.device) {
+      if (this.vertexBuffer) this.vertexBuffer.destroy();
+      if (this.indexBuffer) this.indexBuffer.destroy();
+
+      this.vertexBuffer = this.device.createBuffer({
+        size: data.vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      this.device.queue.writeBuffer(this.vertexBuffer, 0, data.vertices);
+
+      this.indexBuffer = this.device.createBuffer({
+        size: data.indices.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      this.device.queue.writeBuffer(this.indexBuffer, 0, data.indices);
+    }
+
+    // WebGL2 Buffers
+    if (this.gl) {
+      const gl = this.gl;
+      if (!this.glVao) this.glVao = gl.createVertexArray();
+      gl.bindVertexArray(this.glVao);
+
+      if (!this.glVbo) this.glVbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.glVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, data.vertices, gl.STATIC_DRAW);
+
+      if (!this.glIbo) this.glIbo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.glIbo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.indices, gl.STATIC_DRAW);
+
+      const stride = 72;
+      // location 0: pos (3 floats)
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+      // location 1: normal (3 floats)
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+      // location 2: uv (2 floats)
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
+      // location 3: color (4 floats)
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 4, gl.FLOAT, false, stride, 32);
+      // location 4: joints (4 u16)
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribIPointer(4, 4, gl.UNSIGNED_SHORT, stride, 48);
+      // location 5: weights (4 floats)
+      gl.enableVertexAttribArray(5);
+      gl.vertexAttribPointer(5, 4, gl.FLOAT, false, stride, 56);
+
+      gl.bindVertexArray(null);
+    }
   }
 
-  private generateMannequinData(): { vertices: Float32Array; indices: Uint32Array } {
-    const rawVerts: number[] = [];
-    const rawIndices: number[] = [];
-
-    const segments = [
-      { center: [0.0, 1.65, 0.0], dims: [0.28, 0.32, 0.28], color: [1.0, 0.48, 1.2, 1.0] },
-      { center: [0.0, 1.45, 0.0], dims: [0.10, 0.12, 0.10], color: [0.9, 0.50, 1.0, 1.0] },
-      { center: [0.0, 1.25, 0.0], dims: [0.38, 0.30, 0.24], color: [1.0, 0.50, 1.0, 1.0] },
-      { center: [0.0, 0.95, 0.0], dims: [0.34, 0.25, 0.22], color: [1.0, 0.50, 1.0, 1.0] },
-      { center: [-0.28, 1.20, 0.0], dims: [0.10, 0.32, 0.10], color: [0.95, 0.50, 1.0, 0.8] },
-      { center: [0.28, 1.20, 0.0], dims: [0.10, 0.32, 0.10], color: [0.95, 0.50, 1.0, 0.8] },
-      { center: [-0.28, 0.82, 0.0], dims: [0.08, 0.30, 0.08], color: [0.95, 0.50, 1.0, 0.8] },
-      { center: [0.28, 0.82, 0.0], dims: [0.08, 0.30, 0.08], color: [0.95, 0.50, 1.0, 0.8] },
-      { center: [-0.12, 0.65, 0.0], dims: [0.14, 0.38, 0.14], color: [1.0, 0.50, 1.0, 0.9] },
-      { center: [0.12, 0.65, 0.0], dims: [0.14, 0.38, 0.14], color: [1.0, 0.50, 1.0, 0.9] },
-      { center: [-0.12, 0.25, 0.0], dims: [0.11, 0.40, 0.11], color: [1.0, 0.50, 1.0, 0.9] },
-      { center: [0.12, 0.25, 0.0], dims: [0.11, 0.40, 0.11], color: [1.0, 0.50, 1.0, 0.9] },
-      { center: [0.0, -0.02, 0.0], dims: [1.2, 0.04, 1.2], color: [0.7, 0.50, 0.0, 0.3] },
-    ];
-
+  private appendCube(
+    vertices: VertexData[],
+    rawIndices: number[],
+    center: [number, number, number],
+    dims: [number, number, number],
+    color: [number, number, number, number],
+    smoothNormals: boolean = false
+  ) {
     const cubeFaces = [
       { normal: [0, 0, 1], corners: [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]] },
       { normal: [0, 0, -1], corners: [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]] },
@@ -326,38 +1291,518 @@ export class WebGpuViewportRenderer {
       { normal: [-1, 0, 0], corners: [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, -0.5]] },
     ];
 
-    for (const seg of segments) {
-      for (const face of cubeFaces) {
-        const baseIdx = rawVerts.length / 12;
-        for (const pt of face.corners) {
-          // Pos
-          rawVerts.push(
-            seg.center[0] + pt[0] * seg.dims[0],
-            seg.center[1] + pt[1] * seg.dims[1],
-            seg.center[2] + pt[2] * seg.dims[2]
-          );
-          // Normal
-          rawVerts.push(face.normal[0], face.normal[1], face.normal[2]);
-          // UV
-          rawVerts.push(0.0, 0.0);
-          // Color / Anime attributes
-          rawVerts.push(seg.color[0], seg.color[1], seg.color[2], seg.color[3]);
+    for (const face of cubeFaces) {
+      const baseIdx = vertices.length;
+      for (const pt of face.corners) {
+        let norm: [number, number, number];
+        if (smoothNormals) {
+          const rx = pt[0];
+          const ry = pt[1] * 0.25;
+          const rz = pt[2];
+          const len = Math.hypot(rx, ry, rz) || 1.0;
+          norm = [rx / len, ry / len, rz / len];
+        } else {
+          norm = [face.normal[0], face.normal[1], face.normal[2]];
         }
-        rawIndices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
+        vertices.push({
+          pos: [
+            center[0] + pt[0] * dims[0],
+            center[1] + pt[1] * dims[1],
+            center[2] + pt[2] * dims[2],
+          ],
+          normal: norm,
+          uv: [0.0, 0.0],
+          color,
+          joints: [0, 0, 0, 0],
+          weights: [1.0, 0.0, 0.0, 0.0],
+        });
+      }
+      rawIndices.push(baseIdx, baseIdx + 1, baseIdx + 2, baseIdx, baseIdx + 2, baseIdx + 3);
+    }
+  }
+
+  private generateCubeData(size: number): { vertices: Float32Array; indices: Uint32Array } {
+    const vertices: VertexData[] = [];
+    const rawIndices: number[] = [];
+
+    // Main Cube centered at y = 1.0
+    this.appendCube(vertices, rawIndices, [0.0, 1.0, 0.0], [size, size, size], [1.0, 0.50, 1.0, 1.0]);
+    // Studio Turntable Pedestal at ground
+    this.appendCube(vertices, rawIndices, [0.0, -0.02, 0.0], [1.6, 0.04, 1.6], [0.7, 0.50, 0.0, 0.3]);
+
+    return {
+      vertices: packVertices(vertices),
+      indices: new Uint32Array(rawIndices),
+    };
+  }
+
+  private generateSphereData(radius: number, rings: number, sectors: number): { vertices: Float32Array; indices: Uint32Array } {
+    const vertices: VertexData[] = [];
+    const rawIndices: number[] = [];
+
+    for (let r = 0; r <= rings; r++) {
+      const v = r / rings;
+      const theta = v * Math.PI;
+
+      for (let s = 0; s <= sectors; s++) {
+        const u = s / sectors;
+        const phi = u * 2 * Math.PI;
+
+        const x = Math.sin(theta) * Math.cos(phi);
+        const y = Math.cos(theta);
+        const z = Math.sin(theta) * Math.sin(phi);
+
+        // Position sphere at y = 1.0 (camera focus height)
+        vertices.push({
+          pos: [x * radius, y * radius + 1.0, z * radius],
+          normal: [x, y, z],
+          uv: [u, v],
+          color: [1.0, 0.5, 1.0, 1.0],
+          joints: [0, 0, 0, 0],
+          weights: [1.0, 0.0, 0.0, 0.0],
+        });
       }
     }
 
+    for (let r = 0; r < rings; r++) {
+      for (let s = 0; s < sectors; s++) {
+        const first = r * (sectors + 1) + s;
+        const second = first + sectors + 1;
+
+        rawIndices.push(first, first + 1, second);
+        rawIndices.push(second, first + 1, second + 1);
+      }
+    }
+
+    // Studio Turntable Pedestal
+    this.appendCube(vertices, rawIndices, [0.0, -0.02, 0.0], [1.6, 0.04, 1.6], [0.7, 0.50, 0.0, 0.3]);
+
     return {
-      vertices: new Float32Array(rawVerts),
+      vertices: packVertices(vertices),
       indices: new Uint32Array(rawIndices),
     };
+  }
+
+  private applyAnatomicalDeformations(
+    baseVertices: VertexData[],
+    rawIndices: Uint32Array
+  ): { vertices: Float32Array; indices: Uint32Array } {
+    const vertices: VertexData[] = baseVertices.map(v => ({
+      pos: [v.pos[0], v.pos[1], v.pos[2]],
+      normal: [v.normal[0], v.normal[1], v.normal[2]],
+      uv: [v.uv[0], v.uv[1]],
+      color: [v.color[0], v.color[1], v.color[2], v.color[3]],
+      joints: [v.joints[0], v.joints[1], v.joints[2], v.joints[3]],
+      weights: [v.weights[0], v.weights[1], v.weights[2], v.weights[3]],
+    }));
+
+    const headScale = this.headScale;
+    const shoulderWidth = this.shoulderWidth;
+    const legLength = this.legLength;
+    const armLength = this.armLength;
+    const neckLength = this.neckLength;
+
+    const endo = this.somatotypeEndo;
+    const meso = this.somatotypeMeso;
+    const ecto = this.somatotypeEcto;
+
+    for (let i = 0; i < vertices.length; i++) {
+      const v = vertices[i];
+      let x = v.pos[0];
+      let y = v.pos[1];
+      let z = v.pos[2];
+      let nx = v.normal[0];
+      let ny = v.normal[1];
+      let nz = v.normal[2];
+
+      // --- Head & Face (i < 425, center around y=1.60) ---
+      if (i < 425) {
+        x *= headScale;
+        y = 1.55 + (y - 1.55) * headScale;
+        z *= headScale;
+
+        const headWidth = (this.activeMorphWeights.get("head_width") ?? 1.0) - 1.0;
+        if (headWidth !== 0) {
+          x += Math.sign(x) * 0.025 * headWidth;
+        }
+        const headDepth = (this.activeMorphWeights.get("head_depth") ?? 1.0) - 1.0;
+        if (headDepth !== 0 && z < 0) {
+          z -= 0.035 * headDepth;
+        }
+        const faceLower = (this.activeMorphWeights.get("face_lower_length") ?? 1.0) - 1.0;
+        if (faceLower !== 0 && y < 1.62 && z > 0) {
+          y -= 0.025 * faceLower;
+        }
+        const foreheadH = (this.activeMorphWeights.get("forehead_height") ?? 1.0) - 1.0;
+        if (foreheadH !== 0 && y > 1.64) {
+          y += 0.030 * foreheadH;
+        }
+        const browRidge = (this.activeMorphWeights.get("brow_ridge_prominence") ?? 0.2) - 0.2;
+        if (browRidge !== 0 && y > 1.58 && y < 1.66 && z > 0.03) {
+          z += 0.022 * browRidge;
+        }
+        const cheekbone = (this.activeMorphWeights.get("cheekbone_prominence") ?? 0.3) - 0.3;
+        if (cheekbone !== 0 && y > 1.53 && y < 1.62 && Math.abs(x) > 0.04 && z > 0.02) {
+          x += Math.sign(x) * 0.015 * cheekbone;
+          z += 0.015 * cheekbone;
+        }
+        const jawV = (this.activeMorphWeights.get("jaw_v_line_taper") ?? 0.6) - 0.6;
+        if (jawV !== 0 && y < 1.56 && z > -0.02) {
+          const taper = Math.max(0, Math.min(1, (1.56 - y) * 12.0));
+          x -= x * 0.25 * taper * jawV;
+        }
+        const chinLen = (this.activeMorphWeights.get("chin_length") ?? 1.0) - 1.0;
+        if (chinLen !== 0 && y < 1.48) {
+          y -= 0.020 * chinLen;
+        }
+        const chinProj = this.activeMorphWeights.get("chin_forward_projection") ?? 0.0;
+        if (chinProj !== 0 && y < 1.52 && z > 0.04) {
+          z += 0.025 * chinProj;
+        }
+        const eyeScale = (this.activeMorphWeights.get("eye_scale_uniform") ?? 1.0) - 1.0;
+        if (eyeScale !== 0 && y > 1.54 && y < 1.65 && Math.abs(x) > 0.025 && Math.abs(x) < 0.075 && z > 0.04) {
+          x += Math.sign(x) * 0.012 * eyeScale;
+          y += (y - 1.60) * 0.25 * eyeScale;
+          z += 0.008 * eyeScale;
+        }
+        const eyeTilt = this.activeMorphWeights.get("eye_canthal_tilt") ?? 0.0;
+        if (eyeTilt !== 0 && y > 1.55 && y < 1.65 && Math.abs(x) > 0.03 && z > 0.04) {
+          const lat = Math.max(0, Math.min(1, (Math.abs(x) - 0.03) * 25.0));
+          y += (eyeTilt / 20.0) * 0.015 * lat;
+        }
+        const aegyosal = (this.activeMorphWeights.get("lower_eyelid_aegyosal") ?? 0.2) - 0.2;
+        if (aegyosal !== 0 && y > 1.54 && y < 1.58 && Math.abs(x) > 0.03 && Math.abs(x) < 0.065 && z > 0.05) {
+          z += 0.012 * aegyosal;
+        }
+        const noseDepth = (this.activeMorphWeights.get("nose_bridge_depth") ?? 1.0) - 1.0;
+        if (noseDepth !== 0 && y > 1.54 && y < 1.63 && Math.abs(x) < 0.025 && z > 0.05) {
+          z += 0.025 * noseDepth;
+        }
+        const noseUpturn = this.activeMorphWeights.get("nose_tip_upturn") ?? 0.0;
+        if (noseUpturn !== 0 && y > 1.52 && y < 1.57 && Math.abs(x) < 0.018 && z > 0.06) {
+          y += (noseUpturn / 25.0) * 0.015;
+          z += (noseUpturn / 25.0) * 0.005;
+        }
+        const muzzleSlant = (this.activeMorphWeights.get("anime_profile_slant") ?? 0.5) - 0.5;
+        if (muzzleSlant !== 0 && z > 0.03 && y < 1.62) {
+          const s = Math.max(0, Math.min(1, (1.62 - y) * 5.0));
+          z -= 0.018 * s * muzzleSlant;
+        }
+        const earElf = this.activeMorphWeights.get("ear_pointy_elf") ?? 0.0;
+        if (earElf !== 0 && Math.abs(x) > 0.075 && y > 1.58 && z < 0.03) {
+          x += Math.sign(x) * 0.040 * earElf;
+          y += 0.055 * earElf;
+          z -= 0.025 * earElf;
+        }
+      }
+
+      // --- Neck & Trapezius (425 <= i < 544) ---
+      else if (i < 544) {
+        y = 1.35 + (y - 1.35) * neckLength;
+        const adams = this.activeMorphWeights.get("adams_apple_prominence") ?? 0.0;
+        if (adams !== 0 && Math.abs(x) < 0.018 && z > 0.025 && y > 1.38 && y < 1.48) {
+          z += 0.022 * adams;
+        }
+        const trap = (this.activeMorphWeights.get("trapezius_bulk") ?? 0.2) - 0.2;
+        if (trap !== 0 && y < 1.42 && Math.abs(x) > 0.035) {
+          x += Math.sign(x) * 0.020 * trap;
+          y += 0.025 * trap;
+        }
+        const neckCirc = (this.activeMorphWeights.get("neck_circumference") ?? 1.0) - 1.0;
+        if (neckCirc !== 0) {
+          x += nx * 0.018 * neckCirc;
+          z += nz * 0.018 * neckCirc;
+        }
+      }
+
+      // --- Torso / Chest / Bust / Waist (544 <= i < 1069) ---
+      else if (i < 1069) {
+        if (y > 1.25) {
+          x *= shoulderWidth;
+        }
+        const bustCup = (this.activeMorphWeights.get("bust_volume_cup") ?? 0.35) - 0.35;
+        if (bustCup !== 0 && z > 0 && y > 1.10 && y < 1.35 && Math.abs(x) > 0.02 && Math.abs(x) < 0.14) {
+          const yb = Math.exp(-Math.pow((y - 1.22) / 0.08, 2));
+          const xb = Math.exp(-Math.pow((Math.abs(x) - 0.065) / 0.045, 2));
+          const intensity = yb * xb;
+          x += Math.sign(x) * 0.010 * intensity * bustCup;
+          y -= 0.008 * intensity * bustCup;
+          z += 0.055 * intensity * bustCup;
+        }
+        const bustSag = this.activeMorphWeights.get("bust_gravity_sag") ?? 0.0;
+        if (bustSag !== 0 && z > 0.02 && y > 1.08 && y < 1.30 && Math.abs(x) < 0.14) {
+          const intensity = Math.exp(-Math.pow((y - 1.18) / 0.07, 2));
+          y -= 0.035 * intensity * bustSag;
+          z -= 0.012 * intensity * bustSag;
+        }
+        const bustCleave = (this.activeMorphWeights.get("bust_separation_cleavage") ?? 1.0) - 1.0;
+        if (bustCleave !== 0 && z > 0.02 && y > 1.15 && y < 1.32 && Math.abs(x) < 0.14) {
+          x += Math.sign(x) * 0.025 * bustCleave;
+        }
+        const pecBulk = (this.activeMorphWeights.get("pectoral_muscle_bulk") ?? 0.2) - 0.2;
+        if (pecBulk !== 0 && z > 0 && y > 1.15 && y < 1.38 && Math.abs(x) < 0.16) {
+          const intensity = Math.exp(-Math.pow((y - 1.27) / 0.08, 2));
+          z += 0.030 * intensity * pecBulk;
+        }
+        const waistPinch = this.activeMorphWeights.get("waist_pinch_width") ?? 0.0;
+        if (waistPinch !== 0 && y > 0.95 && y < 1.12) {
+          const pinch = Math.max(0, 1.0 - Math.abs((y - 1.03) / 0.08));
+          x -= Math.sign(x) * 0.032 * pinch * waistPinch;
+        }
+        const sixpack = (this.activeMorphWeights.get("abs_sixpack_definition") ?? 0.2) - 0.2;
+        if (sixpack !== 0 && z > 0.04 && y > 0.92 && y < 1.20 && Math.abs(x) < 0.09) {
+          const wave = Math.cos(y * 42.0);
+          const att = Math.max(0, 1.0 - Math.pow(x / 0.09, 2));
+          z += wave * 0.012 * att * sixpack;
+        }
+        const belly = this.activeMorphWeights.get("belly_visceral_protuberance") ?? 0.0;
+        if (belly !== 0 && z > 0.01 && y > 0.90 && y < 1.15) {
+          const bump = Math.exp(-Math.pow((y - 1.02) / 0.10, 2)) * Math.max(0, 1.0 - Math.pow(x / 0.14, 2));
+          z += 0.045 * bump * belly;
+        }
+      }
+
+      // --- Pelvis & Gluteus (1069 <= i < 1444) ---
+      else if (i < 1444) {
+        const hipFlare = (this.activeMorphWeights.get("hip_trochanteric_flare") ?? 1.0) - 1.0;
+        if (hipFlare !== 0 && Math.abs(x) > 0.08) {
+          const f = Math.exp(-Math.pow((y - 0.84) / 0.08, 2));
+          x += Math.sign(x) * 0.038 * f * hipFlare;
+        }
+        const gluteVol = (this.activeMorphWeights.get("gluteus_volume_overall") ?? 1.0) - 1.0;
+        if (gluteVol !== 0 && z < 0) {
+          const f = Math.exp(-Math.pow((y - 0.82) / 0.08, 2)) * Math.exp(-Math.pow(x / 0.14, 2));
+          z -= 0.050 * f * gluteVol;
+        }
+        const gluteProf = this.activeMorphWeights.get("gluteus_shape_profile") ?? 0.0;
+        if (gluteProf !== 0 && z < 0) {
+          const shift = (y - 0.82) * 0.35;
+          z += shift * 0.025 * gluteProf;
+        }
+      }
+
+      // --- Shoulders & Arms (1444 <= i < 2536) ---
+      else if (i < 2536) {
+        x += Math.sign(x) * (shoulderWidth - 1.0) * 0.15;
+        if (i >= 1678) {
+          y = 1.30 - (1.30 - y) * armLength;
+        }
+        const biceps = (this.activeMorphWeights.get("biceps_peak_volume") ?? 0.2) - 0.2;
+        if (biceps !== 0 && i >= 1678 && i < 1912 && z > 0) {
+          z += 0.028 * biceps;
+        }
+        const armThick = (this.activeMorphWeights.get("upper_arm_thickness") ?? 1.0) - 1.0;
+        if (armThick !== 0 && i >= 1678 && i < 1912) {
+          x += nx * 0.020 * armThick;
+          z += nz * 0.020 * armThick;
+        }
+      }
+
+      // --- Lower Limbs (2536 <= i < 4070) ---
+      else {
+        y = y * legLength;
+
+        const thighCirc = (this.activeMorphWeights.get("thigh_circumference") ?? 1.0) - 1.0;
+        if (thighCirc !== 0 && i >= 2536 && i < 2926) {
+          x += nx * 0.025 * thighCirc;
+          z += nz * 0.025 * thighCirc;
+        }
+        const thighGap = this.activeMorphWeights.get("inner_thigh_gap") ?? 0.0;
+        if (thighGap !== 0 && i >= 2536 && i < 2926 && ((x > 0 && nx < 0) || (x < 0 && nx > 0))) {
+          x += Math.sign(x) * 0.022 * thighGap;
+        }
+        const patella = (this.activeMorphWeights.get("knee_patella_prominence") ?? 0.5) - 0.5;
+        if (patella !== 0 && i >= 2926 && i < 3160 && z > 0) {
+          z += 0.022 * patella;
+        }
+        const uchimata = this.activeMorphWeights.get("knee_valgus_uchimata") ?? 0.0;
+        if (uchimata !== 0 && i >= 2926 && i < 3160) {
+          x -= Math.sign(x) * 0.020 * (uchimata / 15.0);
+        }
+        const calfCirc = (this.activeMorphWeights.get("calf_circumference") ?? 1.0) - 1.0;
+        if (calfCirc !== 0 && i >= 3160 && i < 3550) {
+          x += nx * 0.022 * calfCirc;
+          z += nz * 0.022 * calfCirc;
+        }
+      }
+
+      // --- Macro Somatotype Heath-Carter Influence ---
+      if (endo > 0.001) {
+        if (i >= 544 && i < 1444) {
+          x += nx * 0.035 * endo;
+          z += nz * 0.035 * endo;
+        } else if (i >= 2536 && i < 3550) {
+          x += nx * 0.025 * endo;
+          z += nz * 0.025 * endo;
+        }
+      }
+      if (meso > 0.001) {
+        if (i >= 544 && i < 1069 && (z > 0 || Math.abs(x) > 0.1)) {
+          x += nx * 0.030 * meso;
+          z += nz * 0.030 * meso;
+        } else if (i >= 1444 && i < 2146) {
+          x += nx * 0.020 * meso;
+          z += nz * 0.020 * meso;
+        } else if (i >= 2536 && i < 3550) {
+          x += nx * 0.020 * meso;
+          z += nz * 0.020 * meso;
+        }
+      }
+      if (ecto > 0.001) {
+        if (i >= 544 && i < 1444) {
+          x -= nx * 0.025 * ecto;
+          z -= nz * 0.025 * ecto;
+        } else if (i >= 1444 && i < 3550) {
+          x -= nx * 0.018 * ecto;
+          z -= nz * 0.018 * ecto;
+        }
+      }
+
+      v.pos[0] = x;
+      v.pos[1] = y;
+      v.pos[2] = z;
+    }
+
+    const indicesArr = Array.from(rawIndices);
+    // Add studio turntable pedestal at ground
+    this.appendCube(vertices, indicesArr, [0.0, -0.02, 0.0], [1.6, 0.04, 1.6], [0.7, 0.50, 0.0, 0.3]);
+
+    return {
+      vertices: packVertices(vertices),
+      indices: new Uint32Array(indicesArr),
+    };
+  }
+
+  private generateMannequinData(headScale: number = 1.0, headRatio: number = 6.5): { vertices: Float32Array; indices: Uint32Array } {
+    if (this.canonicalBaseVertices && this.canonicalIndices) {
+      return this.applyAnatomicalDeformations(this.canonicalBaseVertices, this.canonicalIndices);
+    }
+    if (this.canonicalVertices && this.canonicalIndices) {
+      return { vertices: this.canonicalVertices, indices: this.canonicalIndices };
+    }
+    // Fallback to cube if not loaded yet
+    return this.generateCubeData(1.0);
+  }
+
+  public async loadCanonicalModel(gender: "male" | "female") {
+    const url = `/models/anigo_base_${gender}.glb`;
+    try {
+      const resp = await fetch(url);
+      const buffer = await resp.arrayBuffer();
+      const dv = new DataView(buffer);
+      
+      const magic = dv.getUint32(0, true);
+      const version = dv.getUint32(4, true);
+      const length = dv.getUint32(8, true);
+      
+      const chunk0Len = dv.getUint32(12, true);
+      const chunk0Type = dv.getUint32(16, true); // JSON
+      const jsonStr = new TextDecoder().decode(new Uint8Array(buffer, 20, chunk0Len));
+      const gltf = JSON.parse(jsonStr);
+      
+      let binBuffer: ArrayBuffer | null = null;
+      let chunk1Offset = 20 + chunk0Len;
+      if (chunk1Offset < length) {
+        const chunk1Len = dv.getUint32(chunk1Offset, true);
+        const chunk1Type = dv.getUint32(chunk1Offset + 4, true); // BIN
+        binBuffer = buffer.slice(chunk1Offset + 8, chunk1Offset + 8 + chunk1Len);
+      }
+      
+      if (!binBuffer || !gltf.meshes || gltf.meshes.length === 0) return;
+      
+      const prim = gltf.meshes[0].primitives[0];
+      
+      const getAccessorData = (accessorIdx: number) => {
+          const accessor = gltf.accessors[accessorIdx];
+          const bufferView = gltf.bufferViews[accessor.bufferView];
+          const offset = (bufferView.byteOffset || 0) + (accessor.byteOffset || 0);
+          return { accessor, offset, bufferView };
+      };
+
+      const posData = getAccessorData(prim.attributes.POSITION);
+      const normData = getAccessorData(prim.attributes.NORMAL);
+      const uvData = prim.attributes.TEXCOORD_0 !== undefined ? getAccessorData(prim.attributes.TEXCOORD_0) : null;
+      const colData = prim.attributes.COLOR_0 !== undefined ? getAccessorData(prim.attributes.COLOR_0) : null;
+      const idxData = prim.indices !== undefined ? getAccessorData(prim.indices) : null;
+      
+      const vertexCount = posData.accessor.count;
+      
+      const readFloatArray = (accData: any, numComponents: number) => {
+        const arr = new Float32Array(vertexCount * numComponents);
+        const stride = accData.bufferView.byteStride || (numComponents * 4);
+        const dv2 = new DataView(binBuffer!);
+        for (let i = 0; i < vertexCount; i++) {
+          for (let j = 0; j < numComponents; j++) {
+            arr[i * numComponents + j] = dv2.getFloat32(accData.offset + i * stride + j * 4, true);
+          }
+        }
+        return arr;
+      };
+
+      const positions = readFloatArray(posData, 3);
+      const normals = readFloatArray(normData, 3);
+      const uvs = uvData ? readFloatArray(uvData, 2) : new Float32Array(vertexCount * 2);
+      
+      let colors: Float32Array | null = null;
+      let colComps = 4;
+      if (colData) {
+        if (colData.accessor.type === "VEC4") colComps = 4;
+        else if (colData.accessor.type === "VEC3") colComps = 3;
+        colors = readFloatArray(colData, colComps);
+      }
+      
+      const vertices: VertexData[] = [];
+      for (let i = 0; i < vertexCount; i++) {
+          let r=1,g=1,b=1,a=1;
+          if (colors) {
+              if (colComps === 4) {
+                  r = colors[i*4]; g = colors[i*4+1]; b = colors[i*4+2]; a = colors[i*4+3];
+              } else {
+                  r = colors[i*3]; g = colors[i*3+1]; b = colors[i*3+2];
+              }
+          }
+          vertices.push({
+              pos: [positions[i*3], positions[i*3+1], positions[i*3+2]],
+              normal: [normals[i*3], normals[i*3+1], normals[i*3+2]],
+              uv: [uvs[i*2], uvs[i*2+1]],
+              color: [r, g, b, a],
+              joints: [0,0,0,0],
+              weights: [1,0,0,0],
+          });
+      }
+      
+      let rawIndices: number[] = [];
+      if (idxData) {
+          const dv2 = new DataView(binBuffer!);
+          const stride = idxData.bufferView.byteStride || (idxData.accessor.componentType === 5123 ? 2 : 4);
+          for (let i = 0; i < idxData.accessor.count; i++) {
+              if (idxData.accessor.componentType === 5123) {
+                  rawIndices.push(dv2.getUint16(idxData.offset + i * stride, true));
+              } else if (idxData.accessor.componentType === 5125) {
+                  rawIndices.push(dv2.getUint32(idxData.offset + i * stride, true));
+              }
+          }
+      } else {
+          for (let i=0; i<vertexCount; i++) rawIndices.push(i);
+      }
+      
+      this.canonicalBaseVertices = vertices;
+      this.canonicalIndices = new Uint32Array(rawIndices);
+      this.canonicalGender = gender;
+      this.canonicalVertices = packVertices(vertices);
+
+      this.currentPreset = "mannequin";
+      this.buildGeometryBuffers();
+    } catch (e) {
+      console.error("[ANIGO 3D] Failed to load canonical model:", e);
+    }
   }
 
   private buildUniformBuffers() {
     if (!this.device || !this.celPipeline || !this.outlinePipeline) return;
 
     this.cameraBuffer = this.device.createBuffer({
-      size: 80, // mat4 (64) + vec4 (16)
+      size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -367,7 +1812,7 @@ export class WebGpuViewportRenderer {
     });
 
     this.materialBuffer = this.device.createBuffer({
-      size: 48,
+      size: 96,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -376,12 +1821,61 @@ export class WebGpuViewportRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // 256x4 2D Toon Ramp Texture
+    // Row 0: Continuous ramp, Row 1: 1-step harsh anime cel, Row 2: 2-step Ghibli penumbra, Row 3: 3-step high-key
+    if (this.toonRampTexture) {
+      try { this.toonRampTexture.destroy(); } catch (_) {}
+    }
+    this.toonRampTexture = this.device.createTexture({
+      size: [256, 4],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    const rampData = new Uint8Array(256 * 4 * 4);
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 256; x++) {
+        const u = x / 255.0;
+        let factor = u;
+        if (y === 0) {
+          factor = u;
+        } else if (y === 1) {
+          factor = u >= 0.5 ? 1.0 : 0.0;
+        } else if (y === 2) {
+          factor = u < 0.35 ? 0.0 : (u < 0.65 ? 0.5 : 1.0);
+        } else if (y === 3) {
+          factor = u < 0.25 ? 0.0 : (u < 0.50 ? 0.35 : (u < 0.75 ? 0.70 : 1.0));
+        }
+        const val = Math.min(255, Math.max(0, Math.round(factor * 255.0)));
+        const idx = (y * 256 + x) * 4;
+        rampData[idx] = val;
+        rampData[idx + 1] = val;
+        rampData[idx + 2] = val;
+        rampData[idx + 3] = 255;
+      }
+    }
+    this.device.queue.writeTexture(
+      { texture: this.toonRampTexture },
+      rampData,
+      { bytesPerRow: 256 * 4, rowsPerImage: 4 },
+      [256, 4]
+    );
+
+    this.toonRampSampler = this.device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+
     this.celBindGroup = this.device.createBindGroup({
       layout: this.celPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.lightBuffer } },
         { binding: 2, resource: { buffer: this.materialBuffer } },
+        { binding: 3, resource: this.toonRampTexture.createView() },
+        { binding: 4, resource: this.toonRampSampler },
       ],
     });
 
@@ -394,131 +1888,393 @@ export class WebGpuViewportRenderer {
     });
   }
 
-  public resize(width: number, height: number) {
-    if (!this.device || width <= 0 || height <= 0) return;
-    this.canvas.width = width;
-    this.canvas.height = height;
+  public resize(cssWidth: number, cssHeight: number) {
+    if (cssWidth <= 0 || cssHeight <= 0) return;
+    this.cssWidth = cssWidth;
+    this.cssHeight = cssHeight;
 
-    if (this.depthTexture) this.depthTexture.destroy();
+    const realWidth = Math.max(Math.round(cssWidth * this.dpiMultiplier), 64);
+    const realHeight = Math.max(Math.round(cssHeight * this.dpiMultiplier), 64);
 
-    this.depthTexture = this.device.createTexture({
-      size: [width, height],
-      format: "depth24plus",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    this.depthView = this.depthTexture.createView();
+    const sizeChanged = this.canvas.width !== realWidth || this.canvas.height !== realHeight;
+
+    if (sizeChanged || !this.depthTexture || !this.depthView) {
+      this.canvas.width = realWidth;
+      this.canvas.height = realHeight;
+
+      if (this.backend === "webgpu" && this.device) {
+        if (this.depthTexture) {
+          try {
+            this.depthTexture.destroy();
+          } catch (_) {}
+        }
+
+        this.depthTexture = this.device.createTexture({
+          size: [realWidth, realHeight],
+          format: "depth24plus",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        this.depthView = this.depthTexture.createView();
+      } else if (this.backend === "webgl2" && this.gl) {
+        this.gl.viewport(0, 0, realWidth, realHeight);
+      }
+    }
+
+    // Immediately render a frame so the canvas never displays a squashed or stretched bitmap
+    if (!this.isRendering) {
+      this.render();
+    }
   }
 
-  // Camera Orbit, Zoom, Pan
+  public setFpsCap(fps: number) {
+    this.targetFps = fps;
+  }
+
+  public setDpiScale(multiplier: number) {
+    if (this.dpiMultiplier !== multiplier) {
+      this.dpiMultiplier = multiplier;
+      this.resize(this.cssWidth, this.cssHeight);
+    }
+  }
+
+  public setVsync(enabled: boolean) {
+    if (this.vsyncEnabled !== enabled) {
+      this.vsyncEnabled = enabled;
+      if (this.device && this.context) {
+        try {
+          this.context.configure({
+            device: this.device,
+            format: this.format,
+            alphaMode: "premultiplied",
+            presentMode: enabled ? "fifo" : "immediate",
+          });
+        } catch (_) {}
+      }
+    }
+  }
+
+  // ==========================================
+  // Camera Controls
+  // ==========================================
   public orbit(deltaAzimuth: number, deltaElevation: number) {
-    const dx = this.eye[0] - this.target[0];
-    const dy = this.eye[1] - this.target[1];
-    const dz = this.eye[2] - this.target[2];
-    const radius = Math.hypot(dx, dy, dz);
-    if (radius < 0.001) return;
+    this.recenterAnim = null;
+    let v: [number, number, number] = [
+      this.eye[0] - this.target[0],
+      this.eye[1] - this.target[1],
+      this.eye[2] - this.target[2],
+    ];
+    const radius = Math.hypot(v[0], v[1], v[2]);
+    if (radius < 0.0001) return;
 
-    let azimuth = Math.atan2(dz, dx);
-    let elevation = Math.asin(Math.max(-1, Math.min(1, dy / radius)));
+    let up: [number, number, number] = [...this.up];
 
-    azimuth += deltaAzimuth;
-    elevation = Math.max(-1.5, Math.min(1.5, elevation + deltaElevation));
+    // 1. Elevation rotates around the camera's local screen-space right vector
+    const z = this.normalize(v);
+    let right = this.cross(up, z);
+    let rLen = Math.hypot(right[0], right[1], right[2]);
+    if (rLen < 1e-4) {
+      const fallback: [number, number, number] = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      right = this.cross(fallback, z);
+      rLen = Math.hypot(right[0], right[1], right[2]);
+    }
+    const rightAxis: [number, number, number] = [right[0] / rLen, right[1] / rLen, right[2] / rLen];
 
-    this.eye[0] = this.target[0] + radius * Math.cos(elevation) * Math.cos(azimuth);
-    this.eye[1] = this.target[1] + radius * Math.sin(elevation);
-    this.eye[2] = this.target[2] + radius * Math.cos(elevation) * Math.sin(azimuth);
+    if (Math.abs(deltaElevation) > 1e-6) {
+      const elevAngle = deltaElevation;
+      v = this.rotateVector(v, rightAxis, elevAngle);
+      up = this.rotateVector(up, rightAxis, elevAngle);
+    }
+
+    // 2. Azimuth rotates around the world Y axis [0, 1, 0]
+    if (Math.abs(deltaAzimuth) > 1e-6) {
+      const worldY: [number, number, number] = [0, 1, 0];
+      v = this.rotateVector(v, worldY, deltaAzimuth);
+      up = this.rotateVector(up, worldY, deltaAzimuth);
+    }
+
+    // 3. Orthonormalize camera vectors to avoid numeric drift or collapse
+    const zNew = this.normalize(v);
+    let rightNew = this.cross(up, zNew);
+    let rLenNew = Math.hypot(rightNew[0], rightNew[1], rightNew[2]);
+    if (rLenNew < 1e-4) {
+      const fallback: [number, number, number] = Math.abs(zNew[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      rightNew = this.cross(fallback, zNew);
+      rLenNew = Math.hypot(rightNew[0], rightNew[1], rightNew[2]);
+    }
+    const rightUnit: [number, number, number] = [rightNew[0] / rLenNew, rightNew[1] / rLenNew, rightNew[2] / rLenNew];
+    const upUnit = this.normalize(this.cross(zNew, rightUnit));
+
+    this.up = [upUnit[0], upUnit[1], upUnit[2]];
+    this.eye = [
+      this.target[0] + v[0],
+      this.target[1] + v[1],
+      this.target[2] + v[2],
+    ];
   }
 
-  public zoom(factor: number) {
-    const dx = this.eye[0] - this.target[0];
-    const dy = this.eye[1] - this.target[1];
-    const dz = this.eye[2] - this.target[2];
-    const radius = Math.hypot(dx, dy, dz);
-    const newRadius = Math.max(0.3, Math.min(30.0, radius * factor));
-    const norm = newRadius / radius;
-    this.eye[0] = this.target[0] + dx * norm;
-    this.eye[1] = this.target[1] + dy * norm;
-    this.eye[2] = this.target[2] + dz * norm;
+  public zoom(factor: number, mouseNdcX: number = 0, mouseNdcY: number = 0) {
+    this.recenterAnim = null;
+    const v: [number, number, number] = [
+      this.eye[0] - this.target[0],
+      this.eye[1] - this.target[1],
+      this.eye[2] - this.target[2],
+    ];
+    const dist = Math.hypot(v[0], v[1], v[2]);
+    if (dist < 0.0001) return;
+
+    // Clamp distance between 0.2 and 40.0 units
+    const targetDist = dist * factor;
+    const clampedDist = Math.max(0.2, Math.min(40.0, targetDist));
+    const effectiveFactor = clampedDist / dist;
+    if (Math.abs(effectiveFactor - 1.0) < 1e-6) return;
+
+    // Camera basis vectors
+    const z = this.normalize(v);
+    let right = this.cross(this.up, z);
+    let rLen = Math.hypot(right[0], right[1], right[2]);
+    if (rLen < 1e-4) {
+      const fallback: [number, number, number] = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      right = this.cross(fallback, z);
+      rLen = Math.hypot(right[0], right[1], right[2]);
+    }
+    const rightUnit: [number, number, number] = [right[0] / rLen, right[1] / rLen, right[2] / rLen];
+    const upUnit = this.normalize(this.cross(z, rightUnit));
+
+    // Focal plane dimensions at target distance
+    const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
+    const halfHeight = dist * Math.tan(this.fov * 0.5);
+    const halfWidth = halfHeight * aspect;
+
+    // World-space focal point P_mouse directly under cursor:
+    // P_mouse = target + right * (mouseNdcX * halfWidth) + up * (mouseNdcY * halfHeight)
+    const pMouse: [number, number, number] = [
+      this.target[0] + rightUnit[0] * (mouseNdcX * halfWidth) + upUnit[0] * (mouseNdcY * halfHeight),
+      this.target[1] + rightUnit[1] * (mouseNdcX * halfWidth) + upUnit[1] * (mouseNdcY * halfHeight),
+      this.target[2] + rightUnit[2] * (mouseNdcX * halfWidth) + upUnit[2] * (mouseNdcY * halfHeight),
+    ];
+
+    // Shift target: newTarget = target + (P_mouse - target) * (1 - effectiveFactor)
+    // Shift eye: newEye = P_mouse + (eye - P_mouse) * effectiveFactor
+    this.target = [
+      this.target[0] + (pMouse[0] - this.target[0]) * (1.0 - effectiveFactor),
+      this.target[1] + (pMouse[1] - this.target[1]) * (1.0 - effectiveFactor),
+      this.target[2] + (pMouse[2] - this.target[2]) * (1.0 - effectiveFactor),
+    ];
+
+    this.eye = [
+      pMouse[0] + (this.eye[0] - pMouse[0]) * effectiveFactor,
+      pMouse[1] + (this.eye[1] - pMouse[1]) * effectiveFactor,
+      pMouse[2] + (this.eye[2] - pMouse[2]) * effectiveFactor,
+    ];
   }
 
   public pan(dx: number, dy: number) {
-    const fx = this.target[0] - this.eye[0];
-    const fy = this.target[1] - this.eye[1];
-    const fz = this.target[2] - this.eye[2];
-    const fLen = Math.hypot(fx, fy, fz);
-    const fNorm = [fx / fLen, fy / fLen, fz / fLen];
+    this.recenterAnim = null;
+    const dist = Math.hypot(
+      this.eye[0] - this.target[0],
+      this.eye[1] - this.target[1],
+      this.eye[2] - this.target[2]
+    );
+    if (dist < 0.0001) return;
 
-    // Right = forward x up
-    const rx = fNorm[1] * this.up[2] - fNorm[2] * this.up[1];
-    const ry = fNorm[2] * this.up[0] - fNorm[0] * this.up[2];
-    const rz = fNorm[0] * this.up[1] - fNorm[1] * this.up[0];
+    const forward = this.normalize([
+      this.target[0] - this.eye[0],
+      this.target[1] - this.eye[1],
+      this.target[2] - this.eye[2],
+    ]);
 
-    const ux = ry * fNorm[2] - rz * fNorm[1];
-    const uy = rz * fNorm[0] - rx * fNorm[2];
-    const uz = rx * fNorm[1] - ry * fNorm[0];
+    let right = this.cross(forward, this.up);
+    const rLen = Math.hypot(right[0], right[1], right[2]);
+    if (rLen > 0.0001) {
+      right = [right[0] / rLen, right[1] / rLen, right[2] / rLen];
+    } else {
+      right = [1, 0, 0];
+    }
 
-    const shiftX = rx * dx + ux * dy;
-    const shiftY = ry * dx + uy * dy;
-    const shiftZ = rz * dx + uz * dy;
+    const up = this.normalize(this.cross(right, forward));
 
-    this.eye[0] += shiftX;
-    this.eye[1] += shiftY;
-    this.eye[2] += shiftZ;
-    this.target[0] += shiftX;
-    this.target[1] += shiftY;
-    this.target[2] += shiftZ;
+    // Screen-space pan tracks 1:1 with mouse movement based on distance to target and viewport height
+    const viewportHeight = this.canvas.clientHeight || this.canvas.height || 600;
+    const factor = (2.0 * dist * Math.tan(this.fov * 0.5)) / Math.max(viewportHeight, 1);
+
+    const shiftX = -dx * factor;
+    const shiftY = dy * factor;
+
+    this.eye[0] += right[0] * shiftX + up[0] * shiftY;
+    this.eye[1] += right[1] * shiftX + up[1] * shiftY;
+    this.eye[2] += right[2] * shiftX + up[2] * shiftY;
+
+    this.target[0] += right[0] * shiftX + up[0] * shiftY;
+    this.target[1] += right[1] * shiftX + up[1] * shiftY;
+    this.target[2] += right[2] * shiftX + up[2] * shiftY;
+  }
+
+  public recenterCamera(duration: number = 300) {
+    if (duration <= 0) {
+      this.recenterAnim = null;
+      this.eye = [0.0, 1.5, 3.5];
+      this.target = [0.0, 1.0, 0.0];
+      this.up = [0.0, 1.0, 0.0];
+      return;
+    }
+
+    this.recenterAnim = {
+      startEye: [...this.eye],
+      startTarget: [...this.target],
+      startUp: [...this.up],
+      endEye: [0.0, 1.5, 3.5],
+      endTarget: [0.0, 1.0, 0.0],
+      endUp: [0.0, 1.0, 0.0],
+      startTime: performance.now(),
+      duration,
+    };
+  }
+
+  private updateRecenterAnimation() {
+    if (!this.recenterAnim) return;
+    const now = performance.now();
+    const elapsed = now - this.recenterAnim.startTime;
+    const progress = Math.min(1.0, Math.max(0.0, elapsed / this.recenterAnim.duration));
+
+    // Smooth cubic ease-out
+    const ease = 1.0 - Math.pow(1.0 - progress, 3);
+
+    for (let i = 0; i < 3; i++) {
+      this.eye[i] = this.recenterAnim.startEye[i] + (this.recenterAnim.endEye[i] - this.recenterAnim.startEye[i]) * ease;
+      this.target[i] = this.recenterAnim.startTarget[i] + (this.recenterAnim.endTarget[i] - this.recenterAnim.startTarget[i]) * ease;
+    }
+    const upLerp: [number, number, number] = [
+      this.recenterAnim.startUp[0] + (this.recenterAnim.endUp[0] - this.recenterAnim.startUp[0]) * ease,
+      this.recenterAnim.startUp[1] + (this.recenterAnim.endUp[1] - this.recenterAnim.startUp[1]) * ease,
+      this.recenterAnim.startUp[2] + (this.recenterAnim.endUp[2] - this.recenterAnim.startUp[2]) * ease,
+    ];
+    const upNorm = this.normalize(upLerp);
+    this.up = (upNorm[0] === 0 && upNorm[1] === 0 && upNorm[2] === 0) ? [0.0, 1.0, 0.0] : (upNorm as [number, number, number]);
+
+    if (progress >= 1.0) {
+      this.eye = [0.0, 1.5, 3.5];
+      this.target = [0.0, 1.0, 0.0];
+      this.up = [0.0, 1.0, 0.0];
+      this.recenterAnim = null;
+    }
+  }
+
+  // ==========================================
+  // Render Loop
+  // ==========================================
+  private checkAndApplyResize() {
+    if (!this.canvas) return;
+    const clientW = this.canvas.clientWidth;
+    const clientH = this.canvas.clientHeight;
+    if (clientW <= 0 || clientH <= 0) return;
+
+    const realW = Math.max(Math.round(clientW * this.dpiMultiplier), 64);
+    const realH = Math.max(Math.round(clientH * this.dpiMultiplier), 64);
+
+    if (this.canvas.width !== realW || this.canvas.height !== realH) {
+      this.resize(clientW, clientH);
+    }
   }
 
   private startRenderLoop() {
-    const frame = () => {
-      this.render();
+    if (this.animationFrameId !== null) return;
+    const frame = (now: number) => {
       this.animationFrameId = requestAnimationFrame(frame);
+      if (this.targetFps > 0) {
+        const interval = 1000 / this.targetFps;
+        const elapsed = now - this.lastFrameTimestamp;
+        if (elapsed < interval - 1.0) {
+          return;
+        }
+        this.lastFrameTimestamp = now - (elapsed % interval);
+      }
+      this.checkAndApplyResize();
+      this.render();
     };
     this.animationFrameId = requestAnimationFrame(frame);
   }
 
   public render() {
-    if (!this.device || !this.context || !this.depthView) return;
-    const startTime = performance.now();
+    if (this.isRendering) return;
+    this.isRendering = true;
+    try {
+      this.updateRecenterAnimation();
+      const startTime = performance.now();
 
-    // 1. Update Uniforms
+      if (this.backend === "webgpu") {
+        this.renderWebGPU(startTime);
+      } else if (this.backend === "webgl2") {
+        this.renderWebGL2(startTime);
+      }
+    } finally {
+      this.isRendering = false;
+    }
+  }
+
+  private renderWebGPU(startTime: number) {
+    if (!this.device || !this.context) return;
+    if (
+      !this.depthTexture ||
+      !this.depthView ||
+      this.depthTexture.width !== this.canvas.width ||
+      this.depthTexture.height !== this.canvas.height
+    ) {
+      this.resize(Math.max(this.canvas.clientWidth || this.cssWidth, 320), Math.max(this.canvas.clientHeight || this.cssHeight, 240));
+      if (!this.depthView) return;
+    }
+
+    let currentTexture: GPUTexture;
+    try {
+      currentTexture = this.context.getCurrentTexture();
+    } catch (_) {
+      return;
+    }
+    const textureView = currentTexture.createView();
+
     const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
-    const viewProj = this.calculateViewProjectionMatrix(aspect);
+    const viewProj = this.calculateViewProjectionMatrix(aspect, true);
 
-    // Camera buffer
+    // 1. Camera Buffer
     const camData = new Float32Array(20);
     camData.set(viewProj, 0);
     camData.set([this.eye[0], this.eye[1], this.eye[2], 1.0], 16);
     this.device.queue.writeBuffer(this.cameraBuffer!, 0, camData);
 
-    // Light buffer
+    // 2. Light Buffer
     const lightData = new Float32Array(12);
     lightData.set([this.lightDir[0], this.lightDir[1], this.lightDir[2], this.lightIntensity], 0);
-    lightData.set([this.lightColor[0], this.lightColor[1], this.lightColor[2], 0.35], 4);
-    lightData.set([this.shadowColor[0], this.shadowColor[1], this.shadowColor[2], 1.0], 8);
+    lightData.set([this.lightColor[0], this.lightColor[1], this.lightColor[2], this.ambientIntensity], 4);
+    lightData.set([this.shadowColor[0], this.shadowColor[1], this.shadowColor[2], this.shadowSaturation], 8);
     this.device.queue.writeBuffer(this.lightBuffer!, 0, lightData);
 
-    // Material buffer
-    const matData = new Float32Array(12);
+    // 3. Material Buffer (96 bytes = 24 floats)
+    const matData = new Float32Array(24);
     matData.set(this.baseColor, 0);
     matData.set(this.shadeColor, 4);
-    matData.set([this.shadowThreshold, 0.04, 0.0, 0.0], 8);
+    matData.set(this.specColor, 8);
+    matData.set([this.shadowThreshold, this.toonSmoothness, this.specIntensity, this.specExponent], 12);
+    matData.set([this.rimIntensity, this.rimSpread, (this.hueShift * Math.PI) / 180.0, this.toonSteps], 16);
+    matData.set([this.specSoftness, this.specOffset, 0.0, 0.0], 20);
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 
-    // Outline buffer
+    // 4. Outline Buffer
     const outlineData = new Float32Array(8);
     outlineData.set(this.outlineColor, 0);
-    outlineData.set([this.outlineWidth, 1.0, 0.0, 0.0], 4);
+    outlineData.set([this.outlineWidth, aspect, this.outlineDepthBias, this.outlineOpacity], 4);
     this.device.queue.writeBuffer(this.outlineBuffer!, 0, outlineData);
 
-    // 2. Command Encoding
+    // 5. Render Passes (Compute Sparse Morphs followed by NPR Cel-Shading)
     const commandEncoder = this.device.createCommandEncoder();
-    const textureView = this.context.getCurrentTexture().createView();
+
+    if (this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0) {
+      this.dispatchSparseMorphs(commandEncoder, this.morphVertexCount);
+    }
 
     const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [
         {
           view: textureView,
-          clearValue: { r: 0.12, g: 0.13, b: 0.16, a: 1.0 },
+          clearValue: { r: 0.08, g: 0.09, b: 0.13, a: 1.0 },
           loadOp: "clear",
           storeOp: "store",
         },
@@ -531,23 +2287,97 @@ export class WebGpuViewportRenderer {
       },
     });
 
-    passEncoder.setVertexBuffer(0, this.vertexBuffer!);
+    const activeVbo = (this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
+      ? this.morphedVertexBuffer
+      : this.vertexBuffer!;
+    passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // Pass 1: Inverted Hull (backface lineart)
-    passEncoder.setPipeline(this.outlinePipeline!);
-    passEncoder.setBindGroup(0, this.outlineBindGroup!);
-    passEncoder.drawIndexed(this.indexCount);
-
-    // Pass 2: Cel-Shading NPR Surfaces
+    // PASS 1: Cel-Shading Frontfaces
     passEncoder.setPipeline(this.celPipeline!);
     passEncoder.setBindGroup(0, this.celBindGroup!);
+    passEncoder.drawIndexed(this.indexCount);
+
+    // PASS 2: Inverted Hull Backfaces
+    passEncoder.setPipeline(this.outlinePipeline!);
+    passEncoder.setBindGroup(0, this.outlineBindGroup!);
     passEncoder.drawIndexed(this.indexCount);
 
     passEncoder.end();
     this.device.queue.submit([commandEncoder.finish()]);
 
-    // Metrics
+    this.recordMetrics(startTime, "WebGPU Hardware");
+  }
+
+  private renderWebGL2(startTime: number) {
+    const gl = this.gl;
+    if (!gl || !this.glCelProgram || !this.glOutlineProgram || !this.glVao) return;
+
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.clearColor(0.08, 0.09, 0.13, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+
+    const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
+    const viewProj = this.calculateViewProjectionMatrix(aspect, false);
+
+    gl.bindVertexArray(this.glVao);
+
+    // PASS 1: Cel-Shading Frontfaces
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+
+    gl.useProgram(this.glCelProgram);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.glCelProgram, "u_view_proj"), false, viewProj);
+    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_light_dir"), this.lightDir[0], this.lightDir[1], this.lightDir[2]);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_light_intensity"), this.lightIntensity);
+    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_light_color"), this.lightColor[0], this.lightColor[1], this.lightColor[2]);
+    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_shadow_color"), this.shadowColor[0], this.shadowColor[1], this.shadowColor[2]);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_ambient_intensity"), this.ambientIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_shadow_saturation"), this.shadowSaturation);
+    gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_base_color"), this.baseColor[0], this.baseColor[1], this.baseColor[2], this.baseColor[3]);
+    gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_shade_color"), this.shadeColor[0], this.shadeColor[1], this.shadeColor[2], this.shadeColor[3]);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_shadow_threshold"), this.shadowThreshold);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_shadow_smoothness"), this.toonSmoothness);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_hue_shift"), this.hueShift);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_toon_steps"), this.toonSteps);
+    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_camera_pos"), this.eye[0], this.eye[1], this.eye[2]);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity"), this.specIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_power"), this.specExponent);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_softness"), this.specSoftness);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_offset"), this.specOffset);
+    gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_spec_color"), this.specColor[0], this.specColor[1], this.specColor[2], this.specColor[3]);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_rim_intensity"), this.rimIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_rim_spread"), this.rimSpread);
+
+    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+
+    // PASS 2: Inverted Hull Backfaces
+    gl.cullFace(gl.FRONT);
+
+    gl.useProgram(this.glOutlineProgram);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_view_proj"), false, viewProj);
+    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_width"), this.outlineWidth);
+    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_aspect"), aspect);
+    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_depth_bias"), this.outlineDepthBias);
+    gl.uniform4f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_color"), this.outlineColor[0], this.outlineColor[1], this.outlineColor[2], this.outlineColor[3]);
+    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_opacity"), this.outlineOpacity);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+
+    gl.disable(gl.BLEND);
+
+    gl.bindVertexArray(null);
+
+    this.recordMetrics(startTime, "WebGL2 Fallback");
+  }
+
+  private recordMetrics(startTime: number, adapter: string) {
     const elapsed = performance.now() - startTime;
     this.frameCounter++;
     if (performance.now() - this.fpsTimer >= 500) {
@@ -558,45 +2388,82 @@ export class WebGpuViewportRenderer {
         this.onMetricsUpdate({
           fps: currentFps,
           frameTimeMs: elapsed,
-          triangles: this.indexCount / 3,
+          triangles: Math.floor(this.indexCount / 3),
           drawCalls: 2,
-          adapterName: this.adapter?.info.device || "WebGPU Hardware (Dawn/Vulkan)",
+          adapterName: this.adapter?.info.device || adapter,
+          backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
         });
       }
     }
   }
 
-  private calculateViewProjectionMatrix(aspect: number): Float32Array {
-    // Standard LookAt Matrix
+  // ==========================================
+  // Matrix Math (Column-Major Standard)
+  // ==========================================
+  private calculateViewProjectionMatrix(aspect: number, isWebGPU: boolean): Float32Array {
     const z = this.normalize([
       this.eye[0] - this.target[0],
       this.eye[1] - this.target[1],
       this.eye[2] - this.target[2],
     ]);
-    const x = this.normalize(this.cross(this.up, z));
-    const y = this.cross(z, x);
+    let x = this.cross(this.up, z);
+    let xLen = Math.hypot(x[0], x[1], x[2]);
+    if (xLen < 1e-4) {
+      const fallback: [number, number, number] = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      x = this.cross(fallback, z);
+      xLen = Math.hypot(x[0], x[1], x[2]);
+    }
+    const right = [x[0] / xLen, x[1] / xLen, x[2] / xLen];
+    const y = this.cross(z, right);
 
+    // Column-major View Matrix
     const view = [
-      x[0], y[0], z[0], 0,
-      x[1], y[1], z[1], 0,
-      x[2], y[2], z[2], 0,
-      -this.dot(x, this.eye), -this.dot(y, this.eye), -this.dot(z, this.eye), 1,
+      right[0], y[0], z[0], 0,
+      right[1], y[1], z[1], 0,
+      right[2], y[2], z[2], 0,
+      -this.dot(right, this.eye), -this.dot(y, this.eye), -this.dot(z, this.eye), 1,
     ];
 
-    // Perspective Matrix
     const f = 1.0 / Math.tan(this.fov / 2);
     const near = 0.05;
     const far = 100.0;
     const nf = 1.0 / (near - far);
 
-    const proj = [
-      f / aspect, 0, 0, 0,
-      0, f, 0, 0,
-      0, 0, far * nf, -1,
-      0, 0, near * far * nf, 0,
-    ];
+    let proj: number[];
+    if (isWebGPU) {
+      // WebGPU NDC Depth: [0, 1]
+      proj = [
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, far * nf, -1,
+        0, 0, near * far * nf, 0,
+      ];
+    } else {
+      // WebGL2 / OpenGL NDC Depth: [-1, 1]
+      proj = [
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, 2 * near * far * nf, 0,
+      ];
+    }
 
     return new Float32Array(this.multiplyMat4(proj, view));
+  }
+
+  // Exact column-major matrix multiplication: out = a * b
+  private multiplyMat4(a: number[], b: number[]): number[] {
+    const out = new Array(16).fill(0);
+    for (let c = 0; c < 4; c++) {
+      for (let r = 0; r < 4; r++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) {
+          sum += a[k * 4 + r] * b[c * 4 + k];
+        }
+        out[c * 4 + r] = sum;
+      }
+    }
+    return out;
   }
 
   private normalize(v: number[]): number[] {
@@ -616,24 +2483,66 @@ export class WebGpuViewportRenderer {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   }
 
-  private multiplyMat4(a: number[], b: number[]): number[] {
-    const out = new Array(16).fill(0);
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 4; c++) {
-        out[r * 4 + c] =
-          a[r * 4 + 0] * b[0 * 4 + c] +
-          a[r * 4 + 1] * b[1 * 4 + c] +
-          a[r * 4 + 2] * b[2 * 4 + c] +
-          a[r * 4 + 3] * b[3 * 4 + c];
-      }
-    }
-    return out;
+  // Rodrigues' Rotation Formula for continuous unrestricted 360-degree rotation
+  private rotateVector(
+    v: [number, number, number],
+    axis: [number, number, number],
+    angle: number
+  ): [number, number, number] {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dot = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+    const cross: [number, number, number] = [
+      axis[1] * v[2] - axis[2] * v[1],
+      axis[2] * v[0] - axis[0] * v[2],
+      axis[0] * v[1] - axis[1] * v[0],
+    ];
+    return [
+      v[0] * cos + cross[0] * sin + axis[0] * dot * (1.0 - cos),
+      v[1] * cos + cross[1] * sin + axis[1] * dot * (1.0 - cos),
+      v[2] * cos + cross[2] * sin + axis[2] * dot * (1.0 - cos),
+    ];
+  }
+
+  public raycastTactile(screenX: number, screenY: number): RaycastHit | null {
+    const ray = createCameraRay(
+      screenX,
+      screenY,
+      this.canvas.width,
+      this.canvas.height,
+      this.eye,
+      this.target,
+      this.up,
+      this.fov
+    );
+    return raycastTactileHulls(ray);
+  }
+
+  public projectTactileDelta(
+    segment: AnatomicalSegment,
+    deltaXPixels: number,
+    deltaYPixels: number
+  ): TactileDragResult {
+    const dxNdc = (2.0 * deltaXPixels) / Math.max(this.canvas.width, 1);
+    const dyNdc = (2.0 * deltaYPixels) / Math.max(this.canvas.height, 1);
+    return projectTactileDrag(segment, dxNdc, dyNdc);
   }
 
   public destroy() {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
     }
+    this.recenterAnim = null;
+    if (this.vertexBuffer) this.vertexBuffer.destroy();
+    if (this.indexBuffer) this.indexBuffer.destroy();
+    if (this.cameraBuffer) this.cameraBuffer.destroy();
+    if (this.lightBuffer) this.lightBuffer.destroy();
+    if (this.materialBuffer) this.materialBuffer.destroy();
+    if (this.outlineBuffer) this.outlineBuffer.destroy();
     if (this.depthTexture) this.depthTexture.destroy();
+    if (this.toonRampTexture) {
+      try { this.toonRampTexture.destroy(); } catch (_) {}
+    }
   }
 }

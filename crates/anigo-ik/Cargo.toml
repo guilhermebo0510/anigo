@@ -1,0 +1,10 @@
+[package]
+name = "anigo-ik"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO Inverse Kinematics and Skeleton Posing Engine"
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true }
+anigo-core = { workspace = true }

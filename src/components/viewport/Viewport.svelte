@@ -1,167 +1,479 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { WebGpuViewportRenderer, type ViewportMetrics } from "./webgpu_renderer";
+  import { WebGpuViewportRenderer, type ViewportMetrics, type MeshPreset } from "./webgpu_renderer";
+  import type { AnatomicalSegment } from "./tactile";
+
+  let {
+    onResize = undefined,
+    onMetrics = undefined,
+    onTactileDrag = undefined,
+  }: {
+    onResize?: (w: number, h: number) => void;
+    onMetrics?: (m: ViewportMetrics) => void;
+    onTactileDrag?: (
+      primarySlider: string,
+      primaryDelta: number,
+      secondarySlider?: string,
+      secondaryDelta?: number
+    ) => void;
+  } = $props();
 
   let canvas: HTMLCanvasElement | null = $state(null);
   let containerEl: HTMLElement | null = $state(null);
   let renderer: WebGpuViewportRenderer | null = null;
+  let resizeObserver: ResizeObserver | null = null;
 
-  // Viewport Metrics
-  let fps = $state(120);
-  let renderTimeMs = $state(0.45);
-  let triangles = $state(156);
-  let drawCalls = $state(2);
-  let gpuInfo = $state("WebGPU / Vulkan Hardware");
-  let webgpuActive = $state(false);
-
-  // Mouse Interaction State
+  // Pointer Interaction State (DCC standard: LMB/Alt+LMB Orbit, MMB/Shift+LMB Pan, Wheel/Alt+RMB Zoom)
   let isDragging = $state(false);
   let lastMouseX = $state(0);
   let lastMouseY = $state(0);
   let buttonPressed = $state(0);
+  let activeTactileSegment: AnatomicalSegment | null = $state(null);
 
-  function handleMouseDown(e: MouseEvent) {
+  function handlePointerDown(e: PointerEvent) {
+    try {
+      containerEl?.setPointerCapture(e.pointerId);
+    } catch (_) {}
     isDragging = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
     buttonPressed = e.button;
+
+    // Prevent middle-click autoscroll and context actions
+    if (e.button === 1 || e.button === 2) {
+      e.preventDefault();
+      activeTactileSegment = null;
+    } else if (e.button === 0 && !e.altKey && !e.ctrlKey && !e.shiftKey && renderer && canvas) {
+      // Tactile raycast on primary left click (Design Doll / The Sims 4 direct manipulation)
+      const rect = canvas.getBoundingClientRect();
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      const hit = renderer.raycastTactile(screenX, screenY);
+      activeTactileSegment = hit ? hit.segment : null;
+    } else {
+      activeTactileSegment = null;
+    }
   }
 
-  function handleMouseMove(e: MouseEvent) {
+  function handlePointerMove(e: PointerEvent) {
     if (!isDragging || !renderer) return;
     const deltaX = e.clientX - lastMouseX;
     const deltaY = e.clientY - lastMouseY;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
 
-    if (buttonPressed === 0) {
-      // Left Click: Orbit
+    if (activeTactileSegment) {
+      const proj = renderer.projectTactileDelta(activeTactileSegment, deltaX, deltaY);
+      if (onTactileDrag) {
+        onTactileDrag(proj.primarySlider, proj.primaryDelta, proj.secondarySlider, proj.secondaryDelta);
+      }
+      return;
+    }
+
+    const isZoom =
+      (buttonPressed === 2 && e.altKey) ||
+      (buttonPressed === 0 && e.ctrlKey);
+
+    const isPan =
+      buttonPressed === 1 ||
+      (buttonPressed === 0 && e.shiftKey) ||
+      (buttonPressed === 2 && e.shiftKey) ||
+      (buttonPressed === 2 && !e.altKey && !e.ctrlKey);
+
+    if (isZoom) {
+      // Progressive distance zoom
+      const zoomFactor = Math.exp(deltaY * 0.005);
+      renderer.zoom(zoomFactor);
+    } else if (isPan) {
+      // 1:1 calibrated screen-space pan
+      renderer.pan(deltaX, deltaY);
+    } else if (buttonPressed === 0) {
+      // Orbit (LMB or Alt+LMB)
       const azimuthDelta = -deltaX * 0.008;
       const elevationDelta = -deltaY * 0.008;
       renderer.orbit(azimuthDelta, elevationDelta);
-    } else if (buttonPressed === 1 || buttonPressed === 2) {
-      // Right or Middle Click: Pan
-      renderer.pan(-deltaX * 0.003, deltaY * 0.003);
     }
   }
 
-  function handleMouseUp() {
-    isDragging = false;
+  function handlePointerUp(e: PointerEvent) {
+    if (isDragging) {
+      try {
+        containerEl?.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+      isDragging = false;
+      activeTactileSegment = null;
+    }
   }
 
   function handleWheel(e: WheelEvent) {
     e.preventDefault();
     if (!renderer) return;
+    const targetEl = canvas || containerEl;
+    let ndcX = 0;
+    let ndcY = 0;
+    if (targetEl) {
+      const rect = targetEl.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+      }
+    }
     const factor = e.deltaY > 0 ? 1.08 : 0.92;
-    renderer.zoom(factor);
+    renderer.zoom(factor, ndcX, ndcY);
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return;
+    }
+
+    if (e.key === "f" || e.key === "F" || e.key === "Home") {
+      e.preventDefault();
+      recenterCamera();
+    }
+  }
+
+  // Exported API for parent components & automated bridge
+  export async function loadCanonicalModel(gender: "male" | "female") {
+    if (renderer) return await renderer.loadCanonicalModel(gender);
+  }
+
+  export function switchPreset(preset: MeshPreset, headScale?: number, headRatio?: number) {
+    if (renderer) renderer.switchPreset(preset, headScale, headRatio);
+  }
+
+  export function setHeadProportions(headScale: number, headRatio: number) {
+    if (renderer) renderer.setHeadProportions(headScale, headRatio);
+  }
+
+  export function setProportions(params: {
+    headScale?: number;
+    headRatio?: number;
+    shoulderWidth?: number;
+    legLength?: number;
+    armLength?: number;
+    neckLength?: number;
+    torsoLength?: number;
+    heightOverall?: number;
+  }) {
+    if (renderer) renderer.setProportions(params);
+  }
+
+  export function setSomatotype(endo: number, meso: number, ecto: number) {
+    if (renderer) renderer.setSomatotype(endo, meso, ecto);
+  }
+
+  export function setGenderDimorphism(gender: number) {
+    if (renderer) renderer.setGenderDimorphism(gender);
+  }
+
+  export function setMorphSlider(name: string, weight: number) {
+    if (renderer) renderer.setMorphSlider(name, weight);
   }
 
   export function orbit(azimuth: number, elevation: number) {
     if (renderer) renderer.orbit(azimuth, elevation);
   }
 
-  export function zoom(factor: number) {
-    if (renderer) renderer.zoom(factor);
+  export function zoom(factor: number, mouseNdcX: number = 0, mouseNdcY: number = 0) {
+    if (renderer) renderer.zoom(factor, mouseNdcX, mouseNdcY);
   }
 
-  export function setLight(dir: [number, number, number], intensity: number) {
+  export function pan(dx: number, dy: number) {
+    if (renderer) renderer.pan(dx, dy);
+  }
+
+  export function setLight(
+    dir: [number, number, number],
+    intensity: number,
+    shadowColor?: [number, number, number],
+    lightColor?: [number, number, number],
+    ambientIntensity?: number,
+    shadowSaturation?: number
+  ) {
     if (renderer) {
-      renderer.lightDir = dir;
-      renderer.lightIntensity = intensity;
+      renderer.setLight(dir, intensity, shadowColor, lightColor, ambientIntensity, shadowSaturation);
     }
   }
 
+  export function setMaterialParams(params: {
+    baseColor?: [number, number, number, number];
+    shadeColor?: [number, number, number, number];
+    shadowThreshold?: number;
+    toonSmoothness?: number;
+    specIntensity?: number;
+    specExponent?: number;
+    specSoftness?: number;
+    specOffset?: number;
+    specColor?: [number, number, number, number];
+    rimIntensity?: number;
+    rimSpread?: number;
+    hueShift?: number;
+    toonSteps?: number;
+    outlineWidth?: number;
+    outlineColor?: [number, number, number, number];
+    outlineOpacity?: number;
+    outlineSmoothness?: number;
+    outlineDepthBias?: number;
+    shadowSaturation?: number;
+  }) {
+    if (renderer) renderer.setMaterialParams(params);
+  }
+
   export function setOutlineWidth(width: number) {
-    if (renderer) renderer.outlineWidth = width * 0.001;
+    if (renderer) renderer.setOutlineWidth(width);
+  }
+
+  export function setOutlineColor(color: [number, number, number, number]) {
+    if (renderer) renderer.setOutlineColor(color);
   }
 
   export function setShadowThreshold(threshold: number) {
-    if (renderer) renderer.shadowThreshold = threshold;
+    if (renderer) renderer.setShadowThreshold(threshold);
+  }
+
+  export function setToonSmoothness(smoothness: number) {
+    if (renderer) renderer.setToonSmoothness(smoothness);
+  }
+
+  export function setSpecular(intensity: number, exponent: number) {
+    if (renderer) renderer.setSpecular(intensity, exponent);
+  }
+
+  export function setRimLight(intensity: number, spread: number) {
+    if (renderer) renderer.setRimLight(intensity, spread);
+  }
+
+  export function setHueShift(degrees: number) {
+    if (renderer) renderer.setHueShift(degrees);
+  }
+
+  export function setToonSteps(steps: number) {
+    if (renderer) renderer.setToonSteps(steps);
+  }
+
+  export function recenterCamera(duration: number = 300) {
+    if (renderer) renderer.recenterCamera(duration);
+  }
+
+  export function setFpsCap(fps: number) {
+    if (renderer) renderer.setFpsCap(fps);
+  }
+
+  export function setDpiScale(multiplier: number) {
+    if (renderer) renderer.setDpiScale(multiplier);
+  }
+
+  export function setVsync(enabled: boolean) {
+    if (renderer) renderer.setVsync(enabled);
+  }
+
+  export function resize(w?: number, h?: number) {
+    if (containerEl && renderer) {
+      const targetW = w ?? containerEl.clientWidth;
+      const targetH = h ?? containerEl.clientHeight;
+      if (targetW > 0 && targetH > 0) {
+        renderer.resize(targetW, targetH);
+        onResize?.(targetW, targetH);
+      }
+    }
   }
 
   onMount(async () => {
     if (canvas && containerEl) {
       renderer = new WebGpuViewportRenderer(canvas);
+
       renderer.onMetricsUpdate = (m: ViewportMetrics) => {
-        fps = m.fps;
-        renderTimeMs = m.frameTimeMs;
-        triangles = m.triangles;
-        drawCalls = m.drawCalls;
-        gpuInfo = m.adapterName;
+        onMetrics?.(m);
+        // Sync live telemetry back to Tauri's LiveWindowState in the background (no HUD overlay on canvas)
+        if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+          import("@tauri-apps/api/core").then(({ invoke }) => {
+            invoke("report_live_telemetry", {
+              telemetry: {
+                fps: m.fps,
+                frame_time_ms: m.frameTimeMs,
+                draw_calls: m.drawCalls,
+                triangle_count: m.triangles,
+                adapter_name: m.adapterName,
+                camera_eye: renderer?.eye || [0, 1.5, 3.5],
+                camera_target: renderer?.target || [0, 1, 0],
+                light_direction: renderer?.lightDir || [0.577, 0.577, 0.577],
+                light_intensity: renderer?.lightIntensity ?? 1.0,
+                shadow_color: renderer?.shadowColor || [0.65, 0.68, 0.85],
+                active_preset: renderer?.currentPreset || "mannequin",
+                outline_width: (renderer?.outlineWidth || 0.0035) * 1000,
+                shadow_threshold: renderer?.shadowThreshold || 0.5,
+                head_scale: renderer?.headScale || 1.0,
+                head_ratio: renderer?.headRatio || 6.5,
+                webgpu_active: m.backend === "WebGPU",
+                spec_intensity: renderer?.specIntensity ?? 0.4,
+                spec_power: renderer?.specExponent ?? 32.0,
+                rim_intensity: renderer?.rimIntensity ?? 0.8,
+                hue_shift: renderer?.hueShift ?? -15.0,
+                toon_steps: renderer?.toonSteps ?? 1.0,
+                light_color: renderer?.lightColor || [1.0, 0.98, 0.95],
+              },
+            }).catch(() => {});
+          });
+        }
       };
 
-      const success = await renderer.initialize();
-      webgpuActive = success;
+      await renderer.initialize();
+      if (typeof window !== "undefined") {
+        (window as any).__ANIGO_VIEWPORT_RENDERER__ = renderer;
+      }
 
-      // Handle window resizing
-      const resizeObserver = new ResizeObserver((entries) => {
-        for (const entry of entries) {
-          const { width, height } = entry.contentRect;
-          if (renderer && width > 0 && height > 0) {
-            renderer.resize(Math.floor(width), Math.floor(height));
+      // Observe container resize
+      if (containerEl) {
+        resizeObserver = new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            const { width, height } = entry.contentRect;
+            if (width > 0 && height > 0) {
+              const w = Math.floor(width);
+              const h = Math.floor(height);
+              if (renderer) {
+                renderer.resize(w, h);
+              }
+              onResize?.(w, h);
+            }
           }
-        }
-      });
-      resizeObserver.observe(containerEl);
+        });
+        resizeObserver.observe(containerEl);
 
-      // Listen for Tauri live bridge events (MCP live control)
+        // Initial dimension report
+        if (containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
+          onResize?.(containerEl.clientWidth, containerEl.clientHeight);
+        }
+      }
+
+      // Listen for Tauri live socket bridge events (MCP remote automation)
       if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
         try {
           const { listen } = await import("@tauri-apps/api/event");
+
           await listen("anigo://camera_orbit", (event: any) => {
             if (renderer && event.payload) {
               renderer.orbit(event.payload.azimuth || 0, event.payload.elevation || 0);
             }
           });
+
           await listen("anigo://camera_zoom", (event: any) => {
             if (renderer && event.payload) {
-              renderer.zoom(event.payload.factor || 1.0);
+              renderer.zoom(
+                event.payload.factor || 1.0,
+                event.payload.ndcX ?? 0,
+                event.payload.ndcY ?? 0
+              );
             }
           });
+
+          await listen("anigo://camera_pan", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.pan(event.payload.dx || 0, event.payload.dy || 0);
+            }
+          });
+
+          await listen("anigo://set_camera", (event: any) => {
+            if (renderer && event.payload) {
+              if (event.payload.eye) renderer.eye = event.payload.eye;
+              if (event.payload.target) renderer.target = event.payload.target;
+            }
+          });
+
           await listen("anigo://set_light", (event: any) => {
             if (renderer && event.payload) {
-              renderer.lightDir = event.payload.direction || renderer.lightDir;
-              renderer.lightIntensity = event.payload.intensity ?? renderer.lightIntensity;
+              if (event.payload.direction) renderer.lightDir = event.payload.direction;
+              if (event.payload.intensity !== undefined) renderer.lightIntensity = event.payload.intensity;
+              if (event.payload.shadow_color) renderer.shadowColor = event.payload.shadow_color;
+              if (event.payload.color) renderer.lightColor = event.payload.color;
+              if (event.payload.ambient_intensity !== undefined) renderer.ambientIntensity = event.payload.ambient_intensity;
+              if (event.payload.shadow_saturation !== undefined) renderer.shadowSaturation = event.payload.shadow_saturation;
             }
           });
+
+          await listen("anigo://load_preset", (event: any) => {
+            if (renderer && event.payload && event.payload.preset) {
+              renderer.switchPreset(event.payload.preset);
+            }
+          });
+
+          await listen("anigo://set_outline", (event: any) => {
+            if (renderer && event.payload && event.payload.width !== undefined) {
+              renderer.setOutlineWidth(event.payload.width);
+            }
+          });
+
+          await listen("anigo://set_material_toon", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.setMaterialParams(event.payload);
+            }
+          });
+
+          await listen("anigo://set_material", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.setMaterialParams(event.payload);
+            }
+          });
+
+          await listen("anigo://set_proportions", (event: any) => {
+            if (renderer && event.payload) {
+              renderer.setHeadProportions(
+                event.payload.head_scale || 1.0,
+                event.payload.head_ratio || 6.5
+              );
+            }
+          });
+          await listen("anigo://camera_recenter", () => {
+            recenterCamera();
+          });
+
+          await listen("anigo://recenter_camera", () => {
+            recenterCamera();
+          });
         } catch (e) {
-          console.warn("[Tauri Live Bridge] Event listener initialization skipped:", e);
+          console.warn("[Tauri Live Bridge] Event listeners init error:", e);
         }
       }
+
+      window.addEventListener("keydown", handleKeyDown);
     }
   });
 
   onDestroy(() => {
+    if (typeof window !== "undefined") {
+      window.removeEventListener("keydown", handleKeyDown);
+    }
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
     if (renderer) renderer.destroy();
   });
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
   bind:this={containerEl}
   class="viewport-container"
-  role="region"
-  aria-label="ANIGO 3D Native WebGPU Viewport"
-  onmousedown={handleMouseDown}
-  onmousemove={handleMouseMove}
-  onmouseup={handleMouseUp}
-  onmouseleave={handleMouseUp}
+  role="application"
+  aria-label="ANIGO 3D Native Viewport"
+  tabindex="0"
+  onpointerdown={handlePointerDown}
+  onpointermove={handlePointerMove}
+  onpointerup={handlePointerUp}
+  onpointercancel={handlePointerUp}
   onwheel={handleWheel}
+  onkeydown={handleKeyDown}
   oncontextmenu={(e) => e.preventDefault()}
 >
-  <!-- Real Hardware WebGPU Canvas -->
-  <canvas bind:this={canvas} class="viewport-canvas"></canvas>
-
-  <!-- Viewport HUD Overlay -->
-  <div class="hud-overlay">
-    <div class="hud-item badge">
-      {webgpuActive ? "WEBGPU NATIVO (120+ FPS)" : "CARREGANDO MOTOR WEBGPU..."}
-    </div>
-    <div class="hud-item">FPS: <span class="val">{fps}</span></div>
-    <div class="hud-item">GPU: <span class="val">{gpuInfo}</span></div>
-    <div class="hud-item">Passe GPU: <span class="val">{renderTimeMs.toFixed(2)} ms</span></div>
-    <div class="hud-item">Triângulos: <span class="val">{triangles.toLocaleString()}</span></div>
-    <div class="hud-item">Draw Calls: <span class="val">{drawCalls} (Hull + Cel)</span></div>
-  </div>
+  <!-- Hardware 3D Canvas -->
+  <canvas
+    bind:this={canvas}
+    class="viewport-canvas"
+    oncontextmenu={(e) => e.preventDefault()}
+  ></canvas>
 </div>
 
 <style>
@@ -169,45 +481,26 @@
     position: relative;
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle at center, #1e2230 0%, #0d0f15 100%);
+    min-width: 0;
+    min-height: 0;
+    background: radial-gradient(circle at center, #1b202e 0%, #0a0d14 100%);
     overflow: hidden;
     cursor: grab;
     display: flex;
     align-items: center;
     justify-content: center;
+    outline: none;
   }
   .viewport-container:active {
     cursor: grabbing;
   }
   .viewport-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     display: block;
-  }
-  .hud-overlay {
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: rgba(15, 17, 23, 0.85);
-    backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-family: monospace;
-    font-size: 0.78rem;
-    color: #94a3b8;
-    pointer-events: none;
-  }
-  .hud-item .val {
-    color: #38bdf8;
-    font-weight: bold;
-  }
-  .badge {
-    color: #ec4899;
-    font-weight: 700;
-    letter-spacing: 1px;
+    object-fit: contain;
   }
 </style>

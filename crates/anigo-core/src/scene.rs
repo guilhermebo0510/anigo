@@ -35,6 +35,18 @@ pub struct StylizedMaterial {
     pub outline_width: f32,
     pub shadow_threshold: f32,
     pub shadow_smoothness: f32,
+    /// Anisotropic specular highlight intensity (0.0 to 2.0)
+    pub spec_intensity: f32,
+    /// Specular power / sharpness exponent (4.0 to 128.0)
+    pub spec_power: f32,
+    /// Stylized Fresnel rim lighting intensity (0.0 to 3.0)
+    pub rim_intensity: f32,
+    /// Rim light spread / angular width (0.05 to 1.0)
+    pub rim_spread: f32,
+    /// Mathematical shadow hue rotation in degrees (-180 to +180)
+    pub hue_shift: f32,
+    /// Toon ramp steps: 1.0 = hard anime cel, 2.0 = 2-tier Ghibli soft, 0.0 = continuous
+    pub toon_steps: f32,
 }
 
 impl Default for StylizedMaterial {
@@ -46,7 +58,13 @@ impl Default for StylizedMaterial {
             outline_color: [0.25, 0.15, 0.20, 1.0], // dark anime lineart color
             outline_width: 0.0035,
             shadow_threshold: 0.50,
-            shadow_smoothness: 0.04,
+            shadow_smoothness: 0.02,
+            spec_intensity: 0.40,
+            spec_power: 32.0,
+            rim_intensity: 0.80,
+            rim_spread: 0.40,
+            hue_shift: -15.0, // cool lavender shift
+            toon_steps: 1.0,
         }
     }
 }
@@ -127,5 +145,64 @@ impl Scene {
 
     pub fn total_triangles(&self) -> usize {
         self.nodes.iter().filter_map(|n| n.mesh.as_ref()).map(|m| m.indices.len() / 3).sum()
+    }
+
+    pub fn update_material_for_all(&mut self, material: StylizedMaterial) {
+        for node in &mut self.nodes {
+            node.material = Some(material.clone());
+        }
+    }
+
+    pub fn update_light(&mut self, light: StylizedLight) {
+        self.light = light;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stylized_material_defaults() {
+        let mat = StylizedMaterial::default();
+        assert_eq!(mat.shadow_threshold, 0.50);
+        assert_eq!(mat.shadow_smoothness, 0.02);
+        assert_eq!(mat.spec_intensity, 0.40);
+        assert_eq!(mat.spec_power, 32.0);
+        assert_eq!(mat.rim_intensity, 0.80);
+        assert_eq!(mat.rim_spread, 0.40);
+        assert_eq!(mat.hue_shift, -15.0);
+        assert_eq!(mat.toon_steps, 1.0);
+    }
+
+    #[test]
+    fn test_scene_update_material() {
+        let mut scene = Scene::default();
+        assert_eq!(scene.nodes.len(), 1);
+        let new_mat = StylizedMaterial {
+            shadow_threshold: 0.65,
+            hue_shift: -25.0,
+            ..Default::default()
+        };
+        scene.update_material_for_all(new_mat);
+
+        let node = scene.nodes.first().unwrap();
+        let mat = node.material.as_ref().unwrap();
+        assert_eq!(mat.shadow_threshold, 0.65);
+        assert_eq!(mat.hue_shift, -25.0);
+    }
+
+    #[test]
+    fn test_scene_update_light() {
+        let mut scene = Scene::default();
+        let light = StylizedLight {
+            intensity: 2.5,
+            shadow_color: [0.5, 0.6, 0.9],
+            ..Default::default()
+        };
+        scene.update_light(light);
+
+        assert_eq!(scene.light.intensity, 2.5);
+        assert_eq!(scene.light.shadow_color, [0.5, 0.6, 0.9]);
     }
 }
