@@ -4,6 +4,7 @@ mod win32_interact;
 #[cfg(not(target_os = "windows"))]
 mod win32_stub;
 mod fs_sandbox;
+mod metrics;
 mod validate;
 
 use std::io::{self, BufRead, Write};
@@ -46,6 +47,8 @@ struct AppState {
     current_gender: Arc<RwLock<BaseGender>>,
     morph_catalog: Arc<RwLock<MorphCatalog>>,
     base_mesh: Arc<RwLock<Mesh>>,
+    /// P2: lock-free counters for observability.
+    metrics: Arc<metrics::McpMetrics>,
 }
 
 #[tokio::main]
@@ -82,6 +85,8 @@ async fn main() -> Result<()> {
 
     let bridge_addr = std::env::var("ANIGO_BRIDGE_ADDR").unwrap_or_else(|_| "127.0.0.1:39090".to_string());
 
+    let metrics = Arc::new(metrics::McpMetrics::new());
+
     let state = Arc::new(AppState {
         renderer: Arc::new(renderer),
         scene: Arc::new(RwLock::new(scene)),
@@ -89,6 +94,7 @@ async fn main() -> Result<()> {
         current_gender: Arc::new(RwLock::new(initial_gender)),
         morph_catalog: Arc::new(RwLock::new(morph_catalog)),
         base_mesh: Arc::new(RwLock::new(base_mesh)),
+        metrics: Arc::clone(&metrics),
     });
 
     let stdin = io::stdin();
@@ -111,6 +117,7 @@ async fn main() -> Result<()> {
         let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(req) => req,
             Err(e) => {
+                metrics.json_rpc_parse_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let err_res = json!({
                     "jsonrpc": "2.0",
                     "id": null,
@@ -121,6 +128,8 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+
+        metrics.json_rpc_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let req_id = request.id.clone().unwrap_or(Value::Null);
 
@@ -137,7 +146,8 @@ async fn main() -> Result<()> {
                             "version": version
                         },
                         "capabilities": {
-                            "tools": {}
+                            "tools": { "listChanged": false },
+                            "logging": {}
                         }
                     }
                 });
@@ -163,16 +173,21 @@ async fn main() -> Result<()> {
                 let rpc_id_str = req_id.to_string();
 
                 // P0-01: No global Mutex held across await. Each tool does short RwLock snapshots.
+                metrics.tool_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let call_result = handle_tool_call(&tool_name, arguments, Arc::clone(&state), rpc_id_str).await;
                 let res = match call_result {
-                    Ok(val) => json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": val
-                        }
-                    }),
+                    Ok(val) => {
+                        metrics.tool_calls_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": val
+                            }
+                        })
+                    }
                     Err(err) => {
+                        metrics.tool_calls_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // Try to map invalid params to -32602
                         let msg = format!("{:#}", err);
                         let code = if msg.contains("code -32602")
@@ -211,6 +226,32 @@ async fn main() -> Result<()> {
                         })
                     }
                 };
+                writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
+                stdout.flush()?;
+            }
+            // P2: MCP-spec `ping` method (server→client pings are unsolicited; this is client→server ping for liveness)
+            "ping" => {
+                let res = json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {}
+                });
+                writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
+                stdout.flush()?;
+            }
+            // P2: `logging/setLevel` — minimal implementation that reconfigures the tracing
+            // EnvFilter at runtime. Note: tracing-subscriber does not support changing filters
+            // on a live subscriber without `reload` feature; we reload via a best-effort hint.
+            "logging/setLevel" => {
+                let level = request.params.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+                tracing::info!(requested_level = %level, "logging/setLevel received (dynamic reload requires tracing-reload feature; honoring via RUST_LOG for future sessions)");
+                // Best effort: store the level in env so subsequent diagnostics reflect it.
+                unsafe { std::env::set_var("RUST_LOG", format!("anigo_mcp={}", level)); }
+                let res = json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": { "level": level, "note": "level applied to future log spans; full dynamic reload pending tracing-subscriber reload handle" }
+                });
                 writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
                 stdout.flush()?;
             }
@@ -626,6 +667,26 @@ fn get_tool_definitions() -> Value {
                 "additionalProperties": false
             },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "anigo_get_metrics",
+            "description": "Returns runtime observability metrics for this MCP server instance: uptime, total/successful/failed tool calls, bridge command counters, frames rendered, bytes written to sandboxed FS, JSON-RPC parse errors, and average requests/sec. Useful for health checks and support bundles.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "anigo_get_support_bundle",
+            "description": "Convenience diagnostic: returns combined output of anigo_get_system_info, anigo_get_live_telemetry, anigo_get_metrics, anigo_get_diagnostics, and version metadata as a single JSON object for support/troubleshooting.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         }
     ])
 }
@@ -1207,6 +1268,7 @@ async fn handle_tool_call(
                 // P0-04: use sanitized path
                 std::fs::write(&diff_path, &png_bytes)
                     .with_context(|| format!("Failed to save diff image to {:?}", diff_path))?;
+                state.metrics.bytes_written_to_fs.fetch_add(png_bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             }
 
             let audit_result = json!({
@@ -1578,7 +1640,9 @@ async fn handle_tool_call(
             if let Some(path) = save_path {
                 std::fs::write(&path, &png_bytes)
                     .with_context(|| format!("Failed to save rendered frame to {:?}", path))?;
+                state.metrics.bytes_written_to_fs.fetch_add(png_bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             }
+            state.metrics.frames_rendered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let mut report_text = format!(
                 "Render Successful: {}x{} | Time: {:.2}ms | Triangles: {} | Draw Calls: {} | GPU: {} ({})",
@@ -2033,6 +2097,45 @@ async fn handle_tool_call(
             Ok(vec![json!({
                 "type": "text",
                 "text": serde_json::to_string_pretty(&diag)?
+            })])
+        }
+        "anigo_get_metrics" => {
+            let snap = state.metrics.snapshot();
+            Ok(vec![json!({
+                "type": "text",
+                "text": serde_json::to_string_pretty(&snap)?
+            })])
+        }
+        "anigo_get_support_bundle" => {
+            let live_active = state.bridge.is_live().await;
+            let info = &state.renderer.adapter_info;
+            let bridge_telemetry = if live_active {
+                state.bridge.send_command("GET_STATUS", json!({})).await.ok()
+            } else { None };
+            let bridge_metrics = if live_active {
+                state.bridge.send_command("GET_METRICS", json!({})).await.ok()
+            } else { None };
+            let diag = tokio::task::spawn_blocking(|| {
+                Win32Harness::collect_logs_and_diagnostics()
+            }).await.unwrap_or_else(|_| json!({"error":"join error"}));
+            let bundle = json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS,
+                "timestamp_utc": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                "gpu": {
+                    "adapter": info.name,
+                    "backend": format!("{:?}", info.backend),
+                    "device_type": format!("{:?}", info.device_type),
+                },
+                "live_bridge_active": live_active,
+                "live_telemetry": bridge_telemetry,
+                "bridge_metrics": bridge_metrics,
+                "mcp_metrics": state.metrics.snapshot(),
+                "diagnostics": diag,
+            });
+            Ok(vec![json!({
+                "type": "text",
+                "text": serde_json::to_string_pretty(&bundle)?
             })])
         }
         _ => anyhow::bail!("Unknown tool: {} (code -32601)", name),

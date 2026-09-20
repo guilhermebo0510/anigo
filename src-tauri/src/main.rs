@@ -3,6 +3,7 @@
 
 mod bridge;
 
+use std::io::Write;
 use std::sync::Arc;
 use base64::Engine;
 use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
@@ -202,14 +203,14 @@ async fn report_live_telemetry(
     let last = LAST_CMD_TELEMETRY.load(std::sync::atomic::Ordering::Relaxed);
     if now.saturating_sub(last) >= 3 {
         LAST_CMD_TELEMETRY.store(now, std::sync::atomic::Ordering::Relaxed);
-        println!(
-            "[CMD TELEMETRY] Engine: {} | {:.0} FPS ({:.2}ms) | Preset: {} | Polys: {} | Adapter: {}",
-            if telemetry.webgpu_active { "WebGPU Native" } else { "WebGL2 Fallback" },
-            telemetry.fps,
-            telemetry.frame_time_ms,
-            telemetry.active_preset,
-            telemetry.triangle_count,
-            telemetry.adapter_name
+        tracing::info!(
+            engine = if telemetry.webgpu_active { "WebGPU Native" } else { "WebGL2 Fallback" },
+            fps = telemetry.fps as u32,
+            frame_time_ms = telemetry.frame_time_ms,
+            preset = %telemetry.active_preset,
+            polys = telemetry.triangle_count,
+            adapter = %telemetry.adapter_name,
+            "telemetry snapshot"
         );
     }
     let mut state = live_state.write().await;
@@ -364,10 +365,35 @@ async fn load_project_file(path: String) -> Result<String, String> {
 }
 
 fn main() {
-    std::panic::set_hook(Box::new(|info| {
-        let _ = std::fs::write("C:\\ANIGO\\panic.log", format!("Panic: {:#?}\n", info));
+    // P2: Initialize structured tracing for the Tauri app shell.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "info,anigo_app=info,anigo_app::bridge=info,wgpu=warn"
+            )
+        });
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .try_init();
+
+    let log_dir = bridge::log_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(panic = %info, "ANIGO panic");
+        let path = log_dir.join("panic.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "Panic at {:?}: {:#?}", std::time::SystemTime::now(), info);
+        }
     }));
-    let _ = std::fs::write("C:\\ANIGO\\launch.log", "Starting ANIGO main...\n");
+
+    let launch_path = bridge::log_dir().join("launch.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&launch_path) {
+        let _ = writeln!(f, "Starting ANIGO main at {:?}", std::time::SystemTime::now());
+    }
+    tracing::info!(log_dir = %bridge::log_dir().display(), "ANIGO Studio starting");
 
     #[cfg(target_os = "windows")]
     {
@@ -422,7 +448,10 @@ fn main() {
         .expect("error building tauri application")
         .run(|_app_handle, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                let _ = std::fs::write("C:\\ANIGO\\launch.log", "Tauri ExitRequested event received\n");
+                let exit_path = bridge::log_dir().join("launch.log");
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&exit_path) {
+                    let _ = writeln!(f, "Tauri ExitRequested event received at {:?}", std::time::SystemTime::now());
+                }
             }
         });
 }

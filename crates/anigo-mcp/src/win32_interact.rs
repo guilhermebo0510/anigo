@@ -84,7 +84,18 @@ extern "system" {
     fn IsWindowVisible(hWnd: *mut std::ffi::c_void) -> i32;
     fn PrintWindow(hWnd: *mut std::ffi::c_void, hDC: *mut std::ffi::c_void, nFlags: u32) -> i32;
     fn GetSystemMetrics(nIndex: i32) -> i32;
+    /// P2-15: declare SetProcessDPIAware to avoid physical-vs-logical coord mismatch on scaled displays.
+    /// We use the user32 import rather than SetProcessDpiAwarenessContext (Win10+) for maximum compatibility.
+    fn SetProcessDPIAware() -> i32;
 }
+
+// GetSystemMetrics constants for multi-monitor (P2-15)
+const SM_CXSCREEN: i32 = 0;
+const SM_CYSCREEN: i32 = 1;
+const SM_XVIRTUALSCREEN: i32 = 76;
+const SM_YVIRTUALSCREEN: i32 = 77;
+const SM_CXVIRTUALSCREEN: i32 = 78;
+const SM_CYVIRTUALSCREEN: i32 = 79;
 
 #[link(name = "gdi32")]
 extern "system" {
@@ -158,8 +169,18 @@ unsafe extern "system" fn enum_window_callback(h_wnd: *mut std::ffi::c_void, l_p
 pub struct Win32Harness;
 
 impl Win32Harness {
-    /// Conecta a thread atual ao desktop interativo 'default' da estação WinSta0
+    /// P2-15: one-time DPI initialization flag. SetProcessDPIAware must be called
+    /// once, early in the process; subsequent calls return 0 but are harmless.
+    static DPI_INIT: std::sync::Once = std::sync::Once::new();
+
+    /// Conecta a thread atual ao desktop interativo 'default' da estação WinSta0.
+    /// Também chama SetProcessDPIAware uma única vez para que GetWindowRect e
+    /// GetSystemMetrics operem em pixels físicos e os cliques acertem em monitores
+    /// com escala 125%/150% (P2-15).
     pub fn attach_interactive_desktop() {
+        DPI_INIT.call_once(|| unsafe {
+            SetProcessDPIAware();
+        });
         unsafe {
             let h_desk = OpenDesktopA(b"default\0".as_ptr(), 0, 0, GENERIC_ALL);
             if !h_desk.is_null() {
@@ -353,13 +374,22 @@ impl Win32Harness {
         }
     }
 
-    /// Converte coordenadas de tela em pixels para coordenadas normalizadas absolutas (0..65535) para mouse_event
+    /// Converte coordenadas de tela em pixels para coordenadas normalizadas absolutas
+    /// (0..65535) exigidas por `mouse_event` com `MOUSEEVENTF_ABSOLUTE`.
+    /// P2-15: usa a tela virtual (SM_XVIRTUALSCREEN/CXVIRTUALSCREEN) em vez do
+    /// monitor primário, suportando multi-monitor onde (0,0) não é o canto superior
+    /// esquerdo do primário.
     fn to_absolute_coords(screen_x: i32, screen_y: i32) -> (u32, u32) {
         unsafe {
-            let sw = GetSystemMetrics(0).max(1);
-            let sh = GetSystemMetrics(1).max(1);
-            let abs_x = (((screen_x as f64) * 65535.0) / (sw as f64)).round() as u32;
-            let abs_y = (((screen_y as f64) * 65535.0) / (sh as f64)).round() as u32;
+            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1);
+            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1);
+            // Normalize: MOUSEEVENTF_ABSOLUTE maps (0,0)..(65535,65535) to the entire virtual screen
+            let norm_x = (screen_x - vx) as f64;
+            let norm_y = (screen_y - vy) as f64;
+            let abs_x = ((norm_x * 65535.0) / (vw as f64)).round().clamp(0.0, 65535.0) as u32;
+            let abs_y = ((norm_y * 65535.0) / (vh as f64)).round().clamp(0.0, 65535.0) as u32;
             (abs_x, abs_y)
         }
     }
