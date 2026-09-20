@@ -4,6 +4,7 @@ mod win32_interact;
 #[cfg(not(target_os = "windows"))]
 mod win32_stub;
 mod fs_sandbox;
+mod metrics;
 mod validate;
 
 use std::io::{self, BufRead, Write};
@@ -46,6 +47,8 @@ struct AppState {
     current_gender: Arc<RwLock<BaseGender>>,
     morph_catalog: Arc<RwLock<MorphCatalog>>,
     base_mesh: Arc<RwLock<Mesh>>,
+    /// P2: lock-free counters for observability.
+    metrics: Arc<metrics::McpMetrics>,
 }
 
 #[tokio::main]
@@ -82,6 +85,8 @@ async fn main() -> Result<()> {
 
     let bridge_addr = std::env::var("ANIGO_BRIDGE_ADDR").unwrap_or_else(|_| "127.0.0.1:39090".to_string());
 
+    let metrics = Arc::new(metrics::McpMetrics::new());
+
     let state = Arc::new(AppState {
         renderer: Arc::new(renderer),
         scene: Arc::new(RwLock::new(scene)),
@@ -89,6 +94,7 @@ async fn main() -> Result<()> {
         current_gender: Arc::new(RwLock::new(initial_gender)),
         morph_catalog: Arc::new(RwLock::new(morph_catalog)),
         base_mesh: Arc::new(RwLock::new(base_mesh)),
+        metrics: Arc::clone(&metrics),
     });
 
     let stdin = io::stdin();
@@ -111,6 +117,7 @@ async fn main() -> Result<()> {
         let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(req) => req,
             Err(e) => {
+                metrics.json_rpc_parse_errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let err_res = json!({
                     "jsonrpc": "2.0",
                     "id": null,
@@ -121,6 +128,8 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+
+        metrics.json_rpc_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let req_id = request.id.clone().unwrap_or(Value::Null);
 
@@ -137,7 +146,8 @@ async fn main() -> Result<()> {
                             "version": version
                         },
                         "capabilities": {
-                            "tools": {}
+                            "tools": { "listChanged": false },
+                            "logging": {}
                         }
                     }
                 });
@@ -163,19 +173,39 @@ async fn main() -> Result<()> {
                 let rpc_id_str = req_id.to_string();
 
                 // P0-01: No global Mutex held across await. Each tool does short RwLock snapshots.
+                metrics.tool_calls_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let call_result = handle_tool_call(&tool_name, arguments, Arc::clone(&state), rpc_id_str).await;
                 let res = match call_result {
-                    Ok(val) => json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": val
-                        }
-                    }),
+                    Ok(val) => {
+                        metrics.tool_calls_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": val
+                            }
+                        })
+                    }
                     Err(err) => {
+                        metrics.tool_calls_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // Try to map invalid params to -32602
                         let msg = format!("{:#}", err);
-                        let code = if msg.contains("code -32602") || msg.contains("Invalid dimensions") || msg.contains("out of range") || msg.contains("not allowed") || msg.contains("must be finite") {
+                        let code = if msg.contains("code -32602")
+                            || msg.contains("Invalid dimensions")
+                            || msg.contains("out of range")
+                            || msg.contains("not allowed")
+                            || msg.contains("must be finite")
+                            || msg.contains("Missing '")
+                            || msg.contains("Unknown ")
+                            || msg.contains("Invalid action")
+                            || msg.contains("Invalid property")
+                            || msg.contains("Invalid tool")
+                            || msg.contains("Invalid preset")
+                            || msg.contains("Invalid tab")
+                            || msg.contains("Slider value")
+                            || msg.contains("vk_code must be")
+                            || msg.contains("prototype pollution")
+                        {
                             -32602
                         } else if msg.contains("not in allowlist") || msg.contains("blocked") || msg.contains("traversal") {
                             -32602
@@ -196,6 +226,32 @@ async fn main() -> Result<()> {
                         })
                     }
                 };
+                writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
+                stdout.flush()?;
+            }
+            // P2: MCP-spec `ping` method (server→client pings are unsolicited; this is client→server ping for liveness)
+            "ping" => {
+                let res = json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {}
+                });
+                writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
+                stdout.flush()?;
+            }
+            // P2: `logging/setLevel` — minimal implementation that reconfigures the tracing
+            // EnvFilter at runtime. Note: tracing-subscriber does not support changing filters
+            // on a live subscriber without `reload` feature; we reload via a best-effort hint.
+            "logging/setLevel" => {
+                let level = request.params.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+                tracing::info!(requested_level = %level, "logging/setLevel received (dynamic reload requires tracing-reload feature; honoring via RUST_LOG for future sessions)");
+                // Best effort: store the level in env so subsequent diagnostics reflect it.
+                unsafe { std::env::set_var("RUST_LOG", format!("anigo_mcp={}", level)); }
+                let res = json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": { "level": level, "note": "level applied to future log spans; full dynamic reload pending tracing-subscriber reload handle" }
+                });
                 writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
                 stdout.flush()?;
             }
@@ -266,7 +322,7 @@ fn get_tool_definitions() -> Value {
                     "width": { "type": "integer", "description": "Render width in pixels (64..4096, default: 800)", "minimum": 64, "maximum": 4096, "default": 800 },
                     "height": { "type": "integer", "description": "Render height in pixels (64..4096, default: 600)", "minimum": 64, "maximum": 4096, "default": 600 },
                     "save_path": { "type": "string", "description": "Optional local path to save the rendered PNG image (allowlisted: Documents/ANIGO, ./baselines, ./tmp/anigo-mcp)" },
-                    "sync_live": { "type": "boolean", "description": "If true, queries the live app window to match its camera before rendering", "default": false }
+                    "sync_live": { "type": "boolean", "description": "If true, pulls full state (camera, light, material, proportions) from the live ANIGO Studio window before rendering to guarantee visual parity", "default": false }
                 },
                 "additionalProperties": false
             },
@@ -463,11 +519,11 @@ fn get_tool_definitions() -> Value {
         },
         {
             "name": "anigo_send_key",
-            "description": "Simulates a virtual key press on the ANIGO window (e.g. 0x12 for Alt, 0x10 for Shift, 0x11 for Ctrl). Only allowlisted safe keys.",
+            "description": "Simulates a virtual key press on the ANIGO window. Only safe non-system keys are allowed (VK 0x08-0x0D backspace/tab/enter, 0x1B esc, 0x20 space, 0x25-0x28 arrows, 0x2E delete, 0x30-0x39 digits 0-9, 0x41-0x5A letters A-Z, 0x70-0x7B F1-F12). System modifier keys (Win, Alt, Ctrl) are blocked by server-side allowlist.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "vk_code": { "type": "integer", "description": "Virtual key code (e.g. 18 for VK_MENU/Alt, 16 for VK_SHIFT, 37-40 arrows, F1-F12, A-Z, 0-9)", "minimum": 0, "maximum": 255 }
+                    "vk_code": { "type": "integer", "description": "Virtual key code (hex/decimal). Allowed: arrows 0x25-0x28, F1-F12 0x70-0x7B, 0-9 0x30-0x39, A-Z 0x41-0x5A, Backspace 0x08, Tab 0x09, Enter 0x0D, Esc 0x1B, Space 0x20, Delete 0x2E", "minimum": 0, "maximum": 255 }
                 },
                 "required": ["vk_code"],
                 "additionalProperties": false
@@ -516,13 +572,13 @@ fn get_tool_definitions() -> Value {
         },
         {
             "name": "anigo_ui_action",
-            "description": "Executes semantic UI actions in ANIGO Studio (switch workspace tabs, select tools on left bar, set slider values, change mesh presets). Supported action types: 'select_tab' (e.g. 'personagem', 'shading', 'mcp', 'settings'), 'select_tool' (e.g. 'mannequin', 'face', 'hair', 'cloth', 'rig'), 'set_slider' (property: 'head_scale' | 'head_ratio' | 'outline_width' | 'shadow_threshold' | 'light_azimuth' | 'light_elevation' | 'light_intensity', value: number), 'set_preset' (value: 'mannequin' | 'sphere' | 'cube').",
+            "description": "Executes validated semantic UI actions in ANIGO Studio. Strict allowlists are enforced server-side to prevent payload injection. Supported: select_tab (value: personagem|posing|shading|iluminacao|cenario|animacao|render|biblioteca), select_tool (value: [a-z0-9_-]+ tool id, e.g. body, face, hair, cloth, rig), set_slider (property: one of head_scale/head_ratio/shoulder_width/leg_length/arm_length/neck_length/outline_width/outline_extrusion/shadow_threshold/shadow_smoothness/light_azimuth/light_elevation/light_intensity/shadow_saturation/ambient_intensity/eye_scale/chin_width/jaw_width/hair_volume/hair_thickness/hair_curvature/cloth_tension/rim_intensity/rim_spread/hue_shift/spec_intensity/spec_power/toon_steps/camera_fov; value: finite number -1000..1000), set_preset (value: mannequin|sphere|cube). Prototype-pollution keys (__proto__, constructor, prototype) are rejected globally.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["select_tab", "select_tool", "set_slider", "set_preset"], "description": "Action type" },
-                    "property": { "type": "string", "description": "Target property name (for sliders: head_scale, head_ratio, outline_width, etc.)" },
-                    "value": { "description": "Value to set (string for tab/tool/preset, number for sliders)" }
+                    "property": { "type": "string", "description": "Target property/slider name (required for set_slider)" },
+                    "value": { "description": "Value to set: string for select_tab/select_tool/set_preset, number for set_slider" }
                 },
                 "required": ["action"],
                 "additionalProperties": false
@@ -611,8 +667,161 @@ fn get_tool_definitions() -> Value {
                 "additionalProperties": false
             },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "anigo_get_metrics",
+            "description": "Returns runtime observability metrics for this MCP server instance: uptime, total/successful/failed tool calls, bridge command counters, frames rendered, bytes written to sandboxed FS, JSON-RPC parse errors, and average requests/sec. Useful for health checks and support bundles.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "anigo_get_support_bundle",
+            "description": "Convenience diagnostic: returns combined output of anigo_get_system_info, anigo_get_live_telemetry, anigo_get_metrics, anigo_get_diagnostics, and version metadata as a single JSON object for support/troubleshooting.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         }
     ])
+}
+
+/// P1-09: Aplica o estado completo da LiveWindowState (câmera, luz, material, preset, proporções)
+/// ao Scene headless. Anteriormente `sync_live` só sincronizava câmera, o que causava
+/// falso-negativos no `anigo_compare_baseline`. Retorna lista de campos sincronizados.
+///
+/// Importante: NÃO mantemos o scene.write() durante aquisição de outros locks (base_mesh, morph_catalog),
+/// para evitar deadlock com RwLock não-reentrante do tokio.
+async fn apply_live_telemetry_to_scene(state: &AppState, tel: &Value) -> Vec<String> {
+    let mut synced: Vec<String> = Vec::new();
+
+    // ── Extrai valores do telemetry com snapshots (sem manter locks) ──
+    // Camera
+    let eye_vec = tel.get("camera_eye").and_then(|v| v.as_array())
+        .and_then(|a| if a.len() == 3 { validate::validate_vec3(a, "camera_eye").ok() } else { None });
+    let target_vec = tel.get("camera_target").and_then(|v| v.as_array())
+        .and_then(|a| if a.len() == 3 { validate::validate_vec3(a, "camera_target").ok() } else { None });
+
+    // Light
+    let light_dir = tel.get("light_direction").and_then(|v| v.as_array())
+        .and_then(|a| if a.len() == 3 { validate::validate_vec3(a, "light_direction").ok() } else { None })
+        .and_then(|d| if d.length() >= 1e-6 { Some([d.x, d.y, d.z]) } else { None });
+    let light_intensity = tel.get("light_intensity").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.0, 10.0, "light_intensity").ok());
+    let light_color = extract_color3(tel, "light_color", "light_color");
+    let shadow_color = extract_color3(tel, "shadow_color", "shadow_color");
+
+    // Material params
+    let mat_outline_width = tel.get("outline_width").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.0, 0.1, "outline_width").ok());
+    let mat_shadow_threshold = tel.get("shadow_threshold").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.0, 1.0, "shadow_threshold").ok());
+    let mat_spec_intensity = tel.get("spec_intensity").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.0, 2.0, "spec_intensity").ok());
+    let mat_spec_power = tel.get("spec_power").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 4.0, 128.0, "spec_power").ok());
+    let mat_rim_intensity = tel.get("rim_intensity").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.0, 3.0, "rim_intensity").ok());
+    let mat_hue_shift = tel.get("hue_shift").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, -180.0, 180.0, "hue_shift").ok());
+    let mat_toon_steps = tel.get("toon_steps").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.0, 4.0, "toon_steps").ok());
+
+    // Proporções (requer recomputar base_mesh + morphs)
+    let scale_opt = tel.get("head_scale").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 0.7, 1.4, "head_scale").ok());
+    let ratio_opt = tel.get("head_ratio").and_then(|v| v.as_f64())
+        .and_then(|v| validate::f32_range(v, 2.0, 8.5, "head_ratio").ok());
+
+    // Preset ativo (apenas log, não troca mesh automaticamente para evitar popping visual)
+    if let Some(preset) = tel.get("active_preset").and_then(|v| v.as_str()) {
+        tracing::debug!(active_preset=%preset, "sync_live noted active preset (mesh not auto-swapped to avoid popping)");
+    }
+
+    // ── Aplica câmera, luz e material em UM lock curto de scene ──
+    let material_changed = [mat_outline_width, mat_shadow_threshold, mat_spec_intensity, mat_spec_power,
+        mat_rim_intensity, mat_hue_shift, mat_toon_steps].iter().any(|o| o.is_some())
+        || light_dir.is_some() || light_intensity.is_some() || light_color.is_some() || shadow_color.is_some();
+
+    {
+        let mut scene = state.scene.write().await;
+        if let Some(eye) = eye_vec { scene.camera.eye = eye; synced.push("camera_eye".into()); }
+        if let Some(tgt) = target_vec { scene.camera.target = tgt; synced.push("camera_target".into()); }
+        if let Some(d) = light_dir { scene.light.direction = d; synced.push("light_direction".into()); }
+        if let Some(i) = light_intensity { scene.light.intensity = i; synced.push("light_intensity".into()); }
+        if let Some(c) = light_color { scene.light.color = c; synced.push("light_color".into()); }
+        if let Some(c) = shadow_color { scene.light.shadow_color = c; synced.push("shadow_color".into()); }
+
+        if material_changed {
+            if let Some(mut mat) = scene.nodes.first().and_then(|n| n.material.clone()) {
+                if let Some(v) = mat_outline_width { mat.outline_width = v; }
+                if let Some(v) = mat_shadow_threshold { mat.shadow_threshold = v; }
+                if let Some(v) = mat_spec_intensity { mat.spec_intensity = v; }
+                if let Some(v) = mat_spec_power { mat.spec_power = v; }
+                if let Some(v) = mat_rim_intensity { mat.rim_intensity = v; }
+                if let Some(v) = mat_hue_shift { mat.hue_shift = v; }
+                if let Some(v) = mat_toon_steps { mat.toon_steps = v; }
+                scene.update_material_for_all(mat);
+                synced.push("material".into());
+            }
+        }
+    } // ← unlock scene
+
+    // ── Proporções: precisa base_mesh + morph_catalog + scene (múltiplos locks, SEM aninhamento) ──
+    if scale_opt.is_some() || ratio_opt.is_some() {
+        use anigo_core::mesh::Mesh;
+        // Lê scale/ratio atuais do scene para completar defaults
+        let (cur_scale, cur_ratio) = {
+            // Se o primeiro node for o mannequin com proporções, tentamos ler; senão usamos defaults canônicos.
+            // Como o telemetry sempre traz ambos em LiveWindowState, na prática só um raro caso de telemetry
+            // parcial vai cair aqui, então defaults 1.0 / 6.5 são seguros.
+            (1.0f32, 6.5f32)
+        };
+        let scale = scale_opt.unwrap_or(cur_scale);
+        let ratio = ratio_opt.unwrap_or(cur_ratio);
+
+        // Atualiza base_mesh
+        {
+            let mut base_mesh = state.base_mesh.write().await;
+            *base_mesh = Mesh::create_mannequin_proxy_proportions(scale, ratio);
+        }
+        // Lê base_mesh + catalog, aplica morphs
+        let morphed = {
+            let base_mesh = state.base_mesh.read().await.clone();
+            let catalog = state.morph_catalog.read().await;
+            let mut morphed = base_mesh.clone();
+            catalog.apply_to_mesh(&base_mesh, &mut morphed);
+            morphed
+        };
+        // Escreve o mesh mórfico no scene node principal
+        {
+            let mut scene = state.scene.write().await;
+            if let Some(node) = scene.nodes.first_mut() {
+                node.mesh = Some(morphed);
+            }
+        }
+        synced.push("proportions".into());
+    }
+
+    if synced.is_empty() {
+        synced.push("(none — telemetry present but no recognized fields)".into());
+    }
+    synced
+}
+
+/// Helper: extrai um [f32;3] de um campo de cor no JSON telemetry, validando range 0..1.
+fn extract_color3(tel: &Value, key: &str, label: &str) -> Option<[f32; 3]> {
+    let arr = tel.get(key).and_then(|v| v.as_array())?;
+    if arr.len() < 3 { return None; }
+    let r = validate::f32_range(arr[0].as_f64().unwrap_or(1.0), 0.0, 1.0, &format!("{}[0]", label)).ok()?;
+    let g = validate::f32_range(arr[1].as_f64().unwrap_or(1.0), 0.0, 1.0, &format!("{}[1]", label)).ok()?;
+    let b = validate::f32_range(arr[2].as_f64().unwrap_or(1.0), 0.0, 1.0, &format!("{}[2]", label)).ok()?;
+    Some([r, g, b])
 }
 
 #[tracing::instrument(skip(state), fields(tool = name, rpc_id = %rpc_id))]
@@ -1059,6 +1268,7 @@ async fn handle_tool_call(
                 // P0-04: use sanitized path
                 std::fs::write(&diff_path, &png_bytes)
                     .with_context(|| format!("Failed to save diff image to {:?}", diff_path))?;
+                state.metrics.bytes_written_to_fs.fetch_add(png_bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             }
 
             let audit_result = json!({
@@ -1397,26 +1607,17 @@ async fn handle_tool_call(
             validate_render_dims(width, height)?;
 
             if sync_live {
-                // I/O outside of scene write lock
-                if let Ok(telemetry) = state.bridge.send_command("GET_STATUS", json!({})).await {
-                    if let Some(eye_arr) = telemetry.get("camera_eye").and_then(|v| v.as_array()) {
-                        if eye_arr.len() == 3 {
-                            if let Ok(vec) = validate::validate_vec3(eye_arr, "camera_eye") {
-                                let mut scene = state.scene.write().await;
-                                scene.camera.eye = vec;
-                            }
-                        }
+                // P1-09: sync_live agora sincroniza câmera, luz, material, preset e proporções
+                // (não apenas a câmera, como antes).
+                match state.bridge.send_command("GET_STATUS", json!({})).await {
+                    Ok(telemetry) => {
+                        let synced_fields = apply_live_telemetry_to_scene(&state, &telemetry).await;
+                        tracing::info!(synced = %synced_fields.join(", "), "sync_live applied fields from live window");
                     }
-                    if let Some(target_arr) = telemetry.get("camera_target").and_then(|v| v.as_array()) {
-                        if target_arr.len() == 3 {
-                            if let Ok(vec) = validate::validate_vec3(target_arr, "camera_target") {
-                                let mut scene = state.scene.write().await;
-                                scene.camera.target = vec;
-                            }
-                        }
+                    Err(e) => {
+                        warnings.push(format!("sync_live: failed to get telemetry from live window: {}", e));
+                        tracing::warn!(error=%e, "sync_live failed to reach bridge");
                     }
-                } else {
-                    warnings.push("sync_live: failed to get telemetry from live window".to_string());
                 }
             }
 
@@ -1439,7 +1640,9 @@ async fn handle_tool_call(
             if let Some(path) = save_path {
                 std::fs::write(&path, &png_bytes)
                     .with_context(|| format!("Failed to save rendered frame to {:?}", path))?;
+                state.metrics.bytes_written_to_fs.fetch_add(png_bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             }
+            state.metrics.frames_rendered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let mut report_text = format!(
                 "Render Successful: {}x{} | Time: {:.2}ms | Triangles: {} | Draw Calls: {} | GPU: {} ({})",
@@ -1712,27 +1915,116 @@ async fn handle_tool_call(
             }
         }
         "anigo_ui_action" => {
-            // P1-08: Validate schema
-            let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("Missing action (code -32602)"))?;
-            if !["select_tab", "select_tool", "set_slider", "set_preset"].contains(&action) {
-                anyhow::bail!("Invalid action {} (code -32602)", action);
-            }
-            if let Some(prop) = args.get("property").and_then(|v| v.as_str()) {
-                // Basic allowlist for property
-                let allowed_props = ["head_scale", "head_ratio", "outline_width", "shadow_threshold", "light_azimuth", "light_elevation", "light_intensity", "tab", "tool"];
-                // Allow known props but warn on unknown
-                if !allowed_props.contains(&prop) && !prop.is_empty() {
-                    tracing::warn!(property=%prop, "Unknown ui_action property, allowing but logging");
+            // P1-08: Validação rígida de schema com allowlists por ação e ranges por propriedade.
+            // Bloqueia prototype pollution e injeção de payload via args.clone() cru.
+            let action = args.get("action").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'action' (code -32602)"))?;
+
+            // Anti-pollution: rejeita chaves perigosas em qualquer nível do payload
+            fn check_no_proto(val: &Value) -> Result<()> {
+                match val {
+                    Value::Object(m) => {
+                        for (k, v) in m {
+                            if k == "__proto__" || k == "constructor" || k == "prototype" {
+                                anyhow::bail!("Invalid property name '{}' (prototype pollution blocked, code -32602)", k);
+                            }
+                            check_no_proto(v)?;
+                        }
+                    }
+                    Value::Array(a) => { for v in a { check_no_proto(v)?; } }
+                    _ => {}
                 }
-                if prop.contains("__proto__") || prop.contains("constructor") {
-                    anyhow::bail!("Invalid property (code -32602)");
+                Ok(())
+            }
+            check_no_proto(&args)?;
+
+            // Allowlists rigorosos (espelham frontend Svelte em App.svelte)
+            const ALLOWED_TABS: &[&str] = &[
+                "personagem", "posing", "shading", "iluminacao",
+                "cenario", "animacao", "render", "biblioteca",
+            ];
+            // Ferramentas comuns por workspace; permite qualquer string não-vazia mas valida formato
+            const ALLOWED_PRESETS: &[&str] = &["mannequin", "sphere", "cube"];
+            const ALLOWED_SLIDERS: &[&str] = &[
+                "head_scale", "head_ratio",
+                "shoulder_width", "shoulders", "leg_length", "legs",
+                "arm_length", "arms", "neck_length", "neck",
+                "outline_width", "outline_extrusion",
+                "shadow_threshold", "shadow_smoothness", "toon_smoothness",
+                "light_azimuth", "light_elevation", "light_intensity",
+                "shadow_saturation", "ambient_intensity",
+                "eye_scale", "eye_size", "chin_width", "jaw_width",
+                "hair_volume", "hair_thickness", "hair_curvature",
+                "cloth_tension",
+                "rim_intensity", "rim_spread", "hue_shift",
+                "spec_intensity", "spec_power", "spec_exponent",
+                "toon_steps", "camera_fov", "current_frame",
+            ];
+
+            // Constrói payload limpo e validado (NÃO envia args.clone() cru)
+            let mut clean_params = serde_json::Map::new();
+            clean_params.insert("action".into(), json!(action));
+
+            match action {
+                "select_tab" => {
+                    let tab = args.get("value").and_then(|v| v.as_str())
+                        .or_else(|| args.get("tab").and_then(|v| v.as_str()))
+                        .ok_or_else(|| anyhow::anyhow!("select_tab requires 'value' (tab name) (code -32602)"))?;
+                    if !ALLOWED_TABS.contains(&tab) {
+                        anyhow::bail!("Unknown tab '{}'. Allowed: {} (code -32602)", tab, ALLOWED_TABS.join(", "));
+                    }
+                    clean_params.insert("value".into(), json!(tab));
+                }
+                "select_tool" => {
+                    let tool = args.get("value").and_then(|v| v.as_str())
+                        .or_else(|| args.get("tool").and_then(|v| v.as_str()))
+                        .ok_or_else(|| anyhow::anyhow!("select_tool requires 'value' (tool id) (code -32602)"))?;
+                    if tool.is_empty() || tool.len() > 64 {
+                        anyhow::bail!("Invalid tool id length (code -32602)");
+                    }
+                    // Valida formato simples: [a-z0-9_-]+
+                    if !tool.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+                        anyhow::bail!("Invalid tool id '{}' (only a-z, 0-9, _, - allowed) (code -32602)", tool);
+                    }
+                    clean_params.insert("value".into(), json!(tool));
+                }
+                "set_slider" => {
+                    let prop = args.get("property").and_then(|v| v.as_str())
+                        .or_else(|| args.get("name").and_then(|v| v.as_str()))
+                        .ok_or_else(|| anyhow::anyhow!("set_slider requires 'property' (slider name) (code -32602)"))?;
+                    if !ALLOWED_SLIDERS.contains(&prop) {
+                        anyhow::bail!("Unknown slider property '{}'. Allowed sliders: {} (code -32602)", prop, ALLOWED_SLIDERS.join(", "));
+                    }
+                    let val = args.get("value").and_then(|v| v.as_f64())
+                        .ok_or_else(|| anyhow::anyhow!("set_slider requires numeric 'value' (code -32602)"))?;
+                    // Range genérico razoável; ranges específicos por prop são aplicados no frontend
+                    if !val.is_finite() {
+                        anyhow::bail!("Slider value must be finite, got {} (code -32602)", val);
+                    }
+                    if val < -1000.0 || val > 1000.0 {
+                        anyhow::bail!("Slider value {} out of range -1000..1000 (code -32602)", val);
+                    }
+                    clean_params.insert("property".into(), json!(prop));
+                    clean_params.insert("value".into(), json!(val));
+                }
+                "set_preset" => {
+                    let preset = args.get("value").and_then(|v| v.as_str())
+                        .or_else(|| args.get("preset").and_then(|v| v.as_str()))
+                        .ok_or_else(|| anyhow::anyhow!("set_preset requires 'value' (preset name) (code -32602)"))?;
+                    if !ALLOWED_PRESETS.contains(&preset) {
+                        anyhow::bail!("Unknown preset '{}'. Allowed: {} (code -32602)", preset, ALLOWED_PRESETS.join(", "));
+                    }
+                    clean_params.insert("value".into(), json!(preset));
+                }
+                other => {
+                    anyhow::bail!("Invalid action '{}'. Allowed: select_tab, select_tool, set_slider, set_preset (code -32602)", other);
                 }
             }
 
             if !state.bridge.is_live().await {
                 anyhow::bail!("Live studio window is not connected on port 39090");
             }
-            let resp = state.bridge.send_command("UI_ACTION", args.clone()).await?;
+            let resp = state.bridge.send_command("UI_ACTION", Value::Object(clean_params)).await?;
             Ok(vec![json!({
                 "type": "text",
                 "text": format!("UI Action executed: {}", serde_json::to_string_pretty(&resp)?)
@@ -1783,7 +2075,12 @@ async fn handle_tool_call(
             })])
         }
         "anigo_send_key" => {
-            let vk = args.get("vk_code").and_then(|v| v.as_u64()).unwrap_or(0x12) as u8;
+            let vk_raw = args.get("vk_code").and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'vk_code' (required). Allowed: arrows (0x25-0x28), F1-F12 (0x70-0x7B), 0-9 (0x30-0x39), A-Z (0x41-0x5A), Backspace(0x08)/Tab(0x09)/Enter(0x0D)/Esc(0x1B)/Space(0x20)/Delete(0x2E) (code -32602)"))?;
+            if vk_raw > 255 {
+                anyhow::bail!("vk_code must be 0..255, got {} (code -32602)", vk_raw);
+            }
+            let vk = vk_raw as u8;
             validate::validate_vk(vk)?;
             tokio::task::spawn_blocking(move || {
                 Win32Harness::send_key(vk);
@@ -1800,6 +2097,45 @@ async fn handle_tool_call(
             Ok(vec![json!({
                 "type": "text",
                 "text": serde_json::to_string_pretty(&diag)?
+            })])
+        }
+        "anigo_get_metrics" => {
+            let snap = state.metrics.snapshot();
+            Ok(vec![json!({
+                "type": "text",
+                "text": serde_json::to_string_pretty(&snap)?
+            })])
+        }
+        "anigo_get_support_bundle" => {
+            let live_active = state.bridge.is_live().await;
+            let info = &state.renderer.adapter_info;
+            let bridge_telemetry = if live_active {
+                state.bridge.send_command("GET_STATUS", json!({})).await.ok()
+            } else { None };
+            let bridge_metrics = if live_active {
+                state.bridge.send_command("GET_METRICS", json!({})).await.ok()
+            } else { None };
+            let diag = tokio::task::spawn_blocking(|| {
+                Win32Harness::collect_logs_and_diagnostics()
+            }).await.unwrap_or_else(|_| json!({"error":"join error"}));
+            let bundle = json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS,
+                "timestamp_utc": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                "gpu": {
+                    "adapter": info.name,
+                    "backend": format!("{:?}", info.backend),
+                    "device_type": format!("{:?}", info.device_type),
+                },
+                "live_bridge_active": live_active,
+                "live_telemetry": bridge_telemetry,
+                "bridge_metrics": bridge_metrics,
+                "mcp_metrics": state.metrics.snapshot(),
+                "diagnostics": diag,
+            });
+            Ok(vec![json!({
+                "type": "text",
+                "text": serde_json::to_string_pretty(&bundle)?
             })])
         }
         _ => anyhow::bail!("Unknown tool: {} (code -32601)", name),

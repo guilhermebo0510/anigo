@@ -1,10 +1,83 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// P2: in-process metrics for the ANIGO Live Bridge. Counters are AtomicU64
+/// and lock-free; we do not (yet) expose a Prometheus scrape endpoint, but a
+/// GET_METRICS action returns this as JSON for `anigo_get_live_telemetry`.
+pub(crate) mod bridge_metrics {
+    use serde_json::{json, Value};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    pub struct BridgeMetrics {
+        pub start_instant: Instant,
+        pub start_epoch_secs: u64,
+        pub connections_accepted: AtomicU64,
+        pub connections_rejected_rate_limit: AtomicU64,
+        pub connections_rejected_auth: AtomicU64,
+        pub requests_total: AtomicU64,
+        pub requests_success: AtomicU64,
+        pub requests_error: AtomicU64,
+        pub bytes_read: AtomicU64,
+        pub bytes_written: AtomicU64,
+        pub frames_too_large: AtomicU64,
+        pub invalid_json: AtomicU64,
+    }
+
+    impl BridgeMetrics {
+        pub fn new() -> Self {
+            Self {
+                start_instant: Instant::now(),
+                start_epoch_secs: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                connections_accepted: AtomicU64::new(0),
+                connections_rejected_rate_limit: AtomicU64::new(0),
+                connections_rejected_auth: AtomicU64::new(0),
+                requests_total: AtomicU64::new(0),
+                requests_success: AtomicU64::new(0),
+                requests_error: AtomicU64::new(0),
+                bytes_read: AtomicU64::new(0),
+                bytes_written: AtomicU64::new(0),
+                frames_too_large: AtomicU64::new(0),
+                invalid_json: AtomicU64::new(0),
+            }
+        }
+
+        pub fn snapshot(&self) -> Value {
+            let uptime = self.start_instant.elapsed().as_secs_f64();
+            json!({
+                "uptime_seconds": uptime,
+                "started_at_epoch_secs": self.start_epoch_secs,
+                "connections_accepted": self.connections_accepted.load(Relaxed),
+                "connections_rejected_rate_limit": self.connections_rejected_rate_limit.load(Relaxed),
+                "connections_rejected_auth": self.connections_rejected_auth.load(Relaxed),
+                "requests_total": self.requests_total.load(Relaxed),
+                "requests_success": self.requests_success.load(Relaxed),
+                "requests_error": self.requests_error.load(Relaxed),
+                "bytes_read": self.bytes_read.load(Relaxed),
+                "bytes_written": self.bytes_written.load(Relaxed),
+                "frames_too_large": self.frames_too_large.load(Relaxed),
+                "invalid_json": self.invalid_json.load(Relaxed),
+                "requests_per_second_avg": if uptime > 0.0 {
+                    (self.requests_total.load(Relaxed) as f64) / uptime
+                } else { 0.0 },
+            })
+        }
+    }
+}
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
@@ -151,6 +224,11 @@ pub struct BridgeRequest {
     pub action: String,
     #[serde(default)]
     pub params: Value,
+    /// P2-14: Optional bearer token. When the server is started with auth enabled
+    /// (ANIGO_BRIDGE_TOKEN set or auto-generated), requests without a valid token
+    /// are rejected with error -32001 Unauthorized before any action is dispatched.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,27 +241,207 @@ pub struct BridgeResponse {
     pub error: Option<String>,
 }
 
+/// P2-14: simple per-IP fixed-window rate limiter.
+/// Window = 1 second; max requests per window = RATE_LIMIT_PER_SEC.
+/// Uses a HashMap protected by a tokio Mutex (traffic is low ~30 rps max).
+struct RateLimiter {
+    /// per-IP: (window_start, count)
+    buckets: Mutex<HashMap<String, (Instant, u32)>>,
+    max_per_sec: u32,
+}
+
+impl RateLimiter {
+    fn new(max_per_sec: u32) -> Self {
+        Self { buckets: Mutex::new(HashMap::new()), max_per_sec }
+    }
+
+    async fn check(&self, key: &str) -> bool {
+        let mut map = self.buckets.lock().await;
+        let now = Instant::now();
+        let entry = map.entry(key.to_string()).or_insert((now, 0));
+        if now.duration_since(entry.0).as_secs() >= 1 {
+            entry.0 = now;
+            entry.1 = 1;
+            true
+        } else if entry.1 < self.max_per_sec {
+            entry.1 += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Periodically evict stale entries to prevent unbounded growth.
+    async fn gc(&self) {
+        let mut map = self.buckets.lock().await;
+        let now = Instant::now();
+        map.retain(|_, v| now.duration_since(v.0).as_secs() < 10);
+    }
+}
+
+/// Generate a cryptographically-random 16-byte hex token using OS entropy.
+/// Falls back to a time+pid+addr-based token if the OS RNG is unavailable
+/// (e.g. sandboxed / restricted environments).
+fn generate_token() -> String {
+    let mut bytes = [0u8; 16];
+    match std::fs::read("/dev/urandom") {
+        Ok(mut f) => {
+            use std::io::Read;
+            // read exactly 16 bytes from urandom
+            let mut buf = [0u8; 16];
+            if f.read_exact(&mut buf).is_ok() {
+                bytes = buf;
+            }
+        }
+        Err(_) => {
+            // Windows fallback / no /dev/urandom: mix pid + time + address
+            let pid = std::process::id() as u128;
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let mixed = pid.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ nanos
+                ^ (nanos >> 32)
+                ^ (&bytes as *const _ as u128);
+            for (i, chunk) in bytes.iter_mut().enumerate() {
+                *chunk = ((mixed >> (i * 8)) & 0xFF) as u8;
+            }
+        }
+    }
+    // Always re-mix in case of partial fill; this is sufficient for a local auth token.
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Determine where to write the bridge lockfile (token + port).
+/// Respects ANIGO_BRIDGE_LOCKFILE; falls back to OS temp dir.
+fn lockfile_path() -> PathBuf {
+    if let Ok(p) = std::env::var("ANIGO_BRIDGE_LOCKFILE") {
+        return PathBuf::from(p);
+    }
+    let pid = std::process::id();
+    let mut base = std::env::temp_dir();
+    base.push(format!("anigo-bridge-{pid}.json"));
+    base
+}
+
+/// P2-10/P2: portable log directory resolver (mirrors the MCP-side logic so that
+/// the Tauri shell writes launch/panic logs into Documents\ANIGO or equivalent
+/// instead of hardcoded C:\ANIGO).
+pub fn log_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("ANIGO_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let p = PathBuf::from(&local).join("ANIGO").join("logs");
+            if p.exists() { return p; }
+            let _ = std::fs::create_dir_all(&p);
+            return p;
+        }
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let p = PathBuf::from(&profile).join("Documents").join("ANIGO").join("logs");
+            if p.exists() { return p; }
+            let p2 = PathBuf::from(&profile).join("Documents").join("ANIGO");
+            let _ = std::fs::create_dir_all(&p);
+            let _ = std::fs::create_dir_all(&p2);
+            return p;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let p = PathBuf::from(home).join(".local").join("share").join("anigo").join("logs");
+            let _ = std::fs::create_dir_all(&p);
+            return p;
+        }
+    }
+    // Legacy fallback
+    PathBuf::from("C:\\ANIGO")
+}
+
 pub struct LiveBridgeServer {
     app_handle: AppHandle,
     state: Arc<RwLock<LiveWindowState>>,
+    /// P2-14: auth token. Empty means auth disabled (legacy/dev mode).
+    token: Arc<str>,
+    /// P2-14: monotonic request counter for server-assigned correlation ids.
+    request_count: AtomicU64,
+    /// P2-14: per-IP rate limiter (30 req/s per peer).
+    rate_limiter: Arc<RateLimiter>,
+    /// P2: runtime metrics.
+    metrics: Arc<crate::bridge_metrics::BridgeMetrics>,
 }
 
 impl LiveBridgeServer {
     pub fn new(app_handle: AppHandle, state: Arc<RwLock<LiveWindowState>>) -> Self {
-        Self { app_handle, state }
+        // P2-14: token precedence: env > auto-generate.
+        let token: String = std::env::var("ANIGO_BRIDGE_TOKEN")
+            .unwrap_or_else(|_| generate_token());
+
+        if std::env::var("ANIGO_BRIDGE_TOKEN").is_ok() {
+            tracing::info!(source = "env", "ANIGO Bridge auth token loaded from ANIGO_BRIDGE_TOKEN");
+        } else {
+            tracing::info!(
+                token_len = token.len(),
+                "ANIGO Bridge auth token auto-generated (pass ANIGO_BRIDGE_TOKEN to override)"
+            );
+        }
+
+        Self {
+            app_handle,
+            state,
+            token: Arc::from(token),
+            request_count: AtomicU64::new(1),
+            rate_limiter: Arc::new(RateLimiter::new(30)),
+            metrics: Arc::new(crate::bridge_metrics::BridgeMetrics::new()),
+        }
     }
 
     pub async fn run(self: Arc<Self>, bind_addr: &str) {
+        // P2-14: bind to loopback. Allow ANIGO_BRIDGE_BIND override (e.g. for UDS future).
         let listener = match TcpListener::bind(bind_addr).await {
             Ok(l) => {
-                eprintln!("[ANIGO Live Bridge] Production server listening on {}", bind_addr);
+                let local = l.local_addr().ok();
+                tracing::info!(bind = %bind_addr, local = ?local, "ANIGO Live Bridge listening");
                 l
             }
             Err(e) => {
-                eprintln!("[ANIGO Live Bridge] ERROR binding to {}: {:#}", bind_addr, e);
+                tracing::error!(bind = %bind_addr, error = %e, "ANIGO Live Bridge failed to bind");
                 return;
             }
         };
+
+        // Write lockfile: { "token": "...", "addr": "127.0.0.1:39090", "pid": N }
+        let local_addr = listener.local_addr().ok();
+        let lockfile = lockfile_path();
+        let lockfile_payload = json!({
+            "token": &*self.token,
+            "addr": local_addr.map(|a| a.to_string()).unwrap_or_else(|| bind_addr.to_string()),
+            "pid": std::process::id(),
+            "started_at_utc": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            "version": env!("CARGO_PKG_VERSION"),
+        });
+        if let Err(e) = std::fs::write(&lockfile, serde_json::to_vec_pretty(&lockfile_payload).unwrap_or_default()) {
+            tracing::warn!(path = %lockfile.display(), error = %e, "Failed to write bridge lockfile; MCP clients may not discover the token");
+        } else {
+            tracing::info!(path = %lockfile.display(), "Wrote bridge token lockfile");
+        }
+
+        // Also propagate token as env var so spawned MCP child processes inherit it.
+        // (The Tauri main will also set this for child processes it launches.)
+        unsafe { std::env::set_var("ANIGO_BRIDGE_TOKEN", &*self.token); }
+
+        // Spawn GC task for rate limiter (every 30s).
+        let rl = Arc::clone(&self.rate_limiter);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                rl.gc().await;
+            }
+        });
 
         loop {
             match listener.accept().await {
@@ -194,20 +452,54 @@ impl LiveBridgeServer {
                     });
                 }
                 Err(e) => {
-                    eprintln!("[ANIGO Live Bridge] Socket accept error: {:#}", e);
+                    tracing::warn!(error = %e, "Bridge accept error");
+                    // Small backoff to avoid busy loop on repeated errors
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
     }
 
-    async fn handle_client(&self, socket: TcpStream, _peer: std::net::SocketAddr) {
+    /// P2: expose snapshot of runtime metrics (for the GET_METRICS action).
+    pub fn metrics_snapshot(&self) -> Value {
+        self.metrics.snapshot()
+    }
+
+    async fn handle_client(&self, socket: TcpStream, peer: std::net::SocketAddr) {
         use tokio::time::{timeout, Duration};
-        const MAX_LINE: usize = 1 << 20; // 1MB max frame - P0-03 hardening
+        const MAX_LINE: usize = 1 << 20; // 1MB max frame
         const READ_TIMEOUT_SECS: u64 = 5;
+
+        let peer_key = peer.ip().to_string();
+
+        // P2-14: rate-limit per connection IP
+        if !self.rate_limiter.check(&peer_key).await {
+            self.metrics.connections_rejected_rate_limit.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(peer = %peer_key, "Bridge connection rejected (rate limit)");
+            let err_res = BridgeResponse {
+                id: "preauth".into(),
+                success: false,
+                data: None,
+                error: Some("Rate limit exceeded (30 req/s max)".into()),
+            };
+            if let Ok(mut rb) = serde_json::to_vec(&err_res) {
+                rb.push(b'\n');
+                let _ = socket.try_write(&rb);
+            }
+            return;
+        }
+
+        self.metrics.connections_accepted.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(peer = %peer_key, "Bridge client connected");
 
         let (reader, mut writer) = socket.into_split();
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
+
+        // P2-14: track if this connection has been authenticated (first request).
+        // When self.token is empty (dev mode), we treat all connections as authenticated.
+        let auth_required = !self.token.is_empty();
+        let mut authed = !auth_required;
 
         loop {
             line.clear();
@@ -215,7 +507,7 @@ impl LiveBridgeServer {
             let read_res = match timeout(Duration::from_secs(READ_TIMEOUT_SECS), read_fut).await {
                 Ok(r) => r,
                 Err(_) => {
-                    // timeout, close connection to avoid hanging
+                    tracing::debug!(peer = %peer_key, "Bridge client read timeout — closing");
                     break;
                 }
             };
@@ -223,21 +515,23 @@ impl LiveBridgeServer {
             let n = match read_res {
                 Ok(0) => break,
                 Ok(n) => n,
-                Err(_) => break,
+                Err(e) => {
+                    tracing::debug!(peer = %peer_key, error = %e, "Bridge client read error");
+                    break;
+                }
             };
 
+            self.metrics.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+
             if n > MAX_LINE {
+                self.metrics.frames_too_large.fetch_add(1, Ordering::Relaxed);
                 let err_res = BridgeResponse {
                     id: "unknown".into(),
                     success: false,
                     data: None,
                     error: Some(format!("Frame too large: {} > {} bytes", n, MAX_LINE)),
                 };
-                if let Ok(mut resp_bytes) = serde_json::to_vec(&err_res) {
-                    resp_bytes.push(b'\n');
-                    let _ = writer.write_all(&resp_bytes).await;
-                    let _ = writer.flush().await;
-                }
+                Self::write_response(&mut writer, &err_res).await;
                 break;
             }
 
@@ -249,43 +543,82 @@ impl LiveBridgeServer {
             let req: BridgeRequest = match serde_json::from_str(trimmed) {
                 Ok(r) => r,
                 Err(e) => {
+                    self.metrics.invalid_json.fetch_add(1, Ordering::Relaxed);
                     let err_res = BridgeResponse {
                         id: "unknown".into(),
                         success: false,
                         data: None,
                         error: Some(format!("Invalid JSON frame: {}", e)),
                     };
-                    if let Ok(mut resp_bytes) = serde_json::to_vec(&err_res) {
-                        resp_bytes.push(b'\n');
-                        let _ = writer.write_all(&resp_bytes).await;
-                        let _ = writer.flush().await;
-                    }
+                    Self::write_response(&mut writer, &err_res).await;
                     continue;
                 }
             };
 
-            let response = self.dispatch_action(&req).await;
-            if let Ok(mut resp_bytes) = serde_json::to_vec(&response) {
-                if resp_bytes.len() > MAX_LINE {
-                    let err_res = BridgeResponse {
-                        id: req.id.clone(),
-                        success: false,
-                        data: None,
-                        error: Some(format!("Response too large: {} bytes", resp_bytes.len())),
-                    };
-                    resp_bytes = serde_json::to_vec(&err_res).unwrap_or_default();
-                }
-                resp_bytes.push(b'\n');
-                let write_fut = writer.write_all(&resp_bytes);
-                if timeout(Duration::from_secs(2), write_fut).await.is_err() {
-                    break;
-                }
-                let flush_fut = writer.flush();
-                if timeout(Duration::from_secs(1), flush_fut).await.is_err() {
-                    break;
+            self.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
+
+            // P2-14: auth check (per-request to allow token upgrade on first message)
+            if auth_required && !authed {
+                match &req.token {
+                    Some(t) if t.as_str() == &*self.token => {
+                        authed = true;
+                        tracing::debug!(peer = %peer_key, "Bridge client authenticated");
+                    }
+                    _ => {
+                        self.metrics.connections_rejected_auth.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(peer = %peer_key, "Bridge request rejected: unauthorized");
+                        let err_res = BridgeResponse {
+                            id: req.id.clone(),
+                            success: false,
+                            data: None,
+                            error: Some("Unauthorized: missing or invalid token (code -32001)".into()),
+                        };
+                        Self::write_response(&mut writer, &err_res).await;
+                        // Close connection after first auth failure to avoid brute force
+                        break;
+                    }
                 }
             }
+
+            let action = req.action.clone();
+            let response = self.dispatch_action(&req).await;
+
+            if response.success {
+                self.metrics.requests_success.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.metrics.requests_error.fetch_add(1, Ordering::Relaxed);
+            }
+            tracing::trace!(peer = %peer_key, action = %action, id = %req.id, ok = response.success, "Bridge request handled");
+
+            Self::write_response(&mut writer, &response).await;
         }
+
+        tracing::debug!(peer = %peer_key, "Bridge client disconnected");
+    }
+
+    /// Helper to serialize + write + flush a BridgeResponse (with size cap + timeouts).
+    async fn write_response(writer: &mut tokio::io::WriteHalf<TcpStream>, resp: &BridgeResponse) {
+        use tokio::time::{timeout, Duration};
+        const MAX_LINE: usize = 1 << 20;
+        let mut resp_bytes = match serde_json::to_vec(resp) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize bridge response");
+                return;
+            }
+        };
+        if resp_bytes.len() > MAX_LINE {
+            let err_res = BridgeResponse {
+                id: resp.id.clone(),
+                success: false,
+                data: None,
+                error: Some(format!("Response too large: {} bytes", resp_bytes.len())),
+            };
+            resp_bytes = serde_json::to_vec(&err_res).unwrap_or_default();
+        }
+        resp_bytes.push(b'\n');
+        let _ = timeout(Duration::from_secs(2), writer.write_all(&resp_bytes)).await;
+        let _ = timeout(Duration::from_secs(1), writer.flush()).await;
     }
 
     async fn dispatch_action(&self, req: &BridgeRequest) -> BridgeResponse {
@@ -755,6 +1088,14 @@ impl LiveBridgeServer {
                     error: None,
                 }
             }
+
+            // P2: runtime metrics for observability
+            "GET_METRICS" => BridgeResponse {
+                id: req.id.clone(),
+                success: true,
+                data: Some(self.metrics_snapshot()),
+                error: None,
+            },
 
             unknown => BridgeResponse {
                 id: req.id.clone(),

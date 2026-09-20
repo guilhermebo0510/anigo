@@ -56,3 +56,48 @@ pub fn clamp_i32(v: i64, min: i32, max: i32, name: &str) -> Result<i32> {
     }
     Ok(v as i32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f32_finite_rejects_nan() {
+        assert!(f32_finite(f64::NAN, "x").is_err());
+        assert!(f32_finite(f64::INFINITY, "x").is_err());
+        assert!(f32_finite(f64::NEG_INFINITY, "x").is_err());
+        assert!(f32_finite(0.0, "x").is_ok());
+    }
+
+    #[test]
+    fn f32_range_rejects_out_of_bounds() {
+        assert!(f32_range(0.5, 0.0, 1.0, "v").is_ok());
+        assert!(f32_range(-0.001, 0.0, 1.0, "v").is_err());
+        assert!(f32_range(1.001, 0.0, 1.0, "v").is_err());
+    }
+
+    #[test]
+    fn validate_vk_allows_arrows_blocks_win() {
+        assert!(validate_vk(0x26).is_ok()); // up arrow
+        assert!(validate_vk(0x41).is_ok()); // 'A'
+        assert!(validate_vk(0x0D).is_ok()); // Enter
+        assert!(validate_vk(0x5B).is_err()); // Win key
+        assert!(validate_vk(0x12).is_err()); // Alt
+        assert!(validate_vk(0x11).is_err()); // Ctrl
+    }
+
+    #[test]
+    fn validate_vec3_accepts_triplets() {
+        let v = vec![serde_json::json!(1.0), serde_json::json!(2.0), serde_json::json!(3.0)];
+        assert!(validate_vec3(&v, "p").is_ok());
+        let v2 = vec![serde_json::json!(1.0), serde_json::json!(2.0)];
+        assert!(validate_vec3(&v2, "p").is_err());
+    }
+
+    #[test]
+    fn clamp_i32_enforces_range() {
+        assert!(clamp_i32(50, 0, 100, "x").is_ok());
+        assert!(clamp_i32(-1, 0, 100, "x").is_err());
+        assert!(clamp_i32(101, 0, 100, "x").is_err());
+    }
+}

@@ -12,6 +12,8 @@ serde_json = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 anigo-core = { workspace = true }
 anigo-renderer = { workspace = true }
 pollster = { workspace = true }

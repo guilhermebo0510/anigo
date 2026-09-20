@@ -297,3 +297,71 @@ pub fn validate_tolerance_channel_diff(v: i32) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_dims_rejects_too_small() {
+        assert!(validate_render_dims(32, 32).is_err());
+        assert!(validate_render_dims(64, 64).is_ok());
+    }
+
+    #[test]
+    fn render_dims_rejects_too_large() {
+        assert!(validate_render_dims(99999, 1).is_err());
+        assert!(validate_render_dims(4096, 4096).is_ok());
+        assert!(validate_render_dims(4097, 4096).is_err());
+    }
+
+    #[test]
+    fn render_dims_rejects_oversized_pixel_count() {
+        // 4096 x 4096 = 16 MP, ok. 5000 x 5000 = 25 MP, rejeitado.
+        assert!(validate_render_dims(5000, 5000).is_err());
+    }
+
+    #[test]
+    fn tolerance_channel_diff_range() {
+        assert!(validate_tolerance_channel_diff(0).is_ok());
+        assert!(validate_tolerance_channel_diff(255).is_ok());
+        assert!(validate_tolerance_channel_diff(-1).is_err());
+        assert!(validate_tolerance_channel_diff(256).is_err());
+    }
+
+    #[test]
+    fn sanitize_read_path_blocks_etc_passwd() {
+        assert!(sanitize_read_path("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn sanitize_read_path_blocks_id_rsa() {
+        assert!(sanitize_read_path("/home/user/.ssh/id_rsa").is_err());
+    }
+
+    #[test]
+    fn sanitize_read_path_rejects_traversal() {
+        assert!(sanitize_read_path("../../etc/passwd").is_err());
+        assert!(sanitize_save_path("../../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn sanitize_read_path_rejects_null_byte() {
+        assert!(sanitize_read_path("foo\0bar.png").is_err());
+    }
+
+    #[test]
+    fn contains_parent_dir_detects_dotdot() {
+        assert!(contains_parent_dir(Path::new("../etc")));
+        assert!(!contains_parent_dir(Path::new("baselines/a.png")));
+    }
+
+    #[test]
+    fn write_killswitch() {
+        // Ensure that when ANIGO_MCP_ALLOW_FS_WRITE=0, writes are rejected.
+        // We set the var, call, then unset it.
+        unsafe { std::env::set_var("ANIGO_MCP_ALLOW_FS_WRITE", "0"); }
+        assert!(sanitize_save_path("tmp/out.png").is_err());
+        unsafe { std::env::remove_var("ANIGO_MCP_ALLOW_FS_WRITE"); }
+    }
+}
