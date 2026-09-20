@@ -276,6 +276,8 @@
     }
   }
 
+  // P2-15 sync html lang with i18n
+  $effect(() => { try { document.documentElement.lang = getLanguage(); } catch {} });
   function handleCharacterPreset(preset: CharacterPreset) {
     activeCharacterPreset = preset.id;
     currentPreset = "mannequin";

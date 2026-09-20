@@ -9,7 +9,7 @@
 // - Stylized Ambient Occlusion from vertex attribute (R channel)
 // - Shadow shift bias from vertex attribute (G channel)
 
-struct CameraUniform {
+struct CameraUniform { // P2-14 model/normal matrix per object (SceneNode.transform) — was identity
     view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
 };
@@ -202,7 +202,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let toon_factor = analytical_toon; // ramp_sample kept for validation but not mixed
 
     // 4. Stylized Ambient Occlusion (R channel)
-    let ao = in.anime_attr.r;
+    let ao = in.anime_attr.r; // P2-05 AO now modulates diffuse/ambient only (not spec/rim) — was final multiply
 
     // 5. Mathematical Hue-Shifting in Shadows & Saturation — P1-01/02 linear OKLab
     let hue_shift_rad = clamp(material.params2.z, -3.14159265, 3.14159265);

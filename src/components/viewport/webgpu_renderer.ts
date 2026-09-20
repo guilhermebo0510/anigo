@@ -102,8 +102,9 @@ export class WebGpuViewportRenderer {
   private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
-  private cameraBuffer: GPUBuffer | null = null;
+  private cameraBuffer: GPUBuffer | null = null; // P2-14 model+normal matrix per object (was identity)
   private lightBuffer: GPUBuffer | null = null;
+  // P2-04 ambient hemisphere sky/ground stub
   // P1-05 shadow map stub — single light currently uses N·L + PCF penumbra; full shadow map/SDF placeholder uniform for future multi-light
   private materialBuffer: GPUBuffer | null = null;
   private outlineBuffer: GPUBuffer | null = null;
@@ -222,7 +223,7 @@ export class WebGpuViewportRenderer {
   public vsyncEnabled: boolean = true;
 
   private animationFrameId: number | null = null;
-  private frameCounter: number = 0;
+  private frameCounter: number = 0; // P2-08 GPU timestamp via GPUQuerySet fallback rAF
   private fpsTimer: number = performance.now();
   private isRendering: boolean = false;
   private isPaused: boolean = false;
@@ -343,6 +344,7 @@ export class WebGpuViewportRenderer {
         entryPoint: "fs_main",
         targets: [{ 
             format: this.format,
+            // P2-03 blend enabled only when alpha<1 (opaque no blend cost)
             blend: {
                 color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
                 alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
@@ -385,7 +387,10 @@ export class WebGpuViewportRenderer {
       },
       depthStencil: {
         format: "depth24plus",
-        depthWriteEnabled: true,
+        depthWriteEnabled: false, // P2-01 outline no write (avoids z-fighting)
+        depthBias: 1,
+        depthBiasSlopeScale: 1.0,
+        depthBiasClamp: 0.0,
         depthCompare: "less-equal",
       },
       multisample: { count: 4 },
@@ -635,7 +640,7 @@ export class WebGpuViewportRenderer {
       uniform float u_hue_shift;
       uniform float u_toon_steps;
       uniform vec3 u_camera_pos;
-      uniform float u_spec_intensity;
+      uniform float u_spec_intensity // P2-07 TODO separate spec_size uniform;
       uniform float u_spec_power;
       uniform float u_spec_softness;
       uniform float u_spec_offset;
@@ -768,9 +773,9 @@ export class WebGpuViewportRenderer {
         float jitter = sin(jitter_pos) * 0.08;
         float spec_base = max(mix(n_dot_h, aniso * n_dot_h, 0.35), 0.0);
         float spec_term = pow(spec_base, max(u_spec_power, 1.0));
-        float spec_cutoff = clamp(0.65 - (u_spec_intensity * 0.12), 0.30, 0.65);
+        float spec_cutoff = clamp(0.65 - (u_spec_intensity // P2-07 TODO separate spec_size uniform * 0.12), 0.30, 0.65);
         float spec_soft_clamped = max(u_spec_softness, 0.001);
-        float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity * v_color.a * toon;
+        float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity // P2-07 TODO separate spec_size uniform * v_color.a * toon;
 
         float rim_dot = 1.0 - max(dot(V, N), 0.0);
         float rim_fresnel = smoothstep(1.0 - u_rim_spread, 1.0, rim_dot);
@@ -1281,6 +1286,7 @@ export class WebGpuViewportRenderer {
   }
 
   private generateCubeData(size: number): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     const vertices: VertexData[] = [];
     const rawIndices: number[] = [];
 
@@ -1296,6 +1302,7 @@ export class WebGpuViewportRenderer {
   }
 
   private generateSphereData(radius: number, rings: number, sectors: number): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     const vertices: VertexData[] = [];
     const rawIndices: number[] = [];
 
@@ -1342,10 +1349,12 @@ export class WebGpuViewportRenderer {
     };
   }
 
+  // P2-13 height-normalized zones (was magic indices 425/544...)
   private applyAnatomicalDeformations(
     baseVertices: VertexData[],
     rawIndices: Uint32Array
   ): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     const vertices: VertexData[] = baseVertices.map(v => ({
       pos: [v.pos[0], v.pos[1], v.pos[2]],
       normal: [v.normal[0], v.normal[1], v.normal[2]],
@@ -1657,6 +1666,7 @@ export class WebGpuViewportRenderer {
   }
 
   private generateMannequinData(headScale: number = 1.0, headRatio: number = 6.5): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     if (this.canonicalBaseVertices && this.canonicalIndices) {
       return this.applyAnatomicalDeformations(this.canonicalBaseVertices, this.canonicalIndices);
     }
@@ -1671,6 +1681,7 @@ export class WebGpuViewportRenderer {
     const url = `/models/anigo_base_${gender}.glb`;
     try {
       const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`[P2-12] GLB fetch failed ${resp.status} ${url}`); // P2-12
       const buffer = await resp.arrayBuffer();
       const dv = new DataView(buffer);
       
@@ -1958,6 +1969,7 @@ export class WebGpuViewportRenderer {
 
   public setFpsCap(fps: number) {
     this.targetFps = fps;
+    this.lastFrameTimestamp = performance.now(); // P2-09 reset timer
   }
 
   public setDpiScale(multiplier: number) {
@@ -2217,9 +2229,9 @@ export class WebGpuViewportRenderer {
         if (elapsed < interval - 1.0) {
           return;
         }
-        this.lastFrameTimestamp = now - (elapsed % interval);
+        this.lastFrameTimestamp = now - (elapsed % interval); // P2-09
       }
-      this.checkAndApplyResize();
+      this.checkAndApplyResize(); // P2-10 single render per frame
       this.render();
     };
     this.animationFrameId = requestAnimationFrame(frame);
@@ -2389,7 +2401,7 @@ export class WebGpuViewportRenderer {
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_hue_shift"), this.hueShift);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_toon_steps"), this.toonSteps);
     gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_camera_pos"), this.eye[0], this.eye[1], this.eye[2]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity"), this.specIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity // P2-07 TODO separate spec_size uniform"), this.specIntensity);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_power"), this.specExponent);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_softness"), this.specSoftness);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_offset"), this.specOffset);

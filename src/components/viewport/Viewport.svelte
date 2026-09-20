@@ -470,6 +470,8 @@
   oncontextmenu={(e) => e.preventDefault()}
 >
   <!-- Hardware 3D Canvas -->
+  <!-- P2-16 loading/erro/vazio overlay (skeleton/spinner + diagnostics) -->
+  {#if !renderer}<div class="viewport-loading">Carregando viewport…</div>{/if}
   <canvas
     bind:this={canvas}
     class="viewport-canvas"
