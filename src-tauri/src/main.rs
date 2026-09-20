@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::{Mutex, RwLock};
 
-use anigo_core::mesh::Mesh;
+use anigo_core::mesh::{BaseGender, Mesh};
 use anigo_core::scene::{Scene, SceneNode};
 use anigo_renderer::HeadlessRenderer;
 use bridge::{LiveBridgeServer, LiveWindowState};
@@ -107,10 +107,12 @@ async fn load_mesh_preset(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
     let mut state = state.lock().await;
+    // P0-05: use canonical base (was proxy box causing export≠viewport MSE)
     let mesh = match preset.as_str() {
         "sphere" => Mesh::create_uv_sphere(0.8, 32, 64),
         "cube" => Mesh::create_cube(1.0),
-        _ => Mesh::create_mannequin_proxy(),
+        "female" => Mesh::create_canonical_base(BaseGender::Female),
+        _ => Mesh::create_canonical_base(BaseGender::Male),
     };
 
     let current_mat = state.scene.nodes.first()
@@ -132,6 +134,7 @@ async fn set_light_params(
     color: Option<[f32; 3]>,
     shadow_color: Option<[f32; 3]>,
     ambient_intensity: Option<f32>,
+    shadow_saturation: Option<f32>,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
@@ -146,6 +149,9 @@ async fn set_light_params(
     }
     if let Some(ai) = ambient_intensity {
         state.scene.light.ambient_intensity = ai;
+    }
+    if let Some(ss) = shadow_saturation {
+        state.scene.light.shadow_saturation = ss;
     }
     Ok(())
 }
@@ -164,6 +170,14 @@ async fn set_material_toon_params(
     shade_color: Option<[f32; 4]>,
     outline_width: Option<f32>,
     outline_color: Option<[f32; 4]>,
+    specular_color: Option<[f32; 4]>,
+    specular_softness: Option<f32>,
+    specular_offset: Option<f32>,
+    rim_color: Option<[f32; 4]>,
+    outline_opacity: Option<f32>,
+    outline_smoothness: Option<f32>,
+    outline_depth_bias: Option<f32>,
+    shadow_saturation: Option<f32>,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
@@ -184,6 +198,15 @@ async fn set_material_toon_params(
             if let Some(v) = shade_color { mat.shade_color = v; }
             if let Some(v) = outline_width { mat.outline_width = v; }
             if let Some(v) = outline_color { mat.outline_color = v; }
+            if let Some(v) = specular_color { mat.specular_color = v; }
+            if let Some(v) = specular_softness { mat.specular_softness = v; }
+            if let Some(v) = specular_offset { mat.specular_offset = v; }
+            if let Some(v) = rim_color { mat.rim_color = v; }
+            if let Some(v) = outline_opacity { mat.outline_opacity = v; }
+            if let Some(v) = outline_smoothness { mat.outline_smoothness = v; }
+            if let Some(v) = outline_depth_bias { mat.outline_depth_bias = v; }
+            // shadow_saturation is light param, but accept here for compat: update light too
+            if let Some(v) = shadow_saturation { state.scene.light.shadow_saturation = v; }
         }
     }
     Ok(())

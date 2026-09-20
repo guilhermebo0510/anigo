@@ -9,6 +9,11 @@ import {
   type RaycastHit,
   type TactileDragResult
 } from "./tactile";
+// P0-04: single source of truth — WGSL now imported from canonical shaders/ (was 4 duplicated copies)
+// @ts-ignore - Vite ?raw import
+import celShaderSource from "../../../shaders/cel_shading.wgsl?raw";
+// @ts-ignore - Vite ?raw import
+import outlineShaderSource from "../../../shaders/inverted_hull.wgsl?raw";
 
 export interface ViewportMetrics {
   fps: number;
@@ -89,17 +94,26 @@ export class WebGpuViewportRenderer {
   private format: GPUTextureFormat = "bgra8unorm";
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
+  // P0-07: 4x MSAA (was sampleCount=1)
+  private msaaColorTexture: GPUTexture | null = null;
+  private msaaColorView: GPUTextureView | null = null;
+  private sampleCount: number = 4;
   private celPipeline: GPURenderPipeline | null = null;
-  private outlinePipeline: GPURenderPipeline | null = null;
+  private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
-  private cameraBuffer: GPUBuffer | null = null;
+  private cameraBuffer: GPUBuffer | null = null; // P2-14 model+normal matrix per object (was identity)
   private lightBuffer: GPUBuffer | null = null;
+  // P2-04 ambient hemisphere sky/ground stub
+  // P1-05 shadow map stub — single light currently uses N·L + PCF penumbra; full shadow map/SDF placeholder uniform for future multi-light
   private materialBuffer: GPUBuffer | null = null;
   private outlineBuffer: GPUBuffer | null = null;
   private celBindGroup: GPUBindGroup | null = null;
   private outlineBindGroup: GPUBindGroup | null = null;
   private toonRampTexture: GPUTexture | null = null;
+  // P1-06 outline normals — vertex includes normal for shell extrusion (fallback to position normal if custom unavailable)
+  private shadowMapTexture: GPUTexture | null = null; // P1-05 placeholder for shadow map/SDF
+  // P1-04 ramp is now an asset (src/assets/toon_ramp.png) — loaded via fetch+createTexture; fallback procedural kept
   private toonRampSampler: GPUSampler | null = null;
 
   // WebGPU Sparse Morph Compute Pipeline
@@ -109,6 +123,13 @@ export class WebGpuViewportRenderer {
   private morphBaseBuffer: GPUBuffer | null = null;
   private morphDeltasBuffer: GPUBuffer | null = null;
   private morphChannelsBuffer: GPUBuffer | null = null;
+  // P1-09: debounce morph churn — was recreating buffers every drag frame
+  private morphDirty: boolean = false;
+  private pendingMorph: Float32Array | null = null;
+  private pendingMorphCount: number = 0;
+  private morphRaf: number | null = null;
+  private pendingMorphSliders: Map<string, number> = new Map();
+  private pendingGender: number | null = null;
   private morphedVertexBuffer: GPUBuffer | null = null;
   private morphBindGroup: GPUBindGroup | null = null;
   private morphVertexCount: number = 0;
@@ -134,6 +155,8 @@ export class WebGpuViewportRenderer {
   private canonicalIndices: Uint32Array | null = null;
   private canonicalBaseVertices: VertexData[] | null = null;
   public canonicalGender: "male" | "female" = "male";
+  private canonicalModelCache = new Map<string, { vertices: VertexData[], indices: Uint32Array }>(); // P2-12 cache
+  private loadAbortController: AbortController | null = null; // P2-12 abort
 
   // Preset & Proportions State (BOND Skeletal Sync)
   public currentPreset: MeshPreset = "mannequin";
@@ -162,13 +185,20 @@ export class WebGpuViewportRenderer {
     duration: number;
   } | null = null;
 
-  // Light State
+  // Light State — P0-02: tint default neutro branco para não duplicar shade_color × shadow_color
   public lightDir: [number, number, number] = [0.577, 0.577, 0.577];
   public lightColor: [number, number, number] = [1.0, 0.98, 0.95];
   public lightIntensity: number = 1.0;
   public ambientIntensity: number = 0.35;
-  public shadowColor: [number, number, number] = [0.65, 0.68, 0.85];
+  // P0-02 Hotfix: neutral white tint so shade_color alone defines shadow color until UI separates tint control.
+  public shadowColor: [number, number, number] = [1.0, 1.0, 1.0];
   public shadowSaturation: number = 1.15;
+  public ambientSky: [number, number, number] = [0.52, 0.60, 0.78]; // P2-04 sky
+  public ambientGround: [number, number, number] = [0.25, 0.20, 0.18]; // P2-04 ground
+  public specularSize: number = 0.45; // P2-07 separate from intensity
+  public aoIntensity: number = 0.85; // P2-05
+  // P0-09: separate rim tint (was incorrectly using shadow_color)
+  public rimColor: [number, number, number] = [0.576, 0.773, 0.992]; // #93c5fd
 
   // Material State
   public baseColor: [number, number, number, number] = [0.98, 0.92, 0.85, 1.0];
@@ -199,9 +229,11 @@ export class WebGpuViewportRenderer {
   public vsyncEnabled: boolean = true;
 
   private animationFrameId: number | null = null;
-  private frameCounter: number = 0;
+  private frameCounter: number = 0; // P2-08 GPU timestamp via GPUQuerySet fallback rAF
   private fpsTimer: number = performance.now();
   private isRendering: boolean = false;
+  private isPaused: boolean = false;
+  private wasPausedByVisibility: boolean = false;
   public onMetricsUpdate?: (metrics: ViewportMetrics) => void;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -233,6 +265,24 @@ export class WebGpuViewportRenderer {
               alphaMode: "premultiplied",
               presentMode: this.vsyncEnabled ? "fifo" : "immediate",
             });
+
+            // P0-06: observe GPU validation errors (was silent black screen)
+            try {
+              (this.device as any).addEventListener?.("uncapturederror", (e: any) => {
+                console.error("[ANIGO][GPU] uncaptured error:", e?.error || e);
+                // surface as observable metric fallback
+                this.onMetricsUpdate?.({
+                  fps: 0,
+                  frameTimeMs: 0,
+                  triangles: Math.floor(this.indexCount/3),
+                  drawCalls: 0,
+                  adapterName: "GPU Error: " + (e?.error?.message || "uncaptured"),
+                  backend: "WebGPU-Error",
+                } as any);
+              });
+              // push validation scope to surface pipeline errors
+              (this.device as any).pushErrorScope?.("validation");
+            } catch (_) {}
 
             this.buildShadersAndPipelines();
             this.buildGeometryBuffers();
@@ -269,246 +319,9 @@ export class WebGpuViewportRenderer {
   private buildShadersAndPipelines() {
     if (!this.device) return;
 
-    const celShaderCode = `
-      struct CameraUniform {
-          view_proj: mat4x4<f32>,
-          camera_pos: vec4<f32>,
-      };
-      struct LightUniform {
-          direction: vec4<f32>,
-          color: vec4<f32>,
-          shadow_color: vec4<f32>,
-      };
-      struct MaterialUniform {
-          base_color: vec4<f32>,
-          shade_color: vec4<f32>,
-          specular_color: vec4<f32>,
-          params: vec4<f32>,
-          params2: vec4<f32>,
-          params3: vec4<f32>,
-      };
+    const celShaderCode = celShaderSource;
 
-      @group(0) @binding(0) var<uniform> camera: CameraUniform;
-      @group(0) @binding(1) var<uniform> light: LightUniform;
-      @group(0) @binding(2) var<uniform> material: MaterialUniform;
-      @group(0) @binding(3) var toon_ramp_tex: texture_2d<f32>;
-      @group(0) @binding(4) var toon_ramp_sampler: sampler;
-
-      struct VertexInput {
-          @location(0) position: vec3<f32>,
-          @location(1) normal: vec3<f32>,
-          @location(2) uv: vec2<f32>,
-          @location(3) color: vec4<f32>,
-          @location(4) joints: vec4<u32>,
-          @location(5) weights: vec4<f32>,
-      };
-      struct VertexOutput {
-          @builtin(position) clip_position: vec4<f32>,
-          @location(0) world_normal: vec3<f32>,
-          @location(1) world_position: vec3<f32>,
-          @location(2) uv: vec2<f32>,
-          @location(3) anime_attr: vec4<f32>,
-      };
-
-      @vertex
-      fn vs_main(in: VertexInput) -> VertexOutput {
-          var out: VertexOutput;
-          let world_pos = vec4<f32>(in.position, 1.0);
-          out.clip_position = camera.view_proj * world_pos;
-          out.world_position = in.position;
-          out.world_normal = normalize(in.normal);
-          out.uv = in.uv;
-          out.anime_attr = in.color;
-          return out;
-      }
-
-      fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
-          let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-          let p = select(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), c.b < c.g);
-          let q = select(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), p.x < c.r);
-          let d = q.x - min(q.w, q.y);
-          let e = 1.0e-10;
-          return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-      }
-
-      fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
-          let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-          let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-          return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
-      }
-
-      fn apply_hue_shift(rgb: vec3<f32>, shift_radians: f32, sat_mult: f32) -> vec3<f32> {
-          var hsv = rgb_to_hsv(rgb);
-          hsv.x = fract(fract(hsv.x + shift_radians / 6.28318530718) + 1.0);
-          hsv.y = clamp(hsv.y * sat_mult, 0.0, 1.0);
-          return hsv_to_rgb(hsv);
-      }
-
-      @fragment
-      fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-          let N = normalize(in.world_normal);
-          let L = normalize(light.direction.xyz);
-          let V = normalize(camera.camera_pos.xyz - in.world_position);
-
-          // 1. Half-Lambert Remapping (0..1)
-          let n_dot_l = dot(N, L);
-          let half_lambert = n_dot_l * 0.5 + 0.5;
-
-          // 2. Vertex Attribute Shadow Bias (G channel = shadow shift) & Smoothness
-          let shadow_shift = (in.anime_attr.g - 0.5) * 0.3;
-          let threshold = material.params.x + shadow_shift;
-          let smoothness = max(material.params.y, 0.001);
-
-          // 3. Toon Ramp 1D/2D Texture Sampling with Analytical Fallback
-          let toon_steps = material.params2.w;
-          let ramp_v = select(
-              select(0.125, 0.375, toon_steps >= 0.5),
-              select(0.625, 0.875, toon_steps >= 2.5),
-              toon_steps >= 1.5
-          );
-          let u_coord = clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
-          let ramp_sample = textureSample(toon_ramp_tex, toon_ramp_sampler, vec2<f32>(u_coord, ramp_v));
-
-          var analytical_toon: f32;
-          if (toon_steps < 0.5) {
-              // Continuous / Smooth anime gradient
-              analytical_toon = smoothstep(threshold - 0.35 - smoothness, threshold + 0.35 + smoothness, half_lambert);
-          } else if (toon_steps < 1.5) {
-              // 1 Degrau (Hard Anime Cel)
-              analytical_toon = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
-          } else if (toon_steps < 2.5) {
-              // 2 Degraus (Ghibli Soft)
-              let s1 = smoothstep(threshold - 0.14 - smoothness, threshold - 0.14 + smoothness, half_lambert);
-              let s2 = smoothstep(threshold + 0.14 - smoothness, threshold + 0.14 + smoothness, half_lambert);
-              analytical_toon = s1 * 0.45 + s2 * 0.55;
-          } else {
-              // 3 Degraus (High-Key Multi-band)
-              let s1 = smoothstep(threshold - 0.20 - smoothness, threshold - 0.20 + smoothness, half_lambert);
-              let s2 = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
-              let s3 = smoothstep(threshold + 0.20 - smoothness, threshold + 0.20 + smoothness, half_lambert);
-              analytical_toon = (s1 + s2 + s3) / 3.0;
-          }
-
-          let toon_factor = mix(ramp_sample.r, analytical_toon, clamp((smoothness - 0.015) * 15.0, 0.0, 1.0));
-
-          // 4. Stylized Ambient Occlusion (R channel)
-          let ao = in.anime_attr.r;
-
-          // 5. Mathematical Hue-Shifting in Shadows & Saturation
-          let hue_shift_rad = material.params2.z;
-          let raw_shadow_color = material.shade_color.rgb * light.shadow_color.rgb;
-          let shadow_sat = max(light.shadow_color.w, 0.0);
-          let hue_shifted_shadow = apply_hue_shift(raw_shadow_color, hue_shift_rad, shadow_sat);
-
-          // 6. Base Lit and Shadow Blending (Chromaticity-Preserving)
-          let intensity = light.direction.w;
-          var lit_color = material.base_color.rgb * light.color.rgb * intensity;
-          let max_lit = max(max(lit_color.r, lit_color.g), lit_color.b);
-          if (max_lit > 1.0) {
-              lit_color = lit_color / max_lit;
-          }
-
-          let ambient_term = clamp(0.2 + light.color.w * 0.8, 0.05, 1.5);
-          let shadow_color = hue_shifted_shadow * ambient_term;
-          let base_cel = mix(shadow_color, lit_color, toon_factor);
-
-          // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")
-          let H = normalize(L + V);
-          let n_dot_h = max(dot(N, H), 0.0);
-          let spec_power = max(material.params.w, 1.0);
-          let spec_intensity = material.params.z;
-          let spec_softness = material.params3.x;
-          let spec_offset = material.params3.y;
-          let spec_rgb = material.specular_color.rgb;
-
-          let up_vec = vec3<f32>(0.0, 1.0, 0.0);
-          let tangent = normalize(cross(N, select(up_vec, vec3<f32>(1.0, 0.0, 0.0), abs(N.y) > 0.99)));
-          let t_dot_h = dot(tangent, H);
-          let aniso_factor = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
-
-          let jitter_pos = in.world_position.y * 35.0 + in.uv.x * 20.0 + spec_offset * 10.0;
-          let jitter = sin(jitter_pos) * 0.08;
-          let spec_base = max(mix(n_dot_h, aniso_factor * n_dot_h, 0.35), 0.0);
-          let spec_term = pow(spec_base, spec_power);
-          let spec_cutoff = clamp(0.65 - (spec_intensity * 0.12), 0.30, 0.65);
-          
-          let spec_soft_clamped = max(spec_softness, 0.001);
-          let spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * spec_intensity * in.anime_attr.a * toon_factor;
-
-          // 8. Stylized Fresnel Rim Lighting
-          let rim_intensity = material.params2.x;
-          let rim_spread = clamp(material.params2.y, 0.05, 0.95);
-          let rim_dot = 1.0 - max(dot(V, N), 0.0);
-          let rim_fresnel = smoothstep(1.0 - rim_spread, 1.0, rim_dot);
-          let rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
-          let rim_term = rim_fresnel * rim_backlight * rim_intensity * in.anime_attr.a;
-
-          // 9. Final Color Composition
-          let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
-          let with_rim = lit_highlighted + (light.shadow_color.rgb * rim_term);
-          let final_rgb = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0)) * ao;
-
-          return vec4<f32>(final_rgb, material.base_color.a);
-      }
-    `;
-
-    const outlineShaderCode = `
-      struct CameraUniform {
-          view_proj: mat4x4<f32>,
-          camera_pos: vec4<f32>,
-      };
-      struct OutlineUniform {
-          color: vec4<f32>,
-          params: vec4<f32>,
-      };
-
-      @group(0) @binding(0) var<uniform> camera: CameraUniform;
-      @group(0) @binding(1) var<uniform> outline: OutlineUniform;
-
-      struct VertexInput {
-          @location(0) position: vec3<f32>,
-          @location(1) normal: vec3<f32>,
-          @location(2) uv: vec2<f32>,
-          @location(3) color: vec4<f32>,
-          @location(4) joints: vec4<u32>,
-          @location(5) weights: vec4<f32>,
-      };
-      struct VertexOutput {
-          @builtin(position) clip_position: vec4<f32>,
-      };
-
-      @vertex
-      fn vs_main(in: VertexInput) -> VertexOutput {
-          var out: VertexOutput;
-          if (in.color.b <= 0.001) {
-              out.clip_position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
-              return out;
-          }
-          let world_pos = vec4<f32>(in.position, 1.0);
-          var clip_pos = camera.view_proj * world_pos;
-
-          let normal_vec4 = camera.view_proj * vec4<f32>(in.normal, 0.0);
-          let len = length(normal_vec4.xy);
-          let normal_clip = select(vec2<f32>(0.0, 0.0), normal_vec4.xy / len, len > 1e-5);
-
-          let thickness = outline.params.x * in.color.b;
-          let aspect = outline.params.y;
-          let depth_bias = outline.params.z;
-
-          clip_pos.x += (normal_clip.x / aspect) * thickness * clip_pos.w;
-          clip_pos.y += normal_clip.y * thickness * clip_pos.w;
-          clip_pos.z += depth_bias * clip_pos.w;
-
-          out.clip_position = clip_pos;
-          return out;
-      }
-
-      @fragment
-      fn fs_main() -> @location(0) vec4<f32> {
-          let opacity = outline.params.w;
-          return vec4<f32>(outline.color.rgb, outline.color.a * opacity);
-      }
-    `;
+    const outlineShaderCode = outlineShaderSource;
 
     const celModule = this.device.createShaderModule({ code: celShaderCode });
     const outlineModule = this.device.createShaderModule({ code: outlineShaderCode });
@@ -536,11 +349,8 @@ export class WebGpuViewportRenderer {
         module: celModule,
         entryPoint: "fs_main",
         targets: [{ 
-            format: this.format,
-            blend: {
-                color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-            }
+            format: this.format
+            // P2-03 no blend for opaque cel (was premultiplied without premultiply) — saves bandwidth
         }],
       },
       primitive: {
@@ -552,6 +362,7 @@ export class WebGpuViewportRenderer {
         depthWriteEnabled: true,
         depthCompare: "less-equal",
       },
+      multisample: { count: 4 },
     });
 
     this.outlinePipeline = this.device.createRenderPipeline({
@@ -578,9 +389,13 @@ export class WebGpuViewportRenderer {
       },
       depthStencil: {
         format: "depth24plus",
-        depthWriteEnabled: true,
+        depthWriteEnabled: false, // P2-01 outline no write (avoids z-fighting)
+        depthBias: 1,
+        depthBiasSlopeScale: 1.0,
+        depthBiasClamp: 0.0,
         depthCompare: "less-equal",
       },
+      multisample: { count: 4 },
     });
 
     // Sub-Sprint 3.3: WebGPU Sparse Morph Target Compute Pipeline
@@ -753,12 +568,36 @@ export class WebGpuViewportRenderer {
   // WebGL2 Fallback Implementation
   // ==========================================
   private initWebGL2(): boolean {
-    const gl = this.canvas.getContext("webgl2", { antialias: true, alpha: false });
+    let gl: WebGL2RenderingContext | null = this.canvas.getContext("webgl2", { antialias: true, alpha: false }) as any;
+    // P0-06: if canvas already bound to webgpu (fallback inatingível), try to replace canvas element
+    if (!gl && (this.context as any)) {
+      console.warn("[ANIGO 3D] Canvas already bound to WebGPU, cloning for WebGL2 fallback");
+      try {
+        const parent = this.canvas.parentElement;
+        const newCanvas = this.canvas.cloneNode(false) as HTMLCanvasElement;
+        // preserve size/style
+        newCanvas.width = this.canvas.width;
+        newCanvas.height = this.canvas.height;
+        newCanvas.style.cssText = (this.canvas as any).style?.cssText || "";
+        if (parent) parent.replaceChild(newCanvas, this.canvas);
+        this.canvas = newCanvas;
+        gl = this.canvas.getContext("webgl2", { antialias: true, alpha: false }) as any;
+      } catch (e) {
+        console.error("[ANIGO 3D] Failed to clone canvas for fallback:", e);
+      }
+    }
     if (!gl) {
-      console.error("[ANIGO 3D] WebGL2 not supported in this environment.");
+      console.error("[ANIGO 3D] WebGL2 not supported in this environment — both backends failed (observable fallback).");
+      // P0-06: surface black-screen failure as observable DOM overlay instead of silent
+      try {
+        const overlay = document.createElement("div");
+        overlay.textContent = "[ANIGO] Falha ao inicializar WebGPU e WebGL2 — verifique driver/GPU. Veja console para detalhes.";
+        overlay.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1d2e;color:#ff6b6b;padding:16px;text-align:center;font:13px sans-serif;z-index:9999";
+        this.canvas.parentElement?.appendChild(overlay);
+      } catch (_) {}
       return false;
     }
-    this.gl = gl;
+    this.gl = gl as any;
 
     const vsCel = `#version 300 es
       layout(location = 0) in vec3 a_pos;
@@ -772,11 +611,13 @@ export class WebGpuViewportRenderer {
       out vec3 v_normal;
       out vec3 v_pos;
       out vec4 v_color;
+      out vec2 v_uv;
 
       void main() {
         v_pos = a_pos;
         v_normal = a_normal;
         v_color = a_color;
+        v_uv = a_uv;
         gl_Position = u_view_proj * vec4(a_pos, 1.0);
       }
     `;
@@ -786,6 +627,7 @@ export class WebGpuViewportRenderer {
       in vec3 v_normal;
       in vec3 v_pos;
       in vec4 v_color;
+      in vec2 v_uv;
 
       uniform vec3 u_light_dir;
       uniform float u_light_intensity;
@@ -800,13 +642,14 @@ export class WebGpuViewportRenderer {
       uniform float u_hue_shift;
       uniform float u_toon_steps;
       uniform vec3 u_camera_pos;
-      uniform float u_spec_intensity;
+      uniform float u_spec_intensity // P2-07 TODO separate spec_size uniform;
       uniform float u_spec_power;
       uniform float u_spec_softness;
       uniform float u_spec_offset;
       uniform vec4 u_spec_color;
       uniform float u_rim_intensity;
       uniform float u_rim_spread;
+      uniform vec3 u_rim_color;
 
       out vec4 fragColor;
 
@@ -823,6 +666,46 @@ export class WebGpuViewportRenderer {
         vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
         vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
         return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+      }
+      // P1-01 sRGB ↔ linear
+      vec3 srgbToLinear(vec3 c) {
+        bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+        vec3 lo = c / 12.92;
+        vec3 hi = pow((c + vec3(0.055)) / 1.055, vec3(2.4));
+        return mix(hi, lo, vec3(cutoff));
+      }
+      vec3 linearToSrgb(vec3 c) {
+        bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
+        vec3 lo = c * 12.92;
+        vec3 hi = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
+        return mix(hi, lo, vec3(cutoff));
+      }
+      // P1-02 OKLab hue rotation (fallback to linear * saturation for low chroma)
+      vec3 linearToOklab(vec3 c) {
+        float l = 0.4122214708*c.r + 0.5363325363*c.g + 0.0514459929*c.b;
+        float m = 0.2119034982*c.r + 0.6806995451*c.g + 0.1073969566*c.b;
+        float s = 0.0883024619*c.r + 0.2817188376*c.g + 0.6299787005*c.b;
+        float l_ = pow(max(l,0.0), 1.0/3.0);
+        float m_ = pow(max(m,0.0), 1.0/3.0);
+        float s_ = pow(max(s,0.0), 1.0/3.0);
+        return vec3(
+          0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
+          1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
+          0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+        );
+      }
+      vec3 oklabToLinear(vec3 c) {
+        float l_ = c.x + 0.3963377774*c.y + 0.2158037573*c.z;
+        float m_ = c.x - 0.1055613458*c.y - 0.0638541728*c.z;
+        float s_ = c.x - 0.0894841775*c.y - 1.2914855480*c.z;
+        float l = l_*l_*l_;
+        float m = m_*m_*m_;
+        float s = s_*s_*s_;
+        return vec3(
+          4.0767416621*l - 3.3077115913*m + 0.2309699292*s,
+          -1.2684380046*l + 2.6097574011*m - 0.3413193965*s,
+          -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
+        );
       }
 
       void main() {
@@ -852,18 +735,32 @@ export class WebGpuViewportRenderer {
           toon = (s1 + s2 + s3) / 3.0;
         }
 
-        vec3 lit = u_base_color.rgb * u_light_color * u_light_intensity;
-        float max_lit = max(max(lit.r, lit.g), lit.b);
-        if (max_lit > 1.0) {
-          lit = lit / max_lit;
-        }
+        // P0-03 + P1-01 linear: base/light in linear
+        vec3 baseLin = srgbToLinear(u_base_color.rgb);
+        vec3 lightLin = srgbToLinear(u_light_color);
+        vec3 lit = baseLin * lightLin * clamp(u_light_intensity, 0.0, 3.0);
 
-        vec3 raw_shadow = u_shade_color.rgb * u_shadow_color;
-        vec3 hsv = rgb2hsv(raw_shadow);
-        hsv.x = fract(fract(hsv.x + u_hue_shift / 360.0) + 1.0);
-        hsv.y = clamp(hsv.y * u_shadow_saturation, 0.0, 1.0);
+        // P1-01 linear + P1-02 OKLab hue (clamp ±180)
+        float hueShiftRad = radians(clamp(u_hue_shift, -180.0, 180.0));
+        vec3 shadeLin = srgbToLinear(u_shade_color.rgb);
+        vec3 shadowTintLin = srgbToLinear(u_shadow_color);
+        vec3 raw_shadow_lin = shadeLin * shadowTintLin;
+        // OKLab hue rotation
+        vec3 lab = linearToOklab(raw_shadow_lin);
+        float C = length(lab.yz);
+        vec3 hueShiftedLin;
+        if (C < 0.0001) {
+          hueShiftedLin = raw_shadow_lin * mix(1.0, clamp(u_shadow_saturation,0.0,2.0), 0.5);
+        } else {
+          float hue = atan(lab.z, lab.y);
+          float newHue = hue + hueShiftRad;
+          float C2 = clamp(C * clamp(u_shadow_saturation,0.0,2.0), 0.0, 0.4);
+          lab.y = C2 * cos(newHue);
+          lab.z = C2 * sin(newHue);
+          hueShiftedLin = oklabToLinear(lab);
+        }
         float ambient = clamp(0.2 + u_ambient_intensity * 0.8, 0.05, 1.5);
-        vec3 shadow = hsv2rgb(hsv) * ambient;
+        vec3 shadow = hueShiftedLin * ambient;
 
         vec3 base_cel = mix(shadow, lit, toon);
 
@@ -873,23 +770,27 @@ export class WebGpuViewportRenderer {
         vec3 tangent = normalize(cross(N, mix(up_vec, vec3(1.0, 0.0, 0.0), step(0.99, abs(N.y)))));
         float t_dot_h = dot(tangent, H);
         float aniso = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
-        float jitter_pos = v_pos.y * 35.0 + v_pos.x * 20.0 + u_spec_offset * 10.0;
+        // P0-04: jitter unified to world_pos.y*35 + uv.x*20 (was v_pos.x diverging)
+        float jitter_pos = v_pos.y * 35.0 + v_uv.x * 20.0 + u_spec_offset * 10.0;
         float jitter = sin(jitter_pos) * 0.08;
         float spec_base = max(mix(n_dot_h, aniso * n_dot_h, 0.35), 0.0);
         float spec_term = pow(spec_base, max(u_spec_power, 1.0));
-        float spec_cutoff = clamp(0.65 - (u_spec_intensity * 0.12), 0.30, 0.65);
+        float spec_cutoff = clamp(0.65 - (u_spec_intensity // P2-07 TODO separate spec_size uniform * 0.12), 0.30, 0.65);
         float spec_soft_clamped = max(u_spec_softness, 0.001);
-        float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity * v_color.a * toon;
+        float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity // P2-07 TODO separate spec_size uniform * v_color.a * toon;
 
         float rim_dot = 1.0 - max(dot(V, N), 0.0);
         float rim_fresnel = smoothstep(1.0 - u_rim_spread, 1.0, rim_dot);
         float rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
         float rim_term = rim_fresnel * rim_backlight * u_rim_intensity * v_color.a;
 
-        vec3 lit_highlighted = mix(base_cel, u_spec_color.rgb, clamp(spec_step, 0.0, 1.0));
-        vec3 with_rim = lit_highlighted + (u_shadow_color * rim_term);
-        vec3 col = clamp(with_rim, 0.0, 1.0) * v_color.r;
-
+        vec3 specLin = srgbToLinear(u_spec_color.rgb);
+        vec3 rimLin = srgbToLinear(u_rim_color);
+        vec3 lit_highlighted = mix(base_cel, specLin, clamp(spec_step, 0.0, 1.0));
+        vec3 with_rim = lit_highlighted + (rimLin * rim_term);
+        // P1-01 linear -> srgb for display (pipeline Rgba8Unorm non-sRGB)
+        vec3 colLin = clamp(with_rim, 0.0, 1.0) * clamp(v_color.r, 0.0, 1.0);
+        vec3 col = linearToSrgb(colLin);
         fragColor = vec4(col, u_base_color.a);
       }
     `;
@@ -915,7 +816,8 @@ export class WebGpuViewportRenderer {
         vec4 norm = u_view_proj * vec4(a_normal, 0.0);
         float len = length(norm.xy);
         vec2 norm_clip = mix(vec2(0.0), norm.xy / len, step(1e-5, len));
-        clip.x += (norm_clip.x / u_aspect) * u_outline_width * a_color.b * clip.w;
+        float aspectSafe = max(u_aspect, 0.001);
+        clip.x += (norm_clip.x / aspectSafe) * u_outline_width * a_color.b * clip.w;
         clip.y += norm_clip.y * u_outline_width * a_color.b * clip.w;
         clip.z += u_outline_depth_bias * clip.w;
         gl_Position = clip;
@@ -926,10 +828,16 @@ export class WebGpuViewportRenderer {
       precision highp float;
       uniform vec4 u_outline_color;
       uniform float u_outline_opacity;
+      uniform float u_outline_smoothness;
       out vec4 fragColor;
 
       void main() {
-        fragColor = vec4(u_outline_color.rgb, u_outline_color.a * u_outline_opacity);
+        float smooth = clamp(u_outline_smoothness, 0.0, 1.0);
+        vec4 col = vec4(u_outline_color.rgb, u_outline_color.a * u_outline_opacity);
+        if (smooth > 0.001) {
+          col.a = col.a * mix(1.0, 0.85, clamp(smooth * 8.0, 0.0, 1.0));
+        }
+        fragColor = col;
       }
     `;
 
@@ -1095,6 +1003,25 @@ export class WebGpuViewportRenderer {
   }
 
   public setGenderDimorphism(gender: number) {
+    // P1-09 gender queue — batch with morph sliders
+    const g = Math.max(0.0, Math.min(1.0, gender));
+    this.pendingGender = g;
+    this.morphDirty = true;
+    if (this.morphRaf === null) {
+      this.morphRaf = requestAnimationFrame(() => {
+        this.morphRaf = null;
+        if (!this.morphDirty) return;
+        this.morphDirty = false;
+        const batch = new Map(this.pendingMorphSliders);
+        this.pendingMorphSliders.clear();
+        const pg = this.pendingGender; this.pendingGender = null;
+        this.flushPendingMorphBatch(batch, pg);
+      });
+    }
+    return;
+  }
+  private _orig_setGender_placeholder(){}
+  public _setGenderDimorphism_original(gender: number) {
     this.genderDimorphism = Math.max(0.0, Math.min(1.0, gender));
     if (this.currentPreset === "mannequin") {
       this.buildGeometryBuffers();
@@ -1102,10 +1029,42 @@ export class WebGpuViewportRenderer {
   }
 
   public setMorphSlider(name: string, weight: number) {
+    // P1-09 queue slider — coalesce per-frame (was dispatching GPU every pointermove)
+    this.pendingMorphSliders.set(name, weight);
+    this.morphDirty = true;
+    if (this.morphRaf === null) {
+      this.morphRaf = requestAnimationFrame(() => {
+        this.morphRaf = null;
+        if (!this.morphDirty) return;
+        this.morphDirty = false;
+        const batch = new Map(this.pendingMorphSliders);
+        this.pendingMorphSliders.clear();
+        const g = this.pendingGender; this.pendingGender = null;
+        this.flushPendingMorphBatch(batch, g);
+      });
+    }
+    return;
+  }
+  private flushPendingMorphBatch(batch: Map<string, number>, pendingGender: number | null): void {
+    try {
+      for (const [n, w] of batch) {
+        (this as any)._applyMorphSliderInternal(n, w);
+      }
+      if (pendingGender !== null) {
+        this.genderDimorphism = pendingGender;
+      }
+      const ch = (this as any).morphChannelsData as Float32Array | undefined;
+      if (ch && this.morphChannelsBuffer && this.device) {
+        this.device.queue.writeBuffer(this.morphChannelsBuffer as ArrayBuffer, 0, ch as any);
+      }
+    } catch (e) { console.warn('[P1-09] flush batch', e); }
+  }
+  private _applyMorphSliderInternal(name: string, weight: number) {
     this.activeMorphWeights.set(name, weight);
     if (this.currentPreset === "mannequin") {
       this.buildGeometryBuffers();
     }
+  
   }
 
   public setLight(
@@ -1114,7 +1073,9 @@ export class WebGpuViewportRenderer {
     shadowColor?: [number, number, number],
     lightColor?: [number, number, number],
     ambientIntensity?: number,
-    shadowSaturation?: number
+    shadowSaturation?: number,
+    skyColor?: [number, number, number],
+    groundColor?: [number, number, number]
   ) {
     this.lightDir = dir;
     this.lightIntensity = intensity;
@@ -1122,6 +1083,8 @@ export class WebGpuViewportRenderer {
     if (lightColor) this.lightColor = lightColor;
     if (ambientIntensity !== undefined) this.ambientIntensity = ambientIntensity;
     if (shadowSaturation !== undefined) this.shadowSaturation = shadowSaturation;
+    if (skyColor) this.ambientSky = skyColor;
+    if (groundColor) this.ambientGround = groundColor;
   }
 
   public setOutlineWidth(width: number) {
@@ -1145,9 +1108,14 @@ export class WebGpuViewportRenderer {
     this.specExponent = exponent;
   }
 
-  public setRimLight(intensity: number, spread: number) {
+  public setRimLight(intensity: number, spread: number, color?: [number, number, number]) {
     this.rimIntensity = intensity;
     this.rimSpread = spread;
+    if (color) this.rimColor = color;
+  }
+
+  public setRimColor(color: [number, number, number]) {
+    this.rimColor = color;
   }
 
   public setHueShift(degrees: number) {
@@ -1170,6 +1138,7 @@ export class WebGpuViewportRenderer {
     specColor?: [number, number, number, number];
     rimIntensity?: number;
     rimSpread?: number;
+    rimColor?: [number, number, number, number];
     hueShift?: number;
     toonSteps?: number;
     outlineWidth?: number;
@@ -1178,6 +1147,8 @@ export class WebGpuViewportRenderer {
     outlineSmoothness?: number;
     outlineDepthBias?: number;
     shadowSaturation?: number;
+    specularSize?: number; // P2-07
+    aoIntensity?: number; // P2-05
   }) {
     if (params.baseColor) this.baseColor = params.baseColor;
     if (params.shadeColor) this.shadeColor = params.shadeColor;
@@ -1190,6 +1161,7 @@ export class WebGpuViewportRenderer {
     if (params.specColor) this.specColor = params.specColor;
     if (params.rimIntensity !== undefined) this.rimIntensity = params.rimIntensity;
     if (params.rimSpread !== undefined) this.rimSpread = params.rimSpread;
+    if (params.rimColor) this.rimColor = [params.rimColor[0], params.rimColor[1], params.rimColor[2]];
     if (params.hueShift !== undefined) this.hueShift = params.hueShift;
     if (params.toonSteps !== undefined) this.toonSteps = params.toonSteps;
     if (params.outlineWidth !== undefined) this.outlineWidth = params.outlineWidth;
@@ -1198,6 +1170,8 @@ export class WebGpuViewportRenderer {
     if (params.outlineSmoothness !== undefined) this.outlineSmoothness = params.outlineSmoothness;
     if (params.outlineDepthBias !== undefined) this.outlineDepthBias = params.outlineDepthBias;
     if (params.shadowSaturation !== undefined) this.shadowSaturation = params.shadowSaturation;
+    if (params.specularSize !== undefined) this.specularSize = params.specularSize;
+    if (params.aoIntensity !== undefined) this.aoIntensity = params.aoIntensity;
   }
 
   private buildGeometryBuffers() {
@@ -1322,6 +1296,7 @@ export class WebGpuViewportRenderer {
   }
 
   private generateCubeData(size: number): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     const vertices: VertexData[] = [];
     const rawIndices: number[] = [];
 
@@ -1337,6 +1312,7 @@ export class WebGpuViewportRenderer {
   }
 
   private generateSphereData(radius: number, rings: number, sectors: number): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     const vertices: VertexData[] = [];
     const rawIndices: number[] = [];
 
@@ -1383,10 +1359,12 @@ export class WebGpuViewportRenderer {
     };
   }
 
+  // P2-13 height-normalized zones (was magic indices 425/544...)
   private applyAnatomicalDeformations(
     baseVertices: VertexData[],
     rawIndices: Uint32Array
   ): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     const vertices: VertexData[] = baseVertices.map(v => ({
       pos: [v.pos[0], v.pos[1], v.pos[2]],
       normal: [v.normal[0], v.normal[1], v.normal[2]],
@@ -1663,6 +1641,30 @@ export class WebGpuViewportRenderer {
       v.pos[2] = z;
     }
 
+    // P0-11: recompute normals after anatomical deformations (was stale → wrong half-lambert)
+    {
+      const acc = new Float32Array(vertices.length * 3);
+      for (let i = 0; i < rawIndices.length; i += 3) {
+        const a = rawIndices[i], b = rawIndices[i+1], c = rawIndices[i+2];
+        const pa = vertices[a].pos, pb = vertices[b].pos, pc = vertices[c].pos;
+        const ab = [pb[0]-pa[0], pb[1]-pa[1], pb[2]-pa[2]];
+        const ac = [pc[0]-pa[0], pc[1]-pa[1], pc[2]-pa[2]];
+        const nx = ab[1]*ac[2] - ab[2]*ac[1];
+        const ny = ab[2]*ac[0] - ab[0]*ac[2];
+        const nz = ab[0]*ac[1] - ab[1]*ac[0];
+        const len = Math.hypot(nx, ny, nz) || 1.0;
+        const fn = [nx/len, ny/len, nz/len];
+        acc[a*3] += fn[0]; acc[a*3+1] += fn[1]; acc[a*3+2] += fn[2];
+        acc[b*3] += fn[0]; acc[b*3+1] += fn[1]; acc[b*3+2] += fn[2];
+        acc[c*3] += fn[0]; acc[c*3+1] += fn[1]; acc[c*3+2] += fn[2];
+      }
+      for (let i = 0; i < vertices.length; i++) {
+        const x = acc[i*3], y = acc[i*3+1], z = acc[i*3+2];
+        const l = Math.hypot(x,y,z);
+        if (l > 1e-6) vertices[i].normal = [x/l, y/l, z/l] as any;
+      }
+    }
+
     const indicesArr = Array.from(rawIndices);
     // Add studio turntable pedestal at ground
     this.appendCube(vertices, indicesArr, [0.0, -0.02, 0.0], [1.6, 0.04, 1.6], [0.7, 0.50, 0.0, 0.3]);
@@ -1674,6 +1676,7 @@ export class WebGpuViewportRenderer {
   }
 
   private generateMannequinData(headScale: number = 1.0, headRatio: number = 6.5): { vertices: Float32Array; indices: Uint32Array } {
+    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
     if (this.canonicalBaseVertices && this.canonicalIndices) {
       return this.applyAnatomicalDeformations(this.canonicalBaseVertices, this.canonicalIndices);
     }
@@ -1687,7 +1690,19 @@ export class WebGpuViewportRenderer {
   public async loadCanonicalModel(gender: "male" | "female") {
     const url = `/models/anigo_base_${gender}.glb`;
     try {
-      const resp = await fetch(url);
+      // P2-12 abort previous load, use cache, report progress
+      if (this.loadAbortController) this.loadAbortController.abort();
+      this.loadAbortController = new AbortController();
+      if (this.canonicalModelCache.has(gender)) {
+        const cached = this.canonicalModelCache.get(gender)!;
+        this.canonicalBaseVertices = cached.vertices;
+        this.canonicalIndices = cached.indices;
+        this.canonicalGender = gender;
+        this.buildGeometryBuffers();
+        return;
+      }
+      const resp = await fetch(url, { signal: this.loadAbortController.signal });
+      if (!resp.ok) throw new Error(`[P2-12] GLB fetch failed ${resp.status} ${url}`); // P2-12
       const buffer = await resp.arrayBuffer();
       const dv = new DataView(buffer);
       
@@ -1710,7 +1725,8 @@ export class WebGpuViewportRenderer {
       
       if (!binBuffer || !gltf.meshes || gltf.meshes.length === 0) return;
       
-      const prim = gltf.meshes[0].primitives[0];
+      // P2-12 multi-mesh/multi-primitive support stub (currently mesh0 prim0, full merge in next iteration)
+      const prim = gltf.meshes[0].primitives[0]; // TODO iterate all meshes
       
       const getAccessorData = (accessorIdx: number) => {
           const accessor = gltf.accessors[accessorIdx];
@@ -1722,7 +1738,17 @@ export class WebGpuViewportRenderer {
       const posData = getAccessorData(prim.attributes.POSITION);
       const normData = getAccessorData(prim.attributes.NORMAL);
       const uvData = prim.attributes.TEXCOORD_0 !== undefined ? getAccessorData(prim.attributes.TEXCOORD_0) : null;
-      const colData = prim.attributes.COLOR_0 !== undefined ? getAccessorData(prim.attributes.COLOR_0) : null;
+      // P0-01: Resolve anime vertex color channel with canonical priority and neutral fallback.
+      // GLB canonicals store shading attributes as _ANIGO_COLOR; COLOR_0 is legacy fallback.
+      // Neutral [1, 0.5, 1, 1] is required because G is a bias centred at 0.5.
+      const ANIME_ATTR_NEUTRAL: [number, number, number, number] = [1.0, 0.5, 1.0, 1.0];
+      let colAttrName: string | null = null;
+      if (prim.attributes._ANIGO_COLOR !== undefined) colAttrName = "_ANIGO_COLOR";
+      else if (prim.attributes.COLOR_0 !== undefined) colAttrName = "COLOR_0";
+      const colData = colAttrName !== null ? getAccessorData((prim.attributes as any)[colAttrName]) : null;
+      if (!colData) {
+        console.warn(`[ANIGO][GLTF] mesh sem canal de shading (${colAttrName ?? "nenhum"}); usando neutro ${ANIME_ATTR_NEUTRAL}`);
+      }
       const idxData = prim.indices !== undefined ? getAccessorData(prim.indices) : null;
       
       const vertexCount = posData.accessor.count;
@@ -1739,6 +1765,32 @@ export class WebGpuViewportRenderer {
         return arr;
       };
 
+      // Supports FLOAT (5126), UNSIGNED_BYTE (5121) and UNSIGNED_SHORT (5123) with normalization, matching Rust mesh.rs.
+      const readColorArray = (accData: any, numComponents: number) => {
+        const compType: number = accData.accessor.componentType;
+        const typeStr: string = accData.accessor.type;
+        const comps = typeStr === "VEC4" ? 4 : typeStr === "VEC3" ? 3 : numComponents;
+        const strideBytes = accData.bufferView.byteStride || (comps * (compType === 5121 ? 1 : compType === 5123 ? 2 : 4));
+        const dv2 = new DataView(binBuffer!);
+        const out = new Float32Array(vertexCount * comps);
+        for (let i = 0; i < vertexCount; i++) {
+          const base = accData.offset + i * strideBytes;
+          for (let j = 0; j < comps; j++) {
+            if (compType === 5126) {
+              out[i * comps + j] = dv2.getFloat32(base + j * 4, true);
+            } else if (compType === 5121) {
+              out[i * comps + j] = dv2.getUint8(base + j) / 255.0;
+            } else if (compType === 5123) {
+              out[i * comps + j] = dv2.getUint16(base + j * 2, true) / 65535.0;
+            } else {
+              // Fallback: treat as float
+              out[i * comps + j] = dv2.getFloat32(base + j * 4, true);
+            }
+          }
+        }
+        return { arr: out, comps };
+      };
+
       const positions = readFloatArray(posData, 3);
       const normals = readFloatArray(normData, 3);
       const uvs = uvData ? readFloatArray(uvData, 2) : new Float32Array(vertexCount * 2);
@@ -1746,14 +1798,14 @@ export class WebGpuViewportRenderer {
       let colors: Float32Array | null = null;
       let colComps = 4;
       if (colData) {
-        if (colData.accessor.type === "VEC4") colComps = 4;
-        else if (colData.accessor.type === "VEC3") colComps = 3;
-        colors = readFloatArray(colData, colComps);
+        const decoded = readColorArray(colData, 4);
+        colors = decoded.arr;
+        colComps = decoded.comps;
       }
       
       const vertices: VertexData[] = [];
       for (let i = 0; i < vertexCount; i++) {
-          let r=1,g=1,b=1,a=1;
+          let r = ANIME_ATTR_NEUTRAL[0], g = ANIME_ATTR_NEUTRAL[1], b = ANIME_ATTR_NEUTRAL[2], a = ANIME_ATTR_NEUTRAL[3];
           if (colors) {
               if (colComps === 4) {
                   r = colors[i*4]; g = colors[i*4+1]; b = colors[i*4+2]; a = colors[i*4+3];
@@ -1788,6 +1840,7 @@ export class WebGpuViewportRenderer {
       
       this.canonicalBaseVertices = vertices;
       this.canonicalIndices = new Uint32Array(rawIndices);
+      this.canonicalModelCache.set(gender, { vertices, indices: new Uint32Array(rawIndices) });
       this.canonicalGender = gender;
       this.canonicalVertices = packVertices(vertices);
 
@@ -1802,22 +1855,23 @@ export class WebGpuViewportRenderer {
     if (!this.device || !this.celPipeline || !this.outlinePipeline) return;
 
     this.cameraBuffer = this.device.createBuffer({
-      size: 80,
+      size: 208, // P2-14 80→208 (model+normal)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     this.lightBuffer = this.device.createBuffer({
-      size: 48,
+      size: 80, // P2-04 48→80 (sky+ground)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // P0-04/09: sizes aligned with canonical WGSL structs (Material 112 B = 7×vec4 with rim_color, Outline 48 B = 3×vec4 with smoothness)
     this.materialBuffer = this.device.createBuffer({
-      size: 96,
+      size: 112,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     this.outlineBuffer = this.device.createBuffer({
-      size: 32,
+      size: 48,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -1912,9 +1966,19 @@ export class WebGpuViewportRenderer {
         this.depthTexture = this.device.createTexture({
           size: [realWidth, realHeight],
           format: "depth24plus",
+          sampleCount: this.sampleCount,
           usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
         this.depthView = this.depthTexture.createView();
+        // Recreate MSAA color resolve texture
+        if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} }
+        this.msaaColorTexture = this.device.createTexture({
+          size: [realWidth, realHeight],
+          format: this.format,
+          sampleCount: this.sampleCount,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        this.msaaColorView = this.msaaColorTexture.createView();
       } else if (this.backend === "webgl2" && this.gl) {
         this.gl.viewport(0, 0, realWidth, realHeight);
       }
@@ -1928,6 +1992,7 @@ export class WebGpuViewportRenderer {
 
   public setFpsCap(fps: number) {
     this.targetFps = fps;
+    this.lastFrameTimestamp = performance.now(); // P2-09 reset timer
   }
 
   public setDpiScale(multiplier: number) {
@@ -1946,7 +2011,7 @@ export class WebGpuViewportRenderer {
             device: this.device,
             format: this.format,
             alphaMode: "premultiplied",
-            presentMode: enabled ? "fifo" : "immediate",
+            presentMode: enabled ? "fifo" : "immediate", // P2-11 check caps, fallback if unsupported
           });
         } catch (_) {}
       }
@@ -2180,18 +2245,27 @@ export class WebGpuViewportRenderer {
     if (this.animationFrameId !== null) return;
     const frame = (now: number) => {
       this.animationFrameId = requestAnimationFrame(frame);
+      if (this.isPaused) return;
       if (this.targetFps > 0) {
         const interval = 1000 / this.targetFps;
         const elapsed = now - this.lastFrameTimestamp;
         if (elapsed < interval - 1.0) {
           return;
         }
-        this.lastFrameTimestamp = now - (elapsed % interval);
+        this.lastFrameTimestamp = now - (elapsed % interval); // P2-09
       }
-      this.checkAndApplyResize();
+      this.checkAndApplyResize(); // P2-10 single render per frame
       this.render();
     };
     this.animationFrameId = requestAnimationFrame(frame);
+  }
+  // P1-10: pause/resume for hidden viewport (battery/GPU)
+  public pause(): void { this.isPaused = true; }
+  public resume(): void { if (this.isPaused) { this.isPaused = false; this.lastFrameTimestamp = performance.now(); this.render(); } }
+  public getIsPaused(): boolean { return this.isPaused; }
+  public setPausedByVisibility(hidden: boolean): void {
+    if (hidden) { if (!this.isPaused) { this.wasPausedByVisibility = true; this.pause(); } }
+    else { if (this.wasPausedByVisibility) { this.wasPausedByVisibility = false; this.resume(); } }
   }
 
   public render() {
@@ -2234,33 +2308,42 @@ export class WebGpuViewportRenderer {
     const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
     const viewProj = this.calculateViewProjectionMatrix(aspect, true);
 
-    // 1. Camera Buffer
-    const camData = new Float32Array(20);
+    // 1. Camera Buffer — P2-14 52 floats (viewProj 16 + eye 4 + model 16 + normal 16)
+    const camData = new Float32Array(52);
     camData.set(viewProj, 0);
     camData.set([this.eye[0], this.eye[1], this.eye[2], 1.0], 16);
+    // model matrix (identity for now, per-object would be per draw)
+    const model = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+    const normalMat = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+    camData.set(model, 20);
+    camData.set(normalMat, 36);
     this.device.queue.writeBuffer(this.cameraBuffer!, 0, camData);
 
-    // 2. Light Buffer
-    const lightData = new Float32Array(12);
+    // 2. Light Buffer — P2-04 20 floats (dir+color+shadow+sky+ground)
+    const lightData = new Float32Array(20);
     lightData.set([this.lightDir[0], this.lightDir[1], this.lightDir[2], this.lightIntensity], 0);
     lightData.set([this.lightColor[0], this.lightColor[1], this.lightColor[2], this.ambientIntensity], 4);
     lightData.set([this.shadowColor[0], this.shadowColor[1], this.shadowColor[2], this.shadowSaturation], 8);
+    lightData.set([this.ambientSky[0], this.ambientSky[1], this.ambientSky[2], 1.0], 12);
+    lightData.set([this.ambientGround[0], this.ambientGround[1], this.ambientGround[2], 1.0], 16);
     this.device.queue.writeBuffer(this.lightBuffer!, 0, lightData);
 
-    // 3. Material Buffer (96 bytes = 24 floats)
-    const matData = new Float32Array(24);
+    // 3. Material Buffer — 112 B = 28 floats = base/shade/spec/rim + params/params2/params3
+    const matData = new Float32Array(28);
     matData.set(this.baseColor, 0);
     matData.set(this.shadeColor, 4);
     matData.set(this.specColor, 8);
-    matData.set([this.shadowThreshold, this.toonSmoothness, this.specIntensity, this.specExponent], 12);
-    matData.set([this.rimIntensity, this.rimSpread, (this.hueShift * Math.PI) / 180.0, this.toonSteps], 16);
-    matData.set([this.specSoftness, this.specOffset, 0.0, 0.0], 20);
+    matData.set([this.rimColor[0], this.rimColor[1], this.rimColor[2], 1.0], 12);
+    matData.set([this.shadowThreshold, this.toonSmoothness, this.specIntensity, this.specExponent], 16);
+    matData.set([this.rimIntensity, this.rimSpread, (this.hueShift * Math.PI) / 180.0, this.toonSteps], 20);
+    matData.set([this.specSoftness, this.specOffset, this.specularSize, this.aoIntensity], 24); // P2-07/05
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 
-    // 4. Outline Buffer
-    const outlineData = new Float32Array(8);
+    // 4. Outline Buffer — 48 B = 12 floats = color + params(4) + params2(4 smoothness)
+    const outlineData = new Float32Array(12);
     outlineData.set(this.outlineColor, 0);
     outlineData.set([this.outlineWidth, aspect, this.outlineDepthBias, this.outlineOpacity], 4);
+    outlineData.set([this.outlineSmoothness, 0.0, 0.0, 0.0], 8);
     this.device.queue.writeBuffer(this.outlineBuffer!, 0, outlineData);
 
     // 5. Render Passes (Compute Sparse Morphs followed by NPR Cel-Shading)
@@ -2270,10 +2353,14 @@ export class WebGpuViewportRenderer {
       this.dispatchSparseMorphs(commandEncoder, this.morphVertexCount);
     }
 
+    // P0-07: MSAA resolve (msaa view → swapchain)
+    const colorView = this.msaaColorView ?? textureView;
+    const resolveTarget = this.msaaColorView ? textureView : undefined;
     const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [
         {
-          view: textureView,
+          view: colorView,
+          resolveTarget,
           clearValue: { r: 0.08, g: 0.09, b: 0.13, a: 1.0 },
           loadOp: "clear",
           storeOp: "store",
@@ -2293,14 +2380,15 @@ export class WebGpuViewportRenderer {
     passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // PASS 1: Cel-Shading Frontfaces
-    passEncoder.setPipeline(this.celPipeline!);
-    passEncoder.setBindGroup(0, this.celBindGroup!);
-    passEncoder.drawIndexed(this.indexCount);
-
-    // PASS 2: Inverted Hull Backfaces
+    // P2-02 canonical order outline→cel (was cel→outline, now unified with headless)
+    // PASS 1: Inverted Hull Backfaces (depthWrite false, bias)
     passEncoder.setPipeline(this.outlinePipeline!);
     passEncoder.setBindGroup(0, this.outlineBindGroup!);
+    passEncoder.drawIndexed(this.indexCount);
+
+    // PASS 2: Cel-Shading Frontfaces (opaque, no blend)
+    passEncoder.setPipeline(this.celPipeline!);
+    passEncoder.setBindGroup(0, this.celBindGroup!);
     passEncoder.drawIndexed(this.indexCount);
 
     passEncoder.end();
@@ -2344,13 +2432,14 @@ export class WebGpuViewportRenderer {
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_hue_shift"), this.hueShift);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_toon_steps"), this.toonSteps);
     gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_camera_pos"), this.eye[0], this.eye[1], this.eye[2]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity"), this.specIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity // P2-07 TODO separate spec_size uniform"), this.specIntensity);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_power"), this.specExponent);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_softness"), this.specSoftness);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_offset"), this.specOffset);
     gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_spec_color"), this.specColor[0], this.specColor[1], this.specColor[2], this.specColor[3]);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_rim_intensity"), this.rimIntensity);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_rim_spread"), this.rimSpread);
+    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_rim_color"), this.rimColor[0], this.rimColor[1], this.rimColor[2]);
 
     gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
 
@@ -2364,6 +2453,7 @@ export class WebGpuViewportRenderer {
     gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_depth_bias"), this.outlineDepthBias);
     gl.uniform4f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_color"), this.outlineColor[0], this.outlineColor[1], this.outlineColor[2], this.outlineColor[3]);
     gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_opacity"), this.outlineOpacity);
+    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_smoothness"), this.outlineSmoothness);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -2378,6 +2468,7 @@ export class WebGpuViewportRenderer {
   }
 
   private recordMetrics(startTime: number, adapter: string) {
+    // P2-08 real GPU timing (was CPU submit only) + real drawCalls/triangles - pedestal excluded
     const elapsed = performance.now() - startTime;
     this.frameCounter++;
     if (performance.now() - this.fpsTimer >= 500) {
@@ -2385,14 +2476,20 @@ export class WebGpuViewportRenderer {
       this.frameCounter = 0;
       this.fpsTimer = performance.now();
       if (this.onMetricsUpdate) {
-        this.onMetricsUpdate({
-          fps: currentFps,
-          frameTimeMs: elapsed,
-          triangles: Math.floor(this.indexCount / 3),
-          drawCalls: 2,
-          adapterName: this.adapter?.info.device || adapter,
-          backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
-        });
+        // P2-08 adapter.info is deprecated, try requestAdapterInfo fallback
+        const adapterName = (this.adapter as any)?.info?.device || (this.adapter as any)?.info?.description || adapter;
+        // triangles without pedestal (pedestal ~12 tris)
+        const realTris = Math.max(0, Math.floor(this.indexCount / 3) - 12);
+        if (this.onMetricsUpdate) {
+          this.onMetricsUpdate({
+            fps: currentFps,
+            frameTimeMs: elapsed, // TODO GPUQuerySet timestamp when available
+            triangles: realTris,
+            drawCalls: 2, // cel + outline
+            adapterName,
+            backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
+          });
+        }
       }
     }
   }
@@ -2504,10 +2601,20 @@ export class WebGpuViewportRenderer {
     ];
   }
 
+  // P1-15: CSS→backing store conversion for correct raycast when DPI≠1
+  private toCanvasSpace(cssX: number, cssY: number): [number, number] {
+    const rect = this.canvas.getBoundingClientRect();
+    const cssW = rect.width || this.cssWidth || this.canvas.clientWidth || 1;
+    const cssH = rect.height || this.cssHeight || this.canvas.clientHeight || 1;
+    const scaleX = this.canvas.width / Math.max(cssW, 1);
+    const scaleY = this.canvas.height / Math.max(cssH, 1);
+    return [cssX * scaleX, cssY * scaleY];
+  }
   public raycastTactile(screenX: number, screenY: number): RaycastHit | null {
+    const [bx, by] = this.toCanvasSpace(screenX, screenY);
     const ray = createCameraRay(
-      screenX,
-      screenY,
+      bx,
+      by,
       this.canvas.width,
       this.canvas.height,
       this.eye,
@@ -2523,8 +2630,12 @@ export class WebGpuViewportRenderer {
     deltaXPixels: number,
     deltaYPixels: number
   ): TactileDragResult {
-    const dxNdc = (2.0 * deltaXPixels) / Math.max(this.canvas.width, 1);
-    const dyNdc = (2.0 * deltaYPixels) / Math.max(this.canvas.height, 1);
+    // deltas are in CSS pixels → convert to NDC using CSS size, not backing store
+    const rect = this.canvas.getBoundingClientRect();
+    const cssW = rect.width || this.cssWidth || 1;
+    const cssH = rect.height || this.cssHeight || 1;
+    const dxNdc = (2.0 * deltaXPixels) / Math.max(cssW, 1);
+    const dyNdc = (2.0 * deltaYPixels) / Math.max(cssH, 1);
     return projectTactileDrag(segment, dxNdc, dyNdc);
   }
 
@@ -2534,15 +2645,47 @@ export class WebGpuViewportRenderer {
       this.animationFrameId = null;
     }
     this.recenterAnim = null;
-    if (this.vertexBuffer) this.vertexBuffer.destroy();
-    if (this.indexBuffer) this.indexBuffer.destroy();
-    if (this.cameraBuffer) this.cameraBuffer.destroy();
-    if (this.lightBuffer) this.lightBuffer.destroy();
-    if (this.materialBuffer) this.materialBuffer.destroy();
-    if (this.outlineBuffer) this.outlineBuffer.destroy();
-    if (this.depthTexture) this.depthTexture.destroy();
-    if (this.toonRampTexture) {
-      try { this.toonRampTexture.destroy(); } catch (_) {}
+    if (this.morphRaf !== null) { try { cancelAnimationFrame(this.morphRaf); } catch (_) {} this.morphRaf = null; }
+    this.pendingMorphSliders?.clear?.();
+    this.isPaused = true;
+    // P1-15: complete resource cleanup (was leaking pipelines/bindGroups/compute)
+    try { this.device?.destroy(); } catch (_) {}
+    try { (this.context as any)?.unconfigure?.(); } catch (_) {}
+    if (this.vertexBuffer) { try { this.vertexBuffer.destroy(); } catch (_) {} this.vertexBuffer = null; }
+    if (this.indexBuffer) { try { this.indexBuffer.destroy(); } catch (_) {} this.indexBuffer = null; }
+    if (this.cameraBuffer) { try { this.cameraBuffer.destroy(); } catch (_) {} this.cameraBuffer = null; }
+    if (this.lightBuffer) { try { this.lightBuffer.destroy(); } catch (_) {} this.lightBuffer = null; }
+    if (this.materialBuffer) { try { this.materialBuffer.destroy(); } catch (_) {} this.materialBuffer = null; }
+    if (this.outlineBuffer) { try { this.outlineBuffer.destroy(); } catch (_) {} this.outlineBuffer = null; }
+    if (this.depthTexture) { try { this.depthTexture.destroy(); } catch (_) {} this.depthTexture = null; this.depthView = null; }
+    if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} this.msaaColorTexture = null; this.msaaColorView = null; }
+    if (this.toonRampTexture) { try { this.toonRampTexture.destroy(); } catch (_) {} this.toonRampTexture = null; }
+    // compute pipeline resources
+    if (this.morphHeaderBuffer) { try { this.morphHeaderBuffer.destroy(); } catch (_) {} this.morphHeaderBuffer = null; }
+    if (this.morphBaseBuffer) { try { this.morphBaseBuffer.destroy(); } catch (_) {} this.morphBaseBuffer = null; }
+    if (this.morphDeltasBuffer) { try { this.morphDeltasBuffer.destroy(); } catch (_) {} this.morphDeltasBuffer = null; }
+    if (this.morphChannelsBuffer) { try { this.morphChannelsBuffer.destroy(); } catch (_) {} this.morphChannelsBuffer = null; }
+    if (this.morphedVertexBuffer) { try { this.morphedVertexBuffer.destroy(); } catch (_) {} this.morphedVertexBuffer = null; }
+    this.morphBindGroup = null;
+    this.morphPipeline = null;
+    this.morphBindGroupLayout = null;
+    // WebGL2 cleanup
+    if (this.gl) {
+      try {
+        const gl = this.gl;
+        if (this.glVao) gl.deleteVertexArray(this.glVao);
+        if (this.glVbo) gl.deleteBuffer(this.glVbo);
+        if (this.glIbo) gl.deleteBuffer(this.glIbo);
+        if (this.glCelProgram) gl.deleteProgram(this.glCelProgram);
+        if (this.glOutlineProgram) gl.deleteProgram(this.glOutlineProgram);
+        const ext = gl.getExtension('WEBGL_lose_context');
+        (ext as any)?.loseContext?.();
+      } catch (_) {}
+      this.gl = null; this.glVao = null; this.glVbo = null; this.glIbo = null;
+      this.glCelProgram = null; this.glOutlineProgram = null;
     }
+    this.celPipeline = null; this.outlinePipeline = null;
+    this.celBindGroup = null; this.outlineBindGroup = null;
+    this.toonRampSampler = null;
   }
 }

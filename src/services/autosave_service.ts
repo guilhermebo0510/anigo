@@ -9,6 +9,8 @@ export interface ProjectStateSnapshot {
   shadowColor: [number, number, number];
   cameraEye: [number, number, number];
   cameraTarget: [number, number, number];
+  cameraUp?: [number, number, number];
+  fov?: number;
   timestamp: number;
   version: string;
   lightAzimuth?: number;
@@ -26,6 +28,19 @@ export interface ProjectStateSnapshot {
   sunColor?: string;
   shadowSaturation?: number;
   ambientIntensity?: number;
+  // P0-10: previously missing params
+  outlineOpacity?: number;
+  outlineSmoothness?: number;
+  outlineDepthBias?: number;
+  specSoftness?: number;
+  specOffset?: number;
+  specularSize?: number;
+  aoIntensity?: number;
+  ambientSky?: [number,number,number];
+  ambientGround?: [number,number,number];
+  specColorHex?: string;
+  rimColor?: string;
+  lightColor?: [number, number, number];
 }
 
 export class AutoSaveService {

@@ -2,6 +2,12 @@
   import { onMount, onDestroy } from "svelte";
   import Viewport from "./components/viewport/Viewport.svelte";
   import { t, getLanguage, setLanguage, type LanguageCode } from "./i18n";
+  import { normalizeBridgePayload } from "./services/bridge_normalizer";
+  import { outlineFromPreset } from "./config/render_config";
+  // P3 imports
+  import { LIGHT_RIGS } from "./config/light_rigs";
+  import { IBL_PROBES } from "./services/ibl_service";
+  import { MATERIAL_LIBRARY } from "./services/material_library";
   import { autoSaveService, type ProjectStateSnapshot } from "./services/autosave_service";
 
   // Icons
@@ -35,6 +41,7 @@
   import ChevronRightIcon from "./components/icons/ChevronRightIcon.svelte";
   import PanelToggleIcon from "./components/icons/PanelToggleIcon.svelte";
   import SettingsModal, { type StudioSettings } from "./components/settings/SettingsModal.svelte";
+  import { loadSettings, saveSettings, devicePixelRatioSafe } from "./services/settings_persist";
   import { historyService, type HistoryStateSnapshot } from "./services/history_service";
   import ProjectMenuPopover from "./components/project/ProjectMenuPopover.svelte";
   import ModelPresetPopover from "./components/project/ModelPresetPopover.svelte";
@@ -273,6 +280,8 @@
     }
   }
 
+  // P2-15 sync html lang with i18n
+  $effect(() => { try { document.documentElement.lang = getLanguage(); } catch {} });
   function handleCharacterPreset(preset: CharacterPreset) {
     activeCharacterPreset = preset.id;
     currentPreset = "mannequin";
@@ -330,6 +339,10 @@
   let specExponent = $state(32.0);
   let toonSteps = $state(1.0);
   let specSoftness = $state(0.05);
+  let specularSize = $state(0.45); // P2-07
+  let aoIntensity = $state(0.85); // P2-05
+  let ambientSky = $state([0.52,0.60,0.78] as [number,number,number]);
+  let ambientGround = $state([0.25,0.20,0.18] as [number,number,number]);
   let specOffset = $state(0.0);
   let specColorHex = $state("#ffffff");
 
@@ -412,16 +425,33 @@
   }
 
   function hexToRgb(hex: string): [number, number, number] {
-    let cleaned = hex.replace(/^#/, "");
+    if (typeof hex !== "string") {
+      console.warn(`[ANIGO][Color] hex inválido (não-string) "${hex}" → fallback #ffffff`);
+      return [1, 1, 1];
+    }
+    let cleaned = hex.replace(/^#/, "").trim();
+    // P1-01: validação estrita — rejeita hex inválido e evita NaN nos uniforms
+    if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(cleaned)) {
+      console.warn(`[ANIGO][Color] hex inválido "${hex}" → fallback #ffffff`);
+      cleaned = "ffffff";
+    }
     if (cleaned.length === 3) {
       cleaned = cleaned.split("").map((c) => c + c).join("");
     }
     const num = parseInt(cleaned, 16);
+    if (Number.isNaN(num)) {
+      console.warn(`[ANIGO][Color] parse NaN para "${hex}" → fallback #ffffff`);
+      return [1, 1, 1];
+    }
     return [
       ((num >> 16) & 255) / 255,
       ((num >> 8) & 255) / 255,
       (num & 255) / 255,
     ];
+  }
+  // P1-01 helper: sRGB→linear para validação round-trip (shader faz principal)
+  function srgbToLinearChannel(c: number): number {
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
   }
 
   function rgbToHex(rgb: number[]): string {
@@ -437,6 +467,11 @@
     const lx = Math.cos(radEl) * Math.cos(radAz);
     const ly = Math.sin(radEl);
     const lz = Math.cos(radEl) * Math.sin(radAz);
+    // P0-10: persist full light/material/camera state (was 8+ params missing, camera fixed)
+    const eye = (viewportRef as any)?.renderer?.eye ?? [0, 1.5, 3.5];
+    const target = (viewportRef as any)?.renderer?.target ?? [0, 1, 0];
+    const up = (viewportRef as any)?.renderer?.up ?? [0, 1, 0];
+    const fovDeg = ((viewportRef as any)?.renderer?.fov ?? (45*Math.PI/180)) * 180/Math.PI;
 
     return {
       preset: currentPreset,
@@ -466,6 +501,22 @@
       sunColor,
       shadowSaturation,
       ambientIntensity,
+      cameraEye: eye,
+      cameraTarget: target,
+      cameraUp: up,
+      fov: fovDeg,
+      outlineOpacity,
+      outlineSmoothness,
+      outlineDepthBias,
+      specSoftness,
+      specOffset,
+      specularSize,
+      aoIntensity,
+      ambientSky,
+      ambientGround,
+      specColorHex,
+      rimColor,
+      lightColor: hexToRgb(sunColor),
     };
   }
 
@@ -496,6 +547,27 @@
     if (snap.sunColor !== undefined) sunColor = snap.sunColor;
     if (snap.shadowSaturation !== undefined) shadowSaturation = snap.shadowSaturation;
     if (snap.ambientIntensity !== undefined) ambientIntensity = snap.ambientIntensity;
+    if ((snap as any).outlineOpacity !== undefined) outlineOpacity = (snap as any).outlineOpacity;
+    if ((snap as any).outlineSmoothness !== undefined) outlineSmoothness = (snap as any).outlineSmoothness;
+    if ((snap as any).outlineDepthBias !== undefined) outlineDepthBias = (snap as any).outlineDepthBias;
+    if ((snap as any).specSoftness !== undefined) specSoftness = (snap as any).specSoftness;
+    if ((snap as any).specOffset !== undefined) specOffset = (snap as any).specOffset;
+    if ((snap as any).specularSize !== undefined) specularSize = (snap as any).specularSize;
+    if ((snap as any).aoIntensity !== undefined) aoIntensity = (snap as any).aoIntensity;
+    if ((snap as any).ambientSky) ambientSky = (snap as any).ambientSky;
+    if ((snap as any).ambientGround) ambientGround = (snap as any).ambientGround;
+    if ((snap as any).specColorHex !== undefined) specColorHex = (snap as any).specColorHex;
+    if ((snap as any).rimColor !== undefined) rimColor = (snap as any).rimColor;
+    // P0-10: restore camera (was fixed)
+    if ((snap as any).cameraEye && (snap as any).cameraTarget) {
+      const r: any = (viewportRef as any)?.renderer;
+      if (r) {
+        r.eye = (snap as any).cameraEye;
+        r.target = (snap as any).cameraTarget;
+        if ((snap as any).cameraUp) r.up = (snap as any).cameraUp;
+        if ((snap as any).fov) r.fov = (snap as any).fov * Math.PI/180;
+      }
+    }
 
     // Direct synchronization to 3D WebGPU Viewport & Rust
     if (viewportRef) {
@@ -520,8 +592,15 @@
         hexToRgb(shadowColorHex),
         hexToRgb(sunColor),
         ambientIntensity,
-        shadowSaturation
+        shadowSaturation,
+        ambientSky as any,
+        ambientGround as any
       );
+      // P2-07/05 sync new material params
+      (viewportRef as any)?.setMaterialParams?.({
+        specularSize: (snap as any).specularSize,
+        aoIntensity: (snap as any).aoIntensity
+      });
     }
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       import("@tauri-apps/api/core").then(({ invoke }) => {
@@ -607,7 +686,15 @@
         currentProjectName = name;
         currentProjectPath = fullPath;
         isProjectDirty = false;
-        historyService.init(getHistorySnapshot());
+        // P1-11 restore persisted settings (DPI/fps)
+    try {
+      const s = loadSettings();
+      if (s.targetFps) { targetFpsCap = s.targetFps as any; viewportRef?.setFpsCap?.(s.targetFps as any); }
+      // P1-11 DPI: clamp DPR 1..2 to avoid memory blow
+      const dpr = devicePixelRatioSafe();
+      if (dpr !== window.devicePixelRatio) console.info('[P1-11] DPR clamped', window.devicePixelRatio, '->', dpr);
+    } catch {}
+    historyService.init(getHistorySnapshot());
       } catch (err) {
         alert("Erro ao carregar projeto: " + err);
       }
@@ -646,6 +733,10 @@
     const lx = Math.cos(radEl) * Math.cos(radAz);
     const ly = Math.sin(radEl);
     const lz = Math.cos(radEl) * Math.sin(radAz);
+    const eye = (viewportRef as any)?.renderer?.eye ?? [0, 1.5, 3.5];
+    const target = (viewportRef as any)?.renderer?.target ?? [0, 1, 0];
+    const up = (viewportRef as any)?.renderer?.up ?? [0, 1, 0];
+    const fovDeg = ((viewportRef as any)?.renderer?.fov ?? (45*Math.PI/180)) * 180/Math.PI;
 
     return {
       preset: currentPreset,
@@ -656,8 +747,10 @@
       lightDir: [lx, ly, lz],
       lightIntensity,
       shadowColor: hexToRgb(shadowColorHex),
-      cameraEye: [0, 1.5, 3.5],
-      cameraTarget: [0, 1, 0],
+      cameraEye: eye,
+      cameraTarget: target,
+      cameraUp: up,
+      fov: fovDeg,
       timestamp: Date.now(),
       version: "0.1.0",
       lightAzimuth,
@@ -675,10 +768,24 @@
       sunColor,
       shadowSaturation,
       ambientIntensity,
+      outlineOpacity,
+      outlineSmoothness,
+      outlineDepthBias,
+      specSoftness,
+      specOffset,
+      specularSize,
+      aoIntensity,
+      ambientSky,
+      ambientGround,
+      specColorHex,
+      rimColor,
+      lightColor: hexToRgb(sunColor),
     };
   }
 
   function handleSaveStudioSettings(settings: StudioSettings) {
+    // P1-11 persist dpi/fps/vsync
+    try { saveSettings({ targetFps: settings.fpsCap as number, dpiAware: settings.dpiScale !== "1.0x" } as any); } catch {}
     vsyncEnabled = settings.vsync;
     targetFpsCap = settings.fpsCap;
     dpiScale = settings.dpiScale;
@@ -802,6 +909,9 @@
         const { listen } = await import("@tauri-apps/api/event");
 
         await listen("anigo://load_preset", (event: any) => {
+          const _norm = normalizeBridgePayload("anigo://load_preset", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://load_preset", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
           if (event.payload?.preset) {
             handlePreset(event.payload.preset);
           }
@@ -814,6 +924,9 @@
         });
 
         await listen("anigo://set_outline", (event: any) => {
+          const _norm = normalizeBridgePayload("anigo://set_outline", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_outline", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
           if (event.payload?.width !== undefined) {
             outlineWidth = event.payload.width;
             handleOutlineChange();
@@ -821,7 +934,10 @@
         });
 
         await listen("anigo://set_material_toon", (event: any) => {
-          const p = event.payload || {};
+          const _norm = normalizeBridgePayload("anigo://set_material_toon", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_material_toon", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.shadow_threshold !== undefined) shadowThreshold = p.shadow_threshold;
           if (p.shadow_smoothness !== undefined) toonSmoothness = p.shadow_smoothness;
           if (p.spec_intensity !== undefined) specIntensity = p.spec_intensity;
@@ -838,7 +954,7 @@
             shadowColorHex = rgbToHex(p.shade_color);
           }
           if (p.outline_width !== undefined) {
-            outlineWidth = p.outline_width > 0.05 ? p.outline_width : p.outline_width * 1000;
+            outlineWidth = p.outline_false /* P1-13 removed heuristic — use outlineFromPreset mode */ ? p.outline_width : p.outline_width * 1000;
           }
           if (p.outline_color && Array.isArray(p.outline_color) && p.outline_color.length >= 3) {
             outlineColor = rgbToHex(p.outline_color);
@@ -847,7 +963,10 @@
         });
 
         await listen("anigo://set_material", (event: any) => {
-          const p = event.payload || {};
+          const _norm = normalizeBridgePayload("anigo://set_material", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_material", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.shadow_threshold !== undefined) {
             shadowThreshold = p.shadow_threshold;
             handleShadowThresholdChange();
@@ -855,7 +974,10 @@
         });
 
         await listen("anigo://set_light", (event: any) => {
-          const p = event.payload || {};
+          const _norm = normalizeBridgePayload("anigo://set_light", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_light", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.direction && Array.isArray(p.direction) && p.direction.length === 3) {
             const [x, y, z] = p.direction;
             const el = Math.asin(Math.max(-1, Math.min(1, y))) * (180 / Math.PI);
@@ -880,7 +1002,7 @@
         });
 
         await listen("anigo://set_character_model", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.model_type) {
             genderDimorphism = p.model_type === "female" ? 0.0 : 1.0;
             viewportRef?.setGenderDimorphism?.(genderDimorphism);
@@ -888,7 +1010,7 @@
         });
 
         await listen("anigo://set_somatotype", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.endo !== undefined) somatotypeEndo = p.endo;
           if (p.meso !== undefined) somatotypeMeso = p.meso;
           if (p.ecto !== undefined) somatotypeEcto = p.ecto;
@@ -896,7 +1018,7 @@
         });
 
         await listen("anigo://apply_morph_slider", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.slider_id && p.value !== undefined) {
             morphSliders[p.slider_id] = p.value;
             viewportRef?.setMorphSlider?.(p.slider_id, p.value);
@@ -913,7 +1035,7 @@
         });
 
         await listen("anigo://ui_action", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (event.payload as any) || {};
           console.log("[ANIGO Studio] UI Action received:", p);
           const action = p.action || p.type;
 
@@ -1223,9 +1345,11 @@
 
     const sunRgb = hexToRgb(sunColor);
     const shadowRgb = hexToRgb(shadowColorHex);
+    // P0-02: neutral white tint — shade_color (material) alone defines shadow hue (was duplicate shadowRgb → double tint)
+    const neutralShadowTint: [number, number, number] = [1.0, 1.0, 1.0];
 
     if (viewportRef?.setLight) {
-      viewportRef.setLight([x, y, z], lightIntensity, shadowRgb, sunRgb, ambientIntensity, shadowSaturation);
+      viewportRef.setLight([x, y, z], lightIntensity, neutralShadowTint, sunRgb, ambientIntensity, shadowSaturation);
     }
 
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
@@ -1234,7 +1358,7 @@
           direction: [x, y, z],
           intensity: lightIntensity,
           color: sunRgb,
-          shadow_color: shadowRgb,
+          shadow_color: neutralShadowTint,
           ambient_intensity: ambientIntensity,
           shadow_saturation: shadowSaturation,
         }).catch(() => {});
@@ -1252,6 +1376,7 @@
     const outlineRgb = hexToRgb(outlineColor);
     const specRgb = hexToRgb(specColorHex);
 
+    const rimRgbLocal = hexToRgb(rimColor);
     if (viewportRef?.setMaterialParams) {
       viewportRef.setMaterialParams({
         baseColor: [baseRgb[0], baseRgb[1], baseRgb[2], 1.0],
@@ -1265,6 +1390,7 @@
         specColor: [specRgb[0], specRgb[1], specRgb[2], 1.0],
         rimIntensity,
         rimSpread,
+        rimColor: [rimRgbLocal[0], rimRgbLocal[1], rimRgbLocal[2], 1.0],
         hueShift,
         toonSteps,
         outlineWidth: outlineWidth * 0.001,
@@ -1276,6 +1402,7 @@
       });
     }
 
+    const rimRgb = rimRgbLocal;
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       import("@tauri-apps/api/core").then(({ invoke }) => {
         invoke("set_material_toon_params", {
@@ -1291,6 +1418,13 @@
           shade_color: [shadeRgb[0], shadeRgb[1], shadeRgb[2], 1.0],
           outline_width: outlineWidth * 0.001,
           outline_color: [outlineRgb[0], outlineRgb[1], outlineRgb[2], 1.0],
+          specular_color: [specRgb[0], specRgb[1], specRgb[2], 1.0],
+          specular_softness: specSoftness,
+          specular_offset: specOffset,
+          rim_color: [rimRgb[0], rimRgb[1], rimRgb[2], 1.0],
+          outline_opacity: outlineOpacity,
+          outline_smoothness: outlineSmoothness,
+          outline_depth_bias: outlineDepthBias,
           shadow_saturation: shadowSaturation,
         }).catch(() => {});
       });
@@ -1341,24 +1475,34 @@
   function reportLiveTelemetry() {
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       import("@tauri-apps/api/core").then(({ invoke }) => {
+        const radAz = (lightAzimuth * Math.PI) / 180;
+        const radEl = (lightElevation * Math.PI) / 180;
+        const lx = Math.cos(radEl) * Math.cos(radAz);
+        const ly = Math.sin(radEl);
+        const lz = Math.cos(radEl) * Math.sin(radAz);
+        const rend: any = (viewportRef as any)?.renderer;
+        const triCount = rend?.indexCount ? Math.floor(rend.indexCount/3) : (currentPreset === "mannequin" ? 6880 : currentPreset === "sphere" ? 2592 : 12);
+        const eye = rend?.eye ?? [0, 1.5, 3.5];
+        const target = rend?.target ?? [0, 1, 0];
+        const fpsVal = rend ? Math.round(1000 / Math.max(rend.frameTimeMs || 16, 1)) : telemetryFps;
         invoke("report_live_telemetry", {
           telemetry: {
-            fps: telemetryFps,
-            frame_time_ms: telemetryFrameMs,
+            fps: fpsVal,
+            frame_time_ms: rend?.frameTimeMs ?? telemetryFrameMs,
             draw_calls: 2,
-            triangle_count: currentPreset === "mannequin" ? 156 : currentPreset === "sphere" ? 2592 : 12,
-            adapter_name: telemetryAdapter,
-            camera_eye: [0, 1.5, 3.5],
-            camera_target: [0, 1, 0],
-            light_direction: [0.577, 0.577, 0.577],
+            triangle_count: triCount,
+            adapter_name: rend?.adapterName ?? telemetryAdapter,
+            camera_eye: eye,
+            camera_target: target,
+            light_direction: [lx, ly, lz],
             light_intensity: lightIntensity,
-            shadow_color: [0.65, 0.68, 0.85],
+            shadow_color: hexToRgb(shadowColorHex),
             active_preset: currentPreset,
             outline_width: outlineWidth,
             shadow_threshold: shadowThreshold,
             head_scale: headScale,
             head_ratio: headRatio,
-            webgpu_active: telemetryBackend.includes("WebGPU"),
+            webgpu_active: (rend?.backend ?? telemetryBackend).includes("WebGPU"),
           },
         }).catch(() => {});
       });
@@ -1935,6 +2079,13 @@
                 onclick={() => { toonSteps = 2.0; updateMaterial(true, false); }}
               >
                 2 Degraus (Ghibli)
+              </button>
+              <button
+                class="btn-secondary"
+                class:selected={toonSteps === 3.0}
+                onclick={() => { toonSteps = 3.0; updateMaterial(true, false); }}
+              >
+                3 Degraus (High-Key)
               </button>
               <button
                 class="btn-secondary"

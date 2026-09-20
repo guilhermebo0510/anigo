@@ -1,0 +1,1 @@
+# P3-13 Golden images — run anigo_compare_baseline via MCP to generate baselines for 12 presets (4 light x 3 bands)

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use wgpu::util::DeviceExt;
 
 use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Vertex};
+use glam::Mat4;
 use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,14 +83,16 @@ impl HeadlessRenderer {
             view_formats: &[],
         };
         let toon_ramp_texture = device.create_texture(&ramp_desc);
+        // P0-04: unified 256x4 ramp with TS viewport (was 85/135 vs 89/166, 64/120/180 vs 64/128/192)
         let mut ramp_data = Vec::with_capacity(256 * 4 * 4);
         for row in 0..4 {
             for col in 0..256 {
+                let u = col as f32 / 255.0;
                 let val = match row {
-                    0 => col as u8, // Continuous linear ramp
-                    1 => if col >= 128 { 255 } else { 0 }, // 1-step hard anime cel
-                    2 => if col >= 135 { 255 } else if col >= 85 { 102 } else { 0 }, // 2-step Ghibli soft penumbra
-                    _ => if col >= 180 { 255 } else if col >= 120 { 179 } else if col >= 64 { 77 } else { 0 }, // 3-step high-key
+                    0 => col as u8,
+                    1 => if u >= 0.5 { 255 } else { 0 },
+                    2 => if u < 0.35 { 0 } else if u < 0.65 { 128 } else { 255 },
+                    _ => if u < 0.25 { 0 } else if u < 0.50 { 89 } else if u < 0.75 { 179 } else { 255 },
                 };
                 ramp_data.extend_from_slice(&[val, val, val, 255]);
             }
@@ -276,7 +279,7 @@ impl HeadlessRenderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -291,7 +294,7 @@ impl HeadlessRenderer {
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: wgpu::TextureFormat::Depth24Plus,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
@@ -323,7 +326,7 @@ impl HeadlessRenderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -338,7 +341,7 @@ impl HeadlessRenderer {
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: wgpu::TextureFormat::Depth24Plus,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
@@ -605,7 +608,7 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
@@ -622,7 +625,7 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format: wgpu::TextureFormat::Depth24Plus,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
@@ -634,9 +637,14 @@ impl HeadlessRenderer {
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
 
+        // P2-14 model matrix per node (was identity)
+        let model_mat = scene.nodes.first().map(|n| n.transform.to_matrix()).unwrap_or(glam::Mat4::IDENTITY);
+        let normal_mat = model_mat.inverse().transpose();
         let camera_uniform = CameraUniform {
             view_proj: view_proj.to_cols_array(),
             camera_pos: [camera_copy.eye.x, camera_copy.eye.y, camera_copy.eye.z, 1.0],
+            model: model_mat.to_cols_array(),
+            normal_mat: normal_mat.to_cols_array(),
         };
         let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
@@ -662,8 +670,10 @@ impl HeadlessRenderer {
                 scene.light.shadow_color[0],
                 scene.light.shadow_color[1],
                 scene.light.shadow_color[2],
-                1.0,
+                scene.light.shadow_saturation,
             ],
+            ambient_sky: [scene.light.ambient_sky[0], scene.light.ambient_sky[1], scene.light.ambient_sky[2], 1.0],
+            ambient_ground: [scene.light.ambient_ground[0], scene.light.ambient_ground[1], scene.light.ambient_ground[2], 1.0],
         };
         let light_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Uniform Buffer"),
@@ -739,11 +749,12 @@ impl HeadlessRenderer {
                         usage: wgpu::BufferUsages::UNIFORM,
                     });
 
-                    // Outline Uniform with calibrated aspect ratio
+                    // P0-04/09: outline uniform parity with viewport (depthBias/opacity/smoothness, was 0.0/0.0)
                     let aspect = width as f32 / height.max(1) as f32;
                     let outline_uniform = OutlineUniform {
                         color: mat.outline_color,
-                        params: [mat.outline_width, aspect, 0.0, 0.0],
+                        params: [mat.outline_width, aspect, mat.outline_depth_bias, mat.outline_opacity],
+                        params2: [mat.outline_smoothness, 0.0, 0.0, 0.0],
                     };
                     let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("Outline Uniform Buffer"),
@@ -805,17 +816,18 @@ impl HeadlessRenderer {
                         usage: wgpu::BufferUsages::INDEX,
                     });
 
-                    // Pass 1: Inverted Hull Outline (renders backfaces first or with depth test)
-                    render_pass.set_pipeline(&self.outline_pipeline);
-                    render_pass.set_bind_group(0, &outline_bind_group, &[]);
+                    // P0-04: order unified to viewport cel→outline (was outline→cel diverging)
+                    // Pass 1: Cel-Shading Surfaces (front faces)
+                    render_pass.set_pipeline(&self.cel_pipeline);
+                    render_pass.set_bind_group(0, &cel_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, v_buffer.slice(..));
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                     draw_calls += 1;
 
-                    // Pass 2: Cel-Shading Surfaces (renders front faces with toon shading)
-                    render_pass.set_pipeline(&self.cel_pipeline);
-                    render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                    // Pass 2: Inverted Hull Outline (backfaces extruded)
+                    render_pass.set_pipeline(&self.outline_pipeline);
+                    render_pass.set_bind_group(0, &outline_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, v_buffer.slice(..));
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
@@ -915,7 +927,7 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
@@ -932,7 +944,7 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format: wgpu::TextureFormat::Depth24Plus,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
@@ -988,9 +1000,14 @@ impl HeadlessRenderer {
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
 
+        // P2-14 model matrix per node (was identity)
+        let model_mat = scene.nodes.first().map(|n| n.transform.to_matrix()).unwrap_or(glam::Mat4::IDENTITY);
+        let normal_mat = model_mat.inverse().transpose();
         let camera_uniform = CameraUniform {
             view_proj: view_proj.to_cols_array(),
             camera_pos: [camera_copy.eye.x, camera_copy.eye.y, camera_copy.eye.z, 1.0],
+            model: model_mat.to_cols_array(),
+            normal_mat: normal_mat.to_cols_array(),
         };
         let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
@@ -1016,8 +1033,10 @@ impl HeadlessRenderer {
                 scene.light.shadow_color[0],
                 scene.light.shadow_color[1],
                 scene.light.shadow_color[2],
-                1.0,
+                scene.light.shadow_saturation,
             ],
+            ambient_sky: [scene.light.ambient_sky[0], scene.light.ambient_sky[1], scene.light.ambient_sky[2], 1.0],
+            ambient_ground: [scene.light.ambient_ground[0], scene.light.ambient_ground[1], scene.light.ambient_ground[2], 1.0],
         };
         let light_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Uniform Buffer"),
@@ -1102,10 +1121,12 @@ impl HeadlessRenderer {
                         usage: wgpu::BufferUsages::UNIFORM,
                     });
 
+                    // P0-04/09: outline uniform parity with viewport (depthBias/opacity/smoothness, was 0.0/0.0)
                     let aspect = width as f32 / height.max(1) as f32;
                     let outline_uniform = OutlineUniform {
                         color: mat.outline_color,
-                        params: [mat.outline_width, aspect, 0.0, 0.0],
+                        params: [mat.outline_width, aspect, mat.outline_depth_bias, mat.outline_opacity],
+                        params2: [mat.outline_smoothness, 0.0, 0.0, 0.0],
                     };
                     let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("Outline Uniform Buffer"),
@@ -1176,17 +1197,18 @@ impl HeadlessRenderer {
                         None => morphed_vertex_buffer.slice(..),
                     };
 
-                    // Pass 1: Inverted Hull Outline
-                    render_pass.set_pipeline(&self.outline_pipeline);
-                    render_pass.set_bind_group(0, &outline_bind_group, &[]);
+                    // P0-04: order unified to viewport cel→outline
+                    // Pass 1: Cel-Shading Surfaces
+                    render_pass.set_pipeline(&self.cel_pipeline);
+                    render_pass.set_bind_group(0, &cel_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, active_v_slice);
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                     draw_calls += 1;
 
-                    // Pass 2: Cel-Shading Surfaces
-                    render_pass.set_pipeline(&self.cel_pipeline);
-                    render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                    // Pass 2: Inverted Hull Outline
+                    render_pass.set_pipeline(&self.outline_pipeline);
+                    render_pass.set_bind_group(0, &outline_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, active_v_slice);
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);

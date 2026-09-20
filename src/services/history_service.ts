@@ -32,6 +32,23 @@ export interface HistoryStateSnapshot {
   sunColor?: string;
   shadowSaturation?: number;
   ambientIntensity?: number;
+  // P0-10: previously missing params now persisted
+  cameraEye?: [number, number, number];
+  cameraTarget?: [number, number, number];
+  cameraUp?: [number, number, number];
+  fov?: number;
+  outlineOpacity?: number;
+  outlineSmoothness?: number;
+  outlineDepthBias?: number;
+  specSoftness?: number;
+  specOffset?: number;
+  specularSize?: number; // P2-07
+  aoIntensity?: number; // P2-05
+  ambientSky?: [number,number,number]; // P2-04
+  ambientGround?: [number,number,number];
+  specColorHex?: string;
+  rimColor?: string;
+  lightColor?: [number, number, number];
 }
 
 export interface HistoryEntry {
