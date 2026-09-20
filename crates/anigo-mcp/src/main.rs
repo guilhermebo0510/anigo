@@ -1415,6 +1415,30 @@ async fn handle_tool_call(
                             }
                         }
                     }
+                    // Keep the headless snapshot visually equivalent to the live window,
+                    // not just camera-equivalent (P1-09).
+                    {
+                        let mut scene = state.scene.write().await;
+                        if let Some(direction) = telemetry.get("light_direction").and_then(|v| v.as_array()) {
+                            if let Ok(v) = validate::validate_vec3(direction, "light_direction") { scene.light.direction = v.to_array(); }
+                        }
+                        if let Some(color) = telemetry.get("light_color").and_then(|v| v.as_array()) {
+                            if let Ok(v) = validate::validate_vec3(color, "light_color") { scene.light.color = v.to_array(); }
+                        }
+                        if let Some(v) = telemetry.get("light_intensity").and_then(|v| v.as_f64()) { scene.light.intensity = validate::f32_range(v, 0.0, 3.0, "light_intensity")?; }
+                        if let Some(v) = telemetry.get("shadow_color").and_then(|x| x.as_array()) {
+                            if let Ok(c) = validate::validate_vec3(v, "shadow_color") { scene.light.shadow_color = c.to_array(); }
+                        }
+                        if let Some(material) = scene.nodes.first_mut().and_then(|n| n.material.as_mut()) {
+                            if let Some(v) = telemetry.get("outline_width").and_then(|x| x.as_f64()) { material.outline_width = validate::f32_range(v, 0.0, 20.0, "outline_width")?; }
+                            if let Some(v) = telemetry.get("shadow_threshold").and_then(|x| x.as_f64()) { material.shadow_threshold = validate::f32_range(v, 0.0, 1.0, "shadow_threshold")?; }
+                            if let Some(v) = telemetry.get("spec_intensity").and_then(|x| x.as_f64()) { material.spec_intensity = validate::f32_range(v, 0.0, 3.0, "spec_intensity")?; }
+                            if let Some(v) = telemetry.get("spec_power").and_then(|x| x.as_f64()) { material.spec_power = validate::f32_range(v, 4.0, 128.0, "spec_power")?; }
+                            if let Some(v) = telemetry.get("rim_intensity").and_then(|x| x.as_f64()) { material.rim_intensity = validate::f32_range(v, 0.0, 3.0, "rim_intensity")?; }
+                            if let Some(v) = telemetry.get("hue_shift").and_then(|x| x.as_f64()) { material.hue_shift = validate::f32_range(v, -180.0, 180.0, "hue_shift")?; }
+                            if let Some(v) = telemetry.get("toon_steps").and_then(|x| x.as_f64()) { material.toon_steps = validate::f32_range(v, 0.0, 8.0, "toon_steps")?; }
+                        }
+                    }
                 } else {
                     warnings.push("sync_live: failed to get telemetry from live window".to_string());
                 }
@@ -1712,21 +1736,44 @@ async fn handle_tool_call(
             }
         }
         "anigo_ui_action" => {
-            // P1-08: Validate schema
-            let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("Missing action (code -32602)"))?;
-            if !["select_tab", "select_tool", "set_slider", "set_preset"].contains(&action) {
+            // P1-08: Validate a closed schema before forwarding anything to the live UI.
+            let object = args.as_object().ok_or_else(|| anyhow::anyhow!("arguments must be an object (code -32602)"))?;
+            for key in object.keys() {
+                if !["action", "property", "value"].contains(&key.as_str()) {
+                    anyhow::bail!("Unknown ui_action field {} (code -32602)", key);
+                }
+            }
+            let action = object.get("action").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("Missing action (code -32602)"))?;
+            let allowed_actions = ["select_tab", "select_tool", "set_slider", "set_preset"];
+            if !allowed_actions.contains(&action) {
                 anyhow::bail!("Invalid action {} (code -32602)", action);
             }
-            if let Some(prop) = args.get("property").and_then(|v| v.as_str()) {
-                // Basic allowlist for property
-                let allowed_props = ["head_scale", "head_ratio", "outline_width", "shadow_threshold", "light_azimuth", "light_elevation", "light_intensity", "tab", "tool"];
-                // Allow known props but warn on unknown
-                if !allowed_props.contains(&prop) && !prop.is_empty() {
-                    tracing::warn!(property=%prop, "Unknown ui_action property, allowing but logging");
+            let allowed_props = ["head_scale", "head_ratio", "outline_width", "shadow_threshold", "light_azimuth", "light_elevation", "light_intensity"];
+            let property = object.get("property");
+            match action {
+                "set_slider" => {
+                    let prop = property.and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("set_slider requires string property (code -32602)"))?;
+                    if !allowed_props.contains(&prop) { anyhow::bail!("Invalid slider property {} (code -32602)", prop); }
+                    let value = object.get("value").and_then(|v| v.as_f64()).ok_or_else(|| anyhow::anyhow!("set_slider requires numeric value (code -32602)"))?;
+                    let (min, max) = match prop {
+                        "head_scale" => (0.7, 1.4), "head_ratio" => (4.0, 10.0),
+                        "outline_width" => (0.0, 20.0), "shadow_threshold" => (0.0, 1.0),
+                        "light_azimuth" => (-360.0, 360.0), "light_elevation" => (-90.0, 90.0),
+                        "light_intensity" => (0.0, 3.0), _ => unreachable!(),
+                    };
+                    validate::f32_range(value, min, max, prop)?;
                 }
-                if prop.contains("__proto__") || prop.contains("constructor") {
-                    anyhow::bail!("Invalid property (code -32602)");
+                "select_tab" | "select_tool" | "set_preset" => {
+                    if property.is_some() { anyhow::bail!("property is not valid for {} (code -32602)", action); }
+                    let value = object.get("value").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("{} requires string value (code -32602)", action))?;
+                    let allowed = match action {
+                        "select_tab" => &["personagem", "shading", "mcp", "settings"][..],
+                        "select_tool" => &["mannequin", "face", "hair", "cloth", "rig", "settings"][..],
+                        _ => &["mannequin", "sphere", "cube"][..],
+                    };
+                    if !allowed.contains(&value) { anyhow::bail!("Invalid value for {} (code -32602)", action); }
                 }
+                _ => unreachable!(),
             }
 
             if !state.bridge.is_live().await {
@@ -1783,7 +1830,8 @@ async fn handle_tool_call(
             })])
         }
         "anigo_send_key" => {
-            let vk = args.get("vk_code").and_then(|v| v.as_u64()).unwrap_or(0x12) as u8;
+            let raw_vk = args.get("vk_code").and_then(|v| v.as_u64()).ok_or_else(|| anyhow::anyhow!("Missing vk_code (code -32602)"))?;
+            let vk = u8::try_from(raw_vk).map_err(|_| anyhow::anyhow!("vk_code must be an integer from 0 to 255 (code -32602)"))?;
             validate::validate_vk(vk)?;
             tokio::task::spawn_blocking(move || {
                 Win32Harness::send_key(vk);

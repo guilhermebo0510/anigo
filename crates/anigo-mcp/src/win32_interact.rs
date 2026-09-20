@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use image::{ImageBuffer, Rgba};
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::PathBuf;
 use std::ptr;
 use std::thread;
 use std::time::Duration;
@@ -443,26 +444,32 @@ impl Win32Harness {
     pub fn collect_logs_and_diagnostics() -> serde_json::Value {
         let mut logs = serde_json::Map::new();
 
-        let log_files = [
-            ("launch_log", "C:\\ANIGO\\launch.log"),
-            ("app_crash_log", "C:\\ANIGO\\app_crash.log"),
-            ("panic_log", "C:\\ANIGO\\panic.log"),
-        ];
+        // Resolve logs from the installation/user data locations instead of a
+        // machine-specific C:\\ANIGO path. Read at most 64 KiB per file so a
+        // corrupted log cannot exhaust the MCP process (P1-10).
+        let mut log_dirs = Vec::<PathBuf>::new();
+        if let Ok(dir) = std::env::var("ANIGO_LOG_DIR") { log_dirs.push(PathBuf::from(dir)); }
+        if let Ok(dir) = std::env::var("LOCALAPPDATA") { log_dirs.push(PathBuf::from(dir).join("ANIGO")); }
+        if let Ok(dir) = std::env::var("USERPROFILE") { log_dirs.push(PathBuf::from(dir).join("Documents").join("ANIGO")); }
+        if let Ok(dir) = std::env::var("HOME") { log_dirs.push(PathBuf::from(dir).join("Documents").join("ANIGO")); }
 
-        for (name, path) in log_files {
-            if Path::new(path).exists() {
-                let content = fs::read_to_string(path).unwrap_or_else(|e| format!("Erro ao ler: {}", e));
-                logs.insert(name.to_string(), serde_json::Value::String(content));
-            } else {
-                logs.insert(name.to_string(), serde_json::Value::String("Arquivo inexistente (sem erros registrados)".to_string()));
-            }
+        for (name, filename) in [("launch_log", "launch.log"), ("app_crash_log", "app_crash.log"), ("panic_log", "panic.log")] {
+            let path = log_dirs.iter().map(|dir| dir.join(filename)).find(|p| p.is_file());
+            let content = path.map(|p| {
+                let mut buf = Vec::with_capacity(64 * 1024);
+                File::open(p).and_then(|mut f| f.take(64 * 1024).read_to_end(&mut buf))
+                    .map(|_| String::from_utf8_lossy(&buf).into_owned())
+                    .unwrap_or_else(|e| format!("Erro ao ler: {}", e))
+            }).unwrap_or_else(|| "Arquivo inexistente (sem erros registrados)".to_string());
+            logs.insert(name.to_string(), serde_json::Value::String(content));
         }
 
-        // Teste de conexão local com a porta 39090
-        let bridge_live = TcpStream::connect_timeout(
-            &"127.0.0.1:39090".parse().unwrap(),
-            Duration::from_millis(300),
-        ).is_ok();
+        // Bounded connect; diagnostics itself runs in spawn_blocking from the
+        // MCP tool handler. Allow the same configurable address as the client.
+        let bridge_addr = std::env::var("ANIGO_BRIDGE_ADDR").unwrap_or_else(|_| "127.0.0.1:39090".to_string());
+        let bridge_live = bridge_addr.parse().ok().map(|addr| {
+            TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+        }).unwrap_or(false);
 
         logs.insert("bridge_port_39090_active".to_string(), serde_json::Value::Bool(bridge_live));
 
