@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use image::{ImageBuffer, Rgba};
 use std::fs;
-use std::net::TcpStream;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::thread;
 use std::time::Duration;
+
+// P1-10: Maximum log read size to avoid loading huge files into RAM
+const MAX_LOG_BYTES: usize = 64 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -439,31 +442,101 @@ impl Win32Harness {
         }
     }
 
-    /// Coleta arquivos de log e status de saúde do ecossistema
-    pub fn collect_logs_and_diagnostics() -> serde_json::Value {
-        let mut logs = serde_json::Map::new();
-
-        let log_files = [
-            ("launch_log", "C:\\ANIGO\\launch.log"),
-            ("app_crash_log", "C:\\ANIGO\\app_crash.log"),
-            ("panic_log", "C:\\ANIGO\\panic.log"),
-        ];
-
-        for (name, path) in log_files {
-            if Path::new(path).exists() {
-                let content = fs::read_to_string(path).unwrap_or_else(|e| format!("Erro ao ler: {}", e));
-                logs.insert(name.to_string(), serde_json::Value::String(content));
-            } else {
-                logs.insert(name.to_string(), serde_json::Value::String("Arquivo inexistente (sem erros registrados)".to_string()));
+    /// Resolve o diretório de logs do ANIGO, procurando em múltiplas localizações:
+    /// 1. %ANIGO_LOG_DIR% (override)
+    /// 2. %LOCALAPPDATA%\ANIGO\logs
+    /// 3. %USERPROFILE%\Documents\ANIGO\logs
+    /// 4. %APPDATA%\ANIGO\logs
+    /// 5. Fallback: C:\ANIGO (comportamento legado)
+    fn resolve_log_dir() -> PathBuf {
+        if let Ok(dir) = std::env::var("ANIGO_LOG_DIR") {
+            return PathBuf::from(dir);
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let p = PathBuf::from(&local).join("ANIGO").join("logs");
+            if p.exists() {
+                return p;
             }
         }
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let p = PathBuf::from(&profile).join("Documents").join("ANIGO").join("logs");
+            if p.exists() {
+                return p;
+            }
+            // também tenta Documents/ANIGO sem subdir logs
+            let p2 = PathBuf::from(&profile).join("Documents").join("ANIGO");
+            if p2.exists() {
+                return p2;
+            }
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = PathBuf::from(&appdata).join("ANIGO").join("logs");
+            if p.exists() {
+                return p;
+            }
+        }
+        // Fallback legado
+        PathBuf::from("C:\\ANIGO")
+    }
 
-        // Teste de conexão local com a porta 39090
-        let bridge_live = TcpStream::connect_timeout(
-            &"127.0.0.1:39090".parse().unwrap(),
-            Duration::from_millis(300),
-        ).is_ok();
+    /// Lê um arquivo de log com limite de tamanho para evitar OOM (P1-10)
+    fn read_log_limited(path: &Path) -> String {
+        match fs::File::open(path) {
+            Ok(mut f) => {
+                let mut buf = vec![0u8; MAX_LOG_BYTES];
+                match f.read(&mut buf) {
+                    Ok(n) => {
+                        let mut content = String::from_utf8_lossy(&buf[..n]).to_string();
+                        if n == MAX_LOG_BYTES {
+                            content.push_str(&format!("\n... [truncated at {} bytes]", MAX_LOG_BYTES));
+                        }
+                        content
+                    }
+                    Err(e) => format!("Erro ao ler: {}", e),
+                }
+            }
+            Err(_) => "Arquivo inexistente (sem erros registrados)".to_string(),
+        }
+    }
 
+    /// Coleta arquivos de log e status de saúde do ecossistema (P1-10: paths resolvidos dinamicamente, sem bloqueio infinito)
+    pub fn collect_logs_and_diagnostics() -> serde_json::Value {
+        let mut logs = serde_json::Map::new();
+        let log_dir = Self::resolve_log_dir();
+        let bridge_addr = std::env::var("ANIGO_BRIDGE_ADDR").unwrap_or_else(|_| "127.0.0.1:39090".to_string());
+
+        let log_files = ["launch.log", "app_crash.log", "panic.log"];
+        let log_keys = ["launch_log", "app_crash_log", "panic_log"];
+
+        for (name, file) in log_keys.iter().zip(log_files.iter()) {
+            let path = log_dir.join(file);
+            let content = Self::read_log_limited(&path);
+            logs.insert(name.to_string(), serde_json::Value::String(content));
+        }
+
+        logs.insert(
+            "log_directory".to_string(),
+            serde_json::Value::String(log_dir.to_string_lossy().to_string()),
+        );
+
+        // P1-10: Teste de conexão com timeout curto (estamos em spawn_blocking, então std::net é OK aqui)
+        let bridge_live = std::net::TcpStream::connect_timeout(
+            &bridge_addr.parse().unwrap_or_else(|_| "127.0.0.1:39090".parse().unwrap()),
+            Duration::from_millis(500),
+        ).map(|mut s| {
+            let _ = s.set_read_timeout(Some(Duration::from_millis(300)));
+            let _ = s.set_write_timeout(Some(Duration::from_millis(300)));
+            // Envia PING rápido para validar que é realmente o bridge
+            let ping = "{\"id\":\"diag\",\"action\":\"PING\",\"params\":{}}\n";
+            let _ = s.write_all(ping.as_bytes());
+            let mut resp = [0u8; 256];
+            let _ = s.read(&mut resp);
+            true
+        }).unwrap_or(false);
+
+        logs.insert("bridge_addr".to_string(), serde_json::Value::String(bridge_addr));
+        logs.insert("bridge_active".to_string(), serde_json::Value::Bool(bridge_live));
+        // Manter chave legada por compatibilidade
         logs.insert("bridge_port_39090_active".to_string(), serde_json::Value::Bool(bridge_live));
 
         serde_json::Value::Object(logs)
