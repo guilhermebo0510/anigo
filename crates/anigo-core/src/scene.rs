@@ -15,6 +15,11 @@ pub struct StylizedLight {
     /// Shadow saturation multiplier applied in HSV hue-shift (default neutral 1.0 to avoid double tint)
     #[serde(default = "default_shadow_saturation")]
     pub shadow_saturation: f32,
+    // P2-04 hemisphere ambient (was single intensity scaling shadow color)
+    #[serde(default = "default_ambient_sky")]
+    pub ambient_sky: [f32; 3],
+    #[serde(default = "default_ambient_ground")]
+    pub ambient_ground: [f32; 3],
 }
 
 impl Default for StylizedLight {
@@ -26,6 +31,8 @@ impl Default for StylizedLight {
             shadow_color: [1.0, 1.0, 1.0], // P0-02: neutral white (was 0.65,0.68,0.85 — double tint with shade_color)
             ambient_intensity: 0.35,
             shadow_saturation: default_shadow_saturation(),
+            ambient_sky: default_ambient_sky(),
+            ambient_ground: default_ambient_ground(),
         }
     }
 }
@@ -75,6 +82,12 @@ pub struct StylizedMaterial {
     pub outline_smoothness: f32,
     #[serde(default = "default_outline_depth_bias")]
     pub outline_depth_bias: f32,
+    // P2-07 separate spec_size (was coupled 0.65-0.12*intensity)
+    #[serde(default = "default_spec_size")]
+    pub specular_size: f32,
+    // P2-05 AO intensity (was hardcoded 0.85 mix)
+    #[serde(default = "default_ao_intensity")]
+    pub ao_intensity: f32,
 }
 
 impl Default for StylizedMaterial {
@@ -100,6 +113,8 @@ impl Default for StylizedMaterial {
             outline_opacity: default_outline_opacity(),
             outline_smoothness: default_outline_smoothness(),
             outline_depth_bias: default_outline_depth_bias(),
+            specular_size: default_spec_size(),
+            ao_intensity: default_ao_intensity(),
         }
     }
 }

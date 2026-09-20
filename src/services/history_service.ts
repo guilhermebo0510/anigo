@@ -42,6 +42,10 @@ export interface HistoryStateSnapshot {
   outlineDepthBias?: number;
   specSoftness?: number;
   specOffset?: number;
+  specularSize?: number; // P2-07
+  aoIntensity?: number; // P2-05
+  ambientSky?: [number,number,number]; // P2-04
+  ambientGround?: [number,number,number];
   specColorHex?: string;
   rimColor?: string;
   lightColor?: [number, number, number];

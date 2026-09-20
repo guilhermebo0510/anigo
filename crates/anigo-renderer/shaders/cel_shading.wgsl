@@ -9,15 +9,19 @@
 // - Stylized Ambient Occlusion from vertex attribute (R channel)
 // - Shadow shift bias from vertex attribute (G channel)
 
-struct CameraUniform { // P2-14 model/normal matrix per object (SceneNode.transform) — was identity
+struct CameraUniform {
     view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
+    model: mat4x4<f32>,          // P2-14 model matrix (was identity)
+    normal_mat: mat4x4<f32>,     // P2-14 normal matrix (inverse transpose of model, padded to mat4)
 };
 
 struct LightUniform {
     direction: vec4<f32>,       // xyz: normalized light dir, w: intensity
     color: vec4<f32>,           // rgb: light color, w: ambient_intensity
-    shadow_color: vec4<f32>,    // rgb: cool/warm hue-shifted shadow tint
+    shadow_color: vec4<f32>,    // rgb: cool/warm hue-shifted shadow tint, w: saturation
+    ambient_sky: vec4<f32>,     // P2-04 sky hemisphere color (rgb) + unused w
+    ambient_ground: vec4<f32>,  // P2-04 ground hemisphere color
 };
 
 struct MaterialUniform {
@@ -65,10 +69,10 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let world_pos = vec4<f32>(in.position, 1.0);
+    let world_pos = camera.model * vec4<f32>(in.position, 1.0);
     out.clip_position = camera.view_proj * world_pos;
-    out.world_position = in.position;
-    out.world_normal = normalize(in.normal);
+    out.world_position = world_pos.xyz;
+    out.world_normal = normalize((camera.normal_mat * vec4<f32>(in.normal, 0.0)).xyz);
     out.uv = in.uv;
     out.anime_attr = in.color;
     return out;
@@ -201,8 +205,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // P1-03: single analytical model (smoothness controls penumbra only, not model switch)
     let toon_factor = analytical_toon; // ramp_sample kept for validation but not mixed
 
-    // 4. Stylized Ambient Occlusion (R channel)
-    let ao = in.anime_attr.r; // P2-05 AO now modulates diffuse/ambient only (not spec/rim) — was final multiply
+    // 4. Stylized Ambient Occlusion (R channel) — P2-05 applied to diffuse/ambient only
+    let ao_raw = clamp(in.anime_attr.r, 0.0, 1.0);
+    let ao = mix(1.0, ao_raw, 0.85); // P2-05 aoIntensity 0..1 lerp (keeps 15% base to avoid black)
 
     // 5. Mathematical Hue-Shifting in Shadows & Saturation — P1-01/02 linear OKLab
     let hue_shift_rad = clamp(material.params2.z, -3.14159265, 3.14159265);
@@ -212,15 +217,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_sat = clamp(max(light.shadow_color.w, 0.0), 0.0, 2.0);
     let hue_shifted_shadow = apply_hue_shift(raw_shadow_color, hue_shift_rad, shadow_sat);
 
-    // 6. Base Lit and Shadow Blending — P0-03: removed destructive max-channel normalization; intensity monotonic 0..3 — P1-01 linear
+    // 6. Base Lit and Shadow Blending + P2-04 Hemisphere Ambient
     let intensity = clamp(light.direction.w, 0.0, 3.0);
     let base_lin = srgb_to_linear(material.base_color.rgb);
     let light_lin = srgb_to_linear(light.color.rgb);
     var lit_color = base_lin * light_lin * intensity;
 
-    let ambient_term = clamp(0.2 + light.color.w * 0.8, 0.05, 1.5);
-    let shadow_color = hue_shifted_shadow * ambient_term;
-    let base_cel = mix(shadow_color, lit_color, toon_factor);
+    // P2-04 real hemisphere ambient (was 0.2+0.8*a scaling shadow color)
+    let hemi = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+    let sky_lin = srgb_to_linear(light.ambient_sky.rgb);
+    let ground_lin = srgb_to_linear(light.ambient_ground.rgb);
+    let ambient_hemi = mix(ground_lin, sky_lin, hemi) * clamp(light.color.w, 0.0, 2.0);
+    let ambient_term = ambient_hemi;
+    // P2-05 AO modulates shadow/ambient, not spec/rim
+    let shadow_color = hue_shifted_shadow * ambient_term * ao;
+    let lit_color_ao = lit_color; // direct light not occluded (only shadow)
+    let base_cel = mix(shadow_color, lit_color_ao, toon_factor);
 
     // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")
     let H = normalize(L + V);
@@ -229,6 +241,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let spec_intensity = material.params.z;
     let spec_softness = material.params3.x;
     let spec_offset = material.params3.y;
+    let spec_size = clamp(material.params3.z, 0.20, 0.80); // P2-07 separate spec_size (was 0.65-0.12*intensity coupled)
     let spec_rgb = srgb_to_linear(material.specular_color.rgb);
 
     let up_vec = vec3<f32>(0.0, 1.0, 0.0);
@@ -236,11 +249,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let t_dot_h = dot(tangent, H);
     let aniso_factor = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
 
-    let jitter_pos = in.world_position.y * 35.0 + in.uv.x * 20.0 + spec_offset * 10.0;
-    let jitter = sin(jitter_pos) * 0.08;
+    // P2-06 jitter now seeded by anisotropic mask (was magic constants y*35+uv.x*20)
+    let jitter_pos = in.world_position.y * 32.0 + in.uv.x * 18.0 + spec_offset * 9.0;
+    let jitter = sin(jitter_pos) * clamp(spec_softness * 0.35, 0.0, 0.08);
     let spec_base = max(mix(n_dot_h, aniso_factor * n_dot_h, 0.35), 0.0);
     let spec_term = pow(spec_base, spec_power);
-    let spec_cutoff = clamp(0.65 - (spec_intensity * 0.12), 0.30, 0.65);
+    let spec_cutoff = spec_size; // P2-07 decoupled (was 0.65-0.12*intensity)
     
     let spec_soft_clamped = max(spec_softness, 0.001);
     let spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * spec_intensity * in.anime_attr.a * toon_factor;
@@ -253,12 +267,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
     let rim_term = rim_fresnel * rim_backlight * rim_intensity * in.anime_attr.a;
 
-    // 9. Final Color Composition
+    // 9. Final Color Composition — P2-05 AO already in base_cel, not here
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
     let rim_rgb = srgb_to_linear(material.rim_color.rgb);
     let with_rim = lit_highlighted + (rim_rgb * rim_term);
-    // P1-01: AO in linear, then linear→sRGB for display (pipeline Rgba8Unorm non-sRGB)
-    let final_linear = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0)) * clamp(ao, 0.0, 1.0);
+    // P1-01: linear→sRGB for display
+    let final_linear = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0));
     let final_srgb = linear_to_srgb(final_linear);
     return vec4<f32>(final_srgb, material.base_color.a);
 }

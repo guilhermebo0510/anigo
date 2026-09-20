@@ -335,6 +335,10 @@
   let specExponent = $state(32.0);
   let toonSteps = $state(1.0);
   let specSoftness = $state(0.05);
+  let specularSize = $state(0.45); // P2-07
+  let aoIntensity = $state(0.85); // P2-05
+  let ambientSky = $state([0.52,0.60,0.78] as [number,number,number]);
+  let ambientGround = $state([0.25,0.20,0.18] as [number,number,number]);
   let specOffset = $state(0.0);
   let specColorHex = $state("#ffffff");
 
@@ -502,6 +506,10 @@
       outlineDepthBias,
       specSoftness,
       specOffset,
+      specularSize,
+      aoIntensity,
+      ambientSky,
+      ambientGround,
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),
@@ -540,6 +548,10 @@
     if ((snap as any).outlineDepthBias !== undefined) outlineDepthBias = (snap as any).outlineDepthBias;
     if ((snap as any).specSoftness !== undefined) specSoftness = (snap as any).specSoftness;
     if ((snap as any).specOffset !== undefined) specOffset = (snap as any).specOffset;
+    if ((snap as any).specularSize !== undefined) specularSize = (snap as any).specularSize;
+    if ((snap as any).aoIntensity !== undefined) aoIntensity = (snap as any).aoIntensity;
+    if ((snap as any).ambientSky) ambientSky = (snap as any).ambientSky;
+    if ((snap as any).ambientGround) ambientGround = (snap as any).ambientGround;
     if ((snap as any).specColorHex !== undefined) specColorHex = (snap as any).specColorHex;
     if ((snap as any).rimColor !== undefined) rimColor = (snap as any).rimColor;
     // P0-10: restore camera (was fixed)
@@ -576,8 +588,15 @@
         hexToRgb(shadowColorHex),
         hexToRgb(sunColor),
         ambientIntensity,
-        shadowSaturation
+        shadowSaturation,
+        ambientSky as any,
+        ambientGround as any
       );
+      // P2-07/05 sync new material params
+      (viewportRef as any)?.setMaterialParams?.({
+        specularSize: (snap as any).specularSize,
+        aoIntensity: (snap as any).aoIntensity
+      });
     }
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       import("@tauri-apps/api/core").then(({ invoke }) => {
@@ -750,6 +769,10 @@
       outlineDepthBias,
       specSoftness,
       specOffset,
+      specularSize,
+      aoIntensity,
+      ambientSky,
+      ambientGround,
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),

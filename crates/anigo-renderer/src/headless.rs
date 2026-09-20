@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use wgpu::util::DeviceExt;
 
 use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Vertex};
+use glam::Mat4;
 use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -636,9 +637,14 @@ impl HeadlessRenderer {
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
 
+        // P2-14 model matrix per node (was identity)
+        let model_mat = scene.nodes.first().map(|n| n.transform.to_matrix()).unwrap_or(glam::Mat4::IDENTITY);
+        let normal_mat = model_mat.inverse().transpose();
         let camera_uniform = CameraUniform {
             view_proj: view_proj.to_cols_array(),
             camera_pos: [camera_copy.eye.x, camera_copy.eye.y, camera_copy.eye.z, 1.0],
+            model: model_mat.to_cols_array(),
+            normal_mat: normal_mat.to_cols_array(),
         };
         let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
@@ -666,6 +672,8 @@ impl HeadlessRenderer {
                 scene.light.shadow_color[2],
                 scene.light.shadow_saturation,
             ],
+            ambient_sky: [scene.light.ambient_sky[0], scene.light.ambient_sky[1], scene.light.ambient_sky[2], 1.0],
+            ambient_ground: [scene.light.ambient_ground[0], scene.light.ambient_ground[1], scene.light.ambient_ground[2], 1.0],
         };
         let light_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Uniform Buffer"),
@@ -992,9 +1000,14 @@ impl HeadlessRenderer {
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
 
+        // P2-14 model matrix per node (was identity)
+        let model_mat = scene.nodes.first().map(|n| n.transform.to_matrix()).unwrap_or(glam::Mat4::IDENTITY);
+        let normal_mat = model_mat.inverse().transpose();
         let camera_uniform = CameraUniform {
             view_proj: view_proj.to_cols_array(),
             camera_pos: [camera_copy.eye.x, camera_copy.eye.y, camera_copy.eye.z, 1.0],
+            model: model_mat.to_cols_array(),
+            normal_mat: normal_mat.to_cols_array(),
         };
         let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
@@ -1022,6 +1035,8 @@ impl HeadlessRenderer {
                 scene.light.shadow_color[2],
                 scene.light.shadow_saturation,
             ],
+            ambient_sky: [scene.light.ambient_sky[0], scene.light.ambient_sky[1], scene.light.ambient_sky[2], 1.0],
+            ambient_ground: [scene.light.ambient_ground[0], scene.light.ambient_ground[1], scene.light.ambient_ground[2], 1.0],
         };
         let light_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Uniform Buffer"),

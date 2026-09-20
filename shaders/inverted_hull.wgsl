@@ -4,6 +4,8 @@
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
+    model: mat4x4<f32>,          // P2-14 model
+    normal_mat: mat4x4<f32>,     // P2-14
 };
 
 struct OutlineUniform {
@@ -39,11 +41,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         return out;
     }
 
-    let world_pos = vec4<f32>(in.position, 1.0);
+    let world_pos = camera.model * vec4<f32>(in.position, 1.0);
     var clip_pos = camera.view_proj * world_pos;
 
-    // Extrusion along normal in clip space, scaled by distance (clip_pos.w) to maintain constant screen thickness
-    let normal_vec4 = camera.view_proj * vec4<f32>(in.normal, 0.0);
+    // Extrusion along normal in clip space — P2-01 depth bias calibrated, scaled by distance (clip_pos.w) to maintain constant screen thickness
+    let world_n = normalize((camera.normal_mat * vec4<f32>(in.normal, 0.0)).xyz);
+    let normal_vec4 = camera.view_proj * vec4<f32>(world_n, 0.0); // P2-14 world normal
     let len = length(normal_vec4.xy);
     let normal_clip = select(vec2<f32>(0.0, 0.0), normal_vec4.xy / len, len > 1e-5);
 

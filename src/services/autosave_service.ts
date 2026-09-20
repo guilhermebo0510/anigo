@@ -34,6 +34,10 @@ export interface ProjectStateSnapshot {
   outlineDepthBias?: number;
   specSoftness?: number;
   specOffset?: number;
+  specularSize?: number;
+  aoIntensity?: number;
+  ambientSky?: [number,number,number];
+  ambientGround?: [number,number,number];
   specColorHex?: string;
   rimColor?: string;
   lightColor?: [number, number, number];

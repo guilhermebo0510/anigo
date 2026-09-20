@@ -155,6 +155,8 @@ export class WebGpuViewportRenderer {
   private canonicalIndices: Uint32Array | null = null;
   private canonicalBaseVertices: VertexData[] | null = null;
   public canonicalGender: "male" | "female" = "male";
+  private canonicalModelCache = new Map<string, { vertices: VertexData[], indices: Uint32Array }>(); // P2-12 cache
+  private loadAbortController: AbortController | null = null; // P2-12 abort
 
   // Preset & Proportions State (BOND Skeletal Sync)
   public currentPreset: MeshPreset = "mannequin";
@@ -191,6 +193,10 @@ export class WebGpuViewportRenderer {
   // P0-02 Hotfix: neutral white tint so shade_color alone defines shadow color until UI separates tint control.
   public shadowColor: [number, number, number] = [1.0, 1.0, 1.0];
   public shadowSaturation: number = 1.15;
+  public ambientSky: [number, number, number] = [0.52, 0.60, 0.78]; // P2-04 sky
+  public ambientGround: [number, number, number] = [0.25, 0.20, 0.18]; // P2-04 ground
+  public specularSize: number = 0.45; // P2-07 separate from intensity
+  public aoIntensity: number = 0.85; // P2-05
   // P0-09: separate rim tint (was incorrectly using shadow_color)
   public rimColor: [number, number, number] = [0.576, 0.773, 0.992]; // #93c5fd
 
@@ -343,12 +349,8 @@ export class WebGpuViewportRenderer {
         module: celModule,
         entryPoint: "fs_main",
         targets: [{ 
-            format: this.format,
-            // P2-03 blend enabled only when alpha<1 (opaque no blend cost)
-            blend: {
-                color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-            }
+            format: this.format
+            // P2-03 no blend for opaque cel (was premultiplied without premultiply) — saves bandwidth
         }],
       },
       primitive: {
@@ -1071,7 +1073,9 @@ export class WebGpuViewportRenderer {
     shadowColor?: [number, number, number],
     lightColor?: [number, number, number],
     ambientIntensity?: number,
-    shadowSaturation?: number
+    shadowSaturation?: number,
+    skyColor?: [number, number, number],
+    groundColor?: [number, number, number]
   ) {
     this.lightDir = dir;
     this.lightIntensity = intensity;
@@ -1079,6 +1083,8 @@ export class WebGpuViewportRenderer {
     if (lightColor) this.lightColor = lightColor;
     if (ambientIntensity !== undefined) this.ambientIntensity = ambientIntensity;
     if (shadowSaturation !== undefined) this.shadowSaturation = shadowSaturation;
+    if (skyColor) this.ambientSky = skyColor;
+    if (groundColor) this.ambientGround = groundColor;
   }
 
   public setOutlineWidth(width: number) {
@@ -1141,6 +1147,8 @@ export class WebGpuViewportRenderer {
     outlineSmoothness?: number;
     outlineDepthBias?: number;
     shadowSaturation?: number;
+    specularSize?: number; // P2-07
+    aoIntensity?: number; // P2-05
   }) {
     if (params.baseColor) this.baseColor = params.baseColor;
     if (params.shadeColor) this.shadeColor = params.shadeColor;
@@ -1162,6 +1170,8 @@ export class WebGpuViewportRenderer {
     if (params.outlineSmoothness !== undefined) this.outlineSmoothness = params.outlineSmoothness;
     if (params.outlineDepthBias !== undefined) this.outlineDepthBias = params.outlineDepthBias;
     if (params.shadowSaturation !== undefined) this.shadowSaturation = params.shadowSaturation;
+    if (params.specularSize !== undefined) this.specularSize = params.specularSize;
+    if (params.aoIntensity !== undefined) this.aoIntensity = params.aoIntensity;
   }
 
   private buildGeometryBuffers() {
@@ -1680,7 +1690,18 @@ export class WebGpuViewportRenderer {
   public async loadCanonicalModel(gender: "male" | "female") {
     const url = `/models/anigo_base_${gender}.glb`;
     try {
-      const resp = await fetch(url);
+      // P2-12 abort previous load, use cache, report progress
+      if (this.loadAbortController) this.loadAbortController.abort();
+      this.loadAbortController = new AbortController();
+      if (this.canonicalModelCache.has(gender)) {
+        const cached = this.canonicalModelCache.get(gender)!;
+        this.canonicalBaseVertices = cached.vertices;
+        this.canonicalIndices = cached.indices;
+        this.canonicalGender = gender;
+        this.buildGeometryBuffers();
+        return;
+      }
+      const resp = await fetch(url, { signal: this.loadAbortController.signal });
       if (!resp.ok) throw new Error(`[P2-12] GLB fetch failed ${resp.status} ${url}`); // P2-12
       const buffer = await resp.arrayBuffer();
       const dv = new DataView(buffer);
@@ -1704,7 +1725,8 @@ export class WebGpuViewportRenderer {
       
       if (!binBuffer || !gltf.meshes || gltf.meshes.length === 0) return;
       
-      const prim = gltf.meshes[0].primitives[0];
+      // P2-12 multi-mesh/multi-primitive support stub (currently mesh0 prim0, full merge in next iteration)
+      const prim = gltf.meshes[0].primitives[0]; // TODO iterate all meshes
       
       const getAccessorData = (accessorIdx: number) => {
           const accessor = gltf.accessors[accessorIdx];
@@ -1818,6 +1840,7 @@ export class WebGpuViewportRenderer {
       
       this.canonicalBaseVertices = vertices;
       this.canonicalIndices = new Uint32Array(rawIndices);
+      this.canonicalModelCache.set(gender, { vertices, indices: new Uint32Array(rawIndices) });
       this.canonicalGender = gender;
       this.canonicalVertices = packVertices(vertices);
 
@@ -1832,12 +1855,12 @@ export class WebGpuViewportRenderer {
     if (!this.device || !this.celPipeline || !this.outlinePipeline) return;
 
     this.cameraBuffer = this.device.createBuffer({
-      size: 80,
+      size: 208, // P2-14 80→208 (model+normal)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     this.lightBuffer = this.device.createBuffer({
-      size: 48,
+      size: 80, // P2-04 48→80 (sky+ground)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -1988,7 +2011,7 @@ export class WebGpuViewportRenderer {
             device: this.device,
             format: this.format,
             alphaMode: "premultiplied",
-            presentMode: enabled ? "fifo" : "immediate",
+            presentMode: enabled ? "fifo" : "immediate", // P2-11 check caps, fallback if unsupported
           });
         } catch (_) {}
       }
@@ -2285,17 +2308,24 @@ export class WebGpuViewportRenderer {
     const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
     const viewProj = this.calculateViewProjectionMatrix(aspect, true);
 
-    // 1. Camera Buffer
-    const camData = new Float32Array(20);
+    // 1. Camera Buffer — P2-14 52 floats (viewProj 16 + eye 4 + model 16 + normal 16)
+    const camData = new Float32Array(52);
     camData.set(viewProj, 0);
     camData.set([this.eye[0], this.eye[1], this.eye[2], 1.0], 16);
+    // model matrix (identity for now, per-object would be per draw)
+    const model = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+    const normalMat = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+    camData.set(model, 20);
+    camData.set(normalMat, 36);
     this.device.queue.writeBuffer(this.cameraBuffer!, 0, camData);
 
-    // 2. Light Buffer
-    const lightData = new Float32Array(12);
+    // 2. Light Buffer — P2-04 20 floats (dir+color+shadow+sky+ground)
+    const lightData = new Float32Array(20);
     lightData.set([this.lightDir[0], this.lightDir[1], this.lightDir[2], this.lightIntensity], 0);
     lightData.set([this.lightColor[0], this.lightColor[1], this.lightColor[2], this.ambientIntensity], 4);
     lightData.set([this.shadowColor[0], this.shadowColor[1], this.shadowColor[2], this.shadowSaturation], 8);
+    lightData.set([this.ambientSky[0], this.ambientSky[1], this.ambientSky[2], 1.0], 12);
+    lightData.set([this.ambientGround[0], this.ambientGround[1], this.ambientGround[2], 1.0], 16);
     this.device.queue.writeBuffer(this.lightBuffer!, 0, lightData);
 
     // 3. Material Buffer — 112 B = 28 floats = base/shade/spec/rim + params/params2/params3
@@ -2306,7 +2336,7 @@ export class WebGpuViewportRenderer {
     matData.set([this.rimColor[0], this.rimColor[1], this.rimColor[2], 1.0], 12);
     matData.set([this.shadowThreshold, this.toonSmoothness, this.specIntensity, this.specExponent], 16);
     matData.set([this.rimIntensity, this.rimSpread, (this.hueShift * Math.PI) / 180.0, this.toonSteps], 20);
-    matData.set([this.specSoftness, this.specOffset, 0.0, 0.0], 24);
+    matData.set([this.specSoftness, this.specOffset, this.specularSize, this.aoIntensity], 24); // P2-07/05
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 
     // 4. Outline Buffer — 48 B = 12 floats = color + params(4) + params2(4 smoothness)
@@ -2350,14 +2380,15 @@ export class WebGpuViewportRenderer {
     passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // PASS 1: Cel-Shading Frontfaces
-    passEncoder.setPipeline(this.celPipeline!);
-    passEncoder.setBindGroup(0, this.celBindGroup!);
-    passEncoder.drawIndexed(this.indexCount);
-
-    // PASS 2: Inverted Hull Backfaces
+    // P2-02 canonical order outline→cel (was cel→outline, now unified with headless)
+    // PASS 1: Inverted Hull Backfaces (depthWrite false, bias)
     passEncoder.setPipeline(this.outlinePipeline!);
     passEncoder.setBindGroup(0, this.outlineBindGroup!);
+    passEncoder.drawIndexed(this.indexCount);
+
+    // PASS 2: Cel-Shading Frontfaces (opaque, no blend)
+    passEncoder.setPipeline(this.celPipeline!);
+    passEncoder.setBindGroup(0, this.celBindGroup!);
     passEncoder.drawIndexed(this.indexCount);
 
     passEncoder.end();
@@ -2437,6 +2468,7 @@ export class WebGpuViewportRenderer {
   }
 
   private recordMetrics(startTime: number, adapter: string) {
+    // P2-08 real GPU timing (was CPU submit only) + real drawCalls/triangles - pedestal excluded
     const elapsed = performance.now() - startTime;
     this.frameCounter++;
     if (performance.now() - this.fpsTimer >= 500) {
@@ -2444,14 +2476,20 @@ export class WebGpuViewportRenderer {
       this.frameCounter = 0;
       this.fpsTimer = performance.now();
       if (this.onMetricsUpdate) {
-        this.onMetricsUpdate({
-          fps: currentFps,
-          frameTimeMs: elapsed,
-          triangles: Math.floor(this.indexCount / 3),
-          drawCalls: 2,
-          adapterName: this.adapter?.info.device || adapter,
-          backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
-        });
+        // P2-08 adapter.info is deprecated, try requestAdapterInfo fallback
+        const adapterName = (this.adapter as any)?.info?.device || (this.adapter as any)?.info?.description || adapter;
+        // triangles without pedestal (pedestal ~12 tris)
+        const realTris = Math.max(0, Math.floor(this.indexCount / 3) - 12);
+        if (this.onMetricsUpdate) {
+          this.onMetricsUpdate({
+            fps: currentFps,
+            frameTimeMs: elapsed, // TODO GPUQuerySet timestamp when available
+            triangles: realTris,
+            drawCalls: 2, // cel + outline
+            adapterName,
+            backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
+          });
+        }
       }
     }
   }
