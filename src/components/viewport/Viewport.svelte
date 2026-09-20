@@ -8,6 +8,10 @@
     onResize = undefined,
     onMetrics = undefined,
     onTactileDrag = undefined,
+    onTactileDragStart = undefined,
+    onTactileDragEnd = undefined,
+    onModelLoadError = undefined,
+    tactileEnabled = false,
   }: {
     onResize?: (w: number, h: number) => void;
     onMetrics?: (m: ViewportMetrics) => void;
@@ -17,6 +21,11 @@
       secondarySlider?: string,
       secondaryDelta?: number
     ) => void;
+    onTactileDragStart?: (segment: AnatomicalSegment) => void;
+    onTactileDragEnd?: () => void;
+    onModelLoadError?: (message: string) => void;
+    /** P0-09: tactile manipulation is gated by the parent (personagem + body/face only). */
+    tactileEnabled?: boolean;
   } = $props();
 
   let canvas: HTMLCanvasElement | null = $state(null);
@@ -45,12 +54,18 @@
       e.preventDefault();
       activeTactileSegment = null;
     } else if (e.button === 0 && !e.altKey && !e.ctrlKey && !e.shiftKey && renderer && canvas) {
-      // Tactile raycast on primary left click (Design Doll / The Sims 4 direct manipulation)
-      const rect = canvas.getBoundingClientRect();
-      const screenX = e.clientX - rect.left;
-      const screenY = e.clientY - rect.top;
-      const hit = renderer.raycastTactile(screenX, screenY);
-      activeTactileSegment = hit ? hit.segment : null;
+      // P0-09: tactile raycast ONLY when explicitly enabled by the parent
+      // (personagem workspace + body/face tool). Otherwise plain orbit.
+      if (tactileEnabled) {
+        const rect = canvas.getBoundingClientRect();
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        const hit = renderer.raycastTactile(screenX, screenY);
+        activeTactileSegment = hit ? hit.segment : null;
+        if (activeTactileSegment) onTactileDragStart?.(activeTactileSegment);
+      } else {
+        activeTactileSegment = null;
+      }
     } else {
       activeTactileSegment = null;
     }
@@ -105,6 +120,7 @@
         containerEl?.releasePointerCapture(e.pointerId);
       } catch (_) {}
       isDragging = false;
+      if (activeTactileSegment) onTactileDragEnd?.();
       activeTactileSegment = null;
     }
   }
@@ -140,7 +156,23 @@
 
   // Exported API for parent components & automated bridge
   export async function loadCanonicalModel(gender: "male" | "female") {
-    if (renderer) return await renderer.loadCanonicalModel(gender);
+    if (!renderer) return;
+    try {
+      return await renderer.loadCanonicalModel(gender);
+    } catch (e) {
+      // P0-10: load failures propagate to the UI (never silent cube).
+      const msg = e instanceof Error ? e.message : String(e);
+      onModelLoadError?.(msg);
+      throw e;
+    }
+  }
+
+  export function getMorphCoverage(): { implemented: number; total: number; explicit: number } | null {
+    try {
+      return (renderer as any)?.getMorphCoverage?.() ?? null;
+    } catch {
+      return null;
+    }
   }
 
   export function switchPreset(preset: MeshPreset, headScale?: number, headRatio?: number) {
@@ -299,6 +331,8 @@
   onMount(async () => {
     if (canvas && containerEl) {
       renderer = new WebGpuViewportRenderer(canvas);
+      // P0-10: surface model/GLB failures to the parent UI.
+      renderer.onModelLoadError = (msg: string) => onModelLoadError?.(msg);
 
       renderer.onMetricsUpdate = (m: ViewportMetrics) => {
         onMetrics?.(m);

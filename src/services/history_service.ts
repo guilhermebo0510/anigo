@@ -4,10 +4,14 @@
  * Implements Snapshot/Command pattern with slider coalescing and strict memory caps.
  */
 
+import type { CharacterState } from "./character_state";
+
 export interface HistoryStateSnapshot {
   preset: "mannequin" | "sphere" | "cube";
   headScale: number;
   headRatio: number;
+  // P0-07: full Personagem coverage — the character domain is part of history.
+  character?: CharacterState;
   outlineWidth: number;
   shadowThreshold: number;
   lightDir: [number, number, number];
@@ -136,21 +140,24 @@ class HistoryService {
   public undo(): HistoryStateSnapshot | null {
     if (this.undoStack.length === 0 || !this.currentSnapshot) return null;
 
+    // P2-11: try/finally — a throwing applySnapshot must never wedge history.
     this.isExecutingHistory = true;
-    const previousEntry = this.undoStack.pop()!;
+    try {
+      const previousEntry = this.undoStack.pop()!;
 
-    // Push current snapshot onto redo stack
-    this.redoStack.push({
-      snapshot: this.currentSnapshot,
-      description: previousEntry.description,
-      timestamp: Date.now(),
-    });
+      // Push current snapshot onto redo stack
+      this.redoStack.push({
+        snapshot: this.currentSnapshot,
+        description: previousEntry.description,
+        timestamp: Date.now(),
+      });
 
-    this.currentSnapshot = JSON.parse(JSON.stringify(previousEntry.snapshot));
-    this.isExecutingHistory = false;
-    this.notifyChange();
-
-    return previousEntry.snapshot;
+      this.currentSnapshot = JSON.parse(JSON.stringify(previousEntry.snapshot));
+      return previousEntry.snapshot;
+    } finally {
+      this.isExecutingHistory = false;
+      this.notifyChange();
+    }
   }
 
   /**
@@ -159,21 +166,24 @@ class HistoryService {
   public redo(): HistoryStateSnapshot | null {
     if (this.redoStack.length === 0 || !this.currentSnapshot) return null;
 
+    // P2-11: try/finally — a throwing applySnapshot must never wedge history.
     this.isExecutingHistory = true;
-    const nextEntry = this.redoStack.pop()!;
+    try {
+      const nextEntry = this.redoStack.pop()!;
 
-    // Push current snapshot onto undo stack
-    this.undoStack.push({
-      snapshot: this.currentSnapshot,
-      description: nextEntry.description,
-      timestamp: Date.now(),
-    });
+      // Push current snapshot onto undo stack
+      this.undoStack.push({
+        snapshot: this.currentSnapshot,
+        description: nextEntry.description,
+        timestamp: Date.now(),
+      });
 
-    this.currentSnapshot = JSON.parse(JSON.stringify(nextEntry.snapshot));
-    this.isExecutingHistory = false;
-    this.notifyChange();
-
-    return nextEntry.snapshot;
+      this.currentSnapshot = JSON.parse(JSON.stringify(nextEntry.snapshot));
+      return nextEntry.snapshot;
+    } finally {
+      this.isExecutingHistory = false;
+      this.notifyChange();
+    }
   }
 
   public canUndo(): boolean {

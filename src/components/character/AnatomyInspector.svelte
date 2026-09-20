@@ -1,17 +1,44 @@
 <script lang="ts">
   import SomatotypePad2D from "./SomatotypePad2D.svelte";
-  import { CANONICAL_ZONES, type MorphSlider, type MorphZone } from "../../services/morph_catalog";
+  import { CANONICAL_SLIDERS, CANONICAL_ZONES, type MorphSlider, type MorphZone } from "../../services/morph_catalog";
   import { CANONICAL_CHARACTER_PRESETS, type CharacterPreset } from "../../services/character_presets";
+  import {
+    GENDER_MALE,
+    NEUTRAL_SOMATOTYPE,
+    clampCatalog,
+    clampGenderDimorphism,
+    createDefaultCharacterState,
+    genderToDimorphism,
+    getSliderDef,
+    isKnownSliderId,
+    normalizeSomatotype,
+    type BaseGender,
+    type CharacterState,
+    type SomatotypeUpdate,
+  } from "../../services/character_state";
+  import { isExplicitMorph } from "../../services/morph_engine";
 
   let {
     viewportRef = null,
     onModelChange = undefined,
+    onCharacterChange = undefined,
+    onCharacterCommit = undefined,
+    onError = undefined,
+    onProportionsChange = undefined,
   }: {
     viewportRef?: any;
     onModelChange?: (gender: "male" | "female") => void;
+    /** Fired on every mutation (continuous) with the full character state. */
+    onCharacterChange?: (state: CharacterState) => void;
+    /** Fired once per committed gesture for a single history entry. */
+    onCharacterCommit?: (description: string) => void;
+    /** User-visible failures (preset apply, model load). */
+    onError?: (message: string) => void;
+    /** Preset proportions (App owns the proportion mirrors). */
+    onProportionsChange?: (p: CharacterPreset["proportions"]) => void;
   } = $props();
 
-  let baseGender: "male" | "female" = $state("male");
+  let baseGender: BaseGender = $state("male");
   let searchQuery = $state("");
   let openZones: Record<string, boolean> = $state({
     GlobalSilhouette: true,
@@ -26,11 +53,17 @@
     }, {} as Record<string, number>)
   );
 
-  let somatotypeEndo = $state(0.0);
-  let somatotypeMeso = $state(0.0);
-  let somatotypeEcto = $state(0.0);
-  let genderDimorphism = $state(0.0);
-  let activePresetId = $state<string | null>("shonen_hero");
+  // P0-02/P1-10: canonical neutral domain (barycentric sum = 1), never (0,0,0).
+  let somatotypeEndo = $state(NEUTRAL_SOMATOTYPE.endo);
+  let somatotypeMeso = $state(NEUTRAL_SOMATOTYPE.meso);
+  let somatotypeEcto = $state(NEUTRAL_SOMATOTYPE.ecto);
+  // P0-03: canonical polarity — 1.0 = Male (matches Rust + presets + pad).
+  let genderDimorphism = $state(GENDER_MALE);
+  let activePresetId = $state<string | null>(null);
+  let modelLoading = $state(false);
+  let modelError: string | null = $state(null);
+
+  const SLIDER_COUNT = CANONICAL_SLIDERS.length;
 
   // Filtering
   let filteredZones = $derived(
@@ -55,78 +88,226 @@
     openZones[key] = !openZones[key];
   }
 
-  function handleSliderInput(slider: MorphSlider, value: number) {
-    sliderValues[slider.id] = value;
-    if (viewportRef) {
-      viewportRef.setMorphSlider(slider.id, value);
+  // -- P0-07: full character state export (history + project snapshots) --
+  export function getCharacterState(): CharacterState {
+    const somatotype = normalizeSomatotype(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+    const morphSliders: Record<string, number> = {};
+    for (const [id, v] of Object.entries(sliderValues)) {
+      const def = getSliderDef(id);
+      if (!def) continue;
+      if (v !== def.defaultValue && Number.isFinite(v)) morphSliders[id] = v;
+    }
+    const base = createDefaultCharacterState();
+    return {
+      ...base,
+      baseGender,
+      activePresetId,
+      somatotype,
+      genderDimorphism: clampGenderDimorphism(genderDimorphism),
+      morphSliders,
+    };
+  }
+
+  // -- App → inspector sync (undo/redo, project load, tactile, MCP) --
+  export function setCharacterState(state: CharacterState) {
+    baseGender = state.baseGender === "female" ? "female" : "male";
+    activePresetId = state.activePresetId;
+    somatotypeEndo = state.somatotype.endo;
+    somatotypeMeso = state.somatotype.meso;
+    somatotypeEcto = state.somatotype.ecto;
+    genderDimorphism = state.genderDimorphism;
+    for (const zone of CANONICAL_ZONES) {
+      for (const s of zone.sliders) {
+        const v = state.morphSliders[s.id];
+        sliderValues[s.id] = v !== undefined ? v : s.defaultValue;
+      }
+    }
+    pushAllToViewport();
+  }
+
+  /** External single-slider write (tactile drag, MCP) with catalog clamp. */
+  export function applyExternalMorph(id: string, value: number): boolean {
+    if (!isKnownSliderId(id)) return false;
+    const clamped = clampCatalog(id, value);
+    if (clamped === null) return false;
+    sliderValues[id] = clamped;
+    viewportRef?.setMorphSlider?.(id, clamped);
+    activePresetId = null;
+    return true;
+  }
+
+  export function applyExternalSomatotype(endo: number, meso: number, ecto: number, gender?: number) {
+    const n = normalizeSomatotype(endo, meso, ecto);
+    somatotypeEndo = n.endo;
+    somatotypeMeso = n.meso;
+    somatotypeEcto = n.ecto;
+    if (gender !== undefined) genderDimorphism = clampGenderDimorphism(gender);
+    viewportRef?.setSomatotype?.(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+    if (gender !== undefined) viewportRef?.setGenderDimorphism?.(genderDimorphism);
+    activePresetId = null;
+  }
+
+  function pushAllToViewport() {
+    if (!viewportRef) return;
+    viewportRef.setSomatotype?.(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+    viewportRef.setGenderDimorphism?.(genderDimorphism);
+    for (const zone of CANONICAL_ZONES) {
+      for (const s of zone.sliders) {
+        viewportRef.setMorphSlider?.(s.id, sliderValues[s.id] ?? s.defaultValue);
+      }
     }
   }
 
+  function notifyChange() {
+    onCharacterChange?.(getCharacterState());
+  }
+
+  function notifyCommit(description: string) {
+    onCharacterCommit?.(description);
+  }
+
+  function handleSliderInput(slider: MorphSlider, value: number) {
+    // P0-09: central clamp on every write path.
+    const clamped = clampCatalog(slider.id, value);
+    if (clamped === null) return;
+    sliderValues[slider.id] = clamped;
+    activePresetId = null;
+    viewportRef?.setMorphSlider?.(slider.id, clamped);
+    notifyChange();
+  }
+
+  function handleSliderCommit(slider: MorphSlider) {
+    notifyCommit(`Ajustar ${slider.name}`);
+  }
+
   async function handleGenderChange(gender: "male" | "female") {
+    if (modelLoading) return;
+    // P0-03: canonical polarity via the single shared helper.
     baseGender = gender;
-    genderDimorphism = gender === "female" ? 1.0 : 0.0;
+    genderDimorphism = genderToDimorphism(gender);
+    modelError = null;
     if (viewportRef) {
       if (typeof viewportRef.loadCanonicalModel === "function") {
-        await viewportRef.loadCanonicalModel(gender);
+        // P2-04: awaited + guarded load with visible state (was fire-and-forget).
+        modelLoading = true;
+        try {
+          await viewportRef.loadCanonicalModel(gender);
+        } catch (e) {
+          const msg = `Falha ao carregar modelo ${gender}: ${e instanceof Error ? e.message : String(e)}`;
+          modelError = msg;
+          onError?.(msg);
+        } finally {
+          modelLoading = false;
+        }
       }
       if (typeof viewportRef.setGenderDimorphism === "function") {
         viewportRef.setGenderDimorphism(genderDimorphism);
       }
     }
+    activePresetId = null;
     onModelChange?.(gender);
+    notifyChange();
+    notifyCommit(`Trocar modelo base (${gender === "female" ? "Feminino" : "Masculino"})`);
   }
 
-  function handleSomatotype(endo: number, meso: number, ecto: number, gender: number) {
-    somatotypeEndo = endo;
-    somatotypeMeso = meso;
-    somatotypeEcto = ecto;
-    genderDimorphism = gender;
+  // P0-02: object callback matching SomatotypePad2D's SomatotypeUpdate —
+  // positional params were the NaN-corruption vector. All values sanitized.
+  function handleSomatotype(update: SomatotypeUpdate) {
+    const n = normalizeSomatotype(update.endomorph, update.mesomorph, update.ectomorph);
+    somatotypeEndo = n.endo;
+    somatotypeMeso = n.meso;
+    somatotypeEcto = n.ecto;
+    genderDimorphism = clampGenderDimorphism(update.genderDimorphism);
+    activePresetId = null;
     if (viewportRef) {
       if (typeof viewportRef.setSomatotype === "function") {
-        viewportRef.setSomatotype(endo, meso, ecto);
+        viewportRef.setSomatotype(somatotypeEndo, somatotypeMeso, somatotypeEcto);
       }
       if (typeof viewportRef.setGenderDimorphism === "function") {
-        viewportRef.setGenderDimorphism(gender);
+        viewportRef.setGenderDimorphism(genderDimorphism);
       }
+    }
+    notifyChange();
+    if (!update.isContinuous) notifyCommit("Ajustar somatótipo");
+  }
+
+  // P0-01: atomic preset application against the REAL CharacterPreset
+  // contract (model / somatotype.{endo,meso,ecto} / proportions / sliders).
+  async function handleApplyPreset(preset: CharacterPreset) {
+    if (modelLoading) return;
+    modelError = null;
+    try {
+      // (a) reset to canonical defaults first (atomic base)
+      resetSlidersToDefaults(false);
+      // (b) awaited model swap with error surfacing
+      if (preset.model !== baseGender) {
+        baseGender = preset.model;
+        modelLoading = true;
+        try {
+          if (typeof viewportRef?.loadCanonicalModel === "function") {
+            await viewportRef.loadCanonicalModel(preset.model);
+          }
+        } finally {
+          modelLoading = false;
+        }
+        onModelChange?.(preset.model);
+      }
+      // (c) somatotype (canonical polarity for gender)
+      const n = normalizeSomatotype(
+        preset.somatotype.endo,
+        preset.somatotype.meso,
+        preset.somatotype.ecto
+      );
+      somatotypeEndo = n.endo;
+      somatotypeMeso = n.meso;
+      somatotypeEcto = n.ecto;
+      genderDimorphism = clampGenderDimorphism(preset.genderDimorphism);
+      viewportRef?.setSomatotype?.(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+      viewportRef?.setGenderDimorphism?.(genderDimorphism);
+      // (d) proportions (viewport + App mirrors stay in sync)
+      viewportRef?.setProportions?.({ ...preset.proportions });
+      onProportionsChange?.({ ...preset.proportions });
+      // (e) sliders (catalog-clamped, unknown ids skipped loudly)
+      for (const [key, val] of Object.entries(preset.sliders ?? {})) {
+        const clamped = clampCatalog(key, val);
+        if (clamped === null) {
+          console.warn(`[AnatomyInspector] preset "${preset.id}": unknown slider "${key}" skipped`);
+          continue;
+        }
+        sliderValues[key] = clamped;
+        viewportRef?.setMorphSlider?.(key, clamped);
+      }
+      activePresetId = preset.id;
+      // (f) ONE history entry for the whole atomic operation
+      notifyChange();
+      notifyCommit(`Aplicar preset ${preset.name}`);
+    } catch (e) {
+      const msg = `Falha ao aplicar preset ${preset.name}: ${e instanceof Error ? e.message : String(e)}`;
+      modelError = msg;
+      onError?.(msg);
     }
   }
 
-  function handleApplyPreset(preset: CharacterPreset) {
-    activePresetId = preset.id;
-    if (preset.base_gender !== baseGender) {
-      handleGenderChange(preset.base_gender);
-    }
-    somatotypeEndo = preset.somatotype[0];
-    somatotypeMeso = preset.somatotype[1];
-    somatotypeEcto = preset.somatotype[2];
-    handleSomatotype(somatotypeEndo, somatotypeMeso, somatotypeEcto, preset.base_gender === "female" ? 1.0 : 0.0);
-
-    // Apply preset morph parameters
-    for (const [key, val] of Object.entries(preset.morph_parameters)) {
-      if (sliderValues[key] !== undefined) {
-        sliderValues[key] = val;
-      }
-      if (viewportRef) {
-        viewportRef.setMorphSlider(key, val);
-      }
-    }
-  }
-
-  function resetAllSliders() {
+  function resetSlidersToDefaults(withCommit: boolean) {
     for (const zone of CANONICAL_ZONES) {
       for (const s of zone.sliders) {
         sliderValues[s.id] = s.defaultValue;
-        if (viewportRef) {
-          viewportRef.setMorphSlider(s.id, s.defaultValue);
-        }
+        viewportRef?.setMorphSlider?.(s.id, s.defaultValue);
       }
     }
-    somatotypeEndo = 0;
-    somatotypeMeso = 0;
-    somatotypeEcto = 0;
-    if (viewportRef) {
-      viewportRef.setSomatotype?.(0, 0, 0);
-    }
+    somatotypeEndo = NEUTRAL_SOMATOTYPE.endo;
+    somatotypeMeso = NEUTRAL_SOMATOTYPE.meso;
+    somatotypeEcto = NEUTRAL_SOMATOTYPE.ecto;
+    genderDimorphism = genderToDimorphism(baseGender);
+    viewportRef?.setSomatotype?.(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+    viewportRef?.setGenderDimorphism?.(genderDimorphism);
+    activePresetId = null;
+    notifyChange();
+    if (withCommit) notifyCommit("Resetar sliders anatômicos");
+  }
+
+  function resetAllSliders() {
+    resetSlidersToDefaults(true);
   }
 </script>
 
@@ -139,6 +320,7 @@
         type="button"
         class="gender-btn"
         class:active={baseGender === "male"}
+        disabled={modelLoading}
         onclick={() => handleGenderChange("male")}
       >
         <span class="gender-icon">♂</span>
@@ -149,6 +331,7 @@
         type="button"
         class="gender-btn"
         class:active={baseGender === "female"}
+        disabled={modelLoading}
         onclick={() => handleGenderChange("female")}
       >
         <span class="gender-icon">♀</span>
@@ -156,6 +339,12 @@
         <span class="poly-badge">4.070 verts</span>
       </button>
     </div>
+    {#if modelLoading}
+      <div class="model-status loading">Carregando modelo canônico…</div>
+    {/if}
+    {#if modelError}
+      <div class="model-status error" role="alert">{modelError}</div>
+    {/if}
   </div>
 
   <!-- Character Presets -->
@@ -198,7 +387,7 @@
     <input
       type="text"
       bind:value={searchQuery}
-      placeholder="Filtrar 148 sliders anatômicos..."
+      placeholder="Filtrar {SLIDER_COUNT} sliders anatômicos..."
       class="search-input"
     />
     {#if searchQuery}
@@ -226,7 +415,7 @@
             {#each zone.sliders as slider (slider.id)}
               <div class="slider-item">
                 <div class="slider-meta">
-                  <span class="slider-label" title={slider.id}>{slider.name}</span>
+                  <span class="slider-label" title={`${slider.id} · ${isExplicitMorph(slider.id) ? "deformação anatômica" : "deformação procedural"} · [${slider.min}, ${slider.max}]`}>{slider.name}</span>
                   <div class="slider-val-wrap">
                     {#if slider.dimorphism === "MaleOnly"}
                       <span class="tag-dimorphic male" title="Exclusivo Masculino">♂</span>
@@ -246,6 +435,7 @@
                     step={slider.step}
                     value={sliderValues[slider.id] ?? slider.defaultValue}
                     oninput={(e) => handleSliderInput(slider, parseFloat((e.target as HTMLInputElement).value))}
+                    onchange={() => handleSliderCommit(slider)}
                     class="anigo-slider"
                   />
                   {#if (sliderValues[slider.id] ?? slider.defaultValue) !== slider.defaultValue}
@@ -362,6 +552,28 @@
     padding: 1px 4px;
     border-radius: 3px;
     opacity: 0.85;
+  }
+
+  .gender-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
+
+  .model-status {
+    font-size: 11px;
+    padding: 6px 8px;
+    border-radius: 4px;
+  }
+  .model-status.loading {
+    color: #7dd3fc;
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+  .model-status.error {
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    word-break: break-word;
   }
 
   .presets-grid {
