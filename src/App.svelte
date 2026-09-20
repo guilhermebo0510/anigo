@@ -1006,7 +1006,7 @@
         });
 
         await listen("anigo://ui_action", (event: any) => {
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = (event.payload as any) || {};
           console.log("[ANIGO Studio] UI Action received:", p);
           const action = p.action || p.type;
 
