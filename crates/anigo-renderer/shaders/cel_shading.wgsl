@@ -154,6 +154,16 @@ fn apply_hue_shift(rgb_linear: vec3<f32>, shift_radians: f32, sat_mult: f32) -> 
 }
 
 // ─────────────────────────────────────────────────────────────
+
+// P3-01 HDR tonemap (ACES simplified + Reinhard) + exposure/white balance
+fn tonemap_aces(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+fn tonemap_reinhard(x: vec3<f32>) -> vec3<f32> {
+    return x / (1.0 + x);
+}
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -272,7 +282,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let rim_rgb = srgb_to_linear(material.rim_color.rgb);
     let with_rim = lit_highlighted + (rim_rgb * rim_term);
     // P1-01: linear→sRGB for display
-    let final_linear = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0));
-    let final_srgb = linear_to_srgb(final_linear);
+    let exposure = exp2(light.ambient_sky.w); // P3-01 exposure EV stored in sky.w (fallback 0)
+    let final_linear = clamp(with_rim * exposure, vec3<f32>(0.0), vec3<f32>(10.0));
+    let tm = tonemap_aces(final_linear); // or reinhard
+    let final_srgb = linear_to_srgb(tm);
     return vec4<f32>(final_srgb, material.base_color.a);
 }

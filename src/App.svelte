@@ -4,6 +4,10 @@
   import { t, getLanguage, setLanguage, type LanguageCode } from "./i18n";
   import { normalizeBridgePayload } from "./services/bridge_normalizer";
   import { outlineFromPreset } from "./config/render_config";
+  // P3 imports
+  import { LIGHT_RIGS } from "./config/light_rigs";
+  import { IBL_PROBES } from "./services/ibl_service";
+  import { MATERIAL_LIBRARY } from "./services/material_library";
   import { autoSaveService, type ProjectStateSnapshot } from "./services/autosave_service";
 
   // Icons
