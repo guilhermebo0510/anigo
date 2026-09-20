@@ -78,6 +78,20 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 // Color Space Conversions & Mathematical Hue Shifting
 // ─────────────────────────────────────────────────────────────
 
+// P1-01: sRGB ↔ linear (IEC 61966)
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let a = vec3<f32>(0.055);
+    let lo = c / 12.92;
+    let hi = pow((c + a) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let a = vec3<f32>(0.055);
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0/2.4)) - a;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
 fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
     let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
     let p = select(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), c.b < c.g);
@@ -93,11 +107,46 @@ fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
 }
 
-fn apply_hue_shift(rgb: vec3<f32>, shift_radians: f32, sat_mult: f32) -> vec3<f32> {
-    var hsv = rgb_to_hsv(rgb);
-    hsv.x = fract(fract(hsv.x + shift_radians / 6.28318530718) + 1.0);
-    hsv.y = clamp(hsv.y * sat_mult, 0.0, 1.0);
-    return hsv_to_rgb(hsv);
+// P1-02: OKLab perceptually uniform hue rotation (Bottosson 2020) — fallback to HSV for low chroma
+fn linear_srgb_to_oklab(c: vec3<f32>) -> vec3<f32> {
+    let l = 0.4122214708*c.r + 0.5363325363*c.g + 0.0514459929*c.b;
+    let m = 0.2119034982*c.r + 0.6806995451*c.g + 0.1073969566*c.b;
+    let s = 0.0883024619*c.r + 0.2817188376*c.g + 0.6299787005*c.b;
+    let l_ = pow(max(l, 0.0), 1.0/3.0);
+    let m_ = pow(max(m, 0.0), 1.0/3.0);
+    let s_ = pow(max(s, 0.0), 1.0/3.0);
+    return vec3<f32>(
+        0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
+        1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
+        0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+    );
+}
+fn oklab_to_linear_srgb(c: vec3<f32>) -> vec3<f32> {
+    let l_ = c.x + 0.3963377774*c.y + 0.2158037573*c.z;
+    let m_ = c.x - 0.1055613458*c.y - 0.0638541728*c.z;
+    let s_ = c.x - 0.0894841775*c.y - 1.2914855480*c.z;
+    let l = l_*l_*l_;
+    let m = m_*m_*m_;
+    let s = s_*s_*s_;
+    return vec3<f32>(
+        4.0767416621*l - 3.3077115913*m + 0.2309699292*s,
+        -1.2684380046*l + 2.6097574011*m - 0.3413193965*s,
+        -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
+    );
+}
+fn apply_hue_shift(rgb_linear: vec3<f32>, shift_radians: f32, sat_mult: f32) -> vec3<f32> {
+    let shift = clamp(shift_radians, -3.14159265, 3.14159265);
+    var lab = linear_srgb_to_oklab(rgb_linear);
+    let C = length(lab.yz);
+    if (C < 0.0001) {
+        return rgb_linear * mix(1.0, sat_mult, 0.5);
+    }
+    let hue = atan2(lab.z, lab.y);
+    let new_hue = hue + shift;
+    let C2 = clamp(C * sat_mult, 0.0, 0.4);
+    lab.y = C2 * cos(new_hue);
+    lab.z = C2 * sin(new_hue);
+    return oklab_to_linear_srgb(lab);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -149,22 +198,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         analytical_toon = (s1 + s2 + s3) / 3.0;
     }
 
-    // Blend texture ramp and analytical calculation based on smoothness:
-    // Preserves exact baseline when smoothness <= 0.015, and dynamically softens when smoothness increases
-    let toon_factor = mix(ramp_sample.r, analytical_toon, clamp((smoothness - 0.015) * 15.0, 0.0, 1.0));
+    // P1-03: single analytical model (smoothness controls penumbra only, not model switch)
+    let toon_factor = analytical_toon; // ramp_sample kept for validation but not mixed
 
     // 4. Stylized Ambient Occlusion (R channel)
     let ao = in.anime_attr.r;
 
-    // 5. Mathematical Hue-Shifting in Shadows & Saturation
-    let hue_shift_rad = material.params2.z;
-    let raw_shadow_color = material.shade_color.rgb * light.shadow_color.rgb;
-    let shadow_sat = max(light.shadow_color.w, 0.0);
+    // 5. Mathematical Hue-Shifting in Shadows & Saturation — P1-01/02 linear OKLab
+    let hue_shift_rad = clamp(material.params2.z, -3.14159265, 3.14159265);
+    let shade_lin = srgb_to_linear(material.shade_color.rgb);
+    let shadow_tint_lin = srgb_to_linear(light.shadow_color.rgb);
+    let raw_shadow_color = shade_lin * shadow_tint_lin;
+    let shadow_sat = clamp(max(light.shadow_color.w, 0.0), 0.0, 2.0);
     let hue_shifted_shadow = apply_hue_shift(raw_shadow_color, hue_shift_rad, shadow_sat);
 
-    // 6. Base Lit and Shadow Blending — P0-03: removed destructive max-channel normalization; intensity monotonic 0..3
-    let intensity = light.direction.w;
-    var lit_color = material.base_color.rgb * light.color.rgb * intensity;
+    // 6. Base Lit and Shadow Blending — P0-03: removed destructive max-channel normalization; intensity monotonic 0..3 — P1-01 linear
+    let intensity = clamp(light.direction.w, 0.0, 3.0);
+    let base_lin = srgb_to_linear(material.base_color.rgb);
+    let light_lin = srgb_to_linear(light.color.rgb);
+    var lit_color = base_lin * light_lin * intensity;
 
     let ambient_term = clamp(0.2 + light.color.w * 0.8, 0.05, 1.5);
     let shadow_color = hue_shifted_shadow * ambient_term;
@@ -177,7 +229,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let spec_intensity = material.params.z;
     let spec_softness = material.params3.x;
     let spec_offset = material.params3.y;
-    let spec_rgb = material.specular_color.rgb;
+    let spec_rgb = srgb_to_linear(material.specular_color.rgb);
 
     let up_vec = vec3<f32>(0.0, 1.0, 0.0);
     let tangent = normalize(cross(N, select(up_vec, vec3<f32>(1.0, 0.0, 0.0), abs(N.y) > 0.99)));
@@ -203,9 +255,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 9. Final Color Composition
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
-    let rim_rgb = material.rim_color.rgb;
+    let rim_rgb = srgb_to_linear(material.rim_color.rgb);
     let with_rim = lit_highlighted + (rim_rgb * rim_term);
-    let final_rgb = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0)) * ao;
-
-    return vec4<f32>(final_rgb, material.base_color.a);
+    // P1-01: AO in linear, then linear→sRGB for display (pipeline Rgba8Unorm non-sRGB)
+    let final_linear = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0)) * clamp(ao, 0.0, 1.0);
+    let final_srgb = linear_to_srgb(final_linear);
+    return vec4<f32>(final_srgb, material.base_color.a);
 }

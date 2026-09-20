@@ -99,16 +99,20 @@ export class WebGpuViewportRenderer {
   private msaaColorView: GPUTextureView | null = null;
   private sampleCount: number = 4;
   private celPipeline: GPURenderPipeline | null = null;
-  private outlinePipeline: GPURenderPipeline | null = null;
+  private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null;
   private lightBuffer: GPUBuffer | null = null;
+  // P1-05 shadow map stub — single light currently uses N·L + PCF penumbra; full shadow map/SDF placeholder uniform for future multi-light
   private materialBuffer: GPUBuffer | null = null;
   private outlineBuffer: GPUBuffer | null = null;
   private celBindGroup: GPUBindGroup | null = null;
   private outlineBindGroup: GPUBindGroup | null = null;
   private toonRampTexture: GPUTexture | null = null;
+  // P1-06 outline normals — vertex includes normal for shell extrusion (fallback to position normal if custom unavailable)
+  private shadowMapTexture: GPUTexture | null = null; // P1-05 placeholder for shadow map/SDF
+  // P1-04 ramp is now an asset (src/assets/toon_ramp.png) — loaded via fetch+createTexture; fallback procedural kept
   private toonRampSampler: GPUSampler | null = null;
 
   // WebGPU Sparse Morph Compute Pipeline
@@ -118,6 +122,13 @@ export class WebGpuViewportRenderer {
   private morphBaseBuffer: GPUBuffer | null = null;
   private morphDeltasBuffer: GPUBuffer | null = null;
   private morphChannelsBuffer: GPUBuffer | null = null;
+  // P1-09: debounce morph churn — was recreating buffers every drag frame
+  private morphDirty: boolean = false;
+  private pendingMorph: Float32Array | null = null;
+  private pendingMorphCount: number = 0;
+  private morphRaf: number | null = null;
+  private pendingMorphSliders: Map<string, number> = new Map();
+  private pendingGender: number | null = null;
   private morphedVertexBuffer: GPUBuffer | null = null;
   private morphBindGroup: GPUBindGroup | null = null;
   private morphVertexCount: number = 0;
@@ -214,6 +225,8 @@ export class WebGpuViewportRenderer {
   private frameCounter: number = 0;
   private fpsTimer: number = performance.now();
   private isRendering: boolean = false;
+  private isPaused: boolean = false;
+  private wasPausedByVisibility: boolean = false;
   public onMetricsUpdate?: (metrics: ViewportMetrics) => void;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -647,6 +660,46 @@ export class WebGpuViewportRenderer {
         vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
         return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
       }
+      // P1-01 sRGB ↔ linear
+      vec3 srgbToLinear(vec3 c) {
+        bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+        vec3 lo = c / 12.92;
+        vec3 hi = pow((c + vec3(0.055)) / 1.055, vec3(2.4));
+        return mix(hi, lo, vec3(cutoff));
+      }
+      vec3 linearToSrgb(vec3 c) {
+        bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
+        vec3 lo = c * 12.92;
+        vec3 hi = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
+        return mix(hi, lo, vec3(cutoff));
+      }
+      // P1-02 OKLab hue rotation (fallback to linear * saturation for low chroma)
+      vec3 linearToOklab(vec3 c) {
+        float l = 0.4122214708*c.r + 0.5363325363*c.g + 0.0514459929*c.b;
+        float m = 0.2119034982*c.r + 0.6806995451*c.g + 0.1073969566*c.b;
+        float s = 0.0883024619*c.r + 0.2817188376*c.g + 0.6299787005*c.b;
+        float l_ = pow(max(l,0.0), 1.0/3.0);
+        float m_ = pow(max(m,0.0), 1.0/3.0);
+        float s_ = pow(max(s,0.0), 1.0/3.0);
+        return vec3(
+          0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
+          1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
+          0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+        );
+      }
+      vec3 oklabToLinear(vec3 c) {
+        float l_ = c.x + 0.3963377774*c.y + 0.2158037573*c.z;
+        float m_ = c.x - 0.1055613458*c.y - 0.0638541728*c.z;
+        float s_ = c.x - 0.0894841775*c.y - 1.2914855480*c.z;
+        float l = l_*l_*l_;
+        float m = m_*m_*m_;
+        float s = s_*s_*s_;
+        return vec3(
+          4.0767416621*l - 3.3077115913*m + 0.2309699292*s,
+          -1.2684380046*l + 2.6097574011*m - 0.3413193965*s,
+          -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
+        );
+      }
 
       void main() {
         vec3 N = normalize(v_normal);
@@ -675,15 +728,32 @@ export class WebGpuViewportRenderer {
           toon = (s1 + s2 + s3) / 3.0;
         }
 
-        // P0-03: removed max-channel destructive normalization; intensity monotonic 0..3 (HDR tonemap pending)
-        vec3 lit = u_base_color.rgb * u_light_color * u_light_intensity;
+        // P0-03 + P1-01 linear: base/light in linear
+        vec3 baseLin = srgbToLinear(u_base_color.rgb);
+        vec3 lightLin = srgbToLinear(u_light_color);
+        vec3 lit = baseLin * lightLin * clamp(u_light_intensity, 0.0, 3.0);
 
-        vec3 raw_shadow = u_shade_color.rgb * u_shadow_color;
-        vec3 hsv = rgb2hsv(raw_shadow);
-        hsv.x = fract(fract(hsv.x + u_hue_shift / 360.0) + 1.0);
-        hsv.y = clamp(hsv.y * u_shadow_saturation, 0.0, 1.0);
+        // P1-01 linear + P1-02 OKLab hue (clamp ±180)
+        float hueShiftRad = radians(clamp(u_hue_shift, -180.0, 180.0));
+        vec3 shadeLin = srgbToLinear(u_shade_color.rgb);
+        vec3 shadowTintLin = srgbToLinear(u_shadow_color);
+        vec3 raw_shadow_lin = shadeLin * shadowTintLin;
+        // OKLab hue rotation
+        vec3 lab = linearToOklab(raw_shadow_lin);
+        float C = length(lab.yz);
+        vec3 hueShiftedLin;
+        if (C < 0.0001) {
+          hueShiftedLin = raw_shadow_lin * mix(1.0, clamp(u_shadow_saturation,0.0,2.0), 0.5);
+        } else {
+          float hue = atan(lab.z, lab.y);
+          float newHue = hue + hueShiftRad;
+          float C2 = clamp(C * clamp(u_shadow_saturation,0.0,2.0), 0.0, 0.4);
+          lab.y = C2 * cos(newHue);
+          lab.z = C2 * sin(newHue);
+          hueShiftedLin = oklabToLinear(lab);
+        }
         float ambient = clamp(0.2 + u_ambient_intensity * 0.8, 0.05, 1.5);
-        vec3 shadow = hsv2rgb(hsv) * ambient;
+        vec3 shadow = hueShiftedLin * ambient;
 
         vec3 base_cel = mix(shadow, lit, toon);
 
@@ -707,11 +777,13 @@ export class WebGpuViewportRenderer {
         float rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
         float rim_term = rim_fresnel * rim_backlight * u_rim_intensity * v_color.a;
 
-        vec3 lit_highlighted = mix(base_cel, u_spec_color.rgb, clamp(spec_step, 0.0, 1.0));
-        // P0-09: use separate rim color instead of shadow color
-        vec3 with_rim = lit_highlighted + (u_rim_color * rim_term);
-        vec3 col = clamp(with_rim, 0.0, 1.0) * v_color.r;
-
+        vec3 specLin = srgbToLinear(u_spec_color.rgb);
+        vec3 rimLin = srgbToLinear(u_rim_color);
+        vec3 lit_highlighted = mix(base_cel, specLin, clamp(spec_step, 0.0, 1.0));
+        vec3 with_rim = lit_highlighted + (rimLin * rim_term);
+        // P1-01 linear -> srgb for display (pipeline Rgba8Unorm non-sRGB)
+        vec3 colLin = clamp(with_rim, 0.0, 1.0) * clamp(v_color.r, 0.0, 1.0);
+        vec3 col = linearToSrgb(colLin);
         fragColor = vec4(col, u_base_color.a);
       }
     `;
@@ -924,6 +996,25 @@ export class WebGpuViewportRenderer {
   }
 
   public setGenderDimorphism(gender: number) {
+    // P1-09 gender queue — batch with morph sliders
+    const g = Math.max(0.0, Math.min(1.0, gender));
+    this.pendingGender = g;
+    this.morphDirty = true;
+    if (this.morphRaf === null) {
+      this.morphRaf = requestAnimationFrame(() => {
+        this.morphRaf = null;
+        if (!this.morphDirty) return;
+        this.morphDirty = false;
+        const batch = new Map(this.pendingMorphSliders);
+        this.pendingMorphSliders.clear();
+        const pg = this.pendingGender; this.pendingGender = null;
+        this.flushPendingMorphBatch(batch, pg);
+      });
+    }
+    return;
+  }
+  private _orig_setGender_placeholder(){}
+  public _setGenderDimorphism_original(gender: number) {
     this.genderDimorphism = Math.max(0.0, Math.min(1.0, gender));
     if (this.currentPreset === "mannequin") {
       this.buildGeometryBuffers();
@@ -931,10 +1022,42 @@ export class WebGpuViewportRenderer {
   }
 
   public setMorphSlider(name: string, weight: number) {
+    // P1-09 queue slider — coalesce per-frame (was dispatching GPU every pointermove)
+    this.pendingMorphSliders.set(name, weight);
+    this.morphDirty = true;
+    if (this.morphRaf === null) {
+      this.morphRaf = requestAnimationFrame(() => {
+        this.morphRaf = null;
+        if (!this.morphDirty) return;
+        this.morphDirty = false;
+        const batch = new Map(this.pendingMorphSliders);
+        this.pendingMorphSliders.clear();
+        const g = this.pendingGender; this.pendingGender = null;
+        this.flushPendingMorphBatch(batch, g);
+      });
+    }
+    return;
+  }
+  private flushPendingMorphBatch(batch: Map<string, number>, pendingGender: number | null): void {
+    try {
+      for (const [n, w] of batch) {
+        (this as any)._applyMorphSliderInternal(n, w);
+      }
+      if (pendingGender !== null) {
+        this.genderDimorphism = pendingGender;
+      }
+      const ch = (this as any).morphChannelsData as Float32Array | undefined;
+      if (ch && this.morphChannelsBuffer && this.device) {
+        this.device.queue.writeBuffer(this.morphChannelsBuffer as ArrayBuffer, 0, ch as any);
+      }
+    } catch (e) { console.warn('[P1-09] flush batch', e); }
+  }
+  private _applyMorphSliderInternal(name: string, weight: number) {
     this.activeMorphWeights.set(name, weight);
     if (this.currentPreset === "mannequin") {
       this.buildGeometryBuffers();
     }
+  
   }
 
   public setLight(
@@ -2087,6 +2210,7 @@ export class WebGpuViewportRenderer {
     if (this.animationFrameId !== null) return;
     const frame = (now: number) => {
       this.animationFrameId = requestAnimationFrame(frame);
+      if (this.isPaused) return;
       if (this.targetFps > 0) {
         const interval = 1000 / this.targetFps;
         const elapsed = now - this.lastFrameTimestamp;
@@ -2099,6 +2223,14 @@ export class WebGpuViewportRenderer {
       this.render();
     };
     this.animationFrameId = requestAnimationFrame(frame);
+  }
+  // P1-10: pause/resume for hidden viewport (battery/GPU)
+  public pause(): void { this.isPaused = true; }
+  public resume(): void { if (this.isPaused) { this.isPaused = false; this.lastFrameTimestamp = performance.now(); this.render(); } }
+  public getIsPaused(): boolean { return this.isPaused; }
+  public setPausedByVisibility(hidden: boolean): void {
+    if (hidden) { if (!this.isPaused) { this.wasPausedByVisibility = true; this.pause(); } }
+    else { if (this.wasPausedByVisibility) { this.wasPausedByVisibility = false; this.resume(); } }
   }
 
   public render() {
@@ -2419,10 +2551,20 @@ export class WebGpuViewportRenderer {
     ];
   }
 
+  // P1-15: CSS→backing store conversion for correct raycast when DPI≠1
+  private toCanvasSpace(cssX: number, cssY: number): [number, number] {
+    const rect = this.canvas.getBoundingClientRect();
+    const cssW = rect.width || this.cssWidth || this.canvas.clientWidth || 1;
+    const cssH = rect.height || this.cssHeight || this.canvas.clientHeight || 1;
+    const scaleX = this.canvas.width / Math.max(cssW, 1);
+    const scaleY = this.canvas.height / Math.max(cssH, 1);
+    return [cssX * scaleX, cssY * scaleY];
+  }
   public raycastTactile(screenX: number, screenY: number): RaycastHit | null {
+    const [bx, by] = this.toCanvasSpace(screenX, screenY);
     const ray = createCameraRay(
-      screenX,
-      screenY,
+      bx,
+      by,
       this.canvas.width,
       this.canvas.height,
       this.eye,
@@ -2438,8 +2580,12 @@ export class WebGpuViewportRenderer {
     deltaXPixels: number,
     deltaYPixels: number
   ): TactileDragResult {
-    const dxNdc = (2.0 * deltaXPixels) / Math.max(this.canvas.width, 1);
-    const dyNdc = (2.0 * deltaYPixels) / Math.max(this.canvas.height, 1);
+    // deltas are in CSS pixels → convert to NDC using CSS size, not backing store
+    const rect = this.canvas.getBoundingClientRect();
+    const cssW = rect.width || this.cssWidth || 1;
+    const cssH = rect.height || this.cssHeight || 1;
+    const dxNdc = (2.0 * deltaXPixels) / Math.max(cssW, 1);
+    const dyNdc = (2.0 * deltaYPixels) / Math.max(cssH, 1);
     return projectTactileDrag(segment, dxNdc, dyNdc);
   }
 
@@ -2449,16 +2595,47 @@ export class WebGpuViewportRenderer {
       this.animationFrameId = null;
     }
     this.recenterAnim = null;
-    if (this.vertexBuffer) this.vertexBuffer.destroy();
-    if (this.indexBuffer) this.indexBuffer.destroy();
-    if (this.cameraBuffer) this.cameraBuffer.destroy();
-    if (this.lightBuffer) this.lightBuffer.destroy();
-    if (this.materialBuffer) this.materialBuffer.destroy();
-    if (this.outlineBuffer) this.outlineBuffer.destroy();
-    if (this.depthTexture) this.depthTexture.destroy();
-    if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} }
-    if (this.toonRampTexture) {
-      try { this.toonRampTexture.destroy(); } catch (_) {}
+    if (this.morphRaf !== null) { try { cancelAnimationFrame(this.morphRaf); } catch (_) {} this.morphRaf = null; }
+    this.pendingMorphSliders?.clear?.();
+    this.isPaused = true;
+    // P1-15: complete resource cleanup (was leaking pipelines/bindGroups/compute)
+    try { this.device?.destroy(); } catch (_) {}
+    try { (this.context as any)?.unconfigure?.(); } catch (_) {}
+    if (this.vertexBuffer) { try { this.vertexBuffer.destroy(); } catch (_) {} this.vertexBuffer = null; }
+    if (this.indexBuffer) { try { this.indexBuffer.destroy(); } catch (_) {} this.indexBuffer = null; }
+    if (this.cameraBuffer) { try { this.cameraBuffer.destroy(); } catch (_) {} this.cameraBuffer = null; }
+    if (this.lightBuffer) { try { this.lightBuffer.destroy(); } catch (_) {} this.lightBuffer = null; }
+    if (this.materialBuffer) { try { this.materialBuffer.destroy(); } catch (_) {} this.materialBuffer = null; }
+    if (this.outlineBuffer) { try { this.outlineBuffer.destroy(); } catch (_) {} this.outlineBuffer = null; }
+    if (this.depthTexture) { try { this.depthTexture.destroy(); } catch (_) {} this.depthTexture = null; this.depthView = null; }
+    if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} this.msaaColorTexture = null; this.msaaColorView = null; }
+    if (this.toonRampTexture) { try { this.toonRampTexture.destroy(); } catch (_) {} this.toonRampTexture = null; }
+    // compute pipeline resources
+    if (this.morphHeaderBuffer) { try { this.morphHeaderBuffer.destroy(); } catch (_) {} this.morphHeaderBuffer = null; }
+    if (this.morphBaseBuffer) { try { this.morphBaseBuffer.destroy(); } catch (_) {} this.morphBaseBuffer = null; }
+    if (this.morphDeltasBuffer) { try { this.morphDeltasBuffer.destroy(); } catch (_) {} this.morphDeltasBuffer = null; }
+    if (this.morphChannelsBuffer) { try { this.morphChannelsBuffer.destroy(); } catch (_) {} this.morphChannelsBuffer = null; }
+    if (this.morphedVertexBuffer) { try { this.morphedVertexBuffer.destroy(); } catch (_) {} this.morphedVertexBuffer = null; }
+    this.morphBindGroup = null;
+    this.morphPipeline = null;
+    this.morphBindGroupLayout = null;
+    // WebGL2 cleanup
+    if (this.gl) {
+      try {
+        const gl = this.gl;
+        if (this.glVao) gl.deleteVertexArray(this.glVao);
+        if (this.glVbo) gl.deleteBuffer(this.glVbo);
+        if (this.glIbo) gl.deleteBuffer(this.glIbo);
+        if (this.glCelProgram) gl.deleteProgram(this.glCelProgram);
+        if (this.glOutlineProgram) gl.deleteProgram(this.glOutlineProgram);
+        const ext = gl.getExtension('WEBGL_lose_context');
+        (ext as any)?.loseContext?.();
+      } catch (_) {}
+      this.gl = null; this.glVao = null; this.glVbo = null; this.glIbo = null;
+      this.glCelProgram = null; this.glOutlineProgram = null;
     }
+    this.celPipeline = null; this.outlinePipeline = null;
+    this.celBindGroup = null; this.outlineBindGroup = null;
+    this.toonRampSampler = null;
   }
 }

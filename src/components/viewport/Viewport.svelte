@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { devicePixelRatioSafe } from "../../services/settings_persist";
   import { WebGpuViewportRenderer, type ViewportMetrics, type MeshPreset } from "./webgpu_renderer";
   import type { AnatomicalSegment } from "./tactile";
 
@@ -315,7 +316,7 @@
                 camera_target: renderer?.target || [0, 1, 0],
                 light_direction: renderer?.lightDir || [0.577, 0.577, 0.577],
                 light_intensity: renderer?.lightIntensity ?? 1.0,
-                shadow_color: renderer?.shadowColor || [0.65, 0.68, 0.85],
+                shadow_color: renderer?.shadowColor || [1.0, 1.0, 1.0], // P1-08 neutral
                 active_preset: renderer?.currentPreset || "mannequin",
                 outline_width: (renderer?.outlineWidth || 0.0035) * 1000,
                 shadow_threshold: renderer?.shadowThreshold || 0.5,
@@ -348,13 +349,32 @@
               const w = Math.floor(width);
               const h = Math.floor(height);
               if (renderer) {
-                renderer.resize(w, h);
+                renderer.resize(w, h); // P1-11 DPR clamped inside renderer via devicePixelRatioSafe (max 2x)
               }
               onResize?.(w, h);
             }
           }
         });
         resizeObserver.observe(containerEl);
+
+        // P1-10: pause when viewport hidden (IntersectionObserver + visibilitychange) — was rendering 120fps hidden
+        const io = new IntersectionObserver((entries) => {
+          for (const e of entries) {
+            const hidden = !e.isIntersecting || (e.intersectionRatio as number) <= 0;
+            (renderer as any)?.setPausedByVisibility?.(hidden);
+          }
+        }, { threshold: 0 });
+        io.observe(containerEl);
+        // store for cleanup (reuse resizeObserver variable for simplicity, add separate)
+        (containerEl as any).__anigoIO = io;
+        const onVis = () => {
+          const hidden = document.hidden || document.visibilityState === 'hidden';
+          // only pause if our container is also not intersecting? For now document hidden → pause
+          if (hidden) (renderer as any)?.pause?.();
+          else (renderer as any)?.resume?.();
+        };
+        document.addEventListener('visibilitychange', onVis);
+        (containerEl as any).__anigoVisHandler = onVis;
 
         // Initial dimension report
         if (containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
@@ -396,49 +416,8 @@
             }
           });
 
-          await listen("anigo://set_light", (event: any) => {
-            if (renderer && event.payload) {
-              if (event.payload.direction) renderer.lightDir = event.payload.direction;
-              if (event.payload.intensity !== undefined) renderer.lightIntensity = event.payload.intensity;
-              if (event.payload.shadow_color) renderer.shadowColor = event.payload.shadow_color;
-              if (event.payload.color) renderer.lightColor = event.payload.color;
-              if (event.payload.ambient_intensity !== undefined) renderer.ambientIntensity = event.payload.ambient_intensity;
-              if (event.payload.shadow_saturation !== undefined) renderer.shadowSaturation = event.payload.shadow_saturation;
-            }
-          });
-
-          await listen("anigo://load_preset", (event: any) => {
-            if (renderer && event.payload && event.payload.preset) {
-              renderer.switchPreset(event.payload.preset);
-            }
-          });
-
-          await listen("anigo://set_outline", (event: any) => {
-            if (renderer && event.payload && event.payload.width !== undefined) {
-              renderer.setOutlineWidth(event.payload.width);
-            }
-          });
-
-          await listen("anigo://set_material_toon", (event: any) => {
-            if (renderer && event.payload) {
-              renderer.setMaterialParams(event.payload);
-            }
-          });
-
-          await listen("anigo://set_material", (event: any) => {
-            if (renderer && event.payload) {
-              renderer.setMaterialParams(event.payload);
-            }
-          });
-
-          await listen("anigo://set_proportions", (event: any) => {
-            if (renderer && event.payload) {
-              renderer.setHeadProportions(
-                event.payload.head_scale || 1.0,
-                event.payload.head_ratio || 6.5
-              );
-            }
-          });
+          // P1-07: single consumer is App/store — Viewport never handles shading/material directly (was duplicate snake→camel no-op)
+          // set_light / load_preset / set_outline / set_material_toon / set_proportions now handled only by App.svelte via normalizeBridgePayload
           await listen("anigo://camera_recenter", () => {
             recenterCamera();
           });
@@ -463,6 +442,13 @@
       resizeObserver.disconnect();
       resizeObserver = null;
     }
+    // P1-10 cleanup IntersectionObserver/visibility
+    try {
+      const io = (containerEl as any)?.__anigoIO as IntersectionObserver | undefined;
+      io?.disconnect();
+      const h = (containerEl as any)?.__anigoVisHandler as any;
+      if (h) document.removeEventListener("visibilitychange", h);
+    } catch (_) {}
     if (renderer) renderer.destroy();
   });
 </script>

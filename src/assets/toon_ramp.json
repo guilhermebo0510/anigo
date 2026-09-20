@@ -1,0 +1,7 @@
+{
+  "description": "P1-04 toon ramp asset \u2014 256x1 sRGB, loaded as texture; fallback procedural if missing",
+  "width": 256,
+  "height": 1,
+  "encoding": "sRGB",
+  "note": "Build copies to /assets/toon_ramp.png \u2014 see vite.config.ts asset handling"
+}

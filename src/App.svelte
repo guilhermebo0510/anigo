@@ -2,6 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import Viewport from "./components/viewport/Viewport.svelte";
   import { t, getLanguage, setLanguage, type LanguageCode } from "./i18n";
+  import { normalizeBridgePayload } from "./services/bridge_normalizer";
+  import { outlineFromPreset } from "./config/render_config";
   import { autoSaveService, type ProjectStateSnapshot } from "./services/autosave_service";
 
   // Icons
@@ -35,6 +37,7 @@
   import ChevronRightIcon from "./components/icons/ChevronRightIcon.svelte";
   import PanelToggleIcon from "./components/icons/PanelToggleIcon.svelte";
   import SettingsModal, { type StudioSettings } from "./components/settings/SettingsModal.svelte";
+  import { loadSettings, saveSettings, devicePixelRatioSafe } from "./services/settings_persist";
   import { historyService, type HistoryStateSnapshot } from "./services/history_service";
   import ProjectMenuPopover from "./components/project/ProjectMenuPopover.svelte";
   import ModelPresetPopover from "./components/project/ModelPresetPopover.svelte";
@@ -412,16 +415,33 @@
   }
 
   function hexToRgb(hex: string): [number, number, number] {
-    let cleaned = hex.replace(/^#/, "");
+    if (typeof hex !== "string") {
+      console.warn(`[ANIGO][Color] hex inválido (não-string) "${hex}" → fallback #ffffff`);
+      return [1, 1, 1];
+    }
+    let cleaned = hex.replace(/^#/, "").trim();
+    // P1-01: validação estrita — rejeita hex inválido e evita NaN nos uniforms
+    if (!/^[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(cleaned)) {
+      console.warn(`[ANIGO][Color] hex inválido "${hex}" → fallback #ffffff`);
+      cleaned = "ffffff";
+    }
     if (cleaned.length === 3) {
       cleaned = cleaned.split("").map((c) => c + c).join("");
     }
     const num = parseInt(cleaned, 16);
+    if (Number.isNaN(num)) {
+      console.warn(`[ANIGO][Color] parse NaN para "${hex}" → fallback #ffffff`);
+      return [1, 1, 1];
+    }
     return [
       ((num >> 16) & 255) / 255,
       ((num >> 8) & 255) / 255,
       (num & 255) / 255,
     ];
+  }
+  // P1-01 helper: sRGB→linear para validação round-trip (shader faz principal)
+  function srgbToLinearChannel(c: number): number {
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
   }
 
   function rgbToHex(rgb: number[]): string {
@@ -641,7 +661,15 @@
         currentProjectName = name;
         currentProjectPath = fullPath;
         isProjectDirty = false;
-        historyService.init(getHistorySnapshot());
+        // P1-11 restore persisted settings (DPI/fps)
+    try {
+      const s = loadSettings();
+      if (s.targetFps) { targetFpsCap = s.targetFps as any; viewportRef?.setFpsCap?.(s.targetFps as any); }
+      // P1-11 DPI: clamp DPR 1..2 to avoid memory blow
+      const dpr = devicePixelRatioSafe();
+      if (dpr !== window.devicePixelRatio) console.info('[P1-11] DPR clamped', window.devicePixelRatio, '->', dpr);
+    } catch {}
+    historyService.init(getHistorySnapshot());
       } catch (err) {
         alert("Erro ao carregar projeto: " + err);
       }
@@ -727,6 +755,8 @@
   }
 
   function handleSaveStudioSettings(settings: StudioSettings) {
+    // P1-11 persist dpi/fps/vsync
+    try { saveSettings({ targetFps: settings.fpsCap as number, dpiAware: settings.dpiScale !== "1.0x" } as any); } catch {}
     vsyncEnabled = settings.vsync;
     targetFpsCap = settings.fpsCap;
     dpiScale = settings.dpiScale;
@@ -850,6 +880,9 @@
         const { listen } = await import("@tauri-apps/api/event");
 
         await listen("anigo://load_preset", (event: any) => {
+          const _norm = normalizeBridgePayload("anigo://load_preset", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://load_preset", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
           if (event.payload?.preset) {
             handlePreset(event.payload.preset);
           }
@@ -862,6 +895,9 @@
         });
 
         await listen("anigo://set_outline", (event: any) => {
+          const _norm = normalizeBridgePayload("anigo://set_outline", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_outline", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
           if (event.payload?.width !== undefined) {
             outlineWidth = event.payload.width;
             handleOutlineChange();
@@ -869,7 +905,10 @@
         });
 
         await listen("anigo://set_material_toon", (event: any) => {
-          const p = event.payload || {};
+          const _norm = normalizeBridgePayload("anigo://set_material_toon", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_material_toon", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.shadow_threshold !== undefined) shadowThreshold = p.shadow_threshold;
           if (p.shadow_smoothness !== undefined) toonSmoothness = p.shadow_smoothness;
           if (p.spec_intensity !== undefined) specIntensity = p.spec_intensity;
@@ -886,7 +925,7 @@
             shadowColorHex = rgbToHex(p.shade_color);
           }
           if (p.outline_width !== undefined) {
-            outlineWidth = p.outline_width > 0.05 ? p.outline_width : p.outline_width * 1000;
+            outlineWidth = p.outline_false /* P1-13 removed heuristic — use outlineFromPreset mode */ ? p.outline_width : p.outline_width * 1000;
           }
           if (p.outline_color && Array.isArray(p.outline_color) && p.outline_color.length >= 3) {
             outlineColor = rgbToHex(p.outline_color);
@@ -895,7 +934,10 @@
         });
 
         await listen("anigo://set_material", (event: any) => {
-          const p = event.payload || {};
+          const _norm = normalizeBridgePayload("anigo://set_material", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_material", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.shadow_threshold !== undefined) {
             shadowThreshold = p.shadow_threshold;
             handleShadowThresholdChange();
@@ -903,7 +945,10 @@
         });
 
         await listen("anigo://set_light", (event: any) => {
-          const p = event.payload || {};
+          const _norm = normalizeBridgePayload("anigo://set_light", event.payload);
+          if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_light", event.payload); return; }
+          // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.direction && Array.isArray(p.direction) && p.direction.length === 3) {
             const [x, y, z] = p.direction;
             const el = Math.asin(Math.max(-1, Math.min(1, y))) * (180 / Math.PI);
@@ -928,7 +973,7 @@
         });
 
         await listen("anigo://set_character_model", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.model_type) {
             genderDimorphism = p.model_type === "female" ? 0.0 : 1.0;
             viewportRef?.setGenderDimorphism?.(genderDimorphism);
@@ -936,7 +981,7 @@
         });
 
         await listen("anigo://set_somatotype", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.endo !== undefined) somatotypeEndo = p.endo;
           if (p.meso !== undefined) somatotypeMeso = p.meso;
           if (p.ecto !== undefined) somatotypeEcto = p.ecto;
@@ -944,7 +989,7 @@
         });
 
         await listen("anigo://apply_morph_slider", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           if (p.slider_id && p.value !== undefined) {
             morphSliders[p.slider_id] = p.value;
             viewportRef?.setMorphSlider?.(p.slider_id, p.value);
@@ -961,7 +1006,7 @@
         });
 
         await listen("anigo://ui_action", (event: any) => {
-          const p = event.payload || {};
+          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
           console.log("[ANIGO Studio] UI Action received:", p);
           const action = p.action || p.type;
 

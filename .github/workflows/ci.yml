@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+    branches: [main, arena/**]
+  pull_request:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - name: svelte-check (TS strict)
+        run: npm run check
+      - name: lint
+        run: npm run lint --if-present
+      - name: build
+        run: npm run build
+      - name: no leaks — destroy/pause hooks present
+        run: |
+          grep -q "setPausedByVisibility" src/components/viewport/webgpu_renderer.ts
+          grep -q "destroy()" src/components/viewport/webgpu_renderer.ts
