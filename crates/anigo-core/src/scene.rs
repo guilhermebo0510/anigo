@@ -2,15 +2,19 @@ use crate::math::{Camera, Transform};
 use crate::mesh::Mesh;
 use serde::{Deserialize, Serialize};
 
+fn default_shadow_saturation() -> f32 { 1.0 }
 /// Stylized Anime Directional Light with Hue-Shifting parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StylizedLight {
     pub direction: [f32; 3],
     pub color: [f32; 3],
     pub intensity: f32,
-    /// Stylized cool/warm hue-shifted shadow tint
+    /// Stylized cool/warm hue-shifted shadow tint — neutral white so shade_color alone defines shadow (P0-02)
     pub shadow_color: [f32; 3],
     pub ambient_intensity: f32,
+    /// Shadow saturation multiplier applied in HSV hue-shift (default neutral 1.0 to avoid double tint)
+    #[serde(default = "default_shadow_saturation")]
+    pub shadow_saturation: f32,
 }
 
 impl Default for StylizedLight {
@@ -19,11 +23,20 @@ impl Default for StylizedLight {
             direction: [0.577, 0.577, 0.577], // normalized (1, 1, 1)
             color: [1.0, 0.98, 0.95],
             intensity: 1.0,
-            shadow_color: [0.65, 0.68, 0.85], // cool anime lavender/blue shadow
+            shadow_color: [1.0, 1.0, 1.0], // P0-02: neutral white (was 0.65,0.68,0.85 — double tint with shade_color)
             ambient_intensity: 0.35,
+            shadow_saturation: default_shadow_saturation(),
         }
     }
 }
+
+fn default_spec_color() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
+fn default_spec_softness() -> f32 { 0.05 }
+fn default_spec_offset() -> f32 { 0.0 }
+fn default_rim_color() -> [f32; 4] { [0.576, 0.773, 0.992, 1.0] } // #93c5fd — P0-09 separate rim tint (was incorrectly sharing shadow_color)
+fn default_outline_opacity() -> f32 { 1.0 }
+fn default_outline_smoothness() -> f32 { 0.0 }
+fn default_outline_depth_bias() -> f32 { 0.0 }
 
 /// Stylized Material parameters for Anime NPR Cel-Shading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,8 +58,23 @@ pub struct StylizedMaterial {
     pub rim_spread: f32,
     /// Mathematical shadow hue rotation in degrees (-180 to +180)
     pub hue_shift: f32,
-    /// Toon ramp steps: 1.0 = hard anime cel, 2.0 = 2-tier Ghibli soft, 0.0 = continuous
+    /// Toon ramp steps: 1.0 = hard anime cel, 2.0 = 2-tier Ghibli soft, 0.0 = continuous, 3.0 = high-key multi-band (P0-09)
     pub toon_steps: f32,
+    // P0-09: previously dead controls / missing params now persisted
+    #[serde(default = "default_spec_color")]
+    pub specular_color: [f32; 4],
+    #[serde(default = "default_spec_softness")]
+    pub specular_softness: f32,
+    #[serde(default = "default_spec_offset")]
+    pub specular_offset: f32,
+    #[serde(default = "default_rim_color")]
+    pub rim_color: [f32; 4],
+    #[serde(default = "default_outline_opacity")]
+    pub outline_opacity: f32,
+    #[serde(default = "default_outline_smoothness")]
+    pub outline_smoothness: f32,
+    #[serde(default = "default_outline_depth_bias")]
+    pub outline_depth_bias: f32,
 }
 
 impl Default for StylizedMaterial {
@@ -65,6 +93,13 @@ impl Default for StylizedMaterial {
             rim_spread: 0.40,
             hue_shift: -15.0, // cool lavender shift
             toon_steps: 1.0,
+            specular_color: default_spec_color(),
+            specular_softness: default_spec_softness(),
+            specular_offset: default_spec_offset(),
+            rim_color: default_rim_color(),
+            outline_opacity: default_outline_opacity(),
+            outline_smoothness: default_outline_smoothness(),
+            outline_depth_bias: default_outline_depth_bias(),
         }
     }
 }
@@ -109,14 +144,15 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
+        // P0-05/P0-08: use canonical base (was proxy 156 tris → real 6880 tris for telemetry parity)
         let mannequin_node = SceneNode::new("mannequin_proxy", "Anime Mannequin")
-            .with_mesh(Mesh::create_mannequin_proxy());
+            .with_mesh(Mesh::create_canonical_base(crate::mesh::BaseGender::Male));
 
         Self {
             nodes: vec![mannequin_node],
             camera: Camera::default(),
             light: StylizedLight::default(),
-            background_color: [0.12, 0.13, 0.16, 1.0], // modern dark studio background
+            background_color: [0.08, 0.09, 0.13, 1.0], // P0-04: unified with viewport clearColor (was 0.12,0.13,0.16)
         }
     }
 }
@@ -127,7 +163,7 @@ impl Scene {
             nodes: Vec::new(),
             camera: Camera::default(),
             light: StylizedLight::default(),
-            background_color: [0.12, 0.13, 0.16, 1.0],
+            background_color: [0.08, 0.09, 0.13, 1.0],
         }
     }
 

@@ -8,7 +8,8 @@ struct CameraUniform {
 
 struct OutlineUniform {
     color: vec4<f32>,
-    params: vec4<f32>, // x: line_width, y: aspect_ratio, z: unused, w: unused
+    params: vec4<f32>,  // x: line_width, y: aspect_ratio, z: depth_bias, w: opacity
+    params2: vec4<f32>, // x: smoothness, yzw: unused (P0-09)
 };
 
 @group(0) @binding(0)
@@ -48,10 +49,11 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     let thickness = outline.params.x * in.color.b;
     let aspect = max(outline.params.y, 0.001);
+    let depth_bias = outline.params.z;
 
     clip_pos.x += (normal_clip.x / aspect) * thickness * clip_pos.w;
     clip_pos.y += normal_clip.y * thickness * clip_pos.w;
-    clip_pos.z += 0.0003 * clip_pos.w;
+    clip_pos.z += depth_bias * clip_pos.w;
 
     out.clip_position = clip_pos;
     return out;
@@ -59,5 +61,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-    return outline.color;
+    let opacity = outline.params.w;
+    let smoothness = max(outline.params2.x, 0.0);
+    var out_col = vec4<f32>(outline.color.rgb, outline.color.a * opacity);
+    if (smoothness > 0.001) {
+        let aa = clamp(smoothness * 8.0, 0.0, 1.0);
+        out_col.a = out_col.a * mix(1.0, 0.85, aa);
+    }
+    return out_col;
 }

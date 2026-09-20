@@ -437,6 +437,11 @@
     const lx = Math.cos(radEl) * Math.cos(radAz);
     const ly = Math.sin(radEl);
     const lz = Math.cos(radEl) * Math.sin(radAz);
+    // P0-10: persist full light/material/camera state (was 8+ params missing, camera fixed)
+    const eye = (viewportRef as any)?.renderer?.eye ?? [0, 1.5, 3.5];
+    const target = (viewportRef as any)?.renderer?.target ?? [0, 1, 0];
+    const up = (viewportRef as any)?.renderer?.up ?? [0, 1, 0];
+    const fovDeg = ((viewportRef as any)?.renderer?.fov ?? (45*Math.PI/180)) * 180/Math.PI;
 
     return {
       preset: currentPreset,
@@ -466,6 +471,18 @@
       sunColor,
       shadowSaturation,
       ambientIntensity,
+      cameraEye: eye,
+      cameraTarget: target,
+      cameraUp: up,
+      fov: fovDeg,
+      outlineOpacity,
+      outlineSmoothness,
+      outlineDepthBias,
+      specSoftness,
+      specOffset,
+      specColorHex,
+      rimColor,
+      lightColor: hexToRgb(sunColor),
     };
   }
 
@@ -496,6 +513,23 @@
     if (snap.sunColor !== undefined) sunColor = snap.sunColor;
     if (snap.shadowSaturation !== undefined) shadowSaturation = snap.shadowSaturation;
     if (snap.ambientIntensity !== undefined) ambientIntensity = snap.ambientIntensity;
+    if ((snap as any).outlineOpacity !== undefined) outlineOpacity = (snap as any).outlineOpacity;
+    if ((snap as any).outlineSmoothness !== undefined) outlineSmoothness = (snap as any).outlineSmoothness;
+    if ((snap as any).outlineDepthBias !== undefined) outlineDepthBias = (snap as any).outlineDepthBias;
+    if ((snap as any).specSoftness !== undefined) specSoftness = (snap as any).specSoftness;
+    if ((snap as any).specOffset !== undefined) specOffset = (snap as any).specOffset;
+    if ((snap as any).specColorHex !== undefined) specColorHex = (snap as any).specColorHex;
+    if ((snap as any).rimColor !== undefined) rimColor = (snap as any).rimColor;
+    // P0-10: restore camera (was fixed)
+    if ((snap as any).cameraEye && (snap as any).cameraTarget) {
+      const r: any = (viewportRef as any)?.renderer;
+      if (r) {
+        r.eye = (snap as any).cameraEye;
+        r.target = (snap as any).cameraTarget;
+        if ((snap as any).cameraUp) r.up = (snap as any).cameraUp;
+        if ((snap as any).fov) r.fov = (snap as any).fov * Math.PI/180;
+      }
+    }
 
     // Direct synchronization to 3D WebGPU Viewport & Rust
     if (viewportRef) {
@@ -646,6 +680,10 @@
     const lx = Math.cos(radEl) * Math.cos(radAz);
     const ly = Math.sin(radEl);
     const lz = Math.cos(radEl) * Math.sin(radAz);
+    const eye = (viewportRef as any)?.renderer?.eye ?? [0, 1.5, 3.5];
+    const target = (viewportRef as any)?.renderer?.target ?? [0, 1, 0];
+    const up = (viewportRef as any)?.renderer?.up ?? [0, 1, 0];
+    const fovDeg = ((viewportRef as any)?.renderer?.fov ?? (45*Math.PI/180)) * 180/Math.PI;
 
     return {
       preset: currentPreset,
@@ -656,8 +694,10 @@
       lightDir: [lx, ly, lz],
       lightIntensity,
       shadowColor: hexToRgb(shadowColorHex),
-      cameraEye: [0, 1.5, 3.5],
-      cameraTarget: [0, 1, 0],
+      cameraEye: eye,
+      cameraTarget: target,
+      cameraUp: up,
+      fov: fovDeg,
       timestamp: Date.now(),
       version: "0.1.0",
       lightAzimuth,
@@ -675,6 +715,14 @@
       sunColor,
       shadowSaturation,
       ambientIntensity,
+      outlineOpacity,
+      outlineSmoothness,
+      outlineDepthBias,
+      specSoftness,
+      specOffset,
+      specColorHex,
+      rimColor,
+      lightColor: hexToRgb(sunColor),
     };
   }
 
@@ -1223,9 +1271,11 @@
 
     const sunRgb = hexToRgb(sunColor);
     const shadowRgb = hexToRgb(shadowColorHex);
+    // P0-02: neutral white tint — shade_color (material) alone defines shadow hue (was duplicate shadowRgb → double tint)
+    const neutralShadowTint: [number, number, number] = [1.0, 1.0, 1.0];
 
     if (viewportRef?.setLight) {
-      viewportRef.setLight([x, y, z], lightIntensity, shadowRgb, sunRgb, ambientIntensity, shadowSaturation);
+      viewportRef.setLight([x, y, z], lightIntensity, neutralShadowTint, sunRgb, ambientIntensity, shadowSaturation);
     }
 
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
@@ -1234,7 +1284,7 @@
           direction: [x, y, z],
           intensity: lightIntensity,
           color: sunRgb,
-          shadow_color: shadowRgb,
+          shadow_color: neutralShadowTint,
           ambient_intensity: ambientIntensity,
           shadow_saturation: shadowSaturation,
         }).catch(() => {});
@@ -1252,6 +1302,7 @@
     const outlineRgb = hexToRgb(outlineColor);
     const specRgb = hexToRgb(specColorHex);
 
+    const rimRgbLocal = hexToRgb(rimColor);
     if (viewportRef?.setMaterialParams) {
       viewportRef.setMaterialParams({
         baseColor: [baseRgb[0], baseRgb[1], baseRgb[2], 1.0],
@@ -1265,6 +1316,7 @@
         specColor: [specRgb[0], specRgb[1], specRgb[2], 1.0],
         rimIntensity,
         rimSpread,
+        rimColor: [rimRgbLocal[0], rimRgbLocal[1], rimRgbLocal[2], 1.0],
         hueShift,
         toonSteps,
         outlineWidth: outlineWidth * 0.001,
@@ -1276,6 +1328,7 @@
       });
     }
 
+    const rimRgb = rimRgbLocal;
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       import("@tauri-apps/api/core").then(({ invoke }) => {
         invoke("set_material_toon_params", {
@@ -1291,6 +1344,13 @@
           shade_color: [shadeRgb[0], shadeRgb[1], shadeRgb[2], 1.0],
           outline_width: outlineWidth * 0.001,
           outline_color: [outlineRgb[0], outlineRgb[1], outlineRgb[2], 1.0],
+          specular_color: [specRgb[0], specRgb[1], specRgb[2], 1.0],
+          specular_softness: specSoftness,
+          specular_offset: specOffset,
+          rim_color: [rimRgb[0], rimRgb[1], rimRgb[2], 1.0],
+          outline_opacity: outlineOpacity,
+          outline_smoothness: outlineSmoothness,
+          outline_depth_bias: outlineDepthBias,
           shadow_saturation: shadowSaturation,
         }).catch(() => {});
       });
@@ -1341,24 +1401,34 @@
   function reportLiveTelemetry() {
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       import("@tauri-apps/api/core").then(({ invoke }) => {
+        const radAz = (lightAzimuth * Math.PI) / 180;
+        const radEl = (lightElevation * Math.PI) / 180;
+        const lx = Math.cos(radEl) * Math.cos(radAz);
+        const ly = Math.sin(radEl);
+        const lz = Math.cos(radEl) * Math.sin(radAz);
+        const rend: any = (viewportRef as any)?.renderer;
+        const triCount = rend?.indexCount ? Math.floor(rend.indexCount/3) : (currentPreset === "mannequin" ? 6880 : currentPreset === "sphere" ? 2592 : 12);
+        const eye = rend?.eye ?? [0, 1.5, 3.5];
+        const target = rend?.target ?? [0, 1, 0];
+        const fpsVal = rend ? Math.round(1000 / Math.max(rend.frameTimeMs || 16, 1)) : telemetryFps;
         invoke("report_live_telemetry", {
           telemetry: {
-            fps: telemetryFps,
-            frame_time_ms: telemetryFrameMs,
+            fps: fpsVal,
+            frame_time_ms: rend?.frameTimeMs ?? telemetryFrameMs,
             draw_calls: 2,
-            triangle_count: currentPreset === "mannequin" ? 156 : currentPreset === "sphere" ? 2592 : 12,
-            adapter_name: telemetryAdapter,
-            camera_eye: [0, 1.5, 3.5],
-            camera_target: [0, 1, 0],
-            light_direction: [0.577, 0.577, 0.577],
+            triangle_count: triCount,
+            adapter_name: rend?.adapterName ?? telemetryAdapter,
+            camera_eye: eye,
+            camera_target: target,
+            light_direction: [lx, ly, lz],
             light_intensity: lightIntensity,
-            shadow_color: [0.65, 0.68, 0.85],
+            shadow_color: hexToRgb(shadowColorHex),
             active_preset: currentPreset,
             outline_width: outlineWidth,
             shadow_threshold: shadowThreshold,
             head_scale: headScale,
             head_ratio: headRatio,
-            webgpu_active: telemetryBackend.includes("WebGPU"),
+            webgpu_active: (rend?.backend ?? telemetryBackend).includes("WebGPU"),
           },
         }).catch(() => {});
       });
@@ -1935,6 +2005,13 @@
                 onclick={() => { toonSteps = 2.0; updateMaterial(true, false); }}
               >
                 2 Degraus (Ghibli)
+              </button>
+              <button
+                class="btn-secondary"
+                class:selected={toonSteps === 3.0}
+                onclick={() => { toonSteps = 3.0; updateMaterial(true, false); }}
+              >
+                3 Degraus (High-Key)
               </button>
               <button
                 class="btn-secondary"

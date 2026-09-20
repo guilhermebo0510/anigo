@@ -84,14 +84,17 @@
       // Progressive distance zoom
       const zoomFactor = Math.exp(deltaY * 0.005);
       renderer.zoom(zoomFactor);
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke("camera_zoom", { factor: zoomFactor }).catch(()=>{}));
     } else if (isPan) {
       // 1:1 calibrated screen-space pan
       renderer.pan(deltaX, deltaY);
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke("camera_pan", { dx: deltaX, dy: deltaY }).catch(()=>{}));
     } else if (buttonPressed === 0) {
       // Orbit (LMB or Alt+LMB)
       const azimuthDelta = -deltaX * 0.008;
       const elevationDelta = -deltaY * 0.008;
       renderer.orbit(azimuthDelta, elevationDelta);
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke("camera_orbit", { azimuth: azimuthDelta, elevation: elevationDelta }).catch(()=>{}));
     }
   }
 
@@ -174,14 +177,24 @@
 
   export function orbit(azimuth: number, elevation: number) {
     if (renderer) renderer.orbit(azimuth, elevation);
+    // P0-05: sync backend camera (was fixed)
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke("camera_orbit", { azimuth, elevation }).catch(()=>{}));
+    }
   }
 
   export function zoom(factor: number, mouseNdcX: number = 0, mouseNdcY: number = 0) {
     if (renderer) renderer.zoom(factor, mouseNdcX, mouseNdcY);
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke("camera_zoom", { factor }).catch(()=>{}));
+    }
   }
 
   export function pan(dx: number, dy: number) {
     if (renderer) renderer.pan(dx, dy);
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke("camera_pan", { dx, dy }).catch(()=>{}));
+    }
   }
 
   export function setLight(
@@ -209,6 +222,7 @@
     specColor?: [number, number, number, number];
     rimIntensity?: number;
     rimSpread?: number;
+    rimColor?: [number, number, number, number];
     hueShift?: number;
     toonSteps?: number;
     outlineWidth?: number;
@@ -241,8 +255,9 @@
     if (renderer) renderer.setSpecular(intensity, exponent);
   }
 
-  export function setRimLight(intensity: number, spread: number) {
-    if (renderer) renderer.setRimLight(intensity, spread);
+  export function setRimLight(intensity: number, spread: number, color?: [number, number, number]) {
+    if (renderer) renderer.setRimLight(intensity, spread, color as any);
+    if (color && renderer) (renderer as any).setRimColor?.(color);
   }
 
   export function setHueShift(degrees: number) {

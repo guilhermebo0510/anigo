@@ -21,7 +21,7 @@ impl Default for CameraUniform {
 pub struct LightUniform {
     pub direction: [f32; 4],
     pub color: [f32; 4],
-    pub shadow_color: [f32; 4],
+    pub shadow_color: [f32; 4], // rgb: shadow tint, w: saturation multiplier (P0-02 unified neutral)
 }
 
 impl Default for LightUniform {
@@ -29,7 +29,7 @@ impl Default for LightUniform {
         Self {
             direction: [0.577, 0.577, 0.577, 1.0],
             color: [1.0, 0.98, 0.95, 0.35],
-            shadow_color: [0.65, 0.68, 0.85, 1.0],
+            shadow_color: [1.0, 1.0, 1.0, 1.0], // P0-02 neutral white (was 0.65,0.68,0.85,1.0 double tint)
         }
     }
 }
@@ -40,6 +40,7 @@ pub struct MaterialUniform {
     pub base_color: [f32; 4],
     pub shade_color: [f32; 4],
     pub specular_color: [f32; 4],
+    pub rim_color: [f32; 4],
     pub params: [f32; 4],
     pub params2: [f32; 4],
     pub params3: [f32; 4],
@@ -51,6 +52,7 @@ impl Default for MaterialUniform {
             base_color: [0.98, 0.92, 0.85, 1.0],
             shade_color: [0.82, 0.73, 0.78, 1.0],
             specular_color: [1.0, 1.0, 1.0, 1.0],
+            rim_color: [0.576, 0.773, 0.992, 1.0],
             params: [0.50, 0.02, 0.40, 32.0],
             params2: [0.80, 0.40, -15.0f32.to_radians(), 1.0],
             params3: [0.05, 0.0, 0.0, 0.0],
@@ -63,7 +65,8 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
         Self {
             base_color: m.base_color,
             shade_color: m.shade_color,
-            specular_color: [1.0, 1.0, 1.0, 1.0], // Core material doesn't have specular_color yet, default to white
+            specular_color: m.specular_color,
+            rim_color: m.rim_color,
             params: [
                 m.shadow_threshold,
                 m.shadow_smoothness,
@@ -76,7 +79,7 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
                 m.hue_shift.to_radians(),
                 m.toon_steps,
             ],
-            params3: [0.05, 0.0, 0.0, 0.0], // Default spec softness and offset
+            params3: [m.specular_softness, m.specular_offset, 0.0, 0.0],
         }
     }
 }
@@ -85,14 +88,16 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct OutlineUniform {
     pub color: [f32; 4],
-    pub params: [f32; 4],
+    pub params: [f32; 4],  // x: width, y: aspect, z: depth_bias, w: opacity
+    pub params2: [f32; 4], // x: smoothness, yzw: unused (P0-09 dead control fix)
 }
 
 impl Default for OutlineUniform {
     fn default() -> Self {
         Self {
             color: [0.25, 0.15, 0.20, 1.0],
-            params: [0.0035, 1.0, 0.0, 0.0],
+            params: [0.0035, 1.0, 0.0, 1.0],
+            params2: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -109,10 +114,11 @@ mod tests {
         assert_eq!(std::mem::size_of::<LightUniform>(), 48);
         assert_eq!(std::mem::size_of::<LightUniform>() % 16, 0);
 
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 96);
+        // P0-04/09: Material 112 B (added rim_color) and Outline 48 B (added smoothness)
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 112);
         assert_eq!(std::mem::size_of::<MaterialUniform>() % 16, 0);
 
-        assert_eq!(std::mem::size_of::<OutlineUniform>(), 32);
+        assert_eq!(std::mem::size_of::<OutlineUniform>(), 48);
         assert_eq!(std::mem::size_of::<OutlineUniform>() % 16, 0);
     }
 

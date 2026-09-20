@@ -24,6 +24,7 @@ struct MaterialUniform {
     base_color: vec4<f32>,
     shade_color: vec4<f32>,
     specular_color: vec4<f32>,
+    rim_color: vec4<f32>,       // P0-09: separate rim tint (was light.shadow_color)
     params: vec4<f32>,          // x: shadow_threshold, y: shadow_smoothness, z: spec_intensity, w: spec_power
     params2: vec4<f32>,         // x: rim_intensity, y: rim_spread, z: hue_shift_rad, w: toon_steps
     params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: unused, w: unused
@@ -161,13 +162,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_sat = max(light.shadow_color.w, 0.0);
     let hue_shifted_shadow = apply_hue_shift(raw_shadow_color, hue_shift_rad, shadow_sat);
 
-    // 6. Base Lit and Shadow Blending (Chromaticity-Preserving)
+    // 6. Base Lit and Shadow Blending — P0-03: removed destructive max-channel normalization; intensity monotonic 0..3
     let intensity = light.direction.w;
     var lit_color = material.base_color.rgb * light.color.rgb * intensity;
-    let max_lit = max(max(lit_color.r, lit_color.g), lit_color.b);
-    if (max_lit > 1.0) {
-        lit_color = lit_color / max_lit;
-    }
 
     let ambient_term = clamp(0.2 + light.color.w * 0.8, 0.05, 1.5);
     let shadow_color = hue_shifted_shadow * ambient_term;
@@ -196,7 +193,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let spec_soft_clamped = max(spec_softness, 0.001);
     let spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * spec_intensity * in.anime_attr.a * toon_factor;
 
-    // 8. Stylized Fresnel Rim Lighting
+    // 8. Stylized Fresnel Rim Lighting — P0-09: use material.rim_color
     let rim_intensity = material.params2.x;
     let rim_spread = clamp(material.params2.y, 0.05, 0.95);
     let rim_dot = 1.0 - max(dot(V, N), 0.0);
@@ -206,7 +203,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 9. Final Color Composition
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
-    let with_rim = lit_highlighted + (light.shadow_color.rgb * rim_term);
+    let rim_rgb = material.rim_color.rgb;
+    let with_rim = lit_highlighted + (rim_rgb * rim_term);
     let final_rgb = clamp(with_rim, vec3<f32>(0.0), vec3<f32>(1.0)) * ao;
 
     return vec4<f32>(final_rgb, material.base_color.a);
