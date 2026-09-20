@@ -2,7 +2,14 @@
 name = "anigo-mcp"
 version = "0.1.0"
 edition = "2021"
-description = "Native Model Context Protocol (MCP) server for ANIGO visual and scene automation"
+description = "Native Model Context Protocol (MCP) server for ANIGO visual and scene automation — WebGPU headless + live bridge"
+authors = ["Guilherme <guilherme@anigo.studio>"]
+license = "Proprietary"
+repository = "https://github.com/guilhermebo0510/anigo"
+readme = "../../README.md"
+keywords = ["mcp", "anigo", "anime", "3d", "webgpu"]
+categories = ["development-tools"]
+rust-version = "1.78"
 
 [[bin]]
 name = "anigo-mcp"
@@ -20,3 +27,7 @@ image = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# No extra dependencies needed for raw win32 linking, but keep for future use
+# winapi is not required because we use #[link(name="user32")] directly

@@ -201,10 +201,46 @@ impl LiveBridgeServer {
     }
 
     async fn handle_client(&self, socket: TcpStream, _peer: std::net::SocketAddr) {
-        let (reader, mut writer) = socket.into_split();
-        let mut lines = BufReader::new(reader).lines();
+        use tokio::time::{timeout, Duration};
+        const MAX_LINE: usize = 1 << 20; // 1MB max frame - P0-03 hardening
+        const READ_TIMEOUT_SECS: u64 = 5;
 
-        while let Ok(Some(line)) = lines.next_line().await {
+        let (reader, mut writer) = socket.into_split();
+        let mut buf_reader = BufReader::new(reader);
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            let read_fut = buf_reader.read_line(&mut line);
+            let read_res = match timeout(Duration::from_secs(READ_TIMEOUT_SECS), read_fut).await {
+                Ok(r) => r,
+                Err(_) => {
+                    // timeout, close connection to avoid hanging
+                    break;
+                }
+            };
+
+            let n = match read_res {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+
+            if n > MAX_LINE {
+                let err_res = BridgeResponse {
+                    id: "unknown".into(),
+                    success: false,
+                    data: None,
+                    error: Some(format!("Frame too large: {} > {} bytes", n, MAX_LINE)),
+                };
+                if let Ok(mut resp_bytes) = serde_json::to_vec(&err_res) {
+                    resp_bytes.push(b'\n');
+                    let _ = writer.write_all(&resp_bytes).await;
+                    let _ = writer.flush().await;
+                }
+                break;
+            }
+
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -230,9 +266,24 @@ impl LiveBridgeServer {
 
             let response = self.dispatch_action(&req).await;
             if let Ok(mut resp_bytes) = serde_json::to_vec(&response) {
+                if resp_bytes.len() > MAX_LINE {
+                    let err_res = BridgeResponse {
+                        id: req.id.clone(),
+                        success: false,
+                        data: None,
+                        error: Some(format!("Response too large: {} bytes", resp_bytes.len())),
+                    };
+                    resp_bytes = serde_json::to_vec(&err_res).unwrap_or_default();
+                }
                 resp_bytes.push(b'\n');
-                let _ = writer.write_all(&resp_bytes).await;
-                let _ = writer.flush().await;
+                let write_fut = writer.write_all(&resp_bytes);
+                if timeout(Duration::from_secs(2), write_fut).await.is_err() {
+                    break;
+                }
+                let flush_fut = writer.flush();
+                if timeout(Duration::from_secs(1), flush_fut).await.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -683,8 +734,6 @@ impl LiveBridgeServer {
             // UI ACTIONS  (dispara ações semânticas na interface Svelte)
             // ─────────────────────────────────────────────────────────────
             "UI_ACTION" => {
-                // Permite que o MCP acione ações da UI por nome semântico.
-                // Ex: {"action": "UI_ACTION", "params": {"name": "select_tab", "value": "shading"}}
                 let _ = self.app_handle.emit("anigo://ui_action", req.params.clone());
                 BridgeResponse {
                     id: req.id.clone(),
