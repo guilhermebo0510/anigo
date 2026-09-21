@@ -2406,6 +2406,9 @@ mod tests {
             Command::SetRenderSettings {
                 msaa_samples: Some(8),
                 tonemap: Some(crate::project::TonemapOperator::Neutral),
+                graph_order: None,
+                graph_disabled: None,
+                depth_prepass: None,
             },
             // Issue #12: a árvore também passa pelo mesmo contrato de involution
             // (aplicar, desfazer e refazer sem deixar resíduo). O reparent e a

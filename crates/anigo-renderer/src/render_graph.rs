@@ -514,7 +514,7 @@ impl RenderGraph {
             }
         }
         let mut queue: VecDeque<usize> = (0..self.passes.len())
-            .filter(|index| enabled[*index] && pending[index] == 0)
+            .filter(|index| enabled[*index] && pending[*index] == 0)
             .collect();
         let mut removed = vec![false; self.passes.len()];
         while let Some(index) = queue.pop_front() {
