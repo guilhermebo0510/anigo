@@ -261,7 +261,10 @@ impl CoreSession {
             .as_ref()
             .ok_or_else(|| "canonical geometry unavailable".to_string())?;
         let fresh_client = client_static_revision == Some(geometry.static_revision);
-        let wants_static = include_static && !fresh_client;
+        // Geometria vai sempre que o cliente está desatualizado — `include_static`
+        // é só o pedido explícito de reenvio (recuperação de contexto GPU). O
+        // caminho rápido (só dinâmico) é `include_static == false` + revisão atual.
+        let wants_static = include_static || !fresh_client;
         Ok(build_snapshot(
             &self.project,
             &geometry.base_mesh,
@@ -396,11 +399,16 @@ mod tests {
         let mut session = CoreSession::new();
         let first = session.snapshot(true, None).expect("snapshot");
         let revision = first.dynamic.static_revision;
-        let second = session.snapshot(true, Some(revision)).expect("snapshot");
-        assert!(second.static_payload.is_none());
-        // A stale revision (or none) still ships the geometry.
-        let third = session.snapshot(true, Some(revision + 99)).expect("snapshot");
-        assert!(third.static_payload.is_some());
+        // Cliente atual + sem pedido explícito ⇒ só a parte dinâmica viaja.
+        let fast = session.snapshot(false, Some(revision)).expect("snapshot");
+        assert!(fast.static_payload.is_none());
+        // Revisão velha ⇒ a geometria volta, mesmo sem pedido explícito (é o que
+        // faz um undo de proporções chegar ao viewport).
+        let stale = session.snapshot(false, Some(revision + 99)).expect("snapshot");
+        assert!(stale.static_payload.is_some());
+        // Pedido explícito (recuperação de contexto GPU) sempre reenvia.
+        let forced = session.snapshot(true, Some(revision)).expect("snapshot");
+        assert!(forced.static_payload.is_some());
     }
 
     #[test]

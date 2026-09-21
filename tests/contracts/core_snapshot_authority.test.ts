@@ -228,6 +228,14 @@ describe("P0 itens 4–5 — cliente da sessão canônica", () => {
     assert.match(CORE_SESSION_RS, /history:\s*CommandHistory/);
     assert.match(CORE_SESSION_RS, /build_snapshot\(/);
     assert.match(CORE_SESSION_RS, /prepare_base_mesh\(/);
+    // Revisão velha ⇒ a geometria volta mesmo sem pedido explícito (é o que faz
+    // um undo de proporções chegar ao viewport); revisão atual ⇒ só dinâmico.
+    assert.match(CORE_SESSION_RS, /let wants_static = include_static \|\| !fresh_client;/);
+    assert.match(CORE_SESSION_RS, /client_static_revision == Some\(geometry\.static_revision\)/);
+    // Cache de geometria por gênero/proporções/dimorfismo: peso de slider não
+    // reconstrói malha (o que o teste `morph_edits_do_not_rebuild...` prova).
+    assert.match(CORE_SESSION_RS, /fn geometry_key\(/);
+    assert.match(CORE_SESSION_RS, /PROPORTION|proportions|gender_dimorphism/);
   });
 
   it("sem núcleo a ponte é explicitamente indisponível (nunca deforma)", async () => {
