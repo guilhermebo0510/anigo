@@ -68,10 +68,21 @@ impl HeadlessRenderer {
         // coisa ser criada (o resto do quadro fica suspeito).
         diagnostics::report_contract_health();
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let instance = match std::panic::catch_unwind(|| {
+            wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..Default::default()
+            })
+        }) {
+            Ok(instance) => instance,
+            Err(_) => {
+                diagnostics::report(
+                    "device_unavailable",
+                    "nenhum backend wgpu utilizável encontrado (headless não pode renderizar)",
+                );
+                anyhow::bail!("Failed to find suitable GPU adapter for ANIGO engine");
+            }
+        };
 
         // P1-01/P1-02: falha de ambiente vira diagnóstico observável (com código)
         // antes de virar `anyhow::Error`.
@@ -91,15 +102,12 @@ impl HeadlessRenderer {
             anyhow::bail!("Failed to find suitable GPU adapter for ANIGO engine");
         }
 
-        // Além do caminho `None`, o wgpu 24 pode **entrar em pânico** ao negociar
-        // o adaptador num runner sem backend utilizável: no CI o
-        // `enumerate_adapters` acima lista um backend que o `request_adapter`
-        // depois recusa (e o wgpu chama `panic!()` sem mensagem no meio do
-        // caminho de erro). Um pânico aqui seria um crash de ambiente, e é
-        // exatamente o que P1-01/P1-02 mandam transformar em diagnóstico
-        // observável: `catch_unwind` converte o pânico no mesmo
-        // `device_unavailable`, e os testes de GPU se pulam pelo caminho de erro
-        // que já existe (`if let Ok(renderer) = …`).
+        // Além do caminho `None`, o wgpu 24 aborta com um pânico **cru** (sem
+        // mensagem) quando o runner não tem backend utilizável — é o caso do CI.
+        // Um pânico aqui seria um crash de ambiente, e é exatamente o que
+        // P1-01/P1-02 mandam transformar em diagnóstico observável: o guarda
+        // converte o pânico no mesmo `device_unavailable`, e os testes de GPU se
+        // pulam pelo caminho de erro que já existe (`if let Ok(renderer) = …`).
         let requested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
