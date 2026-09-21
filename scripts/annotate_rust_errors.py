@@ -17,9 +17,13 @@ restante vai no resumo impresso no log.
 import re
 import sys
 
-MAX_BLOCKS = 40
+MAX_BLOCKS = 60
 MAX_BLOCK_LINES = 22
-MAX_CHARS = 60000
+# O GitHub trunca a mensagem de uma anotação em 4096 caracteres e aceita até 10
+# anotações por passo: os blocos são distribuídos em várias anotações para que o
+# log inteiro caiba (40 KB) em vez de só os primeiros 4 KB.
+ANNOTATION_CHARS = 3800
+MAX_ANNOTATIONS = 10
 
 # O cargo coloriza a saída mesmo em pipeline (o runner não é TTY, mas o cargo
 # detecta `TERM`/`CLICOLOR_FORCE`); sem limpar os escapes o `^error[` não casa.
@@ -62,11 +66,26 @@ def annotate(path: str, label: str) -> int:
         print(escape(message, prefix="::error::"))
         return 1
 
-    body = "\n\n".join("\n".join(block) for block in blocks)
-    message = f"{label} falhou ({len(blocks)} bloco(s) de erro no log):\n\n{body}"
-    if len(message) > MAX_CHARS:
-        message = message[: MAX_CHARS - 40] + "\n... (truncado; veja o log do job)"
-    print(escape(message, prefix="::error::"))
+    header = f"{label} falhou ({len(blocks)} bloco(s) de erro no log)"
+    chunks: list[list[str]] = [[]]
+    size = 0
+    for block in blocks:
+        text = "\n".join(block)
+        if chunks[-1] and size + len(text) > ANNOTATION_CHARS:
+            chunks.append([])
+            size = 0
+        chunks[-1].append(text)
+        size += len(text) + 2
+
+    for index, chunk in enumerate(chunks[:MAX_ANNOTATIONS]):
+        suffix = f" [{index + 1}/{len(chunks)}]" if len(chunks) > 1 else ""
+        message = f"{header}{suffix}:\n\n" + "\n\n".join(chunk)
+        print(escape(message, prefix="::error::"))
+    if len(chunks) > MAX_ANNOTATIONS:
+        print(
+            f"::error::{header}: {len(chunks) - MAX_ANNOTATIONS} bloco(s) além do "
+            "limite de anotações — veja o log do job"
+        )
     return 1
 
 

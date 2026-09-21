@@ -283,7 +283,7 @@ mod tests {
                 "código '{code}' sem severidade"
             );
             assert!(
-                matches!(severity, Severity::Warning | Severity::Error | Severity::Info),
+                Severity::from_str(severity).is_some(),
                 "severidade de '{code}' inválida"
             );
         }

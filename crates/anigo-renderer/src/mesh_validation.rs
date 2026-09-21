@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     fn triangle() -> Mesh {
-        let mut mesh = Mesh::new();
+        let mut mesh = Mesh::new("test_triangle", Vec::new(), Vec::new());
         mesh.vertices.push(Vertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0]));
         mesh.vertices.push(Vertex::new([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0]));
         mesh.vertices.push(Vertex::new([0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0]));
@@ -150,7 +150,8 @@ mod tests {
 
     #[test]
     fn empty_mesh_is_rejected() {
-        let problem = validate_mesh(&Mesh::new()).expect_err("malha vazia reprovada");
+        let empty = Mesh::new("empty", Vec::new(), Vec::new());
+        let problem = validate_mesh(&empty).expect_err("malha vazia reprovada");
         assert_eq!(problem.code, "EMPTY_MESH");
     }
 

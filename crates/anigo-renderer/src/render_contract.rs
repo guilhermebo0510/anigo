@@ -785,6 +785,7 @@ pub fn clip_depth() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CameraUniform, OutlineUniform};
 
     fn contract_hash_as_u64(hash: &str) -> u64 {
         match u64::from_str_radix(hash, 16) {

@@ -23,9 +23,9 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 #[cfg(target_os = "windows")]
-use win32_interact::{Win32Harness, RECT};
+use win32_interact::Win32Harness;
 #[cfg(not(target_os = "windows"))]
-use win32_stub::{Win32Harness, RECT};
+use win32_stub::Win32Harness;
 
 use anigo_core::mesh::{BaseGender, Mesh};
 use anigo_core::morph_catalog::{find_slider_def, MorphCatalog};
@@ -1092,11 +1092,30 @@ async fn handle_tool_call(
                 // For now store in light dirty flag
                 scene.light.shadow_saturation = angle_clamped as f32 / 180.0; // placeholder linkage
             }
-            // Bridge to live window via event
-            if let Some(ws) = &state.live_window_ws {
-                let _ = ws.send(serde_json::json!({"type":"anigo://set_face_light_angle","payload":{"angle_deg":angle_clamped}}).to_string()).await;
+            // Bridge para a janela viva pelo canal genérico de ações da UI: o
+            // app Svelte atende `set_slider` -> `light_elevation` (ângulo do sol
+            // que ilumina o rosto). Não existe ação dedicada de face light no
+            // `bridge.rs`, e falha do bridge vira warning — nunca silêncio.
+            if let Err(e) = state
+                .bridge
+                .send_command(
+                    "UI_ACTION",
+                    json!({
+                        "action": "set_slider",
+                        "property": "light_elevation",
+                        "value": angle_clamped,
+                    }),
+                )
+                .await
+            {
+                warnings.push(format!("Live sync face light failed: {}", e));
+                tracing::warn!(error=%e, "Live bridge UI_ACTION(set_slider) failed");
             }
-            return Ok(serde_json::json!({"status":"ok","angle_deg":angle_clamped}));
+            let mut text = format!("Face light angle: {:.1}°", angle_clamped);
+            if !warnings.is_empty() {
+                text.push_str(&format!("\nWarnings: {}", warnings.join("; ")));
+            }
+            return Ok(vec![json!({ "type": "text", "text": text })]);
         }
         "anigo_set_material_toon" => {
             let mat_clone = {
