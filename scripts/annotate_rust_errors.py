@@ -23,6 +23,10 @@ MAX_BLOCK_LINES = 22
 # anotações por passo: os blocos são distribuídos em várias anotações para que o
 # log inteiro caiba (40 KB) em vez de só os primeiros 4 KB.
 ANNOTATION_CHARS = 3800
+# Bloco condensado de um teste quebrado: um por anotação, com folga para a
+# mensagem inteira (um dump de `SkinAssignmentSummary`/`ProjectState` cortado no
+# meio esconde justamente o campo que explica a falha).
+TEST_ANNOTATION_CHARS = 1500
 MAX_ANNOTATIONS = 10
 
 # O cargo coloriza a saída mesmo em pipeline (o runner não é TTY, mas o cargo
@@ -126,11 +130,11 @@ def failing_test_blocks(lines: list[str]) -> list[str]:
         # isomerismo). Elas entram sempre.
         for _ in range(2):
             if index < len(lines) and not BLOCK_HEADER.match(lines[index]):
-                kept.append(_truncate(lines[index].strip(), 220))
+                kept.append(_truncate(lines[index].strip(), 600))
                 index += 1
         while index < len(lines) and not BLOCK_HEADER.match(lines[index]):
             if len(kept) < MAX_BLOCK_LINES and KEEP_LINE.match(lines[index]):
-                kept.append(_truncate(lines[index].strip(), 220))
+                kept.append(_truncate(lines[index].strip(), 600))
             index += 1
         blocks.append("\n".join(kept))
     return blocks
@@ -167,25 +171,16 @@ def test_failure_annotations(lines: list[str], label: str) -> list[str]:
         # teste quebrado fique invisível, mesmo com o limite de anotações.
         annotations.append(f"{header} — {len(names)} teste(s) falharam:\n\n" + "\n".join(names))
 
-    chunks: list[str] = []
-    current = ""
-    for block in blocks:
-        if current and len(current) + len(block) + 2 > ANNOTATION_CHARS:
-            chunks.append(current)
-            current = ""
-        current += block + "\n\n"
-    if current:
-        chunks.append(current)
-
-    for index, chunk in enumerate(chunks):
-        if len(annotations) >= MAX_ANNOTATIONS:
+    # Um bloco por anotação: nada é cortado pela divisão em pedaços e o limite
+    # de 10 anotações do passo cobre oito testes quebrados (mais a lista).
+    for index, block in enumerate(blocks):
+        if len(annotations) >= MAX_ANNOTATIONS - 1:
             annotations.append(
-                f"{header}: blocos de saída além do limite de {MAX_ANNOTATIONS} "
-                "anotações — veja o log do job"
+                f"{header}: {len(blocks) - index} bloco(s) além do limite de "
+                f"{MAX_ANNOTATIONS} anotações — veja o log do job"
             )
             break
-        suffix = f" [{index + 1}/{len(chunks)}]" if len(chunks) > 1 else ""
-        annotations.append(f"{header}{suffix}:\n\n{chunk.rstrip()}")
+        annotations.append(f"{header}:\n\n{block[:TEST_ANNOTATION_CHARS]}")
 
     return annotations[:MAX_ANNOTATIONS]
 
