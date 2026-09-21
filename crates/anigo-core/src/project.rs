@@ -1847,20 +1847,20 @@ mod tests {
         let mut project = canonical_project();
         let root = project.scene.nodes[0].node_id.clone();
         project.scene.nodes.push(
-            NodeSlot::new(NodeId::from_slug("nod_jacket"), "Jacket", NodeKind::Clothing)
+            NodeSlot::new(NodeId::parse("nod_jacket").expect("node id válido nos testes"), "Jacket", NodeKind::Clothing)
                 .child_of(root.clone()),
         );
         project.scene.nodes.push(
-            NodeSlot::new(NodeId::from_slug("nod_hood"), "Hood", NodeKind::Hair)
-                .child_of(NodeId::from_slug("nod_jacket")),
+            NodeSlot::new(NodeId::parse("nod_hood").expect("node id válido nos testes"), "Hood", NodeKind::Hair)
+                .child_of(NodeId::parse("nod_jacket").expect("node id válido nos testes")),
         );
         project.validate().expect("hierarchy is valid");
         assert_eq!(project.scene.children_of(Some(&root)).len(), 1);
-        assert_eq!(project.scene.depth_of(&NodeId::from_slug("nod_hood")), Some(2));
+        assert_eq!(project.scene.depth_of(&NodeId::parse("nod_hood").expect("node id válido nos testes")), Some(2));
 
         // Pai inexistente.
         let mut dangling = project.clone();
-        dangling.scene.nodes[1].parent_id = Some(NodeId::from_slug("nod_missing"));
+        dangling.scene.nodes[1].parent_id = Some(NodeId::parse("nod_missing").expect("node id válido nos testes"));
         assert!(matches!(
             dangling.validate(),
             Err(ProjectError::InvalidHierarchy { .. })
@@ -1868,7 +1868,7 @@ mod tests {
 
         // Ciclo (a raiz virando filha do próprio descendente).
         let mut cyclic = project.clone();
-        cyclic.scene.nodes[0].parent_id = Some(NodeId::from_slug("nod_hood"));
+        cyclic.scene.nodes[0].parent_id = Some(NodeId::parse("nod_hood").expect("node id válido nos testes"));
         assert!(matches!(
             cyclic.validate(),
             Err(ProjectError::InvalidHierarchy { .. })

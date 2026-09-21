@@ -885,7 +885,7 @@ mod tests {
         project.scene.nodes[0].transform.translation = glam::Vec3::new(2.0, 0.0, 0.0);
         project.scene.nodes.push(
             crate::project::NodeSlot::new(
-                NodeId::from_slug("nod_hat"),
+                NodeId::parse("nod_hat").expect("node id válido nos testes"),
                 "Hat",
                 NodeKind::Accessory,
             )

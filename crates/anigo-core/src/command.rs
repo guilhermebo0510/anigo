@@ -2344,7 +2344,7 @@ mod tests {
             // não aceita ficar vazia), então vivem no teste dedicado
             // `node_tree_commands_round_trip_with_world_transforms`.
             Command::AddNode {
-                node_id: NodeId::from_slug("nod_stage"),
+                node_id: NodeId::parse("nod_stage").expect("node id válido nos testes"),
                 name: "Stage".to_string(),
                 parent_id: None,
                 node_kind: crate::hierarchy::NodeKind::Group,
@@ -2420,8 +2420,8 @@ mod tests {
         let mut state = project();
         let mut history = CommandHistory::new(64);
         let root = NodeId::canonical_character();
-        let jacket = NodeId::from_slug("nod_jacket");
-        let hood = NodeId::from_slug("nod_hood");
+        let jacket = NodeId::parse("nod_jacket").expect("node id válido nos testes");
+        let hood = NodeId::parse("nod_hood").expect("node id válido nos testes");
 
         history
             .execute(
@@ -2525,7 +2525,7 @@ mod tests {
             .execute(
                 &mut state,
                 Command::AddNode {
-                    node_id: NodeId::from_slug("nod_stage"),
+                    node_id: NodeId::parse("nod_stage").expect("node id válido nos testes"),
                     name: "Stage".to_string(),
                     parent_id: None,
                     node_kind: crate::hierarchy::NodeKind::Group,
@@ -2711,9 +2711,9 @@ mod tests {
         let orphan = history.execute(
             &mut state,
             Command::AddNode {
-                node_id: NodeId::from_slug("nod_orphan"),
+                node_id: NodeId::parse("nod_orphan").expect("node id válido nos testes"),
                 name: "Orphan".to_string(),
-                parent_id: Some(NodeId::from_slug("nod_missing")),
+                parent_id: Some(NodeId::parse("nod_missing").expect("node id válido nos testes")),
                 node_kind: crate::hierarchy::NodeKind::Accessory,
                 transform: crate::math::Transform::default(),
                 mesh: None,

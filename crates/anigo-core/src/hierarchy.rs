@@ -433,22 +433,24 @@ mod tests {
     use crate::math::Transform;
     use glam::{Quat, Vec3};
 
+    /// Id canônico de teste: `from_slug` **prefixa** (`"a"` → `nod_a`), então os
+    /// testes montam os ids pela forma completa com `parse` — é o mesmo caminho
+    /// que o serde usa ao receber um id do TS.
+    fn nid(raw: &str) -> NodeId {
+        NodeId::parse(raw).expect("node id válido nos testes")
+    }
+
     fn slot(id: &str, parent: Option<&str>, transform: Transform) -> NodeSlot {
         NodeSlot {
-            node_id: NodeId::from_slug(id),
+            node_id: nid(id),
             name: id.to_string(),
             transform,
             mesh: None,
             material_id: None,
             visible: true,
-            parent_id: parent.map(NodeId::from_slug),
+            parent_id: parent.map(nid),
             kind: NodeKind::Mesh,
         }
-    }
-
-    /// Atalho dos testes: `from_slug` nunca falha (slugifica o que recebe).
-    fn nid(slug: &str) -> NodeId {
-        NodeId::from_slug(slug)
     }
 
     fn translation(x: f32, y: f32, z: f32) -> Transform {
