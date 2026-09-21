@@ -158,6 +158,10 @@ export interface MaterialSnapshotWire {
   /** 0 = normal (mult), 1 = additive. */
   mtoon_matcap_mode: number;
   mtoon_shade_toony: boolean;
+  // Fase 2 (#17): sombra facial SDF
+  face_shadow_offset: number;
+  face_shadow_smoothness: number;
+  face_sdf_enabled: boolean;
 }
 
 export interface NodeSnapshotWire {

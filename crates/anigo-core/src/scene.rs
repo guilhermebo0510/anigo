@@ -47,6 +47,7 @@ impl Default for StylizedLight {
     }
 }
 
+fn default_face_shadow_smoothness() -> f32 { 0.05 }
 fn default_mtoon_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
 fn default_mtoon_emission_intensity() -> f32 { 0.0 }
 fn default_mtoon_second_shade_shift() -> f32 { 0.0 }
@@ -132,6 +133,16 @@ pub struct StylizedMaterial {
     pub mtoon_matcap_mode: u8,
     #[serde(default = "default_mtoon_shade_toony")]
     pub mtoon_shade_toony: bool,
+    // Fase 2 (#17): sombra facial SDF (Genshin style) — off por padrão.
+    /// Deslocamento manual do threshold do SDF facial (-0.25 a 0.25).
+    #[serde(default)]
+    pub face_shadow_offset: f32,
+    /// Suavidade da penumbra da sombra facial.
+    #[serde(default = "default_face_shadow_smoothness")]
+    pub face_shadow_smoothness: f32,
+    /// Ativa a sombra facial (mapa SDF ancorado no renderer).
+    #[serde(default)]
+    pub face_sdf_enabled: bool,
 }
 
 impl Default for StylizedMaterial {
@@ -171,6 +182,9 @@ impl Default for StylizedMaterial {
             mtoon_matcap_enabled: false,
             mtoon_matcap_mode: default_mtoon_matcap_mode(),
             mtoon_shade_toony: default_mtoon_shade_toony(),
+            face_shadow_offset: 0.0,
+            face_shadow_smoothness: default_face_shadow_smoothness(),
+            face_sdf_enabled: false,
         }
     }
 }

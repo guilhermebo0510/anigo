@@ -111,6 +111,10 @@ export interface SceneMaterialSnapshot {
   /** 0 = normal (mult), 1 = additive. */
   mtoon_matcap_mode: number;
   mtoon_shade_toony: boolean;
+  // Fase 2 (#17): sombra facial SDF (default = off)
+  face_shadow_offset: number;
+  face_shadow_smoothness: number;
+  face_sdf_enabled: boolean;
 }
 
 export interface SceneAssetSnapshot {
@@ -224,6 +228,10 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
         mtoon_matcap_enabled: false,
         mtoon_matcap_mode: 0,
         mtoon_shade_toony: true,
+        // Fase 2 (#17): SDF facial off por padrão
+        face_shadow_offset: 0.0,
+        face_shadow_smoothness: 0.05,
+        face_sdf_enabled: false,
       },
     ],
     assets: [
@@ -376,6 +384,13 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
             mtoon_matcap_mode:
               num(material["mtoon_matcap_mode"], template.mtoon_matcap_mode) === 1 ? 1 : 0,
             mtoon_shade_toony: material["mtoon_shade_toony"] !== false,
+            // Fase 2 (#17): SDF facial — tolerante a blocos antigos
+            face_shadow_offset: num(material["face_shadow_offset"], template.face_shadow_offset),
+            face_shadow_smoothness: num(
+              material["face_shadow_smoothness"],
+              template.face_shadow_smoothness
+            ),
+            face_sdf_enabled: material["face_sdf_enabled"] === true,
           },
         ];
       })

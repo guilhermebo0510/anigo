@@ -37,6 +37,8 @@ struct MaterialUniform {
     params4: vec4<f32>,         // x: emission_intensity, y: second_shade_shift, z: second_shade_softness, w: matcap_intensity
     params5: vec4<f32>,         // x: main_tex_enabled, y: shade_tex_enabled, z: second_shade_enabled, w: emission_enabled
     params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: reserved
+    // ── Fase 2 (#17) — sombra facial SDF ──────────────────────────────────
+    params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: reserved
 };
 
 @group(0) @binding(0)
@@ -86,6 +88,15 @@ var sphere_add_tex: texture_2d<f32>;
 
 @group(0) @binding(15)
 var sphere_add_sampler: sampler;
+
+// Fase 2 (#17): mapa SDF da sombra facial (canal R; ver face_sdf.wgsl).
+// Sem textura, o slot é desativado por material.params7.z e o renderer
+// ancora o neutro 1x1 branco (fator de sombra 0).
+@group(0) @binding(16)
+var face_sdf_tex: texture_2d<f32>;
+
+@group(0) @binding(17)
+var face_sdf_sampler: sampler;
 
 struct BonePalette {
     matrices: array<mat4x4<f32>, 24>,
@@ -246,6 +257,29 @@ fn tonemap_reinhard(x: vec3<f32>) -> vec3<f32> {
     return x / (1.0 + x);
 }
 
+// Fase 2 (#17): sombra facial SDF — a mesma definição canônica que está em
+// face_sdf.wgsl (marcadores conferidos por check:wgsl).
+// ANIGO-FACE-SDF-BEGIN — bloco compartilhado (byte a byte igual em
+// face_sdf.wgsl e cel_shading.wgsl; conferido por scripts/check_wgsl.mjs)
+fn face_sdf_theta(local_x: vec3<f32>, local_z: vec3<f32>, light_dir: vec3<f32>) -> f32 {
+    let lx = dot(light_dir, local_x);
+    let lz = dot(light_dir, local_z);
+    return atan2(lx, lz);
+}
+fn face_sdf_threshold(theta: f32, offset: f32) -> f32 {
+    // light_front: 1 = luz frontal (theta ≈ 0), 0 = luz traseira (|theta| ≈ π).
+    // A banda de sombra cresce até 0.25 de threshold quando a luz vai para o
+    // lado/costas; offset é o controle do usuário (face_shadow_offset).
+    let light_front = cos(theta) * 0.5 + 0.5;
+    return 0.5 + (1.0 - light_front) * 0.25 + offset;
+}
+fn face_sdf_factor(sdf: f32, threshold: f32, softness: f32) -> f32 {
+    // 1 = totalmente na sombra, 0 = fora da região de sombra.
+    let s = max(softness, 0.001);
+    return 1.0 - smoothstep(threshold - s, threshold + s, sdf);
+}
+// ANIGO-FACE-SDF-END
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -359,6 +393,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let deep_color = srgb_to_linear(textureSample(second_shade_tex, second_shade_sampler, in.uv).rgb) * shade_lin * 0.45;
         let deep_band = deep_color * ambient_term * ao;
         base_cel = mix(deep_band, base_cel, second_blend);
+    }
+
+    // Fase 2 (#17): sombra facial SDF — azimut da luz projetado no espaço
+    // local da cabeça (eixo Z local = frente do rosto). A região do SDF
+    // (nasal/olhos/queixo) escurece 28% — sem textura real ancorada o fator
+    // fica 0 e o resultado é idêntico ao frame congelado.
+    if (material.params7.z > 0.5) {
+        let face_sdf = textureSample(face_sdf_tex, face_sdf_sampler, in.uv).r;
+        let face_theta = face_sdf_theta(camera.model[0].xyz, camera.model[2].xyz, L);
+        let face_thr = face_sdf_threshold(face_theta, material.params7.x);
+        let face_factor = face_sdf_factor(face_sdf, face_thr, material.params7.y);
+        base_cel = mix(base_cel, base_cel * 0.72, face_factor);
     }
 
     // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")

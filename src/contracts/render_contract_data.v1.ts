@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 429,
-      "fnv1a64": "60f2526add3ed9d8"
+      "lines": 475,
+      "fnv1a64": "9625db908e76e9a3"
     },
     {
       "name": "inverted_hull",
@@ -52,10 +52,12 @@ export const RENDER_CONTRACT_DATA = {
       "language": "wgsl",
       "role": "library",
       "entry_points": {
-        "sample": "sample_face_shadow"
+        "theta": "face_sdf_theta",
+        "threshold": "face_sdf_threshold",
+        "factor": "face_sdf_factor"
       },
-      "lines": 19,
-      "fnv1a64": "24256bd0e7ab0990"
+      "lines": 41,
+      "fnv1a64": "bda7e76d52a49c35"
     },
     {
       "name": "webgl2_fallback/cel_vertex",
@@ -219,7 +221,7 @@ export const RENDER_CONTRACT_DATA = {
     "material": {
       "struct": "MaterialUniform",
       "address_space": "uniform",
-      "size": 176,
+      "size": 192,
       "fields": [
         {
           "name": "base_color",
@@ -293,6 +295,13 @@ export const RENDER_CONTRACT_DATA = {
           "offset": 160,
           "size": 16,
           "meaning": "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved"
+        },
+        {
+          "name": "params7",
+          "kind": "vec4",
+          "offset": 176,
+          "size": 16,
+          "meaning": "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved"
         }
       ]
     },
@@ -633,6 +642,22 @@ export const RENDER_CONTRACT_DATA = {
             "fragment"
           ],
           "declaration": "var sphere_add_sampler: sampler"
+        },
+        {
+          "binding": 16,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var face_sdf_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 17,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var face_sdf_sampler: sampler"
         }
       ]
     },
@@ -912,6 +937,57 @@ export const RENDER_CONTRACT_DATA = {
       "// ANIGO-SKINNING-END"
     ]
   },
+  "face_sdf": {
+    "note": "Sombra facial por SDF com projeção angular: theta = atan2(dot(L, eixoX_local), dot(L, eixoZ_local)); threshold = 0.5 + (1 - (cos(theta)*0.5+0.5)) * 0.25 + face_shadow_offset; fator = 1 - smoothstep(threshold ∓ smoothness, sdf). Canal R do SDF: 0 = centro da sombra, 1 = fora.",
+    "sdf_channel": "r",
+    "sdf_semantics": "0 = centro da região de sombra (nasal/olhos/queixo), 1 = fora da região",
+    "neutral_when_disabled": "neutro 1x1 branco (R=1) → fator 0 → imagem inalterada",
+    "darkening": 0.72,
+    "block_markers": [
+      "// ANIGO-FACE-SDF-BEGIN",
+      "// ANIGO-FACE-SDF-END"
+    ],
+    "shared_by": [
+      "face_sdf",
+      "cel_shading"
+    ],
+    "entry_functions": [
+      "face_sdf_theta",
+      "face_sdf_threshold",
+      "face_sdf_factor"
+    ],
+    "golden": [
+      {
+        "azimuth_degrees": 0,
+        "theta": 0,
+        "light_front": 1,
+        "threshold": 0.5,
+        "factor_sdf_half": 0.5
+      },
+      {
+        "azimuth_degrees": 45,
+        "theta": 0.78539819,
+        "light_front": 0.8535534,
+        "threshold": 0.53661167,
+        "factor_sdf_half": 0.9510253
+      },
+      {
+        "azimuth_degrees": 90,
+        "theta": 1.5707964,
+        "light_front": 0.5,
+        "threshold": 0.625,
+        "factor_sdf_half": 1
+      },
+      {
+        "azimuth_degrees": 135,
+        "theta": 2.3561945,
+        "light_front": 0.14644662,
+        "threshold": 0.71338832,
+        "factor_sdf_half": 1
+      }
+    ],
+    "golden_note": "sdf = 0.5, face_shadow_smoothness = 0.05, face_shadow_offset = 0, modelo identidade"
+  },
   "targets": {
     "offscreen_color_format": "rgba8unorm",
     "viewport_color_format_policy": "surface_preferred",
@@ -1086,6 +1162,9 @@ export const RENDER_CONTRACT_DATA = {
       "matcap_enabled": false,
       "matcap_mode": 0,
       "shade_toony": true,
+      "face_shadow_offset": 0,
+      "face_shadow_smoothness": 0.05,
+      "face_sdf_enabled": false,
       "outline_color": [
    0.25, 0.15, 0.2, 1
   ],
@@ -1122,7 +1201,7 @@ export const RENDER_CONTRACT_DATA = {
    0.980000019, 0.920000017, 0.850000024, 1, 0.819999993, 0.730000019, 0.779999971, 1, 1, 1, 1, 1,
    0.575999975, 0.773000002, 0.991999984, 1, 0.579999983, 0.029999999, 0.550000012, 24, 0.699999988,
    0.449999988, -0.383972436, 2, 0.059999999, 0.01, 0.400000006, 0.800000012, 0, 0, 0, 0, 0, 0,
-   0.050000001, 0, 0, 0, 0, 0, 0, 0, 1, 0
+   0.050000001, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0.050000001, 0, 0
   ],
       "outline_uniform": [
    0.25, 0.150000006, 0.200000003, 1, 0.004, 1.777777791, 0.02, 0.899999976, 0.01, 0, 0, 0

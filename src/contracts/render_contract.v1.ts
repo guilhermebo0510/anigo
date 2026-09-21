@@ -129,12 +129,34 @@ export interface SkinningSpecV1 {
   block_markers: string[];
 }
 
+/** Fase 2 (#17): sombra facial SDF — definição compartilhada + números dourados. */
+export interface FaceSdfSpecV1 {
+  note: string;
+  sdf_channel: string;
+  sdf_semantics: string;
+  neutral_when_disabled: string;
+  darkening: number;
+  block_markers: string[];
+  shared_by: string[];
+  entry_functions: string[];
+  golden: Array<{
+    azimuth_degrees: number;
+    theta: number;
+    light_front: number;
+    threshold: number;
+    factor_sdf_half: number;
+  }>;
+  golden_note: string;
+}
+
 export interface RenderContractV1 {
   version: number;
   /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
   diagnostics?: { note: string; codes: DiagnosticCodeSpecV1[] };
   /** P1-04: skinning (paleta de ossos + atributos de vértice). */
   skinning?: SkinningSpecV1;
+  /** Fase 2 (#17): sombra facial SDF — bloco compartilhado + golden angular. */
+  face_sdf?: FaceSdfSpecV1;
   /** P1-03: códigos de validação de malha antes de criar buffers. */
   mesh_validation?: {
     note: string;

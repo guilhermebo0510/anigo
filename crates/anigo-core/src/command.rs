@@ -135,6 +135,10 @@ pub struct MaterialPatch {
     pub mtoon_matcap_enabled: Option<bool>,
     pub mtoon_matcap_mode: Option<u8>,
     pub mtoon_shade_toony: Option<bool>,
+    // Fase 2 (#17): sombra facial SDF
+    pub face_shadow_offset: Option<f32>,
+    pub face_shadow_smoothness: Option<f32>,
+    pub face_sdf_enabled: Option<bool>,
 }
 
 impl MaterialPatch {
@@ -240,6 +244,16 @@ impl MaterialPatch {
         if let Some(value) = self.mtoon_shade_toony {
             material.mtoon_shade_toony = value;
         }
+        // Fase 2 (#17): sombra facial SDF
+        if let Some(value) = self.face_shadow_offset {
+            material.face_shadow_offset = value;
+        }
+        if let Some(value) = self.face_shadow_smoothness {
+            material.face_shadow_smoothness = value;
+        }
+        if let Some(value) = self.face_sdf_enabled {
+            material.face_sdf_enabled = value;
+        }
     }
 
     /// Builds the inverse patch from the current material values.
@@ -295,6 +309,14 @@ impl MaterialPatch {
                 .map(|_| material.mtoon_matcap_enabled),
             mtoon_matcap_mode: self.mtoon_matcap_mode.map(|_| material.mtoon_matcap_mode),
             mtoon_shade_toony: self.mtoon_shade_toony.map(|_| material.mtoon_shade_toony),
+            // Fase 2 (#17): sombra facial SDF
+            face_shadow_offset: self
+                .face_shadow_offset
+                .map(|_| material.face_shadow_offset),
+            face_shadow_smoothness: self
+                .face_shadow_smoothness
+                .map(|_| material.face_shadow_smoothness),
+            face_sdf_enabled: self.face_sdf_enabled.map(|_| material.face_sdf_enabled),
         }
     }
 

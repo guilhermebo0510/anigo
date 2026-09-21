@@ -331,6 +331,41 @@ export function checkContract(contract, readShader, options = {}) {
     }
   }
 
+  // 3b) Fase 2 (#17): bloco de face SDF idêntico nos shaders que o usam
+  // (mesma regra do skinning: uma definição, vários usos).
+  const faceSdf = contract.face_sdf;
+  if (faceSdf?.block_markers?.length === 2) {
+    const [begin, end] = faceSdf.block_markers;
+    const blocks = new Map();
+    for (const { shader, source } of shaderSources.values()) {
+      if (shader.language !== "wgsl") continue;
+      if (!faceSdf.shared_by?.includes(shader.name)) continue;
+      if (!source.includes(begin)) {
+        problems.push(`${shader.path}: shader '${shader.name}' listado em face_sdf.shared_by sem o bloco`);
+        continue;
+      }
+      const block = extractBlock(source, begin, end, shader.path, problems);
+      if (block) blocks.set(shader.name, block);
+    }
+    if (blocks.size > 0) {
+      const [firstName, firstBlock] = [...blocks.entries()][0];
+      for (const [name, block] of blocks) {
+        if (block !== firstBlock) {
+          problems.push(
+            `face_sdf: bloco de '${name}' difere de '${firstName}' — a definição precisa ser byte-idêntica`
+          );
+        }
+      }
+      for (const fn of faceSdf.entry_functions ?? []) {
+        if (!blocks.get(firstName)?.includes(`fn ${fn}(`)) {
+          problems.push(`face_sdf: bloco canônico sem a função '${fn}'`);
+        }
+      }
+    } else {
+      problems.push("face_sdf: nenhum shader declara o bloco de face SDF");
+    }
+  }
+
   // 4) paleta dos shaders de fallback (GLSL) — mesmo contrato, outra linguagem
   const paletteUniform = "u_bones";
   for (const shader of contract.shaders) {

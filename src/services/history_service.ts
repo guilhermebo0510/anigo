@@ -62,6 +62,10 @@ export interface HistoryStateSnapshot {
   mtoonMatcapEnabled?: boolean;
   mtoonMatcapMode?: number;
   mtoonShadeToony?: boolean;
+  // Fase 2 (#17): sombra facial SDF
+  faceShadowOffset?: number;
+  faceShadowSmoothness?: number;
+  faceSdfEnabled?: boolean;
 }
 
 export interface HistoryEntry {

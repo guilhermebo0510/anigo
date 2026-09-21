@@ -565,6 +565,12 @@
   let mtoonMatcapMode = $state(0);
   let mtoonShadeToony = $state(true);
 
+  // Sombra facial SDF — Fase 2 (#17): parâmetros do material (Genshin style).
+  // Default = off (o renderer ancora o neutro 1x1; a imagem não muda).
+  let faceShadowOffset = $state(0.0);
+  let faceShadowSmoothness = $state(0.05);
+  let faceSdfEnabled = $state(false);
+
   // Timeline & Animation
   let currentFrame = $state(1);
   let isPlaying = $state(false);
@@ -826,6 +832,10 @@
       mtoonMatcapEnabled,
       mtoonMatcapMode,
       mtoonShadeToony,
+      // Fase 2 (#17): SDF facial
+      faceShadowOffset,
+      faceShadowSmoothness,
+      faceSdfEnabled,
       // P0-07: the Personagem domain is part of every history entry.
       character: getAppCharacterState(),
     };
@@ -935,6 +945,10 @@
     if ((snap as any).mtoonMatcapEnabled !== undefined) mtoonMatcapEnabled = (snap as any).mtoonMatcapEnabled;
     if ((snap as any).mtoonMatcapMode !== undefined) mtoonMatcapMode = (snap as any).mtoonMatcapMode;
     if ((snap as any).mtoonShadeToony !== undefined) mtoonShadeToony = (snap as any).mtoonShadeToony;
+    // Fase 2 (#17): SDF facial
+    if ((snap as any).faceShadowOffset !== undefined) faceShadowOffset = (snap as any).faceShadowOffset;
+    if ((snap as any).faceShadowSmoothness !== undefined) faceShadowSmoothness = (snap as any).faceShadowSmoothness;
+    if ((snap as any).faceSdfEnabled !== undefined) faceSdfEnabled = (snap as any).faceSdfEnabled;
     // P0-07: restore the full Personagem domain (undo/redo covers the body).
     if (snap.character) {
       try {
@@ -1648,6 +1662,10 @@
           if (p.mtoon_matcap_enabled !== undefined) mtoonMatcapEnabled = p.mtoon_matcap_enabled;
           if (p.mtoon_matcap_mode !== undefined) mtoonMatcapMode = p.mtoon_matcap_mode;
           if (p.mtoon_shade_toony !== undefined) mtoonShadeToony = p.mtoon_shade_toony;
+          // Fase 2 (#17): SDF facial
+          if (p.face_shadow_offset !== undefined) faceShadowOffset = p.face_shadow_offset;
+          if (p.face_shadow_smoothness !== undefined) faceShadowSmoothness = p.face_shadow_smoothness;
+          if (p.face_sdf_enabled !== undefined) faceSdfEnabled = p.face_sdf_enabled;
           updateMaterial(false);
         });
 
@@ -2248,6 +2266,10 @@
         mtoonMatcapEnabled,
         mtoonMatcapMode,
         mtoonShadeToony,
+        // Fase 2 (#17): SDF facial
+        faceShadowOffset,
+        faceShadowSmoothness,
+        faceSdfEnabled,
       });
     }
 
@@ -2285,6 +2307,10 @@
           mtoon_matcap_enabled: mtoonMatcapEnabled,
           mtoon_matcap_mode: mtoonMatcapMode,
           mtoon_shade_toony: mtoonShadeToony,
+          // Fase 2 (#17): SDF facial
+          face_shadow_offset: faceShadowOffset,
+          face_shadow_smoothness: faceShadowSmoothness,
+          face_sdf_enabled: faceSdfEnabled,
         }).catch(() => {});
       });
     }
@@ -2323,6 +2349,10 @@
           mtoon_matcap_enabled: mtoonMatcapEnabled,
           mtoon_matcap_mode: mtoonMatcapMode,
           mtoon_shade_toony: mtoonShadeToony,
+          // Fase 2 (#17): SDF facial no history (undo/redo repõe os parâmetros)
+          face_shadow_offset: faceShadowOffset,
+          face_shadow_smoothness: faceShadowSmoothness,
+          face_sdf_enabled: faceSdfEnabled,
         },
       });
       recordHistory("Ajustar Material Toon", isContinuous, command);
@@ -3566,6 +3596,9 @@
             bind:hueShift
             bind:shadowSaturation
             bind:ambientIntensity
+            bind:faceShadowOffset
+            bind:faceShadowSmoothness
+            bind:faceSdfEnabled
             onUpdate={(params) => {
               lightAzimuth = params.azimuth;
               lightElevation = params.elevation;
@@ -3576,6 +3609,14 @@
               if (params.shadowSaturation !== undefined) shadowSaturation = params.shadowSaturation;
               if (params.ambientIntensity !== undefined) ambientIntensity = params.ambientIntensity;
               updateLighting(!params.isContinuous, params.isContinuous);
+              updateMaterial(!params.isContinuous, params.isContinuous);
+            }}
+            onFaceShadowUpdate={(params) => {
+              faceShadowOffset = params.offset;
+              faceShadowSmoothness = params.smoothness;
+              faceSdfEnabled = params.enabled;
+              // Fase 2 (#17): parâmetros de material — o bloco do history
+              // captura o snapshot antes de updateMaterial (igual ao UI toon).
               updateMaterial(!params.isContinuous, params.isContinuous);
             }}
           />

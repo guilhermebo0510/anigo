@@ -264,6 +264,10 @@ const fixture = (() => {
           mtoon_matcap_enabled: false,
           mtoon_matcap_mode: 0,
           mtoon_shade_toony: true,
+          // Fase 2 (#17): SDF facial — default = off
+          face_shadow_offset: 0,
+          face_shadow_smoothness: 0.05,
+          face_sdf_enabled: false,
         },
       ],
       nodes: [

@@ -293,6 +293,10 @@ async fn set_material_toon_params(
     mtoon_matcap_enabled: Option<bool>,
     mtoon_matcap_mode: Option<u8>,
     mtoon_shade_toony: Option<bool>,
+    // Fase 2 (#17): sombra facial SDF
+    face_shadow_offset: Option<f32>,
+    face_shadow_smoothness: Option<f32>,
+    face_sdf_enabled: Option<bool>,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
@@ -330,6 +334,9 @@ async fn set_material_toon_params(
         mtoon_matcap_enabled,
         mtoon_matcap_mode,
         mtoon_shade_toony,
+        face_shadow_offset,
+        face_shadow_smoothness,
+        face_sdf_enabled,
         ..Default::default()
     };
 

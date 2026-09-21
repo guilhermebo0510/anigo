@@ -6,7 +6,8 @@ Milestone GitHub #2 — 8 issues. Este arquivo acompanha o progresso.
 
 - [x] #25 — parser glTF 2.0 + VRM 1.0 (TS, 16 testes) + espelho Rust anigo-vrm + comandos Tauri (commits 286a679, 99f0eeb)
 - [x] #18 — material anime VRoid/MToon (176 B de MaterialUniform, slots main/shade/2nd shade/emission/matcap/outline width, composição no cel_shading + inverted_hull, paridade headless↔viewport, frame congelado intacto)
-- [ ] #17 Face SDF · #43 Eye · #53 DoF · #42 CSM · #26 Texturas · #59 relatório
+- [x] #17 — sombra facial SDF (Genshin style): projeção angular `theta = atan2(L_local.x, L_local.z)`, bloco canônico byte-idêntico face_sdf.wgsl ⇄ cel_shading.wgsl (check:wgsl), SDF ancorado no neutro 1×1, `face_shadow_offset`/`face_shadow_smoothness` na UI de sombras, golden 0°/45°/90°/135° (6 testes), frame congelado intacto
+- [ ] #43 Eye · #53 DoF · #42 CSM · #26 Texturas · #59 relatório
 
 ## Escopo por issue
 
@@ -23,7 +24,7 @@ Milestone GitHub #2 — 8 issues. Este arquivo acompanha o progresso.
 
 ## Gates (rodar após cada etapa)
 
-- `npm test` (baseline 278 passing)
+- `npm test` (300 passing após #17)
 - `npm run build`
 - `npm run check:wgsl`
 - `npm run fixtures:check`

@@ -95,9 +95,13 @@ export interface MaterialUniformInput {
   /** 0 = normal (mult), 1 = additive. */
   mtoonMatcapMode?: number;
   mtoonShadeToony?: boolean;
+  // Fase 2 (#17): sombra facial SDF (default = off, smoothness 0.05)
+  faceShadowOffset?: number;
+  faceShadowSmoothness?: number;
+  faceSdfEnabled?: boolean;
 }
 
-/** Bloco `material` (176 B = 44 f32). */
+/** Bloco `material` (192 B = 48 f32). */
 export function materialUniformFloats(input: MaterialUniformInput): Float32Array {
   const data = new Float32Array(uniformFloats("material"));
   writeVec(data, "material", "base_color", input.baseColor);
@@ -140,6 +144,13 @@ export function materialUniformFloats(input: MaterialUniformInput): Float32Array
     (input.mtoonMatcapEnabled ?? false) ? 1.0 : 0.0,
     input.mtoonMatcapMode ?? 0,
     (input.mtoonShadeToony ?? true) ? 1.0 : 0.0,
+    0.0,
+  ]);
+  // Fase 2 (#17): SDF facial — off por padrão (mapa ancorado no neutro 1x1)
+  writeVec(data, "material", "params7", [
+    input.faceShadowOffset ?? 0.0,
+    input.faceShadowSmoothness ?? 0.05,
+    (input.faceSdfEnabled ?? false) ? 1.0 : 0.0,
     0.0,
   ]);
   return data;

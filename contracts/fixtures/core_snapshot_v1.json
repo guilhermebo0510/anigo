@@ -571,7 +571,10 @@
         "mtoon_emission_texture_enabled": false,
         "mtoon_matcap_enabled": false,
         "mtoon_matcap_mode": 0,
-        "mtoon_shade_toony": true
+        "mtoon_shade_toony": true,
+        "face_shadow_offset": 0,
+        "face_shadow_smoothness": 0.05,
+        "face_sdf_enabled": false
       }
     ],
     "nodes": [

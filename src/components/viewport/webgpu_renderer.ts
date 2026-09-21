@@ -226,6 +226,11 @@ export class WebGpuViewportRenderer {
   private mtoonMatcapMode = 0;
   private mtoonShadeToony = true;
 
+  // Fase 2 (#17): sombra facial SDF (default = off)
+  private faceShadowOffset = 0.0;
+  private faceShadowSmoothness = 0.05;
+  private faceSdfEnabled = false;
+
   // WebGPU Sparse Morph Compute Pipeline
   private morphPipeline: GPUComputePipeline | null = null;
   private morphBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1270,6 +1275,10 @@ export class WebGpuViewportRenderer {
     mtoonMatcapEnabled?: boolean;
     mtoonMatcapMode?: number;
     mtoonShadeToony?: boolean;
+    // Fase 2 (#17): sombra facial SDF
+    faceShadowOffset?: number;
+    faceShadowSmoothness?: number;
+    faceSdfEnabled?: boolean;
   }) {
     if (params.baseColor) this.baseColor = params.baseColor;
     if (params.shadeColor) this.shadeColor = params.shadeColor;
@@ -1302,6 +1311,10 @@ export class WebGpuViewportRenderer {
     if (params.mtoonMatcapEnabled !== undefined) this.mtoonMatcapEnabled = params.mtoonMatcapEnabled;
     if (params.mtoonMatcapMode !== undefined) this.mtoonMatcapMode = params.mtoonMatcapMode === 1 ? 1 : 0;
     if (params.mtoonShadeToony !== undefined) this.mtoonShadeToony = params.mtoonShadeToony;
+    // Fase 2 (#17): parâmetros do SDF facial
+    if (params.faceShadowOffset !== undefined) this.faceShadowOffset = params.faceShadowOffset;
+    if (params.faceShadowSmoothness !== undefined) this.faceShadowSmoothness = params.faceShadowSmoothness;
+    if (params.faceSdfEnabled !== undefined) this.faceSdfEnabled = params.faceSdfEnabled;
   }
 
   private buildGeometryBuffers() {
@@ -1758,6 +1771,9 @@ export class WebGpuViewportRenderer {
         { binding: 13, resource: mtoonNeutralSampler },
         { binding: 14, resource: mtoonNeutralView },
         { binding: 15, resource: mtoonNeutralSampler },
+        // Fase 2 (#17): SDF facial — neutro 1x1 (R=1 → fator de sombra 0)
+        { binding: 16, resource: mtoonNeutralView },
+        { binding: 17, resource: mtoonNeutralSampler },
       ],
     });
 
@@ -2197,6 +2213,10 @@ export class WebGpuViewportRenderer {
       mtoonMatcapEnabled: this.mtoonMatcapEnabled,
       mtoonMatcapMode: this.mtoonMatcapMode,
       mtoonShadeToony: this.mtoonShadeToony,
+      // Fase 2 (#17): SDF facial — o slot ancora o neutro 1x1 (R=1 → fator 0)
+      faceShadowOffset: this.faceShadowOffset,
+      faceShadowSmoothness: this.faceShadowSmoothness,
+      faceSdfEnabled: this.faceSdfEnabled,
     });
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 

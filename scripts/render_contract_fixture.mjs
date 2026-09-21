@@ -101,7 +101,11 @@ export function renderContractFixture() {
     shader("cel_shading", "crates/anigo-renderer/shaders/cel_shading.wgsl", "wgsl", "production", { vertex: "vs_main", fragment: "fs_main" }),
     shader("inverted_hull", "crates/anigo-renderer/shaders/inverted_hull.wgsl", "wgsl", "production", { vertex: "vs_main", fragment: "fs_main" }),
     shader("morph_sparse_compute", "crates/anigo-renderer/shaders/morph_sparse_compute.wgsl", "wgsl", "production", { compute: "cs_accumulate_morphs", compute_reset: "cs_reset_vertices" }),
-    shader("face_sdf", "crates/anigo-renderer/shaders/face_sdf.wgsl", "wgsl", "library", { sample: "sample_face_shadow" }),
+    shader("face_sdf", "crates/anigo-renderer/shaders/face_sdf.wgsl", "wgsl", "library", {
+      theta: "face_sdf_theta",
+      threshold: "face_sdf_threshold",
+      factor: "face_sdf_factor",
+    }),
     shader("webgl2_fallback/cel_vertex", "crates/anigo-renderer/shaders/webgl2_fallback/cel_vertex.glsl", "glsl", "fallback_webgl2", { vertex: "main" }),
     shader("webgl2_fallback/cel_fragment", "crates/anigo-renderer/shaders/webgl2_fallback/cel_fragment.glsl", "glsl", "fallback_webgl2", { fragment: "main" }),
     shader("webgl2_fallback/outline_vertex", "crates/anigo-renderer/shaders/webgl2_fallback/outline_vertex.glsl", "glsl", "fallback_webgl2", { vertex: "main" }),
@@ -146,7 +150,7 @@ export function renderContractFixture() {
       material: {
         struct: "MaterialUniform",
         address_space: "uniform",
-        size: 176,
+        size: 192,
         fields: [
           { name: "base_color", kind: "vec4", offset: 0, size: 16 },
           { name: "shade_color", kind: "vec4", offset: 16, size: 16 },
@@ -160,6 +164,8 @@ export function renderContractFixture() {
           { name: "params4", kind: "vec4", offset: 128, size: 16, meaning: "emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity" },
           { name: "params5", kind: "vec4", offset: 144, size: 16, meaning: "main_tex_enabled, shade_tex_enabled, second_shade_enabled, emission_enabled" },
           { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved" },
+          // Fase 2 (#17): sombra facial SDF
+          { name: "params7", kind: "vec4", offset: 176, size: 16, meaning: "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved" },
         ],
       },
       outline: {
@@ -260,6 +266,9 @@ export function renderContractFixture() {
           { binding: 13, kind: "sampler", stages: ["fragment"], declaration: "var emission_sampler: sampler" },
           { binding: 14, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var sphere_add_tex: texture_2d<f32>" },
           { binding: 15, kind: "sampler", stages: ["fragment"], declaration: "var sphere_add_sampler: sampler" },
+          // Fase 2 (#17): mapa SDF da sombra facial (neutro 1x1 quando off)
+          { binding: 16, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var face_sdf_tex: texture_2d<f32>" },
+          { binding: 17, kind: "sampler", stages: ["fragment"], declaration: "var face_sdf_sampler: sampler" },
         ],
       },
       {
@@ -395,6 +404,36 @@ export function renderContractFixture() {
       index_clamp: "índice de osso limitado a joint_count-1 antes de indexar a paleta",
       block_markers: ["// ANIGO-SKINNING-BEGIN", "// ANIGO-SKINNING-END"],
     },
+    // ---------------------------------------------------------------------
+    // Fase 2 (#17): sombra facial SDF (Genshin style). A matemática vive em
+    // UM bloco (face_sdf.wgsl = definição canônica, cel_shading.wgsl = o que
+    // compila no passe de cel) que precisa ser byte-idêntico — check:wgsl
+    // confere. Os números dourados abaixo foram produzidos por uma
+    // implementação independente (luz rotacionando ao redor de Y, modelo
+    // identidade, offset 0) e congelados: a implementação de referência
+    // (src/services/face_shadow.ts) precisa reproduzi-los dentro de 1e-5, e
+    // o WGSL implementa as mesmas fórmulas (hash congelado no contrato).
+    // ---------------------------------------------------------------------
+    face_sdf: {
+      note:
+        "Sombra facial por SDF com projeção angular: theta = atan2(dot(L, eixoX_local), dot(L, eixoZ_local)); " +
+        "threshold = 0.5 + (1 - (cos(theta)*0.5+0.5)) * 0.25 + face_shadow_offset; " +
+        "fator = 1 - smoothstep(threshold ∓ smoothness, sdf). Canal R do SDF: 0 = centro da sombra, 1 = fora.",
+      sdf_channel: "r",
+      sdf_semantics: "0 = centro da região de sombra (nasal/olhos/queixo), 1 = fora da região",
+      neutral_when_disabled: "neutro 1x1 branco (R=1) → fator 0 → imagem inalterada",
+      darkening: 0.72,
+      block_markers: ["// ANIGO-FACE-SDF-BEGIN", "// ANIGO-FACE-SDF-END"],
+      shared_by: ["face_sdf", "cel_shading"],
+      entry_functions: ["face_sdf_theta", "face_sdf_threshold", "face_sdf_factor"],
+      golden: [
+        { azimuth_degrees: 0, theta: 0.0, light_front: 1.0, threshold: 0.5, factor_sdf_half: 0.5 },
+        { azimuth_degrees: 45, theta: 0.78539819, light_front: 0.8535534, threshold: 0.53661167, factor_sdf_half: 0.9510253 },
+        { azimuth_degrees: 90, theta: 1.5707964, light_front: 0.5, threshold: 0.625, factor_sdf_half: 1.0 },
+        { azimuth_degrees: 135, theta: 2.3561945, light_front: 0.14644662, threshold: 0.71338832, factor_sdf_half: 1.0 },
+      ],
+      golden_note: "sdf = 0.5, face_shadow_smoothness = 0.05, face_shadow_offset = 0, modelo identidade",
+    },
     targets: {
       offscreen_color_format: "rgba8unorm",
       viewport_color_format_policy: "surface_preferred",
@@ -491,6 +530,10 @@ export function renderContractFixture() {
         matcap_enabled: false,
         matcap_mode: 0,
         shade_toony: true,
+        // Fase 2 (#17): sombra facial SDF — desativada no frame congelado
+        face_shadow_offset: 0.0,
+        face_shadow_smoothness: 0.05,
+        face_sdf_enabled: false,
         outline_color: [0.25, 0.15, 0.2, 1.0],
         outline_width: 0.004,
         outline_depth_bias: 0.02,
@@ -534,6 +577,9 @@ export function renderContractFixture() {
           // shade_toony, reserved) — frame congelado com tudo desativado.
           0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.050000001, 0.0, 0.0, 0.0, 0.0, 0.0,
           0.0, 0.0, 1.0, 0.0,
+          // Fase 2 (#17): params7 (face_shadow_offset, face_shadow_smoothness,
+          // face_sdf_enabled, reserved) — frame congelado com SDF off.
+          0.0, 0.050000001, 0.0, 0.0,
         ],
         outline_uniform: [
           0.25, 0.150000006, 0.200000003, 1.0, 0.004, 1.777777791, 0.02, 0.899999976,

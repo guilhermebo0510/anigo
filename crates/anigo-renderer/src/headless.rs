@@ -416,6 +416,24 @@ impl HeadlessRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Fase 2 (#17): mapa SDF da sombra facial — ancorado no neutro
+                // 1x1 branco; o shader só amostra quando material.params7.z.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
         ];
         let cel_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cel Bind Group Layout"),
@@ -1159,6 +1177,15 @@ impl HeadlessRenderer {
                                 binding: 15,
                                 resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
                             },
+                            // Fase 2 (#17): SDF facial — neutro 1x1 (R=1 → fator 0).
+                            wgpu::BindGroupEntry {
+                                binding: 16,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 17,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
                         ],
                     });
 
@@ -1674,6 +1701,15 @@ impl HeadlessRenderer {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 15,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            // Fase 2 (#17): SDF facial — neutro 1x1 (R=1 → fator 0).
+                            wgpu::BindGroupEntry {
+                                binding: 16,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 17,
                                 resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
                             },
                         ],

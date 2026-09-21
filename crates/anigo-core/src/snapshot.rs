@@ -271,6 +271,7 @@ impl LightSnapshot {
 
 fn default_material_snapshot_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
 fn default_material_snapshot_shade_toony() -> bool { true }
+fn default_material_snapshot_face_smoothness() -> f32 { 0.05 }
 
 /// Material state handed to the renderer (canonical NPR parameters only).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -324,6 +325,13 @@ pub struct MaterialSnapshot {
     pub mtoon_matcap_mode: u8,
     #[serde(default = "default_material_snapshot_shade_toony")]
     pub mtoon_shade_toony: bool,
+    // Fase 2 (#17): sombra facial SDF — defaults para snapshots antigos.
+    #[serde(default)]
+    pub face_shadow_offset: f32,
+    #[serde(default = "default_material_snapshot_face_smoothness")]
+    pub face_shadow_smoothness: f32,
+    #[serde(default)]
+    pub face_sdf_enabled: bool,
 }
 
 impl MaterialSnapshot {
@@ -369,6 +377,10 @@ impl MaterialSnapshot {
             mtoon_matcap_enabled: material.mtoon_matcap_enabled,
             mtoon_matcap_mode: material.mtoon_matcap_mode,
             mtoon_shade_toony: material.mtoon_shade_toony,
+            // Fase 2 (#17): sombra facial SDF
+            face_shadow_offset: material.face_shadow_offset,
+            face_shadow_smoothness: material.face_shadow_smoothness,
+            face_sdf_enabled: material.face_sdf_enabled,
         }
     }
 }
