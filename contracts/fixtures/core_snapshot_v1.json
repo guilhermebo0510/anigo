@@ -578,6 +578,27 @@
           1,
           1,
           1
+        ],
+        "parent_id": null,
+        "children": [],
+        "kind": "character_root",
+        "world_matrix": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
         ]
       }
     ],

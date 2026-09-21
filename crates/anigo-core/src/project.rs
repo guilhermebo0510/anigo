@@ -29,6 +29,7 @@ use crate::ids::{
     fnv1a64, AnimationClipId, AssetId, CameraId, CharacterId, IdError, LightId, MaterialId,
     MorphId, NodeId, ProjectId, SceneId,
 };
+use crate::hierarchy::{self, NodeKind};
 use crate::math::{Camera, Transform};
 use crate::mesh::{BaseGender, Mesh};
 use crate::morph_catalog::{find_slider_def, ALL_MORPH_SLIDERS};
@@ -110,6 +111,10 @@ pub enum ProjectError {
     /// The project contains no scene.
     #[error("project must contain at least one scene node")]
     EmptyScene,
+    /// Issue #12: a árvore de transformações é inválida (pai ausente, pai
+    /// próprio ou ciclo de parentesco).
+    #[error("invalid scene hierarchy: {detail}")]
+    InvalidHierarchy { detail: String },
 }
 
 /// Root document of a saved project.
@@ -281,6 +286,56 @@ pub struct SceneState {
     pub nodes: Vec<NodeSlot>,
 }
 
+impl SceneState {
+    /// Nó pelo id estável.
+    pub fn node(&self, id: &NodeId) -> Option<&NodeSlot> {
+        self.nodes.iter().find(|node| &node.node_id == id)
+    }
+
+    /// Nó mutável pelo id estável.
+    pub fn node_mut(&mut self, id: &NodeId) -> Option<&mut NodeSlot> {
+        self.nodes.iter_mut().find(|node| &node.node_id == id)
+    }
+
+    /// Filhos diretos de `parent` (issue #12), em ordem de declaração —
+    /// `None` devolve as raízes. A lista é **derivada** de `parent_id`: uma
+    /// única autoridade sobre a topologia.
+    pub fn children_of(&self, parent: Option<&NodeId>) -> Vec<&NodeSlot> {
+        self.nodes
+            .iter()
+            .filter(|node| node.parent_id.as_ref() == parent)
+            .collect()
+    }
+
+    /// Nós raiz (sem pai declarado).
+    pub fn roots(&self) -> Vec<&NodeSlot> {
+        self.children_of(None)
+    }
+
+    /// Profundidade de um nó na árvore (raiz = 0); `None` quando não existe.
+    pub fn depth_of(&self, id: &NodeId) -> Option<usize> {
+        self.node(id).map(|node| hierarchy::depth_of(&self.nodes, &node.node_id))
+    }
+
+    /// Descendentes de um nó (ordem de largura, declaração dentro do nível).
+    pub fn descendants_of(&self, id: &NodeId) -> Vec<&NodeSlot> {
+        hierarchy::descendants_of(&self.nodes, id)
+            .into_iter()
+            .filter_map(|descendant| self.node(&descendant))
+            .collect()
+    }
+
+    /// Matrizes mundiais resolvidas de toda a cena, indexadas por id.
+    pub fn world_transforms(&self) -> Result<BTreeMap<NodeId, glam::Mat4>, hierarchy::HierarchyError> {
+        hierarchy::resolve_world_transforms(&self.nodes)
+    }
+
+    /// Ordem topológica dos nós (pais antes de filhos) como índices.
+    pub fn hierarchy_order(&self) -> Result<Vec<usize>, hierarchy::HierarchyError> {
+        hierarchy::hierarchy_order(&self.nodes)
+    }
+}
+
 /// Project camera slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraSlot {
@@ -308,6 +363,45 @@ pub struct NodeSlot {
     pub material_id: Option<MaterialId>,
     #[serde(default = "default_true")]
     pub visible: bool,
+    /// Issue #12: pai na árvore de transformações (`None` = raiz da cena).
+    ///
+    /// A lista de filhos **não** é persistida aqui: ela é derivada deste campo
+    /// (`SceneState::children_of`), de modo que exista uma única autoridade
+    /// sobre a topologia — duas listas (pai e filhos) só dariam margem a
+    /// divergirem entre si depois de um undo.
+    #[serde(default)]
+    pub parent_id: Option<NodeId>,
+    /// Issue #12: tipo especializado do nó (`character_root`, `clothing`,
+    /// `hair`, `accessory`, `humanoid_bone`, `mesh`, `light`, `camera`, `group`).
+    #[serde(default)]
+    pub kind: NodeKind,
+}
+
+impl NodeSlot {
+    /// Nó folha de um pai opcional (ordem de declaração = ordem de exibição).
+    pub fn new(node_id: NodeId, name: impl Into<String>, kind: NodeKind) -> Self {
+        Self {
+            node_id,
+            name: name.into(),
+            transform: Transform::default(),
+            mesh: None,
+            material_id: None,
+            visible: true,
+            parent_id: None,
+            kind,
+        }
+    }
+
+    /// Nó preso a um pai (acessório/vestuário/cabelo seguindo o corpo).
+    pub fn child_of(mut self, parent: NodeId) -> Self {
+        self.parent_id = Some(parent);
+        self
+    }
+
+    /// `true` quando este nó é o pai direto de `candidate`.
+    pub fn is_parent_of(&self, candidate: &NodeSlot) -> bool {
+        candidate.parent_id.as_ref() == Some(&self.node_id)
+    }
 }
 
 /// Reference to a mesh primitive inside an asset.
@@ -570,6 +664,9 @@ impl Default for SceneState {
             }),
             material_id: Some(material_id),
             visible: true,
+            // Issue #12: o manequim é a raiz do personagem na cena canônica.
+            parent_id: None,
+            kind: NodeKind::CharacterRoot,
         };
 
         Self {
@@ -858,7 +955,19 @@ impl ProjectState {
             for component in node.transform.scale.to_array() {
                 require_finite("scene.nodes[].transform.scale", component)?;
             }
+            for component in node.transform.rotation.to_array() {
+                require_finite("scene.nodes[].transform.rotation", component)?;
+            }
         }
+
+        // Issue #12: a topologia é validada como um todo — ids únicos, todo
+        // `parent_id` existente, nenhum nó sendo seu próprio pai e nenhum ciclo.
+        // Um comando que produza qualquer um desses estados é revertido por
+        // `Command::apply` (validate → draft → validate → swap).
+        hierarchy::validate_hierarchy(&self.scene.nodes)
+            .map_err(|error| ProjectError::InvalidHierarchy {
+                detail: error.to_string(),
+            })?;
 
         for (id, entry) in &self.materials {
             if entry.material_id != *id {
@@ -1729,6 +1838,58 @@ mod tests {
         assert_eq!(project.scene.lights[0].light_id.as_str(), "lgt_key");
         assert!(project.scene.nodes[0].mesh.is_some());
         assert!(project.character.morph_values.is_empty(), "defaults are not stored");
+    }
+
+    #[test]
+    fn hierarchy_validation_rejects_cycles_and_dangling_parents() {
+        use crate::hierarchy::NodeKind;
+
+        let mut project = canonical_project();
+        let root = project.scene.nodes[0].node_id.clone();
+        project.scene.nodes.push(
+            NodeSlot::new(NodeId::from_slug("nod_jacket"), "Jacket", NodeKind::Clothing)
+                .child_of(root.clone()),
+        );
+        project.scene.nodes.push(
+            NodeSlot::new(NodeId::from_slug("nod_hood"), "Hood", NodeKind::Hair)
+                .child_of(NodeId::from_slug("nod_jacket")),
+        );
+        project.validate().expect("hierarchy is valid");
+        assert_eq!(project.scene.children_of(Some(&root)).len(), 1);
+        assert_eq!(project.scene.depth_of(&NodeId::from_slug("nod_hood")), Some(2));
+
+        // Pai inexistente.
+        let mut dangling = project.clone();
+        dangling.scene.nodes[1].parent_id = Some(NodeId::from_slug("nod_missing"));
+        assert!(matches!(
+            dangling.validate(),
+            Err(ProjectError::InvalidHierarchy { .. })
+        ));
+
+        // Ciclo (a raiz virando filha do próprio descendente).
+        let mut cyclic = project.clone();
+        cyclic.scene.nodes[0].parent_id = Some(NodeId::from_slug("nod_hood"));
+        assert!(matches!(
+            cyclic.validate(),
+            Err(ProjectError::InvalidHierarchy { .. })
+        ));
+
+        // Nó sendo pai de si mesmo.
+        let mut selfish = project.clone();
+        let hood_id = selfish.scene.nodes[2].node_id.clone();
+        selfish.scene.nodes[2].parent_id = Some(hood_id);
+        assert!(matches!(
+            selfish.validate(),
+            Err(ProjectError::InvalidHierarchy { .. })
+        ));
+
+        // Rotação não finita (a escala/translação já eram checadas).
+        let mut broken = project;
+        broken.scene.nodes[1].transform.rotation = glam::Quat::from_array([f32::NAN, 0.0, 0.0, 1.0]);
+        assert!(matches!(
+            broken.validate(),
+            Err(ProjectError::InvalidValue { .. })
+        ));
     }
 
     #[test]

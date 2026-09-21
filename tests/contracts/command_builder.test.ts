@@ -51,7 +51,7 @@ function rejected(intent: CommandIntent, code: string): void {
 }
 
 describe("Intent → Command — toda alteração da UI vira um comando do contrato", () => {
-  it("cobre os 19 tipos de comando do contrato v1", () => {
+  it("cobre os 23 tipos de comando do contrato v1", () => {
     const intents: CommandIntent[] = [
       { kind: "morph", slider_id: UNIT_SLIDER.id, value: 1.05 },
       { kind: "reset_morphs", override_count: 3 },
@@ -67,6 +67,21 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
       { kind: "material", patch: { outline_width: 2 } },
       { kind: "node_visibility", node_id: "nod_character_base", visible: false },
       { kind: "node_mesh", node_id: "nod_character_base", mesh_uri: "anigo://preset/cube" },
+      {
+        kind: "add_node",
+        node_id: "nod_jacket",
+        name: "Jaqueta",
+        index: 1,
+        parent_id: "nod_character_base",
+        node_kind: "clothing",
+      },
+      { kind: "remove_node", node_id: "nod_jacket" },
+      { kind: "node_parent", node_id: "nod_jacket", parent_id: "nod_character_base" },
+      {
+        kind: "node_transform",
+        node_id: "nod_jacket",
+        transform: { translation: [0, 0.2, 0] },
+      },
       { kind: "preset", preset: "sphere" },
       { kind: "background_color", color: [0.1, 0.2, 0.3, 1] },
       { kind: "render_settings", msaa_samples: 8 },
