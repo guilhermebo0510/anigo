@@ -1,13 +1,28 @@
 import {
   CHARACTER_SNAPSHOT_SCHEMA_VERSION,
-  sanitizeCharacterState,
   type CharacterState,
 } from "./character_state";
+import {
+  DEFAULT_APP_VERSION,
+  createEnvelope,
+  parseEnvelope,
+  readRecovery,
+  serializeEnvelope,
+  toProjectSnapshot,
+  toSessionState,
+  type ProjectEnvelopeV3,
+  type RecoveryResult,
+  type SessionState,
+} from "./project_persistence";
+import type { CanonicalProjectDocumentV1 } from "../contracts/project_state.v1";
+import type { CommandLogWire } from "../contracts/command_log.v1";
 
 /** Storage key for the crash-recovery cache (P0-08: now actually restored). */
 export const AUTOSAVE_CACHE_KEY = "anigo_autosave_cache";
 
 export interface ProjectStateSnapshot {
+  /** v3: the scene domain travels inside the session block. */
+  scene?: unknown;
   preset: string;
   headScale: number;
   headRatio: number;
@@ -55,12 +70,26 @@ export interface ProjectStateSnapshot {
   lightColor?: [number, number, number];
 }
 
+export interface AutoSaveOptions {
+  /** Canonical project document authored by the Rust core (null in preview). */
+  getCoreProject?: () => CanonicalProjectDocumentV1 | null;
+  /** Opaque UI preferences persisted with the session. */
+  getUiState?: () => Record<string, unknown>;
+  /**
+   * P0 undo/redo: accepted commands of the session. Persisted inside the session
+   * block so the whole session can be rebuilt by replaying it (base + log).
+   */
+  getCommandLog?: () => CommandLogWire | null;
+  appVersion?: string;
+}
+
 export class AutoSaveService {
   private timer: any = null;
   private isRunning: boolean = false;
   private intervalMinutes: number = 5;
   private getStateFn?: () => ProjectStateSnapshot;
   private isDirtyFn?: () => boolean;
+  private options: AutoSaveOptions = {};
   public onSaveCompleted?: (filePath: string, timestamp: string) => void;
   public onSaveError?: (error: unknown) => void;
 
@@ -70,10 +99,12 @@ export class AutoSaveService {
     enabled: boolean,
     intervalMinutes: number,
     getStateFn: () => ProjectStateSnapshot,
-    isDirtyFn?: () => boolean
+    isDirtyFn?: () => boolean,
+    options: AutoSaveOptions = {}
   ) {
     this.getStateFn = getStateFn;
     this.isDirtyFn = isDirtyFn;
+    this.options = options;
     this.intervalMinutes = Math.max(1, intervalMinutes);
 
     if (this.timer) {
@@ -103,7 +134,9 @@ export class AutoSaveService {
       const state = this.getStateFn();
       state.timestamp = Date.now();
       state.schemaVersion = CHARACTER_SNAPSHOT_SCHEMA_VERSION;
-      const jsonStr = JSON.stringify(state, null, 2);
+      // P0 persistence: everything written to disk is a versioned envelope.
+      const envelope = this.buildEnvelope(state);
+      const jsonStr = serializeEnvelope(envelope);
 
       // Save locally to localStorage as immediate recovery cache
       if (typeof localStorage !== "undefined") {
@@ -132,16 +165,52 @@ export class AutoSaveService {
     }
   }
 
-  /** Reads the crash-recovery cache, or null when absent/unparseable. */
-  public readRecoveryCache(): ProjectStateSnapshot | null {
-    try {
-      if (typeof localStorage === "undefined") return null;
-      const raw = localStorage.getItem(AUTOSAVE_CACHE_KEY);
-      if (!raw) return null;
-      return parseProjectSnapshot(raw);
-    } catch {
-      return null;
+  /** Builds the envelope for the current session (never throws on core errors). */
+  public buildEnvelope(state: ProjectStateSnapshot): ProjectEnvelopeV3 {
+    let coreProject: CanonicalProjectDocumentV1 | null = null;
+    if (this.options.getCoreProject) {
+      try {
+        coreProject = this.options.getCoreProject() ?? null;
+      } catch (error) {
+        // A core that cannot answer must not break the autosave: the envelope
+        // records the degraded `preview` source instead of losing the session.
+        console.warn("[AutoSaveService] núcleo não forneceu o documento canônico:", error);
+        coreProject = null;
+      }
     }
+    const session = toSessionState(state);
+    const commandLog = this.options.getCommandLog?.() ?? null;
+    if (commandLog && commandLog.entries.length > 0) {
+      // Only commands that the history accepted ever reach this point.
+      session.command_log = commandLog;
+    }
+    return createEnvelope({
+      session,
+      coreProject,
+      ui: this.options.getUiState?.() ?? {},
+      savedAt: state.timestamp ?? Date.now(),
+      appVersion: this.options.appVersion ?? state.version ?? DEFAULT_APP_VERSION,
+    });
+  }
+
+  /**
+   * Reads the crash-recovery cache: migrates legacy payloads, validates the
+   * envelope and reports *why* a payload was rejected.
+   */
+  public recoverSession(): RecoveryResult {
+    let raw: string | null = null;
+    try {
+      if (typeof localStorage !== "undefined") raw = localStorage.getItem(AUTOSAVE_CACHE_KEY);
+    } catch {
+      raw = null;
+    }
+    return readRecovery(raw);
+  }
+
+  /** Reads the crash-recovery cache as the flat project snapshot, or null. */
+  public readRecoveryCache(): ProjectStateSnapshot | null {
+    const result = this.recoverSession();
+    return result.envelope ? toProjectSnapshot(result.envelope.session) : null;
   }
 
   public clearRecoveryCache(): void {
@@ -164,81 +233,24 @@ export class AutoSaveService {
 export const autoSaveService = new AutoSaveService();
 
 /**
- * P0-08: validating project loader. Parses + sanitizes an untrusted project
- * payload (file or recovery cache). Never throws on schema drift: unknown
- * versions are migrated forward when possible, invalid numerics fall back
- * to safe defaults. Throws only when the payload is not JSON / not an object.
+ * P0 persistence: validating project loader for files and recovery caches.
+ *
+ * Accepts every format the app has ever written (v1 flat, v2 flat, v3
+ * envelope), migrates it forward with explicit steps and validates the result
+ * before returning. Invalid numerics are sanitized; a payload that cannot be
+ * trusted (malformed JSON, non-object root, newer schema) throws a typed
+ * `PersistenceError` the caller can report to the user.
  */
 export function parseProjectSnapshot(rawJson: string): ProjectStateSnapshot {
-  let data: unknown;
-  try {
-    data = JSON.parse(rawJson);
-  } catch (e) {
-    throw new Error(`Projeto inválido: JSON malformado (${String(e)})`);
-  }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    throw new Error("Projeto inválido: raiz precisa ser um objeto");
-  }
-  const o = data as Record<string, unknown>;
-  const num = (v: unknown, fb: number): number =>
-    typeof v === "number" && Number.isFinite(v) ? v : fb;
-  const vec3 = (v: unknown, fb: [number, number, number]): [number, number, number] =>
-    Array.isArray(v) && v.length >= 3 ? [num(v[0], fb[0]), num(v[1], fb[1]), num(v[2], fb[2])] : fb;
+  return toProjectSnapshot(parseProjectDocument(rawJson).session);
+}
 
-  const schemaVersion =
-    typeof o["schemaVersion"] === "number" ? o["schemaVersion"] : o["version"] === "0.1.0" ? 1 : 1;
-  if (schemaVersion > CHARACTER_SNAPSHOT_SCHEMA_VERSION) {
-    throw new Error(
-      `Projeto criado por versão mais nova (schema ${schemaVersion}, suportado ${CHARACTER_SNAPSHOT_SCHEMA_VERSION})`
-    );
-  }
-
-  const preset = o["preset"];
-  return {
-    preset: preset === "sphere" || preset === "cube" ? preset : "mannequin",
-    headScale: num(o["headScale"], 1.0),
-    headRatio: num(o["headRatio"], 6.5),
-    outlineWidth: num(o["outlineWidth"], 3.5),
-    shadowThreshold: num(o["shadowThreshold"], 0.5),
-    lightDir: vec3(o["lightDir"], [0.577, 0.577, 0.577]),
-    lightIntensity: num(o["lightIntensity"], 1.0),
-    shadowColor: vec3(o["shadowColor"], [1, 1, 1]),
-    cameraEye: vec3(o["cameraEye"], [0, 1.5, 3.5]),
-    cameraTarget: vec3(o["cameraTarget"], [0, 1, 0]),
-    cameraUp: vec3(o["cameraUp"], [0, 1, 0]),
-    fov: num(o["fov"], 45),
-    timestamp: num(o["timestamp"], Date.now()),
-    version: typeof o["version"] === "string" ? o["version"] : "0.2.0",
-    schemaVersion: CHARACTER_SNAPSHOT_SCHEMA_VERSION,
-    lightAzimuth: num(o["lightAzimuth"], 45),
-    lightElevation: num(o["lightElevation"], 45),
-    toonSmoothness: num(o["toonSmoothness"], 0.02),
-    specIntensity: num(o["specIntensity"], 0.4),
-    specExponent: num(o["specExponent"], 32),
-    rimIntensity: num(o["rimIntensity"], 0.8),
-    rimSpread: num(o["rimSpread"], 0.4),
-    hueShift: num(o["hueShift"], -15),
-    toonSteps: num(o["toonSteps"], 1),
-    outlineColor: typeof o["outlineColor"] === "string" ? o["outlineColor"] : "#402633",
-    baseColorHex: typeof o["baseColorHex"] === "string" ? o["baseColorHex"] : "#faebd7",
-    shadowColorHex: typeof o["shadowColorHex"] === "string" ? o["shadowColorHex"] : "#d1b8c7",
-    sunColor: typeof o["sunColor"] === "string" ? o["sunColor"] : "#fff2df",
-    shadowSaturation: num(o["shadowSaturation"], 1.15),
-    ambientIntensity: num(o["ambientIntensity"], 0.35),
-    outlineOpacity: num(o["outlineOpacity"], 1),
-    outlineSmoothness: num(o["outlineSmoothness"], 0),
-    outlineDepthBias: num(o["outlineDepthBias"], 0),
-    specSoftness: num(o["specSoftness"], 0.05),
-    specOffset: num(o["specOffset"], 0),
-    specularSize: num(o["specularSize"], 0.45),
-    aoIntensity: num(o["aoIntensity"], 0.85),
-    ambientSky: vec3(o["ambientSky"], [0.52, 0.6, 0.78]),
-    ambientGround: vec3(o["ambientGround"], [0.25, 0.2, 0.18]),
-    specColorHex: typeof o["specColorHex"] === "string" ? o["specColorHex"] : "#ffffff",
-    rimColor: typeof o["rimColor"] === "string" ? o["rimColor"] : "#93c5fd",
-    lightColor: vec3(o["lightColor"], [1, 0.98, 0.95]),
-    // P0-08: the character domain travels with the project (v1 payloads
-    // without it sanitize to the canonical default character).
-    character: sanitizeCharacterState(o["character"]),
-  };
+/** Full read of a persisted project, including the canonical core document. */
+export function parseProjectDocument(rawJson: string): {
+  envelope: ProjectEnvelopeV3;
+  session: SessionState;
+  migrations: string[];
+} {
+  const { envelope, applied } = parseEnvelope(rawJson);
+  return { envelope, session: envelope.session, migrations: applied };
 }

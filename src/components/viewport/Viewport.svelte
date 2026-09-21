@@ -2,6 +2,13 @@
   import { onMount, onDestroy } from "svelte";
   import { devicePixelRatioSafe } from "../../services/settings_persist";
   import { WebGpuViewportRenderer, type ViewportMetrics, type MeshPreset } from "./webgpu_renderer";
+  import type { CoreSnapshotDelivery } from "../../services/core_bridge";
+  import {
+    RendererDiagnostics,
+    type DiagnosticCode,
+    type DiagnosticsSummary,
+    type RenderDiagnostic,
+  } from "../../services/render_diagnostics";
   import type { AnatomicalSegment } from "./tactile";
 
   let {
@@ -24,14 +31,25 @@
     onTactileDragStart?: (segment: AnatomicalSegment) => void;
     onTactileDragEnd?: () => void;
     onModelLoadError?: (message: string) => void;
+    /** P1-02: diagnóstico estruturado do renderer (status bar/telemetria). */
+    onDiagnostic?: (diagnostic: RenderDiagnostic) => void;
     /** P0-09: tactile manipulation is gated by the parent (personagem + body/face only). */
     tactileEnabled?: boolean;
+    /**
+     * P0 §7.5 — busca o snapshot canônico no núcleo. Quem fala com o núcleo é o
+     * shell (`App.svelte`); o viewport só consome a geometria autorizada.
+     */
+    coreSnapshotProvider?: (force?: boolean) => Promise<CoreSnapshotDelivery | null>;
+    /** Whether the renderer should still load the raw GLB (degraded, no core). */
+    allowDegradedBaseMesh?: boolean;
   } = $props();
 
   let canvas: HTMLCanvasElement | null = $state(null);
   let containerEl: HTMLElement | null = $state(null);
   let renderer: WebGpuViewportRenderer | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let coreSnapshotInFlight: Promise<unknown> | null = null;
+  let coreAuthority: string = "unavailable";
 
   // Pointer Interaction State (DCC standard: LMB/Alt+LMB Orbit, MMB/Shift+LMB Pan, Wheel/Alt+RMB Zoom)
   let isDragging = $state(false);
@@ -165,6 +183,20 @@
       onModelLoadError?.(msg);
       throw e;
     }
+  }
+
+  /**
+   * P0 §8: geometria canônica do núcleo que está na GPU + revisão estática.
+   * O App usa isso para o teste de paridade da exportação (nunca para deformar).
+   */
+  export function getCoreGeometry(): {
+    geometry: ReturnType<WebGpuViewportRenderer["getCoreGeometry"]>;
+    staticRevision: number;
+  } {
+    return {
+      geometry: renderer?.getCoreGeometry?.() ?? null,
+      staticRevision: renderer?.getCoreStaticRevision?.() ?? 0,
+    };
   }
 
   export function getMorphCoverage(): { implemented: number; total: number; explicit: number } | null {
@@ -317,6 +349,83 @@
     if (renderer) renderer.setVsync(enabled);
   }
 
+  /**
+   * Aplica um snapshot canônico já buscado pelo shell (parte estática e/ou
+   * dinâmica). Devolve o relatório de autoridade para telemetria/status bar.
+   */
+  export function applyCoreDelivery(delivery: CoreSnapshotDelivery) {
+    if (!renderer) return null;
+    const report = renderer.applyCoreSnapshot(delivery);
+    coreAuthority = report.authority;
+    return report;
+  }
+
+  /** Pede (uma vez) um snapshot novo ao núcleo e o aplica. */
+  export async function requestCoreSnapshot(force: boolean = false) {
+    if (!coreSnapshotProvider) return null;
+    if (coreSnapshotInFlight) return coreSnapshotInFlight;
+    coreSnapshotInFlight = (async () => {
+      try {
+        const delivery = await coreSnapshotProvider(force);
+        if (delivery) return applyCoreDelivery(delivery);
+        return null;
+      } catch (error) {
+        console.warn("[ANIGO 3D] core snapshot request failed:", error);
+        return null;
+      } finally {
+        coreSnapshotInFlight = null;
+      }
+    })();
+    return coreSnapshotInFlight;
+  }
+
+  /** Resumo dos diagnósticos do renderer (item 2 do P1). */
+  export function getDiagnostics(): { summary: DiagnosticsSummary; entries: readonly RenderDiagnostic[] } {
+    return (
+      renderer?.getDiagnostics?.() ?? {
+        summary: { total: 0, errors: 0, warnings: 0, codes: [], dropped: 0, degraded: false },
+        entries: [],
+      }
+    );
+  }
+
+  /**
+   * Reporta um diagnóstico originado fora do renderer (ex.: snapshot recusado
+   * pelo contrato). Passa pelo mesmo canal — um só lugar para a UI observar.
+   */
+  export function reportDiagnostic(
+    code: DiagnosticCode,
+    message: string,
+    options?: { detail?: string; context?: Record<string, string | number | boolean> }
+  ): void {
+    if (renderer?.reportDiagnostic) {
+      renderer.reportDiagnostic(code, message, options);
+      return;
+    }
+    console.warn(RendererDiagnostics.format({
+      code,
+      severity: "error",
+      message,
+      detail: options?.detail ?? null,
+      context: options?.context ?? null,
+      count: 1,
+      firstAt: 0,
+      lastAt: 0,
+    }));
+  }
+
+  /** Autoridade de deformação em vigor no viewport (degradação explícita). */
+  export function getDeformationAuthority() {
+    return renderer?.getDeformationAuthority?.() ?? {
+      authority: coreAuthority,
+      degraded: true,
+      coreStaticRevision: 0,
+      coreDynamicRevision: 0,
+      channels: 0,
+      vertexCount: 0,
+    };
+  }
+
   export function resize(w?: number, h?: number) {
     if (containerEl && renderer) {
       const targetW = w ?? containerEl.clientWidth;
@@ -333,11 +442,19 @@
       renderer = new WebGpuViewportRenderer(canvas);
       // P0-10: surface model/GLB failures to the parent UI.
       renderer.onModelLoadError = (msg: string) => onModelLoadError?.(msg);
+      // P1-02: todo diagnóstico do renderer sobe para o shell.
+      renderer.onDiagnostic = (diagnostic: RenderDiagnostic) => onDiagnostic?.(diagnostic);
+      // P0 §7.5: quando o renderer precisa de geometria canônica, o shell busca
+      // o snapshot no núcleo (nunca há deformação local como plano B).
+      renderer.onCoreGeometryRequired = () => {
+        void requestCoreSnapshot();
+      };
 
       renderer.onMetricsUpdate = (m: ViewportMetrics) => {
         onMetrics?.(m);
         // Sync live telemetry back to Tauri's LiveWindowState in the background (no HUD overlay on canvas)
         if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+          const diagnostics = getDiagnostics().summary;
           import("@tauri-apps/api/core").then(({ invoke }) => {
             invoke("report_live_telemetry", {
               telemetry: {
@@ -357,6 +474,15 @@
                 head_scale: renderer?.headScale || 1.0,
                 head_ratio: renderer?.headRatio || 6.5,
                 webgpu_active: m.backend === "WebGPU",
+                // P1-06: telemetria com dados reais do renderer/núcleo, não estimativas.
+                diagnostics_errors: diagnostics.errors,
+                diagnostics_warnings: diagnostics.warnings,
+                diagnostic_codes: diagnostics.codes,
+                deformation_authority: getDeformationAuthority().authority,
+                core_static_revision: getDeformationAuthority().coreStaticRevision,
+                core_dynamic_revision: getDeformationAuthority().coreDynamicRevision,
+                morph_channels: getDeformationAuthority().channels,
+                vertex_count: getDeformationAuthority().vertexCount,
                 spec_intensity: renderer?.specIntensity ?? 0.4,
                 spec_power: renderer?.specExponent ?? 32.0,
                 rim_intensity: renderer?.rimIntensity ?? 0.8,

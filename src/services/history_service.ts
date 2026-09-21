@@ -186,6 +186,15 @@ class HistoryService {
     }
   }
 
+  /** Depth of the undo stack — used to detect when a push created an entry. */
+  public get undoDepth(): number {
+    return this.undoStack.length;
+  }
+
+  public get redoDepth(): number {
+    return this.redoStack.length;
+  }
+
   public canUndo(): boolean {
     return this.undoStack.length > 0;
   }

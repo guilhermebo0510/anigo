@@ -2,7 +2,7 @@ use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 /// 3D Transform representing position, rotation, and uniform/non-uniform scale.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Quat,
@@ -33,7 +33,7 @@ impl Transform {
 }
 
 /// Camera representation with orbital controls and perspective projection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Camera {
     pub eye: Vec3,
     pub target: Vec3,

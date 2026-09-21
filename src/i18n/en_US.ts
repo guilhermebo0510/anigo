@@ -121,6 +121,7 @@ export const en_US: Record<string, string> = {
   "status.project": "Project",
   "status.untitled": "Untitled.anigo",
   "status.model": "Model",
+  "status.diagnostics": "Diagnostics",
   "status.ready": "Ready",
   "status.autosave": "Autosave",
   "status.saved_at": "Saved at",

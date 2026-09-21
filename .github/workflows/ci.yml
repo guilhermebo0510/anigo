@@ -4,22 +4,100 @@ on:
     branches: [main, arena/**]
   pull_request:
     branches: [main]
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
+        with:
+          # Node 22+: `npm test` usa o type stripping nativo (`--experimental-strip-types`).
+          # No Node 20 o comando nem inicia (exit 9) e os contratos TS⇄Rust não rodavam no CI.
+          node-version: '22'
+          cache: 'npm'
       - run: npm ci
       - name: svelte-check (TS strict)
         run: npm run check
         continue-on-error: true # P1-14 strict ativo; 84 erros legados (Icons size) pré-existentes — gate build é obrigatório, svelte-check será hard gate em P2
       - name: lint
         run: npm run lint --if-present
+      - name: testes (contratos Rust⇄TS, persistência, personagem, e2e)
+        run: npm test
+      - name: contratos congelados (fixtures em dia)
+        run: npm run fixtures:check
+      - name: "shaders ⇄ render contract (P1-04: bloco de skinning idêntico)"
+        run: npm run check:wgsl
+      - name: sintaxe Rust (tree-sitter, sem toolchain)
+        run: node scripts/check_rust_syntax.mjs
       - name: build
         run: npm run build
       - name: no leaks — destroy/pause hooks present
         run: |
           grep -q "setPausedByVisibility" src/components/viewport/webgpu_renderer.ts
           grep -q "destroy()" src/components/viewport/webgpu_renderer.ts
+
+  # P1-07: os gates que exigem toolchain Rust (o job `check` roda sem cargo).
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: dependências de sistema (Tauri/webview)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - name: formato
+        run: cargo fmt --all -- --check
+        continue-on-error: true # o repositório ainda não está 100% rustfmt-clean; vira hard gate depois do P1
+      - name: cargo check (todos os alvos)
+        run: |
+          if ! cargo check --workspace --all-targets > /tmp/cargo-check.log 2>&1; then
+            cat /tmp/cargo-check.log
+            python3 scripts/annotate_rust_errors.py /tmp/cargo-check.log "cargo check --workspace --all-targets"
+            exit 1
+          fi
+          tail -5 /tmp/cargo-check.log
+      - name: cargo test (núcleo)
+        run: |
+          if ! cargo test -p anigo-core > /tmp/cargo-test-core.log 2>&1; then
+            cat /tmp/cargo-test-core.log
+            python3 scripts/annotate_rust_errors.py /tmp/cargo-test-core.log "cargo test -p anigo-core"
+            exit 1
+          fi
+          tail -5 /tmp/cargo-test-core.log
+      - name: cargo test (renderer — testes de GPU se pulam sem adaptador)
+        run: |
+          if ! cargo test -p anigo-renderer > /tmp/cargo-test-renderer.log 2>&1; then
+            cat /tmp/cargo-test-renderer.log
+            python3 scripts/annotate_rust_errors.py /tmp/cargo-test-renderer.log "cargo test -p anigo-renderer"
+            exit 1
+          fi
+          tail -5 /tmp/cargo-test-renderer.log
+      - name: cargo test (MCP)
+        run: |
+          if ! cargo test -p anigo-mcp > /tmp/cargo-test-mcp.log 2>&1; then
+            cat /tmp/cargo-test-mcp.log
+            python3 scripts/annotate_rust_errors.py /tmp/cargo-test-mcp.log "cargo test -p anigo-mcp"
+            exit 1
+          fi
+          tail -5 /tmp/cargo-test-mcp.log
+      - name: WGSL dos shaders de produção (naga)
+        # Sem GPU e sem naga no ambiente de desenvolvimento, um shader inválido
+        # só apareceria ao abrir o app. Desde o skinning (P1-04) este passo é
+        # gate de verdade: se o naga instalar, um shader inválido reprova o CI;
+        # se a instalação falhar (rede), o passo avisa e `npm run check:wgsl`
+        # continua cobrindo a paridade shader ⇄ contrato.
+        run: |
+          if ! command -v naga >/dev/null 2>&1; then
+            cargo install naga-cli --locked || {
+              echo "::warning::naga indisponível (instalação falhou); a paridade shader ⇄ contrato segue em npm run check:wgsl"
+              exit 0
+            }
+          fi
+          naga crates/anigo-renderer/shaders/cel_shading.wgsl \
+               crates/anigo-renderer/shaders/inverted_hull.wgsl \
+               crates/anigo-renderer/shaders/morph_sparse_compute.wgsl \
+               crates/anigo-renderer/shaders/face_sdf.wgsl

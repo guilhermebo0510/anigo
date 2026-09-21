@@ -9,6 +9,8 @@
   import { IBL_PROBES } from "./services/ibl_service";
   import { MATERIAL_LIBRARY } from "./services/material_library";
   import { autoSaveService, parseProjectSnapshot, type ProjectStateSnapshot } from "./services/autosave_service";
+  import { commandLogOf, isDegradedRecovery, defaultSceneDomain, toProjectSnapshot, type SceneDomainSnapshot } from "./services/project_persistence";
+  import type { CanonicalProjectDocumentV1 } from "./contracts/project_state.v1";
   import {
     CHARACTER_SNAPSHOT_SCHEMA_VERSION,
     clampCatalog,
@@ -56,6 +58,27 @@
   import SettingsModal, { type StudioSettings } from "./components/settings/SettingsModal.svelte";
   import { loadSettings, saveSettings, devicePixelRatioSafe } from "./services/settings_persist";
   import { historyService, type HistoryStateSnapshot } from "./services/history_service";
+  import { CommandHistoryService, CommandHistoryError } from "./services/command_history";
+  import {
+    CoreBridgeError,
+    CoreSessionClient,
+    resolveCoreInvoker,
+    type CoreSnapshotDelivery,
+  } from "./services/core_bridge";
+  import { computePasses, renderPasses } from "./contracts/render_contract.v1";
+  import {
+    ExportServiceError,
+    describeParity,
+    exportCanonicalFrame,
+    exportCanonicalGlb,
+    exportFileName,
+    type ExportParityReport,
+  } from "./services/export_service";
+  import type { DiagnosticsSummary, RenderDiagnostic } from "./services/render_diagnostics";
+  import { HistoryAlignment } from "./services/history_alignment";
+  import { buildCommand, type CommandIntent } from "./services/command_builder";
+  import { previewHistoryOutcome, previewOutcome } from "./services/command_scope";
+  import type { CommandWire } from "./contracts/commands.v1";
   import ProjectMenuPopover from "./components/project/ProjectMenuPopover.svelte";
   import ModelPresetPopover from "./components/project/ModelPresetPopover.svelte";
   import QuickStartModal from "./components/project/QuickStartModal.svelte";
@@ -407,6 +430,8 @@
       const cur = morphSliders[id] ?? def.defaultValue;
       const next = clampNumber(cur + delta, def.min, def.max);
       morphSliders[id] = next;
+      // A gesture is one command: remember which sliders it moved.
+      if (!tactileTouchedSliders.includes(id)) tactileTouchedSliders.push(id);
       activeCharacterPreset = null;
       viewportRef?.setMorphSlider?.(id, next);
       try {
@@ -420,8 +445,21 @@
   }
 
   function handleTactileDragEnd() {
-    // P0-09: one history entry per tactile gesture.
-    recordHistory("Manipulação tátil do corpo");
+    // P0-09: one history entry per tactile gesture — and, since every gesture
+    // moves morph sliders, one command batch (P0 undo/redo item 1).
+    const intents: CommandIntent[] = tactileTouchedSliders.map((id) => ({
+      kind: "morph" as const,
+      slider_id: id,
+      value: morphSliders[id] ?? getSliderDef(id)?.defaultValue ?? 1,
+    }));
+    tactileTouchedSliders = [];
+    const command =
+      intents.length === 1
+        ? intentCommand(intents[0])
+        : intents.length > 1
+          ? intentCommand({ kind: "batch", intents })
+          : null;
+    recordHistory("Manipulação tátil do corpo", false, command);
   }
 
   // P2-15 sync html lang with i18n
@@ -544,6 +582,7 @@
   let currentProjectName = $state("Sem Título.anigo");
   let currentProjectPath = $state<string | null>(null);
   let isProjectDirty = $state(false);
+  let isDiagnosticsPopoverOpen = $state(false);
   let isProjectPopoverOpen = $state(false);
   let isPresetPopoverOpen = $state(false);
   let isQuickStartOpen = $state(false);
@@ -552,6 +591,101 @@
   let canUndoAction = $state(false);
   let canRedoAction = $state(false);
   let lastUndoDescription = $state<string | undefined>(undefined);
+
+  // P0 undo/redo: every persistent change is a command, and the command log is
+  // the session that gets persisted (base state + log ⇒ same session on replay).
+  // `HistoryAlignment` keeps the UI undo stack and the command log in lockstep.
+  const commandHistory = new CommandHistoryService();
+  const historyAlignment = new HistoryAlignment<CommandWire>();
+  // P0 §7.5: o shell é o único que fala com o núcleo; o viewport só consome o
+  // snapshot que ele entrega. Sem núcleo (browser), a geometria canônica fica
+  // indisponível e o viewport anuncia degradação — nunca deforma por conta própria.
+  let coreClient: CoreSessionClient | null = null;
+
+  // P0 §8: exportação canônica (o arquivo é escrito pelo núcleo; a UI só escolhe
+  // o caminho, acompanha e mostra o relatório de paridade viewport ⇄ exportação).
+  type ExportResolution = "fhd" | "2k" | "4k";
+  const EXPORT_RESOLUTIONS: Record<ExportResolution, { label: string; width: number; height: number }> = {
+    fhd: { label: "1920×1080 (FHD)", width: 1920, height: 1080 },
+    "2k": { label: "2560×1440 (2K)", width: 2560, height: 1440 },
+    "4k": { label: "3840×2160 (4K)", width: 3840, height: 2160 },
+  };
+  let exportResolution = $state<ExportResolution>("fhd");
+  let exportBusy = $state(false);
+  let exportReport = $state<ExportParityReport | null>(null);
+  let exportMessage = $state("Exportação canônica: o núcleo escreve o arquivo e o viewport confere a paridade.");
+  let exportError = $state<string | null>(null);
+  // P1-02: diagnóstico do renderer visível no shell (último evento + resumo).
+  let lastDiagnostic = $state<RenderDiagnostic | null>(null);
+  let viewportDiagnostics = $state<DiagnosticsSummary>({
+    total: 0,
+    errors: 0,
+    warnings: 0,
+    codes: [],
+    dropped: 0,
+    degraded: false,
+  });
+
+  /** Atualiza o resumo a partir do viewport (fonte é o canal de diagnóstico). */
+  function refreshViewportDiagnostics(): void {
+    const summary = viewportRef?.getDiagnostics?.().summary;
+    if (summary) viewportDiagnostics = summary;
+  }
+
+  /** Handler de diagnóstico do viewport. */
+  function handleViewportDiagnostic(diagnostic: RenderDiagnostic): void {
+    lastDiagnostic = diagnostic;
+    refreshViewportDiagnostics();
+  }
+  /** Sliders movidos pelo gesto tátil atual (um gesto = um comando). */
+  let tactileTouchedSliders: string[] = [];
+
+  /** Converte uma intenção da UI em comando válido (nunca envia comando inválido). */
+  function intentCommand(intent: CommandIntent): CommandWire | null {
+    const result = buildCommand(intent);
+    if (result.ok) return result.command;
+    console.debug(`[ANIGO][History] intenção recusada (${result.code}): ${result.reason}`);
+    return null;
+  }
+
+  /**
+   * Registra no log de comandos algo que já foi aceito. Em modo preview (sem o
+   * core) o outcome é local; quando o core responde, é o outcome dele que entra.
+   */
+  function recordCommand(command: CommandWire, description: string): boolean {
+    try {
+      commandHistory.push(
+        command,
+        previewOutcome({
+          command,
+          description,
+          sequence: commandHistory.next_sequence,
+          revision: commandHistory.revision + 1,
+          undoDepth: commandHistory.undo_depth + 1,
+        })
+      );
+      return true;
+    } catch (error) {
+      const reason = error instanceof CommandHistoryError ? `${error.code}: ${error.message}` : String(error);
+      console.warn(`[ANIGO][History] comando não registrado (${reason})`);
+      return false;
+    }
+  }
+
+  /** Atualiza a entrada corrente quando um ajuste contínuo (drag) estabiliza. */
+  function coalesceCommand(command: CommandWire): void {
+    try {
+      commandHistory.replaceLast(command);
+    } catch (error) {
+      console.warn("[ANIGO][History] coalescência falhou:", error);
+    }
+  }
+
+  /** Log de comandos aceitos (replay = base + log), para o envelope da sessão. */
+  function exportCommandLogEntries() {
+    const log = commandHistory.exportLog();
+    return log.entries.length > 0 ? log : null;
+  }
 
   // Library Asset Inspector State
   let selectedLibraryAsset = $state<AssetRecord | null>(assetCatalog[0] || null);
@@ -562,7 +696,18 @@
     if (asset.id === "char_01") {
       handlePreset("mannequin");
     }
-    recordHistory(`Vincular Ativo: ${asset.name}`);
+    const assetUri = (asset as { uri?: string; path?: string }).uri ?? (asset as { path?: string }).path;
+    recordHistory(
+      `Vincular Ativo: ${asset.name}`,
+      false,
+      assetUri
+        ? intentCommand({
+            kind: "node_mesh",
+            node_id: "nod_character_base",
+            mesh_uri: assetUri,
+          })
+        : null
+    );
     if (assetBrowserRef?.handleUse) {
       assetBrowserRef.handleUse(asset);
     }
@@ -666,8 +811,65 @@
     };
   }
 
-  function recordHistory(description: string, isContinuous = false) {
+  /**
+   * Single entry point for every persistent change (P0 undo/redo item 1).
+   *
+   * `command` is the versioned command that describes the change; when it is
+   * absent the change is UI-only (the snapshot history still records it so the
+   * viewport can be restored, but nothing enters the persisted command log).
+   */
+  /**
+   * Batch com os morphs fora do valor canônico — o estado persistente do corpo
+   * do personagem (usado quando um componente confirma a edição, ex.: o
+   * AnatomyInspector, que não informa quais sliders mudaram).
+   */
+  function morphStateCommand(): CommandWire | null {
+    const intents: CommandIntent[] = [];
+    for (const slider of CANONICAL_SLIDERS) {
+      const value = morphSliders[slider.id];
+      if (value === undefined || !Number.isFinite(value)) continue;
+      if (Math.abs(value - slider.defaultValue) <= 1e-6) continue;
+      intents.push({ kind: "morph", slider_id: slider.id, value });
+    }
+    if (intents.length === 0) return null;
+    if (intents.length === 1) return intentCommand(intents[0]);
+    return intentCommand({ kind: "batch", intents });
+  }
+
+  /** Resets both histories together (new/opened project). */
+  function resetHistories(): void {
+    historyService.init(getHistorySnapshot());
+    commandHistory.clear();
+    historyAlignment.clear();
+  }
+
+  function recordHistory(description: string, isContinuous = false, command: CommandWire | null = null) {
+    const depthBefore = historyService.undoDepth;
     historyService.push(getHistorySnapshot(), description, isContinuous);
+    const added = historyService.undoDepth > depthBefore;
+
+    if (command) {
+      if (added) {
+        // The UI history created an entry — the command log mirrors it 1:1. If
+        // the core refused the command (or the outcome was malformed) the entry
+        // is still undoable, but as a UI-only step: the stacks stay aligned.
+        if (recordCommand(command, description)) {
+          historyAlignment.markAdded("command", command);
+          // Autoridade: o núcleo aplica o mesmo comando e devolve o snapshot.
+          void pushCommandToCore(command);
+        } else {
+          historyAlignment.markAdded("ui");
+        }
+      } else if (isContinuous && historyAlignment.undo_depth > 0) {
+        // Continuous adjustment on the entry already open (slider drag): the
+        // log keeps one entry, with the value that settled.
+        coalesceCommand(command);
+        historyAlignment.markCoalesced(command);
+      }
+    } else if (added) {
+      historyAlignment.markAdded("ui");
+    }
+
     isProjectDirty = true;
   }
 
@@ -768,18 +970,219 @@
     reportLiveTelemetry();
   }
 
+  /**
+   * P0 §8 — exportação canônica.
+   *
+   * O núcleo escreve o artefato (GLB da malha deformada ou PNG do renderer
+   * canônico) **e** o manifesto ao lado; aqui o manifesto é conferido contra a
+   * geometria que o viewport está desenhando. Sem núcleo (browser/dev server) o
+   * export é recusado explicitamente — nunca um segundo caminho de geometria.
+   */
+  async function runExport(kind: "glb" | "frame") {
+    if (exportBusy) return;
+    const invoker = coreClient?.invoker ?? null;
+    const { geometry, staticRevision } = viewportRef?.getCoreGeometry?.() ?? {
+      geometry: null,
+      staticRevision: 0,
+    };
+    exportBusy = true;
+    exportError = null;
+    exportReport = null;
+    try {
+      if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+        throw new ExportServiceError(
+          "core_unavailable",
+          "a exportação usa a sessão canônica do núcleo (disponível no app desktop Tauri)"
+        );
+      }
+      const { invoke } = await import("@tauri-apps/api/core");
+      const dirs = await invoke<{ exports_dir: string; renders_dir: string }>("get_studio_directories");
+      const revisions = {
+        staticRevision: staticRevision || coreClient?.static_revision || 0,
+        dynamicRevision: coreClient?.dynamic_revision || 0,
+      };
+
+      if (kind === "glb") {
+        const name = exportFileName(currentProjectName, revisions, "glb");
+        const path = joinStudioPath(dirs.exports_dir, name);
+        const result = await exportCanonicalGlb({
+          invoker,
+          path,
+          geometry,
+          staticRevision: revisions.staticRevision,
+          // O caminho CPU (WebGL2) acumula os deltas do núcleo: dá para comparar
+          // a malha deformada byte a byte. No WebGPU quem soma é o compute shader.
+          verifyDeformed: (viewportRef as any)?.renderer?.backend === "webgl2",
+        });
+        exportReport = result.parity;
+        exportMessage = result.parity.ok
+          ? `GLB exportado (${Math.round(result.glbBytes / 1024)} KB) em ${result.glbPath} — ${describeParity(result.parity)}`
+          : `GLB exportado em ${result.glbPath}, mas a paridade falhou: ${describeParity(result.parity)}`;
+        if (!result.parity.ok) {
+          viewportRef?.reportDiagnostic?.("contract_drift", "exportação divergiu do viewport", {
+            detail: describeParity(result.parity),
+          });
+          refreshViewportDiagnostics();
+        }
+      } else {
+        const resolution = EXPORT_RESOLUTIONS[exportResolution];
+        const name = exportFileName(currentProjectName, revisions, "png");
+        const path = joinStudioPath(dirs.renders_dir, name);
+        const result = await exportCanonicalFrame({
+          invoker,
+          path,
+          width: resolution.width,
+          height: resolution.height,
+          geometry,
+          staticRevision: revisions.staticRevision,
+        });
+        exportReport = result.parity;
+        exportMessage = result.parity.ok
+          ? `Frame ${resolution.label} renderizado pelo núcleo (${result.render.backend}, ${
+              result.render.draw_calls
+            } draw calls, ${result.render.render_time_ms.toFixed(1)} ms) em ${result.imagePath}`
+          : `Frame renderizado em ${result.imagePath}, mas a paridade falhou: ${describeParity(result.parity)}`;
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      exportError = detail;
+      exportMessage = "exportação não concluída";
+      // P1-02: falha de exportação vai para o mesmo canal de diagnóstico.
+      viewportRef?.reportDiagnostic?.("unexpected_error", "falha na exportação canônica", {
+        detail,
+      });
+      refreshViewportDiagnostics();
+    } finally {
+      exportBusy = false;
+    }
+  }
+
+  /** Junta pasta + nome sem depender de separador do sistema. */
+  function joinStudioPath(directory: string, name: string): string {
+    const separator = directory.includes("\\") ? "\\" : "/";
+    return directory.endsWith(separator) ? `${directory}${name}` : `${directory}${separator}${name}`;
+  }
+
   function handleUndo() {
     const prev = historyService.undo();
-    if (prev) {
-      applySnapshot(prev);
+    if (!prev) return;
+    applySnapshot(prev);
+    void pushHistoryStepToCore("undo");
+    // The command log follows the same step: only command-backed entries move
+    // (item 2 — apply and undo are symmetric).
+    const marker = historyAlignment.undo();
+    if (marker?.origin === "command" && commandHistory.can_undo) {
+      commandHistory.applyUndo(
+        previewHistoryOutcome({
+          description: `Undo ${marker.command ? describeCommand(marker.command) : "comando"}`,
+          revision: commandHistory.revision + 1,
+          undoDepth: commandHistory.undo_depth - 1,
+          redoDepth: commandHistory.redo_depth + 1,
+        })
+      );
     }
   }
 
   function handleRedo() {
     const next = historyService.redo();
-    if (next) {
-      applySnapshot(next);
+    if (!next) return;
+    applySnapshot(next);
+    void pushHistoryStepToCore("redo");
+    const marker = historyAlignment.redo();
+    if (marker?.origin === "command" && commandHistory.can_redo) {
+      commandHistory.applyRedo(
+        previewHistoryOutcome({
+          description: `Redo ${marker.command ? describeCommand(marker.command) : "comando"}`,
+          revision: commandHistory.revision + 1,
+          undoDepth: commandHistory.undo_depth + 1,
+          redoDepth: commandHistory.redo_depth - 1,
+        })
+      );
     }
+  }
+
+  /**
+   * P0 §7.5 — busca um snapshot no núcleo e o devolve ao viewport.
+   *
+   * `force` pede a parte estática mesmo quando a revisão do cliente é a atual
+   * (recuperação de contexto GPU/perda de buffers).
+   */
+  async function coreSnapshotProvider(force: boolean = false): Promise<CoreSnapshotDelivery | null> {
+    if (!coreClient || !coreClient.available) return null;
+    try {
+      return await coreClient.pullSnapshot(force);
+    } catch (error) {
+      reportCoreFailure(error);
+      return null;
+    }
+  }
+
+  /**
+   * Diagnóstico de falha do núcleo (nunca silenciosa, nunca fatal para o UI).
+   *
+   * Vai para o mesmo canal do renderer: a status bar e a telemetria veem tudo
+   * num lugar só (P1-02/P1-06).
+   */
+  function reportCoreFailure(error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const stale = detail.includes("fora de ordem");
+    viewportRef?.reportDiagnostic?.(
+      stale ? "snapshot_stale" : "snapshot_invalid",
+      stale ? "snapshot do núcleo chegou fora de ordem e foi descartado" : "falha ao obter/decodificar o snapshot do núcleo",
+      { detail }
+    );
+    refreshViewportDiagnostics();
+    if (error instanceof CoreBridgeError && error.code === "core_unavailable") {
+      lastDiagnostic = {
+        code: "geometry_unavailable",
+        severity: "warning",
+        message: "núcleo indisponível",
+        detail,
+        context: null,
+        count: 1,
+        firstAt: 0,
+        lastAt: 0,
+      };
+    }
+  }
+
+  /**
+   * Manda o comando para o núcleo (autoridade) e atualiza o viewport com a
+   * geometria/pesos que ele devolver. O log local é um espelho: quando os
+   * revisões divergem, o núcleo vence e a divergência é registrada.
+   */
+  async function pushCommandToCore(command: CommandWire): Promise<void> {
+    if (!coreClient || !coreClient.available) return;
+    try {
+      const outcome = await coreClient.applyCommand(command);
+      if (outcome.revision !== commandHistory.revision) {
+        console.debug(
+          `[ANIGO][Core] revision do núcleo ${outcome.revision} ≠ espelho local ${commandHistory.revision}`
+        );
+      }
+      await viewportRef?.requestCoreSnapshot?.();
+    } catch (error) {
+      reportCoreFailure(error);
+    }
+  }
+
+  /** Undo/redo no núcleo (ele é quem decide o que é reversível) + refresh do viewport. */
+  async function pushHistoryStepToCore(kind: "undo" | "redo"): Promise<void> {
+    if (!coreClient || !coreClient.available) return;
+    try {
+      if (kind === "undo") await coreClient.undo();
+      else await coreClient.redo();
+      await viewportRef?.requestCoreSnapshot?.(true);
+    } catch (error) {
+      reportCoreFailure(error);
+    }
+  }
+
+  /** Rótulo curto de um comando, usado nas descrições de undo/redo. */
+  function describeCommand(command: CommandWire): string {
+    const record = command as Record<string, unknown>;
+    const target = (record.target ?? record.node_id ?? record.material_id ?? record.light_id) as string | undefined;
+    return target ? `${command.kind} ${target}` : command.kind;
   }
 
   function markCleanSave() {
@@ -864,7 +1267,7 @@
       const dpr = devicePixelRatioSafe();
       if (dpr !== window.devicePixelRatio) console.info('[P1-11] DPR clamped', window.devicePixelRatio, '->', dpr);
     } catch {}
-    historyService.init(getHistorySnapshot());
+    resetHistories();
       } catch (err) {
         alert("Erro ao carregar projeto: " + err);
       }
@@ -893,7 +1296,7 @@
       console.warn("[App] handleNewProject character reset failed:", e);
     }
     handlePreset("mannequin", false);
-    historyService.init(getHistorySnapshot());
+    resetHistories();
   }
 
   async function handleOpenProjectsFolder() {
@@ -960,6 +1363,53 @@
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),
+      // P0 persistência: cena + materiais + render viajam com o projeto.
+      scene: getSceneDomain(),
+    };
+  }
+
+  /**
+   * P0 persistência — domínio de cena do autosave.
+   *
+   * Materiais vêm da UI (cores atuais), nós/assets da cena canônica. Background,
+   * MSAA e tonemap ainda não têm controle no Studio, então são gravados com os
+   * valores canônicos — mas passam a fazer parte do arquivo, então quando os
+   * controles existirem nada muda no formato.
+   */
+  function getSceneDomain(): SceneDomainSnapshot {
+    const scene = defaultSceneDomain();
+    const rgba = (hex: string): [number, number, number, number] => {
+      const [r, g, b] = hexToRgb(hex);
+      return [r, g, b, 1];
+    };
+    scene.materials[0] = {
+      ...scene.materials[0],
+      base_color: rgba(baseColorHex),
+      shade_color: rgba(shadowColorHex),
+      outline_color: rgba(outlineColor),
+    };
+    return scene;
+  }
+
+  /**
+   * P0 persistência — documento canônico do projeto.
+   *
+   * A autoria é do núcleo Rust. Enquanto os comandos Tauri que devolvem o
+   * `ProjectState`/`CoreSnapshot` não estiverem ligados (item 5 do P0 de
+   * autoridade), não existe documento autoritativo: o envelope é gravado como
+   * `preview` (degradado) em vez de inventar um.
+   */
+  function getCoreProjectDocument(): CanonicalProjectDocumentV1 | null {
+    return null;
+  }
+
+  /** P0 persistência — preferências de UI que acompanham a sessão. */
+  function getUiStateSnapshot(): Record<string, unknown> {
+    return {
+      workspace: activeWorkspace,
+      inspector_width: inspectorWidth,
+      inspector_visible: inspectorVisible,
+      preset: currentPreset,
     };
   }
 
@@ -982,7 +1432,13 @@
     autoSaveService.configure(
       settings.autoSave,
       settings.autoSaveInterval,
-      getProjectSnapshot
+      getProjectSnapshot,
+      () => isProjectDirty,
+      {
+        getCoreProject: getCoreProjectDocument,
+        getUiState: getUiStateSnapshot,
+        getCommandLog: exportCommandLogEntries,
+      }
     );
   }
 
@@ -1076,6 +1532,18 @@
     updateLighting();
     handleOutlineChange();
     handleShadowThresholdChange();
+
+    // P0 §7.5: conecta a sessão canônica. Com núcleo, a geometria do viewport
+    // vem exclusivamente dos snapshots dele; sem núcleo (browser), o viewport
+    // anuncia autoridade indisponível e mostra a malha base sem deformação.
+    coreClient = new CoreSessionClient(await resolveCoreInvoker());
+    if (coreClient.available) {
+      await viewportRef?.requestCoreSnapshot?.(true);
+    } else {
+      console.warn(
+        "[ANIGO][Core] núcleo indisponível: viewport degradado (sem geometria canônica; nenhuma deformação local)"
+      );
+    }
 
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       try {
@@ -1200,7 +1668,11 @@
             } catch { /* inspector unmounted */ }
             inspectorCharacter = c;
             isProjectDirty = true;
-            recordHistory(`MCP: trocar modelo (${p.model_type})`);
+            recordHistory(
+              `MCP: trocar modelo (${p.model_type})`,
+              false,
+              intentCommand({ kind: "base_gender", gender: p.model_type })
+            );
           } else if (p.model_type !== undefined) {
             console.warn("[App] MCP set_character_model: invalid model_type", p.model_type);
           }
@@ -1224,7 +1696,16 @@
           } catch { /* inspector unmounted */ }
           inspectorCharacter = getAppCharacterState();
           isProjectDirty = true;
-          recordHistory("MCP: ajustar somatótipo", true);
+          recordHistory(
+            "MCP: ajustar somatótipo",
+            true,
+            intentCommand({
+              kind: "somatotype",
+              endo: somatotypeEndo,
+              meso: somatotypeMeso,
+              ecto: somatotypeEcto,
+            })
+          );
         });
 
         await listen("anigo://apply_morph_slider", (event: any) => {
@@ -1245,7 +1726,11 @@
             } catch { /* inspector unmounted */ }
             inspectorCharacter = getAppCharacterState();
             isProjectDirty = true;
-            recordHistory(`MCP: ${p.slider_id}`, true);
+            recordHistory(
+              `MCP: ${p.slider_id}`,
+              true,
+              intentCommand({ kind: "morph", slider_id: p.slider_id, value: clamped })
+            );
           }
         });
 
@@ -1257,7 +1742,7 @@
           c.activePresetId = null;
           applyCharacterState(c, { swapModel: false });
           isProjectDirty = true;
-          recordHistory("MCP: resetar morphs");
+          recordHistory("MCP: resetar morphs", false, intentCommand({ kind: "reset_morphs" }));
         });
 
         await listen("anigo://ui_action", (event: any) => {
@@ -1309,7 +1794,11 @@
     }
 
     // Initialize real background autosave engine (P0-08: dirty-gated).
-    autoSaveService.configure(true, 5, getProjectSnapshot, () => isProjectDirty);
+    autoSaveService.configure(true, 5, getProjectSnapshot, () => isProjectDirty, {
+      getCoreProject: getCoreProjectDocument,
+      getUiState: getUiStateSnapshot,
+      getCommandLog: exportCommandLogEntries,
+    });
     autoSaveService.onSaveCompleted = (_filePath: string, timeStr: string) => {
       lastAutosaveTime = timeStr;
     };
@@ -1318,17 +1807,48 @@
       alert("Falha no salvamento automático: " + String(err));
     };
 
-    // P0-08: crash-recovery — the autosave cache is now actually restored.
+    // P0 persistência: recuperação de sessão lida e validada (migrações
+    // explícitas; payload inválido é reportado em vez de descartado em silêncio).
     try {
-      const recovery = autoSaveService.readRecoveryCache();
+      const recovery = autoSaveService.recoverSession();
       let cleanAt = 0;
       try {
         cleanAt = Number(localStorage.getItem("anigo_last_clean_save") ?? 0) || 0;
       } catch { /* ignore */ }
-      if (recovery && recovery.timestamp > cleanAt) {
-        const when = new Date(recovery.timestamp).toLocaleString();
-        if (confirm(`Sessão não salva encontrada (autosave de ${when}). Deseja recuperar?`)) {
-          applySnapshot(recovery as unknown as HistoryStateSnapshot);
+      if (recovery.status === "invalid" && recovery.error) {
+        console.warn("[App] autosave cache rejeitado:", recovery.error.code, recovery.error.message);
+        alert(
+          `O autosave encontrado não pôde ser lido (${recovery.error.code}).\n` +
+            `${recovery.error.message}\n\nA sessão atual continuará; o cache foi mantido em disco.`
+        );
+      } else if (recovery.envelope && recovery.envelope.saved_at > cleanAt) {
+        const when = new Date(recovery.envelope.saved_at).toLocaleString();
+        const notes: string[] = [];
+        if (isDegradedRecovery(recovery.envelope)) {
+          notes.push("Este autosave não contém o documento canônico do núcleo (sessão de preview).");
+        }
+        if (recovery.migrations.length > 0) {
+          notes.push(`Migrações aplicadas: ${recovery.migrations.join(" → ")}.`);
+        }
+        const extra = notes.length > 0 ? `\n\n${notes.join("\n")}` : "";
+        if (confirm(`Sessão não salva encontrada (autosave de ${when}). Deseja recuperar?${extra}`)) {
+          const restoredLog = commandLogOf(recovery.envelope);
+          applySnapshot(toProjectSnapshot(recovery.envelope.session) as unknown as HistoryStateSnapshot);
+          historyService.init(getHistorySnapshot());
+          // Replay: the session comes back with its accepted commands, so undo
+          // history after the restore is the same as before the crash — and the
+          // command-backed marker keeps both stacks aligned.
+          if (restoredLog) {
+            try {
+              commandHistory.restoreLog(restoredLog);
+              historyAlignment.clear();
+              for (const entry of restoredLog.entries) {
+                historyAlignment.markAdded("command", entry.command);
+              }
+            } catch (error) {
+              console.warn("[App] log de comandos restaurado inválido:", error);
+            }
+          }
           isProjectDirty = true;
         } else {
           autoSaveService.clearRecoveryCache();
@@ -1339,7 +1859,7 @@
     }
 
     // Initialize history baseline
-    historyService.init(getHistorySnapshot());
+    resetHistories();
 
     // History stack change synchronization
     historyService.onStackChange = (canUndo, canRedo, desc) => {
@@ -1567,7 +2087,18 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Proporções Anatômicas", true);
+      const command = intentCommand({
+        kind: "proportions",
+        patch: {
+          head_scale: headScale,
+          head_ratio: headRatio,
+          shoulder_width: shoulderWidth,
+          leg_length: legLength,
+          arm_length: armLength,
+          neck_length: neckLength,
+        },
+      });
+      recordHistory("Ajustar Proporções Anatômicas", true, command);
     }
   }
 
@@ -1583,7 +2114,8 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory(`Alterar Modelo para ${presetLabels[preset]}`);
+      const command = intentCommand({ kind: "preset", preset });
+      recordHistory(`Alterar Modelo para ${presetLabels[preset]}`, false, command);
     }
   }
 
@@ -1617,7 +2149,22 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Iluminação Solar", isContinuous);
+      const command = intentCommand({
+        kind: "light",
+        patch: {
+          direction: [x, y, z],
+          intensity: lightIntensity,
+          color: [sunRgb[0], sunRgb[1], sunRgb[2]],
+          shadow_color: [
+            neutralShadowTint[0],
+            neutralShadowTint[1],
+            neutralShadowTint[2],
+          ],
+          ambient_intensity: ambientIntensity,
+          shadow_saturation: shadowSaturation,
+        },
+      });
+      recordHistory("Ajustar Iluminação Solar", isContinuous, command);
     }
   }
 
@@ -1682,7 +2229,33 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Material Toon", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: {
+          base_color: [baseRgb[0], baseRgb[1], baseRgb[2], 1.0],
+          shade_color: [shadeRgb[0], shadeRgb[1], shadeRgb[2], 1.0],
+          outline_color: [outlineRgb[0], outlineRgb[1], outlineRgb[2], 1.0],
+          specular_color: [specRgb[0], specRgb[1], specRgb[2], 1.0],
+          rim_color: [rimRgb[0], rimRgb[1], rimRgb[2], 1.0],
+          shadow_threshold: shadowThreshold,
+          shadow_smoothness: toonSmoothness,
+          spec_intensity: specIntensity,
+          spec_power: specExponent,
+          specular_softness: specSoftness,
+          specular_offset: specOffset,
+          specular_size: specularSize,
+          rim_intensity: rimIntensity,
+          rim_spread: rimSpread,
+          hue_shift: hueShift,
+          toon_steps: toonSteps,
+          outline_width: outlineWidth * 0.001,
+          outline_opacity: outlineOpacity,
+          outline_smoothness: outlineSmoothness,
+          outline_depth_bias: outlineDepthBias,
+          ao_intensity: aoIntensity,
+        },
+      });
+      recordHistory("Ajustar Material Toon", isContinuous, command);
     }
   }
 
@@ -1697,7 +2270,14 @@
     updateMaterial(false);
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Contorno Inverted Hull", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: {
+          outline_width: outlineWidth * 0.001,
+          outline_color: [outlineRgb[0], outlineRgb[1], outlineRgb[2], 1.0],
+        },
+      });
+      recordHistory("Ajustar Contorno Inverted Hull", isContinuous, command);
     }
   }
 
@@ -1708,7 +2288,11 @@
     updateMaterial(false);
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Limiar Toon Ramp", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: { shadow_threshold: shadowThreshold },
+      });
+      recordHistory("Ajustar Limiar Toon Ramp", isContinuous, command);
     }
   }
 
@@ -1719,7 +2303,11 @@
     updateMaterial(false);
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Suavidade Toon", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: { shadow_smoothness: toonSmoothness },
+      });
+      recordHistory("Ajustar Suavidade Toon", isContinuous, command);
     }
   }
 
@@ -1971,6 +2559,8 @@
           onTactileDragEnd={handleTactileDragEnd}
           tactileEnabled={activeWorkspace === "personagem" && (activeTool === "body" || activeTool === "face")}
           onModelLoadError={(msg) => alert("Erro ao carregar modelo: " + msg)}
+          onDiagnostic={handleViewportDiagnostic}
+          coreSnapshotProvider={coreSnapshotProvider}
         />
       </div>
 
@@ -2070,7 +2660,7 @@
             {viewportRef}
             onModelChange={(g) => { loadedModelGender = g; }}
             onCharacterChange={handleInspectorCharacterChange}
-            onCharacterCommit={(desc) => recordHistory(desc)}
+            onCharacterCommit={(desc) => recordHistory(desc, false, morphStateCommand())}
             onProportionsChange={handleInspectorProportionsChange}
             onError={(msg) => alert(msg)}
           />
@@ -3210,30 +3800,67 @@
           <div class="control-group">
             <div class="group-title">RESOLUÇÃO DE EXPORTAÇÃO</div>
             <div class="btn-grid">
-              <button class="btn-secondary selected">1920×1080 (FHD)</button>
-              <button class="btn-secondary">2560×1440 (2K)</button>
-              <button class="btn-secondary">3840×2160 (4K)</button>
+              {#each Object.entries(EXPORT_RESOLUTIONS) as [key, resolution] (key)}
+                <button
+                  class="btn-secondary"
+                  class:selected={exportResolution === key}
+                  onclick={() => (exportResolution = key as ExportResolution)}
+                >
+                  {resolution.label}
+                </button>
+              {/each}
             </div>
           </div>
 
           <div class="control-group">
             <div class="group-title">PASSES DE RENDERIZAÇÃO NPR</div>
-            <label class="check-row">
-              <input type="checkbox" checked />
-              <span>Beauty Toon Completo</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" checked />
-              <span>Linhas Inverted Hull Isoladas</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" />
-              <span>Pass de Sombra Flat</span>
-            </label>
+            {#each renderPasses() as pass (pass.name)}
+              <label class="check-row">
+                <input type="checkbox" checked disabled />
+                <span>
+                  {pass.name === "cel" ? "Beauty Toon Completo" : "Linhas Inverted Hull"} · {pass.shader}
+                </span>
+              </label>
+            {/each}
+            {#each computePasses() as pass (pass.name)}
+              <label class="check-row">
+                <input type="checkbox" checked disabled />
+                <span>Morphs esparsos (compute canônico) · {pass.shader}</span>
+              </label>
+            {/each}
           </div>
 
           <div class="control-group">
-            <button class="btn-action">Renderizar Imagem Atual</button>
+            <button class="btn-action" disabled={exportBusy} onclick={() => runExport("frame")}>
+              {exportBusy ? "Exportando…" : "Renderizar Imagem Atual"}
+            </button>
+            <button class="btn-secondary" disabled={exportBusy} onclick={() => runExport("glb")}>
+              Exportar GLB Canônico (malha + manifesto)
+            </button>
+          </div>
+
+          <div class="control-group">
+            <div class="group-title">RELATÓRIO DE EXPORTAÇÃO</div>
+            <p class="export-message" data-testid="export-message">{exportMessage}</p>
+            {#if exportError}
+              <p class="export-error" data-testid="export-error">{exportError}</p>
+            {/if}
+            {#if exportReport}
+              {#if exportReport.problems.length > 0}
+                <div class="export-problems">
+                  {#each exportReport.problems as problem (problem.code + problem.field)}
+                    <div class="export-problem">
+                      <code>[{problem.code}]</code>
+                      <span>{problem.field}: arquivo {problem.expected} × viewport {problem.actual}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <p class="export-checks">
+                {exportReport.checks.length} campo(s) conferido(s) contra o manifesto do núcleo{#if exportReport.skipped.length > 0},
+                  {exportReport.skipped.length} não conferível(is) neste backend: {exportReport.skipped.join("; ")}{/if}.
+              </p>
+            {/if}
           </div>
 
         {/if}
@@ -3292,6 +3919,40 @@
 
     <!-- Right: Status & Autosave (Moved here as requested!) -->
     <div class="status-right">
+      <!-- P1-02: falha de renderer/núcleo não é mais silenciosa -->
+      {#if viewportDiagnostics.degraded || lastDiagnostic}
+        <button
+          class="status-btn status-diagnostics"
+          class:status-diagnostics-error={viewportDiagnostics.degraded}
+          class:status-diagnostics-warn={!viewportDiagnostics.degraded}
+          onclick={() => (isDiagnosticsPopoverOpen = !isDiagnosticsPopoverOpen)}
+          title={lastDiagnostic
+            ? `[${lastDiagnostic.code}] ${lastDiagnostic.message}`
+            : "diagnósticos do renderer"}
+          aria-label="Diagnósticos do renderer"
+        >
+          <span class="status-label">{t("status.diagnostics")}:</span>
+          <span class="status-val">
+            {viewportDiagnostics.errors}E / {viewportDiagnostics.warnings}W
+          </span>
+        </button>
+        {#if isDiagnosticsPopoverOpen}
+          <div class="status-diagnostics-panel" role="log" aria-live="polite">
+            <strong>{t("status.diagnostics")}</strong>
+            {#each viewportRef?.getDiagnostics?.().entries ?? [] as entry (entry.code + entry.message)}
+              <div class="status-diagnostics-entry" data-severity={entry.severity}>
+                <code>[{entry.code}]</code>
+                <span>{entry.message}{entry.count > 1 ? ` (×${entry.count})` : ""}</span>
+                {#if entry.detail}<em>{entry.detail}</em>{/if}
+              </div>
+            {/each}
+            {#if viewportDiagnostics.dropped > 0}
+              <em>{viewportDiagnostics.dropped} diagnóstico(s) descartado(s) por limite</em>
+            {/if}
+          </div>
+        {/if}
+        <span class="status-sep">•</span>
+      {/if}
       <span class="status-ready">{t("status.ready")}</span>
       {#if lastAutosaveTime}
         <span class="status-sep">•</span>
@@ -3942,6 +4603,56 @@
     color: #ffffff;
   }
 
+  .btn-secondary:disabled,
+  .btn-action:disabled {
+    opacity: 0.55;
+    cursor: progress;
+  }
+
+  /* Relatório de exportação canônica (§8) — paridade viewport × manifesto. */
+  .export-message {
+    margin: 0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #cbd5e1;
+    word-break: break-word;
+  }
+
+  .export-error {
+    margin: 6px 0 0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #fca5a5;
+    word-break: break-word;
+  }
+
+  .export-problems {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .export-problem {
+    font-size: 0.68rem;
+    color: #fca5a5;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    border-radius: 4px;
+    padding: 4px 6px;
+  }
+
+  .export-problem code {
+    color: #fdba74;
+    margin-right: 4px;
+  }
+
+  .export-checks {
+    margin: 6px 0 0;
+    font-size: 0.66rem;
+    color: #94a3b8;
+  }
+
   .btn-action {
     background: #7e22ce;
     border: none;
@@ -4123,6 +4834,32 @@
 
 
   /* 4. Bottom Status Bar */
+  .status-diagnostics {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 2px 8px;
+    cursor: pointer;
+    background: transparent;
+  }
+  .status-diagnostics-error { color: #ff7b72; border-color: rgba(255, 123, 114, 0.5); }
+  .status-diagnostics-warn { color: #e3b341; border-color: rgba(227, 179, 65, 0.5); }
+  .status-diagnostics-panel {
+    position: absolute;
+    bottom: 32px;
+    right: 12px;
+    max-width: 460px;
+    max-height: 220px;
+    overflow: auto;
+    background: #171a26;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 11px;
+    z-index: 40;
+  }
+  .status-diagnostics-entry { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+  .status-diagnostics-entry[data-severity="error"] code { color: #ff7b72; }
+  .status-diagnostics-entry[data-severity="warning"] code { color: #e3b341; }
   .app-statusbar {
     height: 28px;
     margin: 0 6px 6px 6px;

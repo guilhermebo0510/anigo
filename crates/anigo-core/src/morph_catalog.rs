@@ -362,9 +362,114 @@ pub struct MeshIntegrityReport {
     pub max_bounds: [f32; 3],
 }
 
+/// Last vertex of the head/face band (`0..425`).
+const HEAD_VERTEX_END: usize = 425;
+/// Last vertex of the neck/trapezius band (`425..544`).
+const NECK_VERTEX_END: usize = 544;
+/// First vertex of the forearm band (`1912..2146`).
+const FOREARM_VERTEX_START: usize = 1912;
+/// Last vertex of the forearm band (`1912..2146`).
+const FOREARM_VERTEX_END: usize = 2146;
+
+/// Faixas anatômicas **medidas na própria malha** que as regras de delta usam
+/// como referência.
+///
+/// As bases canônicas têm alturas diferentes (masculina 1,795 m, feminina
+/// 1,655 m), então um limite *absoluto* de `y` — como `y < 1.48` para o queixo —
+/// só valia para uma delas: nove sliders faciais/trapézio ficavam inertes no
+/// masculino e o braquiorradial no feminino, e a cobertura do núcleo caía para
+/// menos de 157/157 (o payload passava a se declarar `reference_ts`).
+///
+/// As frações abaixo (mesmo princípio de `skinning::PartBounds::measure`) são
+/// invariantes de escala e de gênero: `0.0` é o queixo/limite interno e `1.0` o
+/// topo da faixa.
+#[derive(Debug, Clone, Copy)]
+pub struct DeltaBands {
+    head_y: [f32; 2],
+    neck_y: [f32; 2],
+    forearm_abs_x: [f32; 2],
+}
+
+impl DeltaBands {
+    /// Mede as faixas nas posições da malha canônica recebida.
+    pub fn measure(mesh: &Mesh) -> Self {
+        Self {
+            head_y: vertical_span(mesh, 0, HEAD_VERTEX_END),
+            neck_y: vertical_span(mesh, HEAD_VERTEX_END, NECK_VERTEX_END),
+            forearm_abs_x: absolute_x_span(mesh, FOREARM_VERTEX_START, FOREARM_VERTEX_END),
+        }
+    }
+
+    /// Fração `0..1` de `y` na faixa da cabeça (0 = queixo, 1 = topo).
+    pub fn head(&self, y: f32) -> f32 {
+        fraction_of(self.head_y, y)
+    }
+
+    /// Fração `0..1` de `y` na faixa do pescoço (0 = base, 1 = topo).
+    pub fn neck(&self, y: f32) -> f32 {
+        fraction_of(self.neck_y, y)
+    }
+
+    /// Fração `0..1` de `|x|` na faixa do antebraço (0 = lado interno, 1 = externo).
+    pub fn forearm(&self, x: f32) -> f32 {
+        fraction_of(self.forearm_abs_x, x.abs())
+    }
+}
+
+impl Default for DeltaBands {
+    fn default() -> Self {
+        Self {
+            head_y: [0.0, 1.0],
+            neck_y: [0.0, 1.0],
+            forearm_abs_x: [0.0, 1.0],
+        }
+    }
+}
+
+fn fraction_of(range: [f32; 2], value: f32) -> f32 {
+    let [min, max] = range;
+    if (max - min).abs() < 1e-6 {
+        return 0.5;
+    }
+    ((value - min) / (max - min)).clamp(0.0, 1.0)
+}
+
+/// `[min, max]` de `y` entre dois índices de vértice (fallback `0..1`).
+fn vertical_span(mesh: &Mesh, start: usize, end: usize) -> [f32; 2] {
+    let mut span = [f32::INFINITY, f32::NEG_INFINITY];
+    for vertex in mesh.vertices.iter().take(end).skip(start) {
+        let y = vertex.position[1];
+        if y.is_finite() {
+            span[0] = span[0].min(y);
+            span[1] = span[1].max(y);
+        }
+    }
+    if !span[0].is_finite() || !span[1].is_finite() || span[0] >= span[1] {
+        return [0.0, 1.0];
+    }
+    span
+}
+
+/// `[min, max]` de `|x|` entre dois índices de vértice (fallback `0..1`).
+fn absolute_x_span(mesh: &Mesh, start: usize, end: usize) -> [f32; 2] {
+    let mut span = [f32::INFINITY, f32::NEG_INFINITY];
+    for vertex in mesh.vertices.iter().take(end).skip(start) {
+        let x = vertex.position[0].abs();
+        if x.is_finite() {
+            span[0] = span[0].min(x);
+            span[1] = span[1].max(x);
+        }
+    }
+    if !span[0].is_finite() || !span[1].is_finite() || span[0] >= span[1] {
+        return [0.0, 1.0];
+    }
+    span
+}
+
 /// Generates canonical sparse morph targets for all 148 sliders tailored to the base mesh topology.
 pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
     let mut morph_set = SparseMorphSet::new();
+    let bands = DeltaBands::measure(base_mesh);
 
     // Canonical vertex ranges in the 4,070-vertex base mesh:
     // 0..425: Head & Face (center ~ y=1.60)
@@ -449,36 +554,41 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                     }
                 }
                 "jaw_v_line_taper" => {
-                    if v_idx < 425 && y < 1.56 && z > -0.02 {
-                        let taper = ((1.56 - y) * 12.0).clamp(0.0, 1.0);
+                    if v_idx < HEAD_VERTEX_END && bands.head(y) < 0.55 && z > -0.02 {
+                        let taper = ((0.55 - bands.head(y)) / 0.38).clamp(0.0, 1.0);
                         Some(([-x * 0.25 * taper, 0.0, 0.005 * taper], [-nx * 0.2, 0.0, 0.1]))
                     } else {
                         None
                     }
                 }
                 "jaw_bigonial_width" => {
-                    if v_idx < 425 && y < 1.56 && x.abs() > 0.04 {
+                    if v_idx < HEAD_VERTEX_END && bands.head(y) < 0.55 && x.abs() > 0.04 {
                         Some(([x.signum() * 0.025, 0.0, 0.0], [nx * 0.3, 0.0, 0.0]))
                     } else {
                         None
                     }
                 }
                 "chin_length" => {
-                    if v_idx < 425 && y < 1.48 {
+                    // Fração da faixa da cabeça (Medido na malha: ver `DeltaBands`).
+                    if v_idx < HEAD_VERTEX_END && bands.head(y) < 0.17 {
                         Some(([0.0, -0.020, 0.0], [0.0, -0.3, 0.0]))
                     } else {
                         None
                     }
                 }
                 "chin_forward_projection" => {
-                    if v_idx < 425 && y < 1.52 && z > 0.04 {
+                    if v_idx < HEAD_VERTEX_END && bands.head(y) < 0.36 && z > 0.04 {
                         Some(([0.0, 0.0, 0.025], [0.0, 0.0, 0.4]))
                     } else {
                         None
                     }
                 }
                 "chin_cleft_dimple" => {
-                    if v_idx < 425 && y < 1.51 && x.abs() < 0.012 && z > 0.05 {
+                    if v_idx < HEAD_VERTEX_END
+                        && bands.head(y) < 0.31
+                        && x.abs() < 0.012
+                        && z > 0.05
+                    {
                         Some(([0.0, 0.0, -0.012], [0.0, 0.0, -0.3]))
                     } else {
                         None
@@ -505,7 +615,14 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                     }
                 }
                 "lower_eyelid_aegyosal" => {
-                    if v_idx < 425 && y > 1.54 && y < 1.58 && x.abs() > 0.03 && x.abs() < 0.065 && z > 0.05 {
+                    let band = bands.head(y);
+                    if v_idx < HEAD_VERTEX_END
+                        && band > 0.45
+                        && band < 0.64
+                        && x.abs() > 0.03
+                        && x.abs() < 0.065
+                        && z > 0.05
+                    {
                         Some(([0.0, -0.002, 0.012], [0.0, -0.1, 0.4]))
                     } else {
                         None
@@ -521,7 +638,13 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                     }
                 }
                 "nose_tip_upturn" => {
-                    if v_idx < 425 && y > 1.52 && y < 1.57 && x.abs() < 0.018 && z > 0.06 {
+                    let band = bands.head(y);
+                    if v_idx < HEAD_VERTEX_END
+                        && band > 0.36
+                        && band < 0.60
+                        && x.abs() < 0.018
+                        && z > 0.06
+                    {
                         let scale = 1.0 / 25.0;
                         Some(([0.0, 0.015 * scale, 0.005 * scale], [0.0, 0.4 * scale, 0.2 * scale]))
                     } else {
@@ -529,7 +652,13 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                     }
                 }
                 "nose_tip_sharpness" => {
-                    if v_idx < 425 && y > 1.52 && y < 1.57 && x.abs() < 0.022 && z > 0.055 {
+                    let band = bands.head(y);
+                    if v_idx < HEAD_VERTEX_END
+                        && band > 0.36
+                        && band < 0.60
+                        && x.abs() < 0.022
+                        && z > 0.055
+                    {
                         Some(([-x * 0.35, 0.0, 0.012], [-nx * 0.3, 0.0, 0.3]))
                     } else {
                         None
@@ -569,7 +698,10 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                     }
                 }
                 "trapezius_bulk" => {
-                    if (425..544).contains(&v_idx) && y < 1.42 && x.abs() > 0.035 {
+                    if (HEAD_VERTEX_END..NECK_VERTEX_END).contains(&v_idx)
+                        && bands.neck(y) < 0.70
+                        && x.abs() > 0.035
+                    {
                         Some(([x.signum() * 0.020, 0.025, 0.0], [nx * 0.3, 0.4, 0.0]))
                     } else {
                         None
@@ -730,7 +862,12 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                     }
                 }
                 "forearm_brachioradialis" => {
-                    if (1912..2146).contains(&v_idx) && x.abs() > 0.25 {
+                    // Metade externa do antebraço: `0.25` absoluto só existia na
+                    // base masculina (|x| 0.212..0.288) e deixava o slider inerte
+                    // na feminina (0.172..0.228).
+                    if (FOREARM_VERTEX_START..FOREARM_VERTEX_END).contains(&v_idx)
+                        && bands.forearm(x) > 0.5
+                    {
                         Some(([x.signum() * 0.022, 0.0, 0.010], [nx * 0.3, 0.0, 0.1]))
                     } else {
                         None
@@ -775,9 +912,15 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                 }
 
                 // Default fallback for any remaining morph sliders:
+                //
+                // P0 (canonical authority): the deformation model is
+                // geometry-only, so *every* slider — including the BoneDelta
+                // ones — receives the zone fallback delta. Bone-driven sliders
+                // keep their skeletal semantics in `bone_sync.rs`; until real
+                // skinning lands (P1-04) their geometric counterpart lives here
+                // so no canonical slider is inert in the viewport/export.
                 _ => {
-                    if slider.mechanism == SliderMechanism::Morph || slider.mechanism == SliderMechanism::Dual {
-                        match slider.zone {
+                    match slider.zone {
                             AnatomicalZone::Craniofacial | AnatomicalZone::Eyes | AnatomicalZone::Nose | AnatomicalZone::MouthLips | AnatomicalZone::JawChin | AnatomicalZone::Ears | AnatomicalZone::Eyebrows => {
                                 if v_idx < 425 && z > 0.0 {
                                     Some(([nx * 0.008, ny * 0.008, nz * 0.008], [nx * 0.1, ny * 0.1, nz * 0.1]))
@@ -823,9 +966,6 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                             AnatomicalZone::GlobalSilhouette => {
                                 Some(([nx * 0.015, ny * 0.015, nz * 0.015], [nx * 0.1, ny * 0.1, nz * 0.1]))
                             }
-                        }
-                    } else {
-                        None
                     }
                 }
             };
@@ -837,6 +977,12 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
 
         morph_set.add_target(slider.id, deltas);
     }
+
+    // P1-05: nenhuma meta pode deformar posição sem normal. O catálogo canônico
+    // já traz deltas de normal; quando uma meta customizada não trouxer, o
+    // núcleo recalcula a partir da topologia e passa a entregá-la em delta —
+    // WGSL/WebGL2/headless continuam sem precisar da topologia.
+    morph_set.complete_normal_deltas(&base_mesh.vertices, &base_mesh.indices);
 
     morph_set
 }

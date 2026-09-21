@@ -121,6 +121,7 @@ export const ja_JP: Record<string, string> = {
   "status.project": "プロジェクト",
   "status.untitled": "無題.anigo",
   "status.model": "モデル",
+  "status.diagnostics": "診断",
   "status.ready": "準備完了",
   "status.autosave": "自動保存",
   "status.saved_at": "保存時刻",

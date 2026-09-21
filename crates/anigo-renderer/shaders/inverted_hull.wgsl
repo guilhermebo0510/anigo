@@ -20,6 +20,39 @@ var<uniform> camera: CameraUniform;
 @group(0) @binding(1)
 var<uniform> outline: OutlineUniform;
 
+struct BonePalette {
+    matrices: array<mat4x4<f32>, 24>,
+};
+
+@group(0) @binding(2)
+var<uniform> bones: BonePalette;
+
+// ANIGO-SKINNING-BEGIN — bloco compartilhado (byte a byte igual entre shaders; conferido por scripts/check_wgsl.mjs)
+const PALETTE_JOINT_COUNT: u32 = 24u;
+
+// Linear Blend Skinning: soma ponderada das matrizes dos ossos com peso > 0.
+// Os pesos são normalizados **aqui** (o buffer de vértice carrega o peso cru do
+// GLB), então peso total nulo (vértice sem skin) devolve a identidade em vez de
+// colapsar o vértice na origem.
+fn skin_palette(joints: vec4<u32>, weights: vec4<f32>) -> mat4x4<f32> {
+    var blend = mat4x4<f32>(0.0);
+    var total = 0.0;
+    for (var slot = 0u; slot < 4u; slot = slot + 1u) {
+        let weight = weights[slot];
+        if (weight <= 1e-6) {
+            continue;
+        }
+        let bone = min(joints[slot], PALETTE_JOINT_COUNT - 1u);
+        blend = blend + bones.matrices[bone] * weight;
+        total = total + weight;
+    }
+    if (total < 1e-5) {
+        return mat4x4<f32>(1.0);
+    }
+    return blend / total;
+}
+// ANIGO-SKINNING-END
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -41,11 +74,16 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         return out;
     }
 
-    let world_pos = camera.model * vec4<f32>(in.position, 1.0);
+    // P1-04: o contorno segue a mesma pele do cel shading (mesma paleta, mesma
+    // função) — sem isto o hull ficaria na pose de repouso.
+    let skin = skin_palette(in.joints, in.weights);
+    let skinned_position = (skin * vec4<f32>(in.position, 1.0)).xyz;
+    let skinned_normal = (skin * vec4<f32>(in.normal, 0.0)).xyz;
+    let world_pos = camera.model * vec4<f32>(skinned_position, 1.0);
     var clip_pos = camera.view_proj * world_pos;
 
     // Extrusion along normal in clip space — P2-01 depth bias calibrated, scaled by distance (clip_pos.w) to maintain constant screen thickness
-    let world_n = normalize((camera.normal_mat * vec4<f32>(in.normal, 0.0)).xyz);
+    let world_n = normalize((camera.normal_mat * vec4<f32>(skinned_normal, 0.0)).xyz);
     let normal_vec4 = camera.view_proj * vec4<f32>(world_n, 0.0); // P2-14 world normal
     let len = length(normal_vec4.xy);
     let normal_clip = select(vec2<f32>(0.0, 0.0), normal_vec4.xy / len, len > 1e-5);

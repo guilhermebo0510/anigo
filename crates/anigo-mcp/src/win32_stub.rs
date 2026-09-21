@@ -16,6 +16,9 @@ pub struct RECT {
 pub struct Win32Harness;
 
 impl Win32Harness {
+    /// No-op fora do Windows: existe para a API do harness ser a mesma nos dois
+    /// `cfg` (no Windows prende o processo ao desktop interativo da sessão).
+    #[allow(dead_code)]
     pub fn attach_interactive_desktop() {}
 
     pub fn find_anigo_window() -> Result<(*mut std::ffi::c_void, String, RECT, bool)> {

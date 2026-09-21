@@ -10,14 +10,21 @@
     "tauri": "tauri",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint src --ext .ts,.svelte || true",
-    "test": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/character/*.test.ts\" \"tests/e2e/*.test.ts\""
+    "test": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/character/*.test.ts\" \"tests/contracts/*.test.ts\" \"tests/persistence/*.test.ts\" \"tests/e2e/*.test.ts\"",
+    "test:contracts": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/contracts/*.test.ts\"",
+    "check:rust": "node scripts/check_rust_syntax.mjs && node scripts/audit_calls.mjs",
+    "test:persistence": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/persistence/*.test.ts\"",
+    "fixtures:check": "node scripts/gen_contract_fixtures.mjs --check",
+    "check:wgsl": "node scripts/check_wgsl.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tauri-apps/cli": "^2.1.0",
     "svelte": "^5.2.7",
+    "tree-sitter-wasms": "^0.1.11",
     "typescript": "^5.7.2",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "web-tree-sitter": "^0.22.6"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1"

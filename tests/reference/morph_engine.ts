@@ -1,22 +1,24 @@
 /**
- * ANIGO Studio — Pure Morph Deformation Engine (P0-04 / P0-05 / P0-06)
+ * ANIGO Studio — Reference morph deformation engine (TEST-ONLY).
  *
- * Data-driven generic deformation for EVERY catalog slider, so that no
- * slider exposed in the UI is ever inert (audit P0-04). Sliders with
- * hand-authored anatomical math keep it (EXPLICIT set); all others receive
- * a deterministic, zone-masked, per-slider-distinct procedural delta.
+ * P0 §7.4 removed this engine from production: the canonical deformation lives
+ * in the Rust core (`crates/anigo-core/src/{deformation,morph_catalog}.rs`) and
+ * reaches the viewport as a core snapshot. This file is kept **exclusively** as
+ * the reference oracle for contract tests — the parity between the Rust core and
+ * this implementation is what the P0 tests assert.
  *
- * Also hosts the pure sparse-morph-set builder + normal recomputation used
- * by the WebGPU compute path (P0-05) and its CPU fallback (P0-06).
+ * It must never be imported by `src/**`: the P0 contract tests fail if a
+ * production module imports it (ARQUITETURA §2.2 / §4.1).
  *
  * Pure TypeScript — no DOM/WebGPU — unit-tested under Node.
  */
 
-import type { MorphSlider } from "./morph_catalog";
+import type { MorphSlider } from "../../src/services/morph_catalog";
 
 // ---------------------------------------------------------------------------
-// Explicit (hand-authored) slider ids — must match the ids consumed by
-// WebGpuViewportRenderer.applyAnatomicalDeformations(). Single source.
+// Explicit (hand-authored) slider ids of the reference engine. The Rust core
+// covers the whole catalog, so this set only documents which sliders the
+// reference oracle implements with hand-authored math.
 // ---------------------------------------------------------------------------
 
 export const EXPLICIT_TS_MORPH_IDS: ReadonlySet<string> = new Set([
