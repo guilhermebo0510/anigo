@@ -957,10 +957,12 @@ impl Command {
                         });
                     }
                 }
-                state.character.active_preset_id = Some(match gender {
-                    BaseGender::Male => "mannequin_male".to_string(),
-                    BaseGender::Female => "mannequin_female".to_string(),
-                });
+                // NOTE: `active_preset_id` is intentionally NOT mutated here. It is
+                // a higher-level concept (which preset is loaded) that this
+                // low-level geometry command cannot restore on undo, so writing
+                // it would break the "undo reproduces the exact prior state"
+                // invariant of the history. Loading a preset is the caller's
+                // responsibility if they want the id updated.
                 Ok(())
             }
             Command::SetSomatotype {
@@ -1131,14 +1133,9 @@ impl Command {
                     // Sparse morph channels exist only for the canonical base.
                     state.character.morph_values.clear();
                 }
-                state.character.active_preset_id = Some(match preset {
-                    MeshPreset::Cube => "cube".to_string(),
-                    MeshPreset::Sphere => "sphere".to_string(),
-                    MeshPreset::Mannequin => match gender {
-                        BaseGender::Male => "mannequin_male".to_string(),
-                        BaseGender::Female => "mannequin_female".to_string(),
-                    },
-                });
+                // `active_preset_id` is intentionally left untouched: this
+                // command's inverse (`SetNodeMesh` + `SetBaseGender`) cannot
+                // restore it, so mutating it here would make undo asymmetric.
                 Ok(())
             }
             Command::SetBackgroundColor { color } => {
@@ -1812,6 +1809,13 @@ mod tests {
             },
             Command::RenameProject {
                 name: "Projeto de Teste".to_string(),
+            },
+            // Regression guard for the undo-involution fix: switching the base
+            // gender must round-trip exactly. Its inverse is `SetBaseGender`
+            // with the previous gender, which now leaves `active_preset_id`
+            // untouched — so undo reproduces the prior state byte for byte.
+            Command::SetBaseGender {
+                gender: BaseGender::Female,
             },
         ];
 
