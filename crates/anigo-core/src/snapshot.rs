@@ -37,7 +37,7 @@ use crate::ids::{AssetId, CharacterId, LightId, MaterialId, MorphId, ProjectId};
 use crate::bone_sync::BondSyncManager;
 use crate::mesh::{BaseGender, Mesh, Vertex};
 use crate::morph::SparseMorphSet;
-use crate::morph_catalog::{find_slider_def, ALL_MORPH_SLIDERS};
+use crate::morph_catalog::ALL_MORPH_SLIDERS;
 use crate::project::{ColorManagement, ProjectState, RenderState, TonemapOperator};
 use crate::scene::StylizedLight;
 use crate::somatotype::SomatotypeCoords;

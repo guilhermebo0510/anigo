@@ -1098,9 +1098,12 @@ impl ProjectState {
     /// Same as [`ProjectState::from_json`] for an already parsed value.
     pub fn from_value(value: Value) -> Result<Self, ProjectError> {
         let migrated = Self::migrate_value(value)?;
-        let project: ProjectState = serde_json::from_value(migrated)
-            .map_err(|e| ProjectError::Json(e.to_string()))?
-            .sanitize();
+        // O tipo do `from_value` precisa ser explícito: com `.sanitize()` no
+        // encadeamento o parâmetro `T` fica ambíguo (E0282) — o alvo do `let`
+        // não o restringe, porque quem define a saída é o método.
+        let parsed: ProjectState = serde_json::from_value(migrated)
+            .map_err(|e| ProjectError::Json(e.to_string()))?;
+        let project = parsed.sanitize();
         project.validate()?;
         Ok(project)
     }
