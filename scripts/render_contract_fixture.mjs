@@ -335,6 +335,10 @@ export function renderContractFixture() {
         { code: "unexpected_error", severity: "error" },
         { code: "contract_drift", severity: "error" },
         { code: "device_unavailable", severity: "error" },
+        // Issue #11: perda de device é interceptada (warning) e a recriação do
+        // device é registrada (info) — o mesmo canal MPSC que o Rust drena.
+        { code: "device_lost", severity: "warning" },
+        { code: "device_recreated", severity: "info" },
         { code: "shader_compile_failed", severity: "error" },
         { code: "buffer_creation_failed", severity: "error" },
         { code: "readback_failed", severity: "error" },

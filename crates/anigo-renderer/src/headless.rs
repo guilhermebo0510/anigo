@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Vertex};
 use crate::diagnostics;
+use crate::device_recovery::{DeviceRecreationReport, PresentationMode, UncapturedErrorBus};
 use crate::mesh_validation;
 use crate::render_contract as contract;
 use crate::uniforms::{
@@ -45,10 +46,29 @@ fn bone_palette_uniform(scene: &Scene) -> BonePaletteUniform {
     BonePaletteUniform::from_floats(&scene.skin.palette)
 }
 
+/// Issue #11: recursos GPU persistentes pertencentes ao device — recriáveis
+/// como um bloco inteiro por `recreate_device_and_swapchain` (reinstanciação
+/// dos PSOs + re-alocação dos buffers essenciais a partir do contrato
+/// canônico, a mesma fonte do snapshot do núcleo).
+struct DeviceResources {
+    cel_pipeline: wgpu::RenderPipeline,
+    outline_pipeline: wgpu::RenderPipeline,
+    cel_bind_group_layout: wgpu::BindGroupLayout,
+    outline_bind_group_layout: wgpu::BindGroupLayout,
+    morph_compute_pipeline: wgpu::ComputePipeline,
+    morph_bind_group_layout: wgpu::BindGroupLayout,
+    toon_ramp_view: wgpu::TextureView,
+    toon_ramp_sampler: wgpu::Sampler,
+}
+
 pub struct HeadlessRenderer {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub adapter_info: wgpu::AdapterInfo,
+    /// Issue #11: canal MPSC `on_uncaptured_error` → módulo de diagnósticos.
+    error_bus: UncapturedErrorBus,
+    /// Issue #11: modo de apresentação explícito (Fifo/Immediate/Mailbox).
+    presentation_mode: PresentationMode,
     cel_pipeline: wgpu::RenderPipeline,
     outline_pipeline: wgpu::RenderPipeline,
     cel_bind_group_layout: wgpu::BindGroupLayout,
@@ -63,11 +83,18 @@ pub struct HeadlessRenderer {
 }
 
 impl HeadlessRenderer {
-    pub async fn new() -> Result<Self> {
-        // P1-02: um contrato em drift aparece na telemetria antes de qualquer
-        // coisa ser criada (o resto do quadro fica suspeito).
-        diagnostics::report_contract_health();
-
+    /// Solicita um novo adapter + device com os mesmos guardas da criação
+    /// inicial (P1-01/P1-02: um pânico do wgpu em runner headless vira
+    /// diagnóstico `device_unavailable`, nunca crash de processo).
+    ///
+    /// Reutilizado por [`Self::recreate_device_and_swapchain`] (issue #11):
+    /// perda de GPU, troca dedicada/integrada ou suspensão do SO passam pela
+    /// mesma rota, com o mesmo tratamento observável.
+    async fn request_device() -> Result<(
+        Arc<wgpu::Device>,
+        Arc<wgpu::Queue>,
+        wgpu::AdapterInfo,
+    )> {
         let instance = match std::panic::catch_unwind(|| {
             wgpu::Instance::new(&wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::all(),
@@ -84,15 +111,9 @@ impl HeadlessRenderer {
             }
         };
 
-        // P1-01/P1-02: falha de ambiente vira diagnóstico observável (com código)
-        // antes de virar `anyhow::Error`.
-        //
-        // Além do caminho `None`, o wgpu 24 aborta com um pânico **cru** (sem
-        // mensagem) quando o runner não tem backend utilizável — é o caso do CI.
-        // Um pânico aqui seria um crash de ambiente, e é exatamente o que
-        // P1-01/P1-02 mandam transformar em diagnóstico observável: o guarda
-        // converte o pânico no mesmo `device_unavailable`, e os testes de GPU se
-        // pulam pelo caminho de erro que já existe (`if let Ok(renderer) = …`).
+        // P1-01/P1-02: além do caminho `None`, o wgpu 24 aborta com um pânico
+        // **cru** (sem mensagem) quando o runner não tem backend utilizável.
+        // O guarda converte o pânico no mesmo `device_unavailable`.
         let requested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -136,9 +157,20 @@ impl HeadlessRenderer {
             }
         };
 
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
+        Ok((Arc::new(device), Arc::new(queue), adapter_info))
+    }
 
+    /// Constrói todos os recursos GPU persistentes (toon ramp, shader modules,
+    /// bind group layouts e pipelines) em um device.
+    ///
+    /// Issue #11: estar desacoplado da solicitação do device é o que permite a
+    /// `recreate_device_and_swapchain` reinstanciar os PSOs e re-alocar os
+    /// buffers essenciais a partir do snapshot canônico — bytes de shader e
+    /// layout vêm do contrato (a mesma fonte que o núcleo serializa).
+    fn build_device_resources(
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+    ) -> Result<DeviceResources> {
         // Toon Ramp 2D (256x4): bytes e sampler vêm do render contract, então a
         // textura do headless é a mesma do viewport por construção.
         let ramp_spec = contract::toon_ramp_spec();
@@ -214,8 +246,6 @@ impl HeadlessRenderer {
         // P1-04: o binding da paleta de skinning vem do contrato (5 no cel, 2 no
         // outline). Se o contrato trocar o número, o layout e o WGSL mudam juntos
         // — o que não pode é o headless fixar um literal.
-        let cel_skin_binding = contract::skinning_binding("cel").unwrap_or(5);
-        let outline_skin_binding = contract::skinning_binding("outline").unwrap_or(2);
         let skin_min_binding = wgpu::BufferSize::new(contract::skinning_palette_bytes() as u64);
 
         // Cel Bind Group Layout (Camera, Light, Material, ToonRampTexture, ToonRampSampler, Bones)
@@ -267,7 +297,7 @@ impl HeadlessRenderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: cel_skin_binding,
+                    binding: contract::skinning_binding("cel").unwrap_or(5),
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -305,7 +335,7 @@ impl HeadlessRenderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: outline_skin_binding,
+                    binding: contract::skinning_binding("outline").unwrap_or(2),
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -519,21 +549,127 @@ impl HeadlessRenderer {
             cache: None,
         });
 
-        Ok(Self {
-            device,
-            queue,
-            adapter_info,
+        Ok(DeviceResources {
             cel_pipeline,
             outline_pipeline,
             cel_bind_group_layout,
             outline_bind_group_layout,
-            cel_skin_binding,
-            outline_skin_binding,
             morph_compute_pipeline,
             morph_bind_group_layout,
             toon_ramp_view,
             toon_ramp_sampler,
         })
+    }
+
+    pub async fn new() -> Result<Self> {
+        // P1-02: um contrato em drift aparece na telemetria antes de qualquer
+        // coisa ser criada (o resto do quadro fica suspeito).
+        diagnostics::report_contract_health();
+
+        let (device, queue, adapter_info) = Self::request_device().await?;
+
+        // Issue #11: erros `on_uncaptured_error` são interceptados pelo canal
+        // MPSC estruturado (nada de pânico no caminho crítico); o dreno para o
+        // módulo de diagnósticos acontece a cada quadro, no `render_scene`.
+        let error_bus = UncapturedErrorBus::new();
+        error_bus.install_on(&device);
+
+        // P1-04: o binding da paleta de skinning vem do contrato (5 no cel, 2 no
+        // outline) — contrato e WGSL mudam juntos, nunca um literal solto.
+        let cel_skin_binding = contract::skinning_binding("cel").unwrap_or(5);
+        let outline_skin_binding = contract::skinning_binding("outline").unwrap_or(2);
+
+        let resources = Self::build_device_resources(&device, &queue)?;
+
+        Ok(Self {
+            device,
+            queue,
+            adapter_info,
+            error_bus,
+            presentation_mode: PresentationMode::Fifo,
+            cel_pipeline: resources.cel_pipeline,
+            outline_pipeline: resources.outline_pipeline,
+            cel_bind_group_layout: resources.cel_bind_group_layout,
+            outline_bind_group_layout: resources.outline_bind_group_layout,
+            cel_skin_binding,
+            outline_skin_binding,
+            morph_compute_pipeline: resources.morph_compute_pipeline,
+            morph_bind_group_layout: resources.morph_bind_group_layout,
+            toon_ramp_view: resources.toon_ramp_view,
+            toon_ramp_sampler: resources.toon_ramp_sampler,
+        })
+    }
+
+    /// Issue #11 — recuperação de perda de device (device lost / crash recovery).
+    ///
+    /// Re-solicita adapter e device, reinstancia os PSOs e re-aloca os buffers
+    /// essenciais a partir do snapshot canônico (contrato de render + shaders
+    /// embutidos: a mesma fonte do estado serializado pelo núcleo). O estado do
+    /// personagem — morphs, transforms, materiais — vive no `ProjectState` e
+    /// desce novamente pela `Scene` no próximo `render_scene`, então a
+    /// recuperação não perde nenhum dado do usuário.
+    ///
+    /// Chamada pelo Tauri quando um frame falha e pelo teste de falha forçada
+    /// (aceitação #1: sem crash do processo).
+    pub async fn recreate_device_and_swapchain(&mut self) -> Result<DeviceRecreationReport> {
+        let started = Instant::now();
+        let previous_adapter = self.adapter_info.name.clone();
+        self.error_bus.drain_to_diagnostics();
+        diagnostics::report_with_detail(
+            "device_lost",
+            "recriando device wgpu e pipelines gráficos",
+            Some(format!("adapter anterior: {previous_adapter}")),
+        );
+
+        let (device, queue, adapter_info) = Self::request_device().await?;
+        self.error_bus.install_on(&device);
+        let resources = Self::build_device_resources(&device, &queue)?;
+
+        self.device = device;
+        self.queue = queue;
+        self.adapter_info = adapter_info.clone();
+        self.cel_pipeline = resources.cel_pipeline;
+        self.outline_pipeline = resources.outline_pipeline;
+        self.cel_bind_group_layout = resources.cel_bind_group_layout;
+        self.outline_bind_group_layout = resources.outline_bind_group_layout;
+        self.morph_compute_pipeline = resources.morph_compute_pipeline;
+        self.morph_bind_group_layout = resources.morph_bind_group_layout;
+        self.toon_ramp_view = resources.toon_ramp_view;
+        self.toon_ramp_sampler = resources.toon_ramp_sampler;
+
+        let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+        diagnostics::report_with_detail(
+            "device_recreated",
+            "device recriado; estado do personagem reapresentado a partir do snapshot canônico",
+            Some(format!("adapter: {} em {duration_ms:.1} ms", adapter_info.name)),
+        );
+
+        Ok(DeviceRecreationReport {
+            adapter_name: adapter_info.name,
+            backend: format!("{:?}", adapter_info.backend),
+            duration_ms,
+        })
+    }
+
+    /// Issue #11: modo de apresentação explícito (`Fifo` = VSync ligado,
+    /// `Immediate` = menor latência, `Mailbox` quando suportado pela GPU).
+    ///
+    /// O headless renderiza offscreen (sem surface), então o modo é parte do
+    /// contrato de device — propagado ao status/telemetria e espelhado pelo
+    /// viewport TypeScript, que é quem efetivamente configura o `presentMode`.
+    pub fn set_presentation_mode(&mut self, mode: PresentationMode) {
+        self.presentation_mode = mode;
+    }
+
+    /// Modo de apresentação configurado (status/telemetria).
+    pub fn presentation_mode(&self) -> PresentationMode {
+        self.presentation_mode
+    }
+
+    /// Drena o canal MPSC de erros de device para o módulo de diagnósticos
+    /// (uma vez por quadro: o callback do wgpu só `send` no canal).
+    fn drain_device_errors(&self) {
+        self.error_bus.drain_to_diagnostics();
     }
 
     /// Dispatches the sparse morph compute pass directly into an active command encoder.
@@ -702,6 +838,7 @@ impl HeadlessRenderer {
         height: u32,
     ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
         let start_time = Instant::now();
+        self.drain_device_errors();
 
         // 1. Setup Render Target and Depth Texture (formato/MSAA do contrato)
         let color_format = contract::offscreen_color_format();
@@ -1116,6 +1253,7 @@ impl HeadlessRenderer {
         height: u32,
     ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
         let start_time = Instant::now();
+        self.drain_device_errors();
 
         // 1. Setup Render Target and Depth Texture (formato/MSAA do contrato)
         let color_format = contract::offscreen_color_format();
@@ -1753,6 +1891,55 @@ mod tests {
                 assert_eq!(metrics.draw_calls, 2);
                 assert_eq!(metrics.triangle_count, 12);
             }
+        });
+    }
+
+    #[test]
+    fn test_headless_recreate_device_and_swapchain_restores_rendering() {
+        // Issue #11, aceitações #1 e #2: falha forçada de device não provaca
+        // crash, e o estado (Scene do snapshot canônico) é reapresentado nos
+        // novos buffers após `recreate_device_and_swapchain`.
+        let _guard = crate::diagnostics::test_guard();
+        pollster::block_on(async {
+            let created = HeadlessRenderer::new().await;
+            if created.is_err() {
+                // Sem adaptador no ambiente: o caminho de erro já é coberto
+                // pelos demais testes (skipped por design no CI sem GPU).
+                return;
+            }
+            let mut renderer = created.unwrap();
+            renderer.set_presentation_mode(crate::device_recovery::PresentationMode::Fifo);
+
+            // Falha forçada entra pelo MESMO canal MPSC do callback
+            // `on_uncaptured_error` (sem device para provocar de verdade).
+            renderer.error_bus.inject(
+                crate::device_recovery::UncapturedErrorRecord::device_lost(
+                    "driver crash simulado (issue #11)",
+                ),
+            );
+            assert_eq!(renderer.error_bus.pending(), 1);
+
+            let report = renderer
+                .recreate_device_and_swapchain()
+                .await
+                .expect("recreate_device_and_swapchain deve re-solicitar adapter/device");
+            assert!(!report.adapter_name.is_empty());
+            assert!(report.duration_ms >= 0.0);
+
+            // O canal foi drenado para os diagnósticos (código estável).
+            let summary = crate::diagnostics::summary();
+            assert!(summary.codes.contains(&"device_lost".to_string()));
+            assert!(summary.codes.contains(&"device_recreated".to_string()));
+
+            // Aceitação #2: o personagem (Scene do snapshot) renderiza de novo
+            // nos buffers re-alocados.
+            let scene = Scene::default();
+            let (img, metrics) = renderer
+                .render_scene(&scene, 64, 64)
+                .await
+                .expect("render após recriação deve recuperar o estado");
+            assert_eq!(img.width(), 64);
+            assert!(metrics.draw_calls >= 1);
         });
     }
 }

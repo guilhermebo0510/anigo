@@ -66,6 +66,10 @@ import fsCel from "../../../crates/anigo-renderer/shaders/webgl2_fallback/cel_fr
 import vsOutline from "../../../crates/anigo-renderer/shaders/webgl2_fallback/outline_vertex.glsl?raw";
 // @ts-ignore - Vite ?raw import
 import fsOutline from "../../../crates/anigo-renderer/shaders/webgl2_fallback/outline_fragment.glsl?raw";
+// Issue #11: calendário de reconexão após perda de device — o mesmo
+// `ReconnectSchedule::default` do Rust (`device_recovery.rs`): 500ms, 1s, 2s.
+const DEVICE_RECONNECT_DELAYS_MS = [500, 1000, 2000] as const;
+
 // P0 renderer: todo o estado de pipeline (passes, MSAA, formatos, blend, depth,
 // uniforms e toon ramp) vem do contrato congelado — não existem literais de
 // renderização espalhados neste arquivo.
@@ -352,6 +356,30 @@ export class WebGpuViewportRenderer {
   private wasPausedByVisibility: boolean = false;
   public onMetricsUpdate?: (metrics: ViewportMetrics) => void;
 
+  // Issue #11: tolerância a falhas e recuperação de perda de device WebGPU.
+  // A queda é interceptada no listener da Promise `device.lost`: queda
+  // esperada (`reason === "destroyed"`) só registra; crash (`"unknown"` /
+  // `"connection_lost"`) dispara reconexão automática com backoff exponencial
+  // (500ms → 1s → 2s) e overlay, em vez de travar a UI.
+  private destroyed: boolean = false;
+  private deviceLostHandlerInstalled: boolean = false;
+  private reconnecting: boolean = false;
+  private reconnectOverlay: HTMLDivElement | null = null;
+  /**
+   * Issue #11: modo de apresentação explícito — `fifo` (VSync ligado),
+   * `immediate` (menor latência) e `mailbox` (quando suportado pela GPU).
+   */
+  private presentMode: "fifo" | "immediate" | "mailbox" = "fifo";
+  /**
+   * Issue #11, aceitação #3: notificação de recuperação para a UI (rodapé) —
+   * eventos + tempo de recuperação, espelhando `DeviceRecreationReport` do Rust.
+   */
+  public onDeviceRecovery?: (info: {
+    attempts: number;
+    elapsedMs: number;
+    expected: boolean;
+  }) => void;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
   }
@@ -374,39 +402,21 @@ export class WebGpuViewportRenderer {
         });
         if (this.adapter) {
           this.device = await this.adapter.requestDevice();
-          this.context = this.canvas.getContext("webgpu");
+            this.context = this.canvas.getContext("webgpu");
           if (this.context) {
             this.format = navigator.gpu.getPreferredCanvasFormat();
             this.context.configure({
               device: this.device,
               format: this.format,
               alphaMode: "premultiplied",
-              presentMode: this.vsyncEnabled ? "fifo" : "immediate",
+              // Issue #11: modo de apresentação explícito (Fifo/Immediate/Mailbox).
+              presentMode: this.getPresentMode(),
             });
 
             // P0-06: observe GPU validation errors (was silent black screen)
-            try {
-              (this.device as any).addEventListener?.("uncapturederror", (e: any) => {
-                this.report("gpu_device_error", "erro não capturado do device WebGPU", {
-                  detail: String(e?.error?.message ?? e?.error ?? e ?? "uncaptured"),
-                });
-                // surface as observable metric fallback
-                this.onMetricsUpdate?.({
-                  fps: 0,
-                  frameTimeMs: 0,
-                  triangles: Math.floor(this.indexCount/3),
-                  drawCalls: 0,
-                  adapterName: "GPU Error: " + (e?.error?.message || "uncaptured"),
-                  backend: "WebGPU-Error",
-                } as any);
-              });
-              // push validation scope to surface pipeline errors
-              (this.device as any).pushErrorScope?.("validation");
-            } catch (e) {
-              this.report("gpu_device_error", "não foi possível instalar o observador de erros da GPU", {
-                detail: e instanceof Error ? e.message : String(e),
-              });
-            }
+            this.installDeviceErrorObservers();
+            // Issue #11: listener da Promise `device.lost` (recuperação de crash).
+            this.installDeviceLostHandler();
 
             this.buildShadersAndPipelines();
             this.buildGeometryBuffers();
@@ -593,6 +603,234 @@ export class WebGpuViewportRenderer {
         detail: e instanceof Error ? e.message : String(e),
       });
     }
+  }
+
+  // ==========================================
+  // Issue #11 — Tolerância a falhas e recuperação de device
+  // ==========================================
+
+  private sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Modo de apresentação em vigor (Fifo = VSync ligado). */
+  private getPresentMode(): "fifo" | "immediate" | "mailbox" {
+    return this.presentMode;
+  }
+
+  /**
+   * Issue #11: configuração explícita do modo de apresentação — `fifo`
+   * (VSync ligado), `immediate` (menor latência) e `mailbox` (quando a GPU
+   * suporta; o driver resolve o fallback). Reconfigura o contexto ativo.
+   * Devolve `false` quando o modo é inválido.
+   */
+  public setPresentMode(mode: "fifo" | "immediate" | "mailbox"): boolean {
+    if (mode !== "fifo" && mode !== "immediate" && mode !== "mailbox") return false;
+    this.presentMode = mode;
+    this.vsyncEnabled = mode === "fifo";
+    if (this.device && this.context) {
+      try {
+        // O TS 5.7 ainda não declara `presentMode` em `GPUCanvasConfiguration`.
+        (this.context as any).configure({
+          device: this.device,
+          format: this.format,
+          alphaMode: "premultiplied",
+          presentMode: mode,
+        });
+        return true;
+      } catch (e) {
+        this.report("context_configure_failed", "não foi possível aplicar o modo de apresentação pedido", {
+          detail: e instanceof Error ? e.message : String(e),
+        });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Observadores de erro do device (P0-06), instaláveis após cada recriação. */
+  private installDeviceErrorObservers(): void {
+    if (!this.device) return;
+    try {
+      (this.device as any).addEventListener?.("uncapturederror", (e: any) => {
+        this.report("gpu_device_error", "erro não capturado do device WebGPU", {
+          detail: String(e?.error?.message ?? e?.error ?? e ?? "uncaptured"),
+        });
+        // surface as observable metric fallback
+        this.onMetricsUpdate?.({
+          fps: 0,
+          frameTimeMs: 0,
+          triangles: Math.floor(this.indexCount/3),
+          drawCalls: 0,
+          adapterName: "GPU Error: " + (e?.error?.message || "uncaptured"),
+          backend: "WebGPU-Error",
+        } as any);
+      });
+      // push validation scope to surface pipeline errors
+      (this.device as any).pushErrorScope?.("validation");
+    } catch (e) {
+      this.report("gpu_device_error", "não foi possível instalar o observador de erros da GPU", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /**
+   * Issue #11: listener da Promise `device.lost`.
+   *
+   * Diferencia queda esperada (`reason === "destroyed"` — o nosso próprio
+   * `destroy()`) de crash (`reason === "unknown"` / `"connection_lost"`):
+   * a primeira só registra; a segunda reconecta com backoff exponencial.
+   */
+  private installDeviceLostHandler(): void {
+    if (!this.device || this.deviceLostHandlerInstalled) return;
+    this.deviceLostHandlerInstalled = true;
+    const device = this.device;
+    const lost = (device as any).lost as Promise<{ reason?: string; message?: string } | undefined> | undefined;
+    if (typeof lost?.then !== "function") return;
+    void lost.then((info) => {
+      void this.handleDeviceLost(info?.reason ?? "unknown", info?.message);
+    });
+  }
+
+  /** Handler central de perda de device (issue #11). */
+  private async handleDeviceLost(reason: string, message?: string): Promise<void> {
+    if (this.destroyed || this.reconnecting) return;
+
+    // Queda esperada: quem encerrou foi o próprio renderer (destroy) — sem
+    // reconexão, apenas registro observável (mesmo canal de diagnóstico).
+    if (reason === "destroyed") {
+      this.report("device_lost", "device WebGPU encerrado (esperado — destroy)", {
+        detail: message ?? "destroyed",
+      });
+      return;
+    }
+
+    // Crash (unknown/connection_lost): reconexão automática com backoff
+    // exponcial (500ms → 1s → 2s) e overlay — a UI nunca trava.
+    this.isPaused = true;
+    this.reconnecting = true;
+    this.report("device_lost", "device WebGPU perdido — reconexão automática em andamento", {
+      detail: message ?? reason,
+    });
+    this.showReconnectOverlay(1);
+    const startedAt = performance.now();
+
+    for (let attempt = 0; attempt < DEVICE_RECONNECT_DELAYS_MS.length; attempt++) {
+      await this.sleepMs(DEVICE_RECONNECT_DELAYS_MS[attempt]);
+      if (this.destroyed) {
+        this.reconnecting = false;
+        return;
+      }
+      try {
+        await this.rebuildWebGpuDevice();
+        const elapsedMs = performance.now() - startedAt;
+        this.hideReconnectOverlay();
+        this.reconnecting = false;
+        this.deviceLostHandlerInstalled = false;
+        this.isPaused = false;
+        this.lastFrameTimestamp = performance.now();
+        this.report("device_recreated", `device WebGPU recuperado (tentativa ${attempt + 1})`, {
+          detail: `recuperação em ${elapsedMs.toFixed(0)} ms`,
+        });
+        // Aceitação #3: notificação informativa com evento + tempo de recuperação.
+        this.onDeviceRecovery?.({ attempts: attempt + 1, elapsedMs, expected: false });
+        return;
+      } catch (e) {
+        this.showReconnectOverlay(attempt + 2);
+        this.report("device_lost", `tentativa ${attempt + 1} de reconexão falhou`, {
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    // Calendário esgotado: degradação observável, sem crash.
+    this.reconnecting = false;
+    this.hideReconnectOverlay();
+    this.report("device_unavailable", "reconexão automática WebGPU falhou (3 tentativas)", {
+      detail: "verifique driver/GPU manualmente — o viewport segue no último quadro válido",
+    });
+  }
+
+  /**
+   * Re-solicita adapter + device, reconfigura o canvas e re-aloca todos os
+   * buffers/pipelines (aceitação #2: estado do personagem reapresentado nos
+   * novos buffers — a geometria vem do snapshot canônico do núcleo).
+   */
+  private async rebuildWebGpuDevice(): Promise<void> {
+    if (typeof navigator === "undefined" || !navigator.gpu) {
+      throw new Error("WebGPU indisponível para a reconexão");
+    }
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) throw new Error("nenhum adaptador para a reconexão");
+    const device = await adapter.requestDevice();
+
+    this.adapter = adapter as any;
+    this.device = device;
+    this.installDeviceErrorObservers();
+    this.installDeviceLostHandler();
+
+    const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
+    if (!context) throw new Error("contexto do canvas indisponível após a perda do device");
+    this.context = context;
+    this.format = navigator.gpu.getPreferredCanvasFormat();
+    // O TS 5.7 ainda não declara `presentMode` em `GPUCanvasConfiguration` —
+    // o mesmo padrão de cast pontual que o restante do arquivo usa.
+    (context as any).configure({
+      device,
+      format: this.format,
+      alphaMode: "premultiplied",
+      presentMode: this.getPresentMode(),
+    });
+
+    // PSOs e buffers essenciais re-alocados no device novo.
+    this.buildShadersAndPipelines();
+    this.buildGeometryBuffers();
+    this.buildUniformBuffers();
+
+    // Estado do personagem: a geometria canônica (morphs, pesos, paleta de
+    // skinning) desce de novo pelos buffers novos — nada é recalculado aqui.
+    if (this.coreGeometry) {
+      this.uploadCoreGeometry(this.coreGeometry);
+    } else {
+      // Modo degradado: os handles de morph do device morto não servem mais.
+      this.morphBindGroup = null;
+      this.gpuMorphActive = false;
+      this.gpuMorphDirty = false;
+    }
+
+    const w = this.canvas.clientWidth > 50 ? this.canvas.clientWidth : this.cssWidth;
+    const h = this.canvas.clientHeight > 50 ? this.canvas.clientHeight : this.cssHeight;
+    this.resize(w, h);
+    this.backend = "webgpu";
+  }
+
+  /** Overlay de reconexão (a UI nunca trava: o canvas segue o último quadro). */
+  private showReconnectOverlay(nextAttempt: number): void {
+    this.hideReconnectOverlay();
+    try {
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
+        "background:rgba(26,29,46,0.82);color:#9ecbff;padding:16px;text-align:center;" +
+        "font:13px sans-serif;z-index:9999;pointer-events:none";
+      overlay.textContent =
+        `[ANIGO] Conexão com a GPU perdida — reconectando ` +
+        `(tentativa ${Math.min(nextAttempt, DEVICE_RECONNECT_DELAYS_MS.length)}/${DEVICE_RECONNECT_DELAYS_MS.length})…`;
+      (this.canvas.parentElement ?? document.body).appendChild(overlay);
+      this.reconnectOverlay = overlay;
+    } catch {
+      // Sem DOM (ambiente de teste): o canal de diagnóstico já cobre o evento.
+    }
+  }
+
+  private hideReconnectOverlay(): void {
+    try {
+      this.reconnectOverlay?.remove();
+    } catch {
+      // remove() em node já destacado: ignorável.
+    }
+    this.reconnectOverlay = null;
   }
 
   // ==========================================
@@ -1758,13 +1996,20 @@ export class WebGpuViewportRenderer {
   public setVsync(enabled: boolean) {
     if (this.vsyncEnabled !== enabled) {
       this.vsyncEnabled = enabled;
+      // Issue #11: o VSync é o modo `fifo`; desligado vira `immediate`
+      // (a menos que o modo explícito pedido seja `mailbox`).
+      if (enabled) {
+        this.presentMode = "fifo";
+      } else if (this.presentMode !== "mailbox") {
+        this.presentMode = "immediate";
+      }
       if (this.device && this.context) {
         try {
           this.context.configure({
             device: this.device,
             format: this.format,
             alphaMode: "premultiplied",
-            presentMode: enabled ? "fifo" : "immediate", // P2-11 check caps, fallback if unsupported
+            presentMode: this.getPresentMode(),
           });
         } catch (e) {
           this.report("context_configure_failed", "não foi possível reconfigurar o canvas (vsync/present)", {
@@ -2431,10 +2676,15 @@ export class WebGpuViewportRenderer {
   }
 
   public destroy() {
+    // Issue #11: marca a destruição para o listener de `device.lost` não
+    // interpretar o encerramento como crash (reason === "destroyed" é esperado).
+    this.destroyed = true;
+    this.isPaused = true;
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
     }
+    this.hideReconnectOverlay();
     this.recenterAnim = null;
     this.liveWeights.clear();
     this.channelWeights.clear();
