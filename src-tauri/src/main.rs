@@ -766,6 +766,105 @@ async fn load_project_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Erro ao ler arquivo de projeto: {}", e))
 }
 
+// ---------------------------------------------------------------------------
+// Fase 2 (#25): interoperabilidade glTF 2.0 / VRM 1.0 — comandos Tauri.
+// A validação roda no parser Rust (`anigo-vrm`), espelho do módulo TS;
+// o resumo e os metadados VRM viajam serializados (nada de silêncio).
+// ---------------------------------------------------------------------------
+
+/// Resposta de `vrm_import_model` — metadados VRM 1.0 para o diálogo de import.
+#[derive(Clone, Serialize)]
+struct VrmMetaInfo {
+    title: String,
+    author: String,
+    version: String,
+    year: i64,
+    humanoid_bones: std::collections::BTreeMap<String, Option<u64>>,
+    expression_presets: std::collections::BTreeMap<String, u64>,
+    expression_custom: std::collections::BTreeMap<String, u64>,
+    mtoon_material_count: usize,
+    spring_bone_groups: usize,
+    node_constraint_count: usize,
+    warnings: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct VrmImportInfo {
+    summary: anigo_vrm::ImportSummary,
+    vrm: Option<VrmMetaInfo>,
+}
+
+/// Valida um arquivo `.glb`/`.gltf`/`.vrm` (parser Rust, códigos estáveis).
+#[tauri::command]
+async fn vrm_validate_model(path: String) -> Result<anigo_vrm::ValidationResult, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Erro ao ler '{path}': {e}"))?;
+    Ok(anigo_vrm::validate_model(&bytes))
+}
+
+/// Importa (valida + extrai metadados) um modelo. A geometria em si é decodada
+/// pelo viewport via `src/services/vrm` — este comando dá o resumo para a UI.
+#[tauri::command]
+async fn vrm_import_model(path: String) -> Result<VrmImportInfo, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Erro ao ler '{path}': {e}"))?;
+    let result = anigo_vrm::parse_model(&bytes)
+        .map_err(|e| format!("Falha na validação ({}): {}", e.code.as_str(), e.message))?;
+    let summary = anigo_vrm::summarize_import(&result.model.json);
+    let vrm = result.vrm.map(|parsed| {
+        let mut humanoid_bones = std::collections::BTreeMap::new();
+        for (bone, entry) in &parsed.humanoid.human_bones {
+            humanoid_bones.insert(bone.clone(), entry.get("node").and_then(serde_json::Value::as_u64));
+        }
+        let mut expression_presets = std::collections::BTreeMap::new();
+        for (name, binding) in &parsed.expression.preset {
+            if let Some(index) = binding.get("blendShape").and_then(serde_json::Value::as_u64) {
+                expression_presets.insert(name.clone(), index);
+            }
+        }
+        let mut expression_custom = std::collections::BTreeMap::new();
+        for (name, binding) in &parsed.expression.custom {
+            if let Some(index) = binding.get("blendShape").and_then(serde_json::Value::as_u64) {
+                expression_custom.insert(name.clone(), index);
+            }
+        }
+        VrmMetaInfo {
+            title: parsed.meta.title,
+            author: parsed.meta.author,
+            version: parsed.meta.version,
+            year: parsed.meta.year,
+            humanoid_bones,
+            expression_presets,
+            expression_custom,
+            mtoon_material_count: parsed.materials.iter().filter(|m| m.is_some()).count(),
+            spring_bone_groups: parsed.spring_bone.as_ref().map(|s| s.groups.len()).unwrap_or(0),
+            node_constraint_count: parsed.node_constraints.iter().filter(|c| c.is_some()).count(),
+            warnings: parsed.warnings,
+        }
+    });
+    Ok(VrmImportInfo { summary, vrm })
+}
+
+/// Exporta a cena normalizada (JSON) para `.glb`/`.vrm` no caminho dado.
+/// `vrm_json` presente → saída `.vrm` com camadas VRM 1.0.
+#[tauri::command]
+async fn vrm_export_model(
+    path: String,
+    scene_json: String,
+    vrm_json: Option<String>,
+) -> Result<String, String> {
+    let scene: anigo_vrm::ExportScene = serde_json::from_str(&scene_json)
+        .map_err(|e| format!("Cena inválida: {e}"))?;
+    let vrm = match vrm_json {
+        Some(json) => Some(
+            serde_json::from_str::<anigo_vrm::VrmExportData>(&json)
+                .map_err(|e| format!("Camada VRM inválida: {e}"))?,
+        ),
+        None => None,
+    };
+    let bytes = anigo_vrm::export_model(&scene, vrm.as_ref());
+    std::fs::write(&path, &bytes).map_err(|e| format!("Erro ao gravar '{path}': {e}"))?;
+    Ok(path)
+}
+
 fn main() {
     // P2: Initialize structured tracing for the Tauri app shell.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -852,6 +951,9 @@ fn main() {
             core_deformed_mesh,
             core_export_glb,
             core_export_frame,
+            vrm_validate_model,
+            vrm_import_model,
+            vrm_export_model,
         ])
         .build(tauri::generate_context!());
 
