@@ -262,6 +262,18 @@ const fixture = (() => {
           translation: [0, 0, 0],
           rotation: [0, 0, 0, 1],
           scale: [1, 1, 1],
+          // Issue #12: a árvore de transformações também faz parte do snapshot
+          // (`W(node) = W(pai) × T(local)`), então o fixture declara a raiz do
+          // personagem com a matriz mundial identidade.
+          parent_id: null,
+          children: [],
+          kind: "character_root",
+          world_matrix: [
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+          ],
         },
       ],
       render: {

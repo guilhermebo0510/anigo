@@ -2,6 +2,7 @@ pub mod bone_sync;
 pub mod command;
 pub mod deformation;
 pub mod export;
+pub mod hierarchy;
 pub mod ids;
 pub mod math;
 pub mod mesh;
@@ -29,6 +30,10 @@ pub use deformation::{
     apply_proportions, canonical_base_mesh, catalog_weights, interpolate_gender, prepare_base_mesh,
     recompute_normals, vertical_bounds, DeformationError, DeformationInputs, HEAD_BAND_START,
     HIP_BAND, PROPORTION_POLICY_VERSION, SHOULDER_BAND, SOMATOTYPE_POLICY_VERSION,
+};
+pub use hierarchy::{
+    ancestors_of, descendants_of, depth_of, hierarchy_order, reparent_checked,
+    resolve_world_transforms, validate_hierarchy, HierarchyError, NodeKind,
 };
 pub use ids::{
     fnv1a64, is_valid_slug, normalize_uri, slugify, AnimationClipId, AssetId, CameraId, CharacterId,

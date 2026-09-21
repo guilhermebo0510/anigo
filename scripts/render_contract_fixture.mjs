@@ -395,7 +395,7 @@ export function renderContractFixture() {
       fov_y_degrees_default: 45.0,
       z_near_default: 0.05,
       z_far_default: 100.0,
-      model_from: "scene.nodes[0].transform",
+      model_from: "scene.nodes[*].world_matrix",
       uniform: "camera",
     },
     toon_ramp: {

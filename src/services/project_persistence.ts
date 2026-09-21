@@ -32,6 +32,7 @@
  * builds or repairs one.
  */
 
+import { NODE_KINDS, type NodeKindWire } from "../contracts/commands.v1";
 import {
   CANONICAL_IDS,
   CANONICAL_URIS,
@@ -89,6 +90,14 @@ export interface SceneNodeSnapshot {
   material_id: string | null;
   /** Canonical asset id of the mesh bound to the node (`ast_*`). */
   mesh_asset_id: string | null;
+  /**
+   * Issue #12: pai na árvore de transformações (`null` = raiz da cena) e tipo
+   * especializado do nó. A lista de filhos é **derivada** de `parent_id` e
+   * existe materializada só para a UI não refazer a travessia.
+   */
+  parent_id: string | null;
+  children: string[];
+  kind: NodeKindWire;
 }
 
 export interface SceneMaterialSnapshot {
@@ -188,6 +197,9 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
         visible: true,
         material_id: CANONICAL_IDS.defaultMaterialId,
         mesh_asset_id: null,
+        parent_id: null,
+        children: [],
+        kind: "character_root",
       },
     ],
     materials: [
@@ -288,6 +300,16 @@ function tonemap(value: unknown, fallback: TonemapName): TonemapName {
     : fallback;
 }
 
+/**
+ * Issue #12: tipo do nó — `mesh` é o valor neutro (`NodeKind::Mesh` é o
+ * `Default` do Rust), então um payload antigo continua válido.
+ */
+function nodeKindOrDefault(value: unknown): NodeKindWire {
+  return typeof value === "string" && (NODE_KINDS as readonly string[]).includes(value)
+    ? (value as NodeKindWire)
+    : "mesh";
+}
+
 /** Sanitizes the scene domain of a session block (never throws). */
 export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
   const defaults = defaultSceneDomain();
@@ -299,6 +321,16 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
         if (typeof entry !== "object" || entry === null) return [];
         const node = entry as Record<string, unknown>;
         const nodeId = str(node["node_id"], CANONICAL_IDS.characterNodeId);
+        const parentId =
+          typeof node["parent_id"] === "string" && node["parent_id"] !== nodeId
+            ? node["parent_id"]
+            : null;
+        const kind = nodeKindOrDefault(node["kind"]);
+        const children = Array.isArray(node["children"])
+          ? (node["children"] as unknown[]).filter(
+              (child): child is string => typeof child === "string" && child !== nodeId
+            )
+          : [];
         return [
           {
             node_id: nodeId,
@@ -306,6 +338,9 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
             visible: node["visible"] !== false,
             material_id: typeof node["material_id"] === "string" ? node["material_id"] : null,
             mesh_asset_id: typeof node["mesh_asset_id"] === "string" ? node["mesh_asset_id"] : null,
+            parent_id: parentId,
+            children,
+            kind,
           },
         ];
       })

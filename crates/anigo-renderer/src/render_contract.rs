@@ -765,9 +765,16 @@ pub fn expected_toon_ramp_fingerprint() -> &'static str {
 // Câmera
 // ---------------------------------------------------------------------------
 
-/// `scene.nodes[0].transform` — a fonte canônica do model matrix.
+/// `scene.nodes[*].world_matrix` — a fonte canônica do model matrix.
+///
+/// A matriz mundial já vem resolvida pelo núcleo (`W = W_pai × T_local`), o que
+/// torna a hierarquia do snapshot a única autoridade sobre a pose do quadro
+/// (issue #12). O contrato antigo dizia `scene.nodes[0].transform`, o que não
+/// expressa nem o nó corrente nem a cadeia de pais.
 pub fn model_matrix_source() -> &'static str {
-    contract()["camera"]["model_from"].as_str().unwrap_or("scene.nodes[0].transform")
+    contract()["camera"]["model_from"]
+        .as_str()
+        .unwrap_or("scene.nodes[*].world_matrix")
 }
 
 /// Bloco de uniform que carrega a câmera (`camera`).
@@ -801,7 +808,7 @@ mod tests {
     fn contract_parses_and_matches_version() {
         assert_eq!(contract()["version"].as_u64(), Some(CONTRACT_VERSION));
         assert_eq!(clip_depth(), "zero_to_one");
-        assert_eq!(model_matrix_source(), "scene.nodes[0].transform");
+        assert_eq!(model_matrix_source(), "scene.nodes[*].world_matrix");
     }
 
     #[test]

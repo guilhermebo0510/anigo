@@ -345,7 +345,7 @@ test("as convenções de câmera do contrato são as implementadas", () => {
   assert.equal(RENDER_CONTRACT.camera.clip_depth, "zero_to_one");
   assert.equal(RENDER_CONTRACT.camera.matrix_layout, "column_major");
   assert.equal(RENDER_CONTRACT.camera.up_axis, "y");
-  assert.equal(RENDER_CONTRACT.camera.model_from, "scene.nodes[0].transform");
+  assert.equal(RENDER_CONTRACT.camera.model_from, "scene.nodes[*].world_matrix");
 
   // profundidade 0..1: near → 0, far → 1 (clip space do wgpu)
   const proj = perspectiveRhZeroToOne(45 * (Math.PI / 180), 16 / 9, 0.05, 100);

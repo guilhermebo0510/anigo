@@ -18,10 +18,13 @@
 
 import {
   COMMAND_KINDS,
+  NODE_KINDS,
   type CommandWire,
   type MaterialPatchWire,
   type MeshPresetWire,
+  type NodeKindWire,
   type TonemapOperatorWire,
+  type TransformWire,
 } from "../contracts/commands.v1";
 import {
   ID_PREFIXES,
@@ -122,6 +125,13 @@ export interface CameraIntent {
   fov_degrees?: number;
 }
 
+/** Local transform patch of a node (issue #12). */
+export interface NodeTransformIntent {
+  translation?: [number, number, number];
+  rotation?: [number, number, number, number];
+  scale?: [number, number, number];
+}
+
 export type CommandIntent =
   | { kind: "morph"; slider_id: string; value: number; /** current value, when the UI knows it */ current_value?: number }
   | { kind: "reset_morphs"; /** number of overrides currently set */ override_count?: number }
@@ -143,6 +153,43 @@ export type CommandIntent =
   | { kind: "material"; patch: MaterialPatchWire; material_id?: string }
   | { kind: "node_visibility"; node_id: string; visible: boolean; current_visible?: boolean }
   | { kind: "node_mesh"; node_id: string; mesh_uri?: string | null; primitive_index?: number }
+  /**
+   * Issue #12: cria um nó (raiz ou filho de `parent_id`).
+   *
+   * `index` é obrigatório — a posição do nó na lista é parte do documento
+   * canônico, então o comando declara onde ele entra (e o undo o devolve ao
+   * mesmo lugar).
+   */
+  | {
+      kind: "add_node";
+      node_id: string;
+      name: string;
+      index: number;
+      parent_id?: string | null;
+      node_kind?: NodeKindWire;
+      transform?: TransformWire;
+      mesh_uri?: string | null;
+      primitive_index?: number;
+      material_id?: string | null;
+      /** Ids já presentes na cena, quando a UI os conhece (checagem local). */
+      existing_node_ids?: string[];
+    }
+  | { kind: "remove_node"; node_id: string }
+  | {
+      kind: "node_parent";
+      node_id: string;
+      parent_id?: string | null;
+      /** Pai atual, quando conhecido: repetir é no-op. */
+      current_parent_id?: string | null;
+      /** Subárvore do nó (ids), quando conhecida: fecha o cerco contra ciclos. */
+      subtree_ids?: string[];
+    }
+  | {
+      kind: "node_transform";
+      node_id: string;
+      transform: NodeTransformIntent;
+      current_transform?: TransformWire;
+    }
   | { kind: "preset"; preset: MeshPresetWire }
   | { kind: "background_color"; color: [number, number, number, number]; current_color?: [number, number, number, number] }
   | { kind: "render_settings"; msaa_samples?: number; tonemap?: TonemapOperatorWire }
@@ -404,6 +451,137 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
       return { ok: true, command: { kind: "set_node_mesh", node_id: intent.node_id, mesh: withPrimitive } };
     }
 
+    // ── Issue #12: árvore de cena ───────────────────────────────────────────
+    case "add_node": {
+      if (!isValidStableId(intent.node_id, "node")) {
+        return fail("unknown_target", `node_id '${intent.node_id}' inválido`, "node_id");
+      }
+      if (intent.existing_node_ids?.includes(intent.node_id)) {
+        return fail("invalid_value", `o nó '${intent.node_id}' já existe na cena`, "node_id");
+      }
+      if (typeof intent.name !== "string" || intent.name.trim().length === 0) {
+        return fail("invalid_value", "o nome do nó não pode ser vazio", "name");
+      }
+      if (!Number.isInteger(intent.index) || intent.index < 0) {
+        return fail("invalid_value", "'index' precisa ser um inteiro >= 0", "index");
+      }
+      if (intent.parent_id !== undefined && intent.parent_id !== null) {
+        if (!isValidStableId(intent.parent_id, "node")) {
+          return fail("unknown_target", `parent_id '${intent.parent_id}' inválido`, "parent_id");
+        }
+        if (intent.parent_id === intent.node_id) {
+          return fail("invalid_value", "um nó não pode ser pai de si mesmo", "parent_id");
+        }
+      }
+      if (intent.node_kind !== undefined && !NODE_KINDS.includes(intent.node_kind)) {
+        return fail("invalid_value", `node_kind '${intent.node_kind}' desconhecido`, "node_kind");
+      }
+      if (intent.material_id !== undefined && intent.material_id !== null) {
+        if (!isValidStableId(intent.material_id, "material")) {
+          return fail("unknown_target", `material_id '${intent.material_id}' inválido`, "material_id");
+        }
+      }
+      if (intent.transform !== undefined) {
+        const problem = checkTransform(intent.transform);
+        if (problem) return problem;
+      }
+
+      const command: CommandWire = {
+        kind: "add_node",
+        node_id: intent.node_id,
+        name: intent.name.trim(),
+        index: intent.index,
+      };
+      if (intent.parent_id !== undefined) command.parent_id = intent.parent_id;
+      if (intent.node_kind !== undefined) command.node_kind = intent.node_kind;
+      if (intent.transform !== undefined) command.transform = cloneTransform(intent.transform);
+      if (intent.mesh_uri !== undefined && intent.mesh_uri !== null) {
+        if (intent.mesh_uri.length === 0) {
+          return fail("invalid_value", "mesh_uri vazio", "mesh_uri");
+        }
+        command.mesh =
+          intent.primitive_index !== undefined
+            ? { asset_id: assetIdForUri(intent.mesh_uri), primitive_index: intent.primitive_index }
+            : { asset_id: assetIdForUri(intent.mesh_uri) };
+      } else if (intent.mesh_uri === null) {
+        command.mesh = null;
+      }
+      if (intent.material_id !== undefined) command.material_id = intent.material_id;
+      return { ok: true, command };
+    }
+
+    case "remove_node": {
+      if (!isValidStableId(intent.node_id, "node")) {
+        return fail("unknown_target", `node_id '${intent.node_id}' inválido`, "node_id");
+      }
+      // Remover leva a subárvore junto; a existência do nó é verificada pelo
+      // core (a UI pode estar com um snapshot antigo).
+      return { ok: true, command: { kind: "remove_node", node_id: intent.node_id }, unverifiedTarget: true };
+    }
+
+    case "node_parent": {
+      if (!isValidStableId(intent.node_id, "node")) {
+        return fail("unknown_target", `node_id '${intent.node_id}' inválido`, "node_id");
+      }
+      const parent = intent.parent_id ?? null;
+      if (parent !== null) {
+        if (!isValidStableId(parent, "node")) {
+          return fail("unknown_target", `parent_id '${parent}' inválido`, "parent_id");
+        }
+        if (parent === intent.node_id) {
+          return fail("invalid_value", "um nó não pode ser pai de si mesmo", "parent_id");
+        }
+        if (intent.subtree_ids?.includes(parent)) {
+          return fail(
+            "invalid_value",
+            `'${parent}' é descendente de '${intent.node_id}' (criaria um ciclo)`,
+            "parent_id"
+          );
+        }
+      }
+      if (intent.current_parent_id !== undefined && (intent.current_parent_id ?? null) === parent) {
+        return fail(
+          "no_op",
+          `o nó '${intent.node_id}' já está em ${parent ?? "<raiz>"}`,
+          "parent_id"
+        );
+      }
+      return { ok: true, command: { kind: "set_node_parent", node_id: intent.node_id, parent_id: parent } };
+    }
+
+    case "node_transform": {
+      if (!isValidStableId(intent.node_id, "node")) {
+        return fail("unknown_target", `node_id '${intent.node_id}' inválido`, "node_id");
+      }
+      const patch: NodeTransformIntent = {};
+      if (intent.transform.translation !== undefined) {
+        const problem = buildVec3(intent.transform.translation, "translation");
+        if (problem) return problem;
+        patch.translation = [...intent.transform.translation];
+      }
+      if (intent.transform.rotation !== undefined) {
+        const problem = checkQuaternion(intent.transform.rotation);
+        if (problem) return problem;
+        patch.rotation = [...intent.transform.rotation];
+      }
+      if (intent.transform.scale !== undefined) {
+        const problem = buildVec3(intent.transform.scale, "scale");
+        if (problem) return problem;
+        patch.scale = [...intent.transform.scale];
+      }
+      if (Object.keys(patch).length === 0) {
+        return fail("no_op", "patch de transformação vazio");
+      }
+      if (intent.current_transform && transformEquals(intent.current_transform, patch)) {
+        return fail("no_op", `a transformação de '${intent.node_id}' já é essa`, "transform");
+      }
+      return {
+        ok: true,
+        command: { kind: "set_node_transform", node_id: intent.node_id, ...patch },
+        unverifiedTarget: true,
+      };
+    }
+
     case "preset": {
       if (!["mannequin", "cube", "sphere"].includes(intent.preset)) {
         return fail("invalid_value", `preset '${intent.preset}' desconhecido`, "preset");
@@ -486,6 +664,50 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
       return fail("invalid_value", `intent desconhecida: ${JSON.stringify(exhaustive)}`);
     }
   }
+}
+
+/** Quaternion check: 4 finite components and a non-zero length. */
+function checkQuaternion(value: unknown): CommandBuildFailure | null {
+  if (!Array.isArray(value) || value.length !== 4) {
+    return fail("invalid_value", "'rotation' precisa ser um quaternion de 4 números", "rotation");
+  }
+  let lengthSquared = 0;
+  for (let index = 0; index < 4; index++) {
+    const problem = finite(value[index], `rotation[${index}]`);
+    if (problem) return problem;
+    lengthSquared += value[index] * value[index];
+  }
+  if (lengthSquared < 1e-12) {
+    return fail("invalid_value", "'rotation' não pode ser o quaternion nulo", "rotation");
+  }
+  return null;
+}
+
+/** Full transform check (translation, rotation, scale). */
+function checkTransform(transform: TransformWire): CommandBuildFailure | null {
+  return (
+    buildVec3(transform.translation, "translation") ??
+    checkQuaternion(transform.rotation) ??
+    buildVec3(transform.scale, "scale")
+  );
+}
+
+function cloneTransform(transform: TransformWire): TransformWire {
+  return {
+    translation: [...transform.translation],
+    rotation: [...transform.rotation],
+    scale: [...transform.scale],
+  };
+}
+
+/** `true` when applying `patch` to `current` would not change anything. */
+function transformEquals(current: TransformWire, patch: NodeTransformIntent): boolean {
+  const same = (a: readonly number[], b: readonly number[]): boolean =>
+    a.length === b.length && a.every((value, index) => Math.abs(value - b[index]) <= NO_OP_EPSILON);
+  if (patch.translation && !same(current.translation, patch.translation)) return false;
+  if (patch.rotation && !same(current.rotation, patch.rotation)) return false;
+  if (patch.scale && !same(current.scale, patch.scale)) return false;
+  return true;
 }
 
 /** 4-component vector check for material colors (RGBA). */

@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::hierarchy::NodeKind;
 use crate::ids::{AssetId, LightId, MaterialId, MorphId, NodeId};
+use crate::math::Transform;
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
 use crate::project::{
@@ -346,6 +348,50 @@ pub enum Command {
         #[serde(default)]
         mesh: Option<MeshRef>,
     },
+    /// Issue #12: cria um nó na cena (filho de `parent_id` ou nova raiz).
+    ///
+    /// A posição `index` é explícita para que o undo restaure o nó exatamente
+    /// onde ele estava (ordem determinística faz parte do documento canônico).
+    AddNode {
+        node_id: NodeId,
+        name: String,
+        #[serde(default)]
+        parent_id: Option<NodeId>,
+        #[serde(default)]
+        node_kind: NodeKind,
+        #[serde(default)]
+        transform: Transform,
+        #[serde(default)]
+        mesh: Option<MeshRef>,
+        #[serde(default)]
+        material_id: Option<MaterialId>,
+        index: u32,
+    },
+    /// Issue #12: remove um nó e toda a sua subárvore.
+    ///
+    /// Falha se o nó não existir; o inverso recria a subárvore inteira (com os
+    /// pais na ordem correta), então nada se perde no undo.
+    RemoveNode { node_id: NodeId },
+    /// Issue #12: reparenta um nó (ou o devolve à raiz com `parent_id: None`).
+    ///
+    /// Um parentesco que fecharia ciclo é recusado com
+    /// [`CommandError::InvalidValue`] — a árvore nunca fica inconsistente.
+    SetNodeParent {
+        node_id: NodeId,
+        #[serde(default)]
+        parent_id: Option<NodeId>,
+    },
+    /// Issue #12: patcha a transformação **local** de um nó (o que a UI edita).
+    /// Os filhos acompanham automaticamente pela composição pai × local.
+    SetNodeTransform {
+        node_id: NodeId,
+        #[serde(default)]
+        translation: Option<[f32; 3]>,
+        #[serde(default)]
+        rotation: Option<[f32; 4]>,
+        #[serde(default)]
+        scale: Option<[f32; 3]>,
+    },
     /// Loads a preset mesh into the character node.
     LoadMeshPreset { preset: MeshPreset },
     /// Sets the render background color.
@@ -426,6 +472,13 @@ impl Command {
             Command::SetMaterialParams { .. } => "Material".to_string(),
             Command::SetNodeVisibility { .. } => "Visibility".to_string(),
             Command::SetNodeMesh { .. } => "Mesh".to_string(),
+            Command::AddNode { node_id, .. } => format!("Add node {node_id}"),
+            Command::RemoveNode { node_id } => format!("Remove node {node_id}"),
+            Command::SetNodeParent { node_id, parent_id } => match parent_id {
+                Some(parent) => format!("Parent {node_id} under {parent}"),
+                None => format!("Unparent {node_id}"),
+            },
+            Command::SetNodeTransform { node_id, .. } => format!("Transform {node_id}"),
             Command::LoadMeshPreset { preset } => format!("Preset {preset:?}").to_lowercase(),
             Command::SetBackgroundColor { .. } => "Background".to_string(),
             Command::SetRenderSettings { .. } => "Render settings".to_string(),
@@ -452,10 +505,16 @@ impl Command {
             | Command::OrbitCamera { .. }
             | Command::ZoomCamera { .. }
             | Command::PanCamera { .. } => ChangeScope::Camera,
+            // Issue #12: topologia e transformação de nós são apresentação —
+            // não invalidam a geometria base (a malha canônica é a mesma).
             Command::SetLight { .. }
             | Command::SetNodeVisibility { .. }
             | Command::SetBackgroundColor { .. }
-            | Command::SetRenderSettings { .. } => ChangeScope::Presentation,
+            | Command::SetRenderSettings { .. }
+            | Command::AddNode { .. }
+            | Command::RemoveNode { .. }
+            | Command::SetNodeParent { .. }
+            | Command::SetNodeTransform { .. } => ChangeScope::Presentation,
             Command::RenameProject { .. } => ChangeScope::Project,
             Command::Batch { commands } => commands
                 .iter()
@@ -488,6 +547,16 @@ impl Command {
             Command::SetNodeVisibility { node_id, .. } | Command::SetNodeMesh { node_id, .. } => {
                 vec![node_id.to_string()]
             }
+            // Issue #12: a remoção de um nó leva a subárvore junto; o alvo
+            // reportado é a raiz removida (o `ProjectState` é quem sabe listar
+            // os descendentes, e ele já mudou quando o outcome é montado).
+            Command::AddNode { node_id, .. } => vec![node_id.to_string()],
+            Command::RemoveNode { node_id } => vec![node_id.to_string()],
+            Command::SetNodeParent { node_id, parent_id } => match parent_id {
+                Some(parent) => vec![node_id.to_string(), parent.to_string()],
+                None => vec![node_id.to_string()],
+            },
+            Command::SetNodeTransform { node_id, .. } => vec![node_id.to_string()],
             Command::LoadMeshPreset { .. } => vec![NodeId::canonical_character().to_string()],
             Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } => {
                 vec!["rnd_main".to_string()]
@@ -704,6 +773,138 @@ impl Command {
                 }
                 Ok(())
             }
+            // ── Issue #12: árvore de transformações ─────────────────────────
+            Command::AddNode {
+                node_id,
+                name,
+                parent_id,
+                transform,
+                mesh,
+                material_id,
+                ..
+            } => {
+                if state.scene.nodes.iter().any(|node| &node.node_id == node_id) {
+                    return Err(CommandError::InvalidValue {
+                        field: "node_id".to_string(),
+                        detail: format!("node '{node_id}' already exists"),
+                    });
+                }
+                if name.trim().is_empty() {
+                    return Err(CommandError::InvalidValue {
+                        field: "name".to_string(),
+                        detail: "node name must not be empty".to_string(),
+                    });
+                }
+                if let Some(parent) = parent_id {
+                    if parent == node_id {
+                        return Err(CommandError::InvalidValue {
+                            field: "parent_id".to_string(),
+                            detail: "a node cannot be its own parent".to_string(),
+                        });
+                    }
+                    if state.scene.node(parent).is_none() {
+                        return Err(CommandError::UnknownTarget {
+                            kind: "scene node",
+                            target: parent.to_string(),
+                        });
+                    }
+                }
+                if let Some(reference) = mesh {
+                    require_known_asset(state, &reference.asset_id)?;
+                }
+                if let Some(material_id) = material_id {
+                    if !state.materials.contains_key(material_id) {
+                        return Err(CommandError::UnknownTarget {
+                            kind: "material",
+                            target: material_id.to_string(),
+                        });
+                    }
+                }
+                validate_transform("transform", *transform)?;
+                Ok(())
+            }
+            Command::RemoveNode { node_id } => {
+                find_node(state, node_id)?;
+                Ok(())
+            }
+            Command::SetNodeParent { node_id, parent_id } => {
+                let node = find_node(state, node_id)?;
+                if let Some(parent_id) = parent_id {
+                    if state.scene.node(parent_id).is_none() {
+                        return Err(CommandError::UnknownTarget {
+                            kind: "scene node",
+                            target: parent_id.to_string(),
+                        });
+                    }
+                    if parent_id == &node.node_id {
+                        return Err(CommandError::InvalidValue {
+                            field: "parent_id".to_string(),
+                            detail: "a node cannot be its own parent".to_string(),
+                        });
+                    }
+                    let subtree = crate::hierarchy::descendants_of(&state.scene.nodes, node_id);
+                    if subtree.iter().any(|descendant| descendant == parent_id) {
+                        return Err(CommandError::InvalidValue {
+                            field: "parent_id".to_string(),
+                            detail: format!(
+                                "'{parent_id}' is a descendant of '{node_id}' (would create a cycle)"
+                            ),
+                        });
+                    }
+                }
+                if node.parent_id == *parent_id {
+                    let current = match parent_id {
+                        Some(parent) => format!("'{parent}'"),
+                        None => "the scene root".to_string(),
+                    };
+                    return Err(CommandError::NoOp(format!(
+                        "node '{node_id}' is already parented to {current}"
+                    )));
+                }
+                Ok(())
+            }
+            Command::SetNodeTransform {
+                node_id,
+                translation,
+                rotation,
+                scale,
+            } => {
+                let node = find_node(state, node_id)?;
+                // Um patch vazio não é comando; um patch que não muda nada é NoOp.
+                if translation.is_none() && rotation.is_none() && scale.is_none() {
+                    return Err(CommandError::NoOp("empty transform patch".to_string()));
+                }
+                let mut transform = node.transform;
+                let mut changed = false;
+                if let Some(translation) = translation {
+                    validate_vector("translation", *translation)?;
+                    if transform.translation.to_array() != *translation {
+                        transform.translation = glam::Vec3::from_array(*translation);
+                        changed = true;
+                    }
+                }
+                if let Some(rotation) = rotation {
+                    validate_quaternion(*rotation)?;
+                    let quat = glam::Quat::from_array(*rotation);
+                    if transform.rotation != quat {
+                        transform.rotation = quat;
+                        changed = true;
+                    }
+                }
+                if let Some(scale) = scale {
+                    validate_vector("scale", *scale)?;
+                    if transform.scale.to_array() != *scale {
+                        transform.scale = glam::Vec3::from_array(*scale);
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    return Err(CommandError::NoOp(format!(
+                        "transform of '{node_id}' already has those values"
+                    )));
+                }
+                Ok(())
+            }
             Command::LoadMeshPreset { preset } => {
                 // Presets resolve to their canonical built-in asset, which every
                 // well-formed project registers (`BUILTIN_MESH_URIS`).
@@ -764,8 +965,14 @@ impl Command {
                 if commands.is_empty() {
                     return Err(CommandError::NoOp("empty batch".to_string()));
                 }
+                // Um batch é atômico, então cada comando é validado contra o
+                // estado **intermediário** (replay num rascunho), não contra o
+                // estado inicial: é o que permite, por exemplo, recriar um pai e
+                // o filho no mesmo lote — o undo de uma remoção de subárvore.
+                let mut scratch = state.clone();
                 for command in commands {
-                    command.validate(state)?;
+                    command.validate(&scratch)?;
+                    command.apply_unchecked(&mut scratch)?;
                 }
                 Ok(())
             }
@@ -900,6 +1107,76 @@ impl Command {
                 Ok(Command::SetNodeMesh {
                     node_id: node_id.clone(),
                     mesh: node.mesh.clone(),
+                })
+            }
+            // ── Issue #12: árvore de transformações ─────────────────────────
+            Command::AddNode { node_id, .. } => Ok(Command::RemoveNode {
+                node_id: node_id.clone(),
+            }),
+            Command::RemoveNode { node_id } => {
+                // O inverso da remoção recria a subárvore inteira. A ordem é a
+                // das posições **originais** (ascendente), o que reproduz o
+                // array exatamente; um nó cujo pai também foi removido entra
+                // como raiz e recebe o vínculo no `SetNodeParent` do fim do
+                // lote — referência para frente seria um estado inválido.
+                find_node(state, node_id)?;
+                let removed: std::collections::BTreeSet<NodeId> = std::iter::once(node_id.clone())
+                    .chain(crate::hierarchy::descendants_of(&state.scene.nodes, node_id))
+                    .collect();
+                let mut adds: Vec<Command> = Vec::new();
+                let mut links: Vec<Command> = Vec::new();
+                for (index, slot) in state.scene.nodes.iter().enumerate() {
+                    if !removed.contains(&slot.node_id) {
+                        continue;
+                    }
+                    let parent_inside = slot
+                        .parent_id
+                        .as_ref()
+                        .map(|parent| removed.contains(parent))
+                        .unwrap_or(false);
+                    adds.push(Command::AddNode {
+                        node_id: slot.node_id.clone(),
+                        name: slot.name.clone(),
+                        parent_id: if parent_inside {
+                            None
+                        } else {
+                            slot.parent_id.clone()
+                        },
+                        node_kind: slot.kind,
+                        transform: slot.transform,
+                        mesh: slot.mesh.clone(),
+                        material_id: slot.material_id.clone(),
+                        index: index as u32,
+                    });
+                    if parent_inside {
+                        links.push(Command::SetNodeParent {
+                            node_id: slot.node_id.clone(),
+                            parent_id: slot.parent_id.clone(),
+                        });
+                    }
+                }
+                let mut commands = adds;
+                commands.extend(links);
+                if commands.len() == 1 {
+                    Ok(commands.remove(0))
+                } else {
+                    Ok(Command::Batch { commands })
+                }
+            }
+            Command::SetNodeParent { node_id, .. } => {
+                let node = find_node(state, node_id)?;
+                Ok(Command::SetNodeParent {
+                    node_id: node_id.clone(),
+                    parent_id: node.parent_id.clone(),
+                })
+            }
+            Command::SetNodeTransform { node_id, .. } => {
+                let node = find_node(state, node_id)?;
+                Ok(Command::SetNodeTransform {
+                    node_id: node_id.clone(),
+                    translation: Some(node.transform.translation.to_array()),
+                    rotation: Some(node.transform.rotation.to_array()),
+                    scale: Some(node.transform.scale.to_array()),
                 })
             }
             Command::LoadMeshPreset { preset } => {
@@ -1149,6 +1426,66 @@ impl Command {
                 node.mesh = mesh.clone();
                 Ok(())
             }
+            // ── Issue #12: árvore de transformações ─────────────────────────
+            Command::AddNode {
+                node_id,
+                name,
+                parent_id,
+                node_kind,
+                transform,
+                mesh,
+                material_id,
+                index,
+            } => {
+                let slot = NodeSlot {
+                    node_id: node_id.clone(),
+                    name: name.clone(),
+                    transform: *transform,
+                    mesh: mesh.clone(),
+                    material_id: material_id.clone(),
+                    visible: true,
+                    parent_id: parent_id.clone(),
+                    kind: *node_kind,
+                };
+                let position = (*index as usize).min(state.scene.nodes.len());
+                state.scene.nodes.insert(position, slot);
+                Ok(())
+            }
+            Command::RemoveNode { node_id } => {
+                // Remove a subárvore inteira: um filho órfão seria inválido, e o
+                // inverse recria tudo de uma vez.
+                let doomed: Vec<NodeId> = std::iter::once(node_id.clone())
+                    .chain(crate::hierarchy::descendants_of(&state.scene.nodes, node_id))
+                    .collect();
+                state
+                    .scene
+                    .nodes
+                    .retain(|node| !doomed.contains(&node.node_id));
+                Ok(())
+            }
+            Command::SetNodeParent { node_id, parent_id } => {
+                let node = find_node_mut(state, node_id)?;
+                node.parent_id = parent_id.clone();
+                Ok(())
+            }
+            Command::SetNodeTransform {
+                node_id,
+                translation,
+                rotation,
+                scale,
+            } => {
+                let node = find_node_mut(state, node_id)?;
+                if let Some(translation) = translation {
+                    node.transform.translation = glam::Vec3::from_array(*translation);
+                }
+                if let Some(rotation) = rotation {
+                    node.transform.rotation = glam::Quat::from_array(*rotation).normalize();
+                }
+                if let Some(scale) = scale {
+                    node.transform.scale = glam::Vec3::from_array(*scale);
+                }
+                Ok(())
+            }
             Command::LoadMeshPreset { preset } => {
                 let node_id = NodeId::canonical_character();
                 let gender = state.character.base_gender;
@@ -1299,6 +1636,36 @@ fn require_known_asset(state: &ProjectState, asset_id: &AssetId) -> Result<(), C
             target: asset_id.to_string(),
         })
     }
+}
+
+/// Issue #12: um vetor de transformação só entra no documento se for finito.
+fn validate_vector(field: &str, value: [f32; 3]) -> Result<(), CommandError> {
+    for component in value {
+        require_finite(field, component)?;
+    }
+    Ok(())
+}
+
+/// Issue #12: quaternion finito e não nulo (uma rotação válida).
+fn validate_quaternion(value: [f32; 4]) -> Result<(), CommandError> {
+    for component in value {
+        require_finite("rotation", component)?;
+    }
+    let length_squared: f32 = value.iter().map(|component| component * component).sum();
+    if length_squared < 1e-12 {
+        return Err(CommandError::InvalidValue {
+            field: "rotation".to_string(),
+            detail: "quaternion must not be zero".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Issue #12: transformação local completa (translação, rotação e escala).
+fn validate_transform(field: &str, transform: Transform) -> Result<(), CommandError> {
+    validate_vector(&format!("{field}.translation"), transform.translation.to_array())?;
+    validate_quaternion(transform.rotation.to_array())?;
+    validate_vector(&format!("{field}.scale"), transform.scale.to_array())
 }
 
 fn find_node<'a>(state: &'a ProjectState, node_id: &NodeId) -> Result<&'a NodeSlot, CommandError> {
@@ -1856,6 +2223,27 @@ mod tests {
                 msaa_samples: Some(8),
                 tonemap: Some(crate::project::TonemapOperator::Neutral),
             },
+            // Issue #12: a árvore também passa pelo mesmo contrato de involution
+            // (aplicar, desfazer e refazer sem deixar resíduo). O reparent e a
+            // remoção de subárvore precisam de mais de um nó (e a cena canônica
+            // não aceita ficar vazia), então vivem no teste dedicado
+            // `node_tree_commands_round_trip_with_world_transforms`.
+            Command::AddNode {
+                node_id: NodeId::from_slug("stage"),
+                name: "Stage".to_string(),
+                parent_id: None,
+                node_kind: crate::hierarchy::NodeKind::Group,
+                transform: Transform::default(),
+                mesh: None,
+                material_id: None,
+                index: 1,
+            },
+            Command::SetNodeTransform {
+                node_id: NodeId::canonical_character(),
+                translation: Some([0.5, 0.25, -0.5]),
+                rotation: Some([0.0, 0.0, 0.0, 1.0]),
+                scale: Some([1.0, 1.0, 1.0]),
+            },
             Command::RenameProject {
                 name: "Projeto de Teste".to_string(),
             },
@@ -1908,6 +2296,246 @@ mod tests {
                 assert_eq!(state, before, "apply → undo → redo → undo is symmetric");
             }
         }
+    }
+
+    #[test]
+    fn node_tree_commands_round_trip_with_world_transforms() {
+        // Issue #12 — a árvore é editada só por comandos, e o undo devolve
+        // topologia + transformações exatamente como estavam.
+        let mut state = project();
+        let mut history = CommandHistory::new(64);
+        let root = NodeId::canonical_character();
+        let jacket = NodeId::from_slug("jacket");
+        let hood = NodeId::from_slug("hood");
+
+        history
+            .execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: jacket.clone(),
+                    name: "Jacket".to_string(),
+                    parent_id: Some(root.clone()),
+                    node_kind: crate::hierarchy::NodeKind::Clothing,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 1,
+                },
+            )
+            .expect("add node");
+        history
+            .execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: hood.clone(),
+                    name: "Hood".to_string(),
+                    parent_id: Some(jacket.clone()),
+                    node_kind: crate::hierarchy::NodeKind::Hair,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 2,
+                },
+            )
+            .expect("add child node");
+
+        assert_eq!(
+            state
+                .scene
+                .children_of(Some(&root))
+                .iter()
+                .map(|node| node.node_id.clone())
+                .collect::<Vec<_>>(),
+            vec![jacket.clone()]
+        );
+        assert_eq!(state.scene.depth_of(&hood), Some(2));
+
+        // Mover o tronco move a peça pendurada nele — sem tocar no filho.
+        history
+            .execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root.clone(),
+                    translation: Some([2.0, 0.0, 0.0]),
+                    rotation: None,
+                    scale: None,
+                },
+            )
+            .expect("move root");
+        let world = crate::hierarchy::resolve_world_transforms(&state.scene.nodes).expect("world");
+        let hood_world = world.get(&hood).expect("hood matrix");
+        assert!((hood_world.transform_point3(glam::Vec3::ZERO).x - 2.0).abs() < 1e-5);
+        assert!(state.scene.node(&hood).expect("hood").transform.translation.x.abs() < 1e-6);
+
+        // Reparentar para um descendente é recusado (ciclo) e nada muda.
+        let before = state.clone();
+        let error = history
+            .execute(
+                &mut state,
+                Command::SetNodeParent {
+                    node_id: jacket.clone(),
+                    parent_id: Some(hood.clone()),
+                },
+            )
+            .expect_err("cycle must be rejected");
+        assert!(matches!(error, CommandError::InvalidValue { .. }));
+        assert_eq!(state, before, "a rejected command leaves the project untouched");
+
+        // Reparentar a raiz para a jaqueta também fecharia ciclo.
+        assert!(history
+            .execute(
+                &mut state,
+                Command::SetNodeParent {
+                    node_id: root.clone(),
+                    parent_id: Some(jacket.clone()),
+                },
+            )
+            .is_err());
+
+        // NoOp: repetir o mesmo pai é recusado.
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeParent {
+                    node_id: hood.clone(),
+                    parent_id: Some(jacket.clone()),
+                },
+            ),
+            Err(CommandError::NoOp(_))
+        ));
+
+        // Uma segunda raiz mantém a cena não-vazia: o projeto canônico não
+        // aceita remover o último nó (`ProjectError::EmptyScene`).
+        history
+            .execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: NodeId::from_slug("stage"),
+                    name: "Stage".to_string(),
+                    parent_id: None,
+                    node_kind: crate::hierarchy::NodeKind::Group,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 3,
+                },
+            )
+            .expect("add second root");
+
+        // Remover a jaqueta leva a subárvore inteira (o capuz) junto...
+        let snapshot = state.clone();
+        history
+            .execute(
+                &mut state,
+                Command::RemoveNode {
+                    node_id: jacket.clone(),
+                },
+            )
+            .expect("remove subtree");
+        assert_eq!(
+            state
+                .scene
+                .nodes
+                .iter()
+                .map(|node| node.node_id.to_string())
+                .collect::<Vec<_>>(),
+            vec![root.to_string(), "nod_stage".to_string()],
+            "children must never survive their parent"
+        );
+
+        // ...e o undo recria todos os nós com os vínculos e as transformações.
+        history.undo(&mut state).expect("undo restores the subtree");
+        assert_eq!(state, snapshot, "undo restores topology and transforms exactly");
+        assert_eq!(
+            state
+                .scene
+                .children_of(Some(&root))
+                .iter()
+                .map(|node| node.node_id.clone())
+                .collect::<Vec<_>>(),
+            vec![jacket.clone()]
+        );
+        assert_eq!(
+            state.scene.node(&hood).expect("hood").parent_id.as_ref(),
+            Some(&jacket)
+        );
+    }
+
+    #[test]
+    fn add_node_rejects_duplicates_and_unknown_parents() {
+        let mut state = project();
+        let mut history = CommandHistory::new(8);
+        let root = NodeId::canonical_character();
+
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: root.clone(),
+                    name: "Duplicated".to_string(),
+                    parent_id: None,
+                    node_kind: crate::hierarchy::NodeKind::Group,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 0,
+                },
+            ),
+            Err(CommandError::InvalidValue { .. })
+        ));
+
+        let orphan = history.execute(
+            &mut state,
+            Command::AddNode {
+                node_id: NodeId::from_slug("orphan"),
+                name: "Orphan".to_string(),
+                parent_id: Some(NodeId::from_slug("missing")),
+                node_kind: crate::hierarchy::NodeKind::Accessory,
+                transform: crate::math::Transform::default(),
+                mesh: None,
+                material_id: None,
+                index: 1,
+            },
+        );
+        assert!(matches!(orphan, Err(CommandError::UnknownTarget { .. })));
+
+        // Transformação não finita e quaternion nulo também são recusados.
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root.clone(),
+                    translation: Some([f32::NAN, 0.0, 0.0]),
+                    rotation: None,
+                    scale: None,
+                },
+            ),
+            Err(CommandError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root.clone(),
+                    translation: None,
+                    rotation: Some([0.0, 0.0, 0.0, 0.0]),
+                    scale: None,
+                },
+            ),
+            Err(CommandError::InvalidValue { .. })
+        ));
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root,
+                    translation: None,
+                    rotation: None,
+                    scale: None,
+                },
+            ),
+            Err(CommandError::NoOp(_))
+        ));
     }
 
     #[test]

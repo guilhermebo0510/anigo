@@ -919,6 +919,14 @@ impl HeadlessRenderer {
         let camera_view_proj = view_proj.to_cols_array();
         let camera_pos = camera_copy.eye.extend(1.0).to_array();
 
+        // Issue #12: matrizes mundiais resolvidas uma vez por quadro
+        // (W = W_pai × T_local). Uma cena cuja topologia não resolve — o
+        // `ProjectState` já a teria recusado — cai no modo plano: cada nó usa a
+        // própria transformação local, sem propagação.
+        let world_matrices = scene
+            .resolve_world_transforms()
+            .unwrap_or_default();
+
         // 3. Setup Light Uniform
         let light_uniform = LightUniform {
             direction: [
@@ -1029,7 +1037,12 @@ impl HeadlessRenderer {
                     }
 
                     // P1-05: model/normal do nó atual (era o transform de nodes[0]).
-                    let model_mat = node.transform.to_matrix();
+                    // Issue #12: a matriz é a **mundial** (pai × local); nós
+                    // ausentes do mapa caem na transformação local.
+                    let model_mat = world_matrices
+                        .get(&node.id)
+                        .copied()
+                        .unwrap_or_else(|| node.transform.to_matrix());
                     let normal_mat = model_mat.inverse().transpose();
                     let camera_uniform = CameraUniform {
                         view_proj: camera_view_proj,
@@ -1377,6 +1390,10 @@ impl HeadlessRenderer {
         let camera_view_proj = view_proj.to_cols_array();
         let camera_pos = camera_copy.eye.extend(1.0).to_array();
 
+        // Issue #12: matrizes mundiais resolvidas uma vez por quadro, como no
+        // caminho principal (`W = W_pai × T_local`).
+        let world_matrices = scene.resolve_world_transforms().unwrap_or_default();
+
         // 4. Setup Light Uniform
         let light_uniform = LightUniform {
             direction: [
@@ -1498,7 +1515,12 @@ impl HeadlessRenderer {
                     }
 
                     // P1-05: model/normal do nó atual (era o transform de nodes[0]).
-                    let model_mat = node.transform.to_matrix();
+                    // Issue #12: a matriz é a **mundial** (pai × local); nós
+                    // ausentes do mapa caem na transformação local.
+                    let model_mat = world_matrices
+                        .get(&node.id)
+                        .copied()
+                        .unwrap_or_else(|| node.transform.to_matrix());
                     let normal_mat = model_mat.inverse().transpose();
                     let camera_uniform = CameraUniform {
                         view_proj: camera_view_proj,
