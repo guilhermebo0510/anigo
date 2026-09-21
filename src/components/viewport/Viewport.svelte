@@ -185,6 +185,20 @@
     }
   }
 
+  /**
+   * P0 §8: geometria canônica do núcleo que está na GPU + revisão estática.
+   * O App usa isso para o teste de paridade da exportação (nunca para deformar).
+   */
+  export function getCoreGeometry(): {
+    geometry: ReturnType<WebGpuViewportRenderer["getCoreGeometry"]>;
+    staticRevision: number;
+  } {
+    return {
+      geometry: renderer?.getCoreGeometry?.() ?? null,
+      staticRevision: renderer?.getCoreStaticRevision?.() ?? 0,
+    };
+  }
+
   export function getMorphCoverage(): { implemented: number; total: number; explicit: number } | null {
     try {
       return (renderer as any)?.getMorphCoverage?.() ?? null;

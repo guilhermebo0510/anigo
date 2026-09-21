@@ -1,0 +1,55 @@
+{
+  "$comment": "Export manifest v1 fixture — a identidade verificável do artefato exportado. Decodificado por src/contracts/export_manifest.v1.ts (viewport) e por crates/anigo-core/src/export.rs (Rust); os checksums da base são os bytes do core_snapshot_v1.json, então o teste de paridade do frontend compara o que o viewport desenha com o que foi exportado usando dados reais.",
+  "format_version": 1,
+  "generator": "anigo-core/export",
+  "project": {
+    "project_id": "prj_fixture",
+    "project_name": "Fixture Project",
+    "character_id": "chr_canonical",
+    "base_gender": "Male",
+    "static_revision": 3,
+    "dynamic_revision": 7,
+    "snapshot_version": 1
+  },
+  "geometry": {
+    "vertex_count": 3,
+    "index_count": 3,
+    "triangle_count": 1,
+    "vertex_stride_bytes": 72,
+    "topology_hash": "00000000deadbeef",
+    "base_vertex_checksum": "8be17484557b3c99",
+    "base_index_checksum": "756241e1be8c9396",
+    "catalog_fingerprint": "0123456789abcdef",
+    "mesh_uri": "anigo://fixture/triangle",
+    "mesh_asset_id": "ast_fixture_mesh"
+  },
+  "deformation": {
+    "authority": "core",
+    "morph_total_deltas": 3,
+    "active_channels": 2,
+    "morph_weights": [
+      {
+        "target": "mrf_head_width",
+        "slider_id": "head_width",
+        "value": 1.2,
+        "weight": 0.2
+      },
+      {
+        "target": "mrf_jaw_v_line_taper",
+        "slider_id": "jaw_v_line_taper",
+        "value": 0.6,
+        "weight": 0.1
+      }
+    ],
+    "deformed_vertex_checksum": "7d2f610511d7c58e",
+    "deformed_position_checksum": "7d66fde551e5fc52"
+  },
+  "skin": {
+    "bone_count": 24,
+    "bind_pose": "canonical_rest",
+    "palette_is_identity": true,
+    "palette_checksum": "be26cf6477107025",
+    "skinned_vertices": 3,
+    "unskinned_vertices": 0
+  }
+}

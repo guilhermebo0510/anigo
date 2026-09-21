@@ -1,6 +1,7 @@
 pub mod bone_sync;
 pub mod command;
 pub mod deformation;
+pub mod export;
 pub mod ids;
 pub mod math;
 pub mod mesh;
@@ -18,6 +19,11 @@ pub use command::{
     execute_command, restore_from_log, AppliedCommand, ChangeScope, Command, CommandError,
     CommandHistory, CommandLog, CommandLogEntry, CommandOutcome, HistoryEntry, MaterialPatch,
     MeshPreset, ReplayedLog, Revision, COMMAND_LOG_VERSION,
+};
+pub use export::{
+    buffer_checksum, build_export_bundle, manifest_from_json, ExportBundle, ExportDeformationInfo,
+    ExportError, ExportGeometryInfo, ExportManifest, ExportProjectInfo, ExportRenderInfo,
+    ExportRequest, ExportSkinInfo, EXPORT_FORMAT_VERSION, EXPORT_GENERATOR,
 };
 pub use deformation::{
     apply_proportions, canonical_base_mesh, catalog_weights, interpolate_gender, prepare_base_mesh,

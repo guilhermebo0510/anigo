@@ -131,16 +131,16 @@ export function isCoreHistoryReport(value: unknown): value is CoreHistoryReport 
 
 /** Wrapper do transporte: valida a forma de tudo que sai/entra do núcleo. */
 export class CoreTransport {
-  private invoker: CoreInvoker | null;
+  private invokerRef: CoreInvoker | null;
   private lastError: string | null = null;
 
   constructor(invoker: CoreInvoker | null) {
-    this.invoker = invoker;
+    this.invokerRef = invoker;
   }
 
   /** Whether a core is reachable right now. */
   get available(): boolean {
-    return this.invoker !== null;
+    return this.invokerRef !== null;
   }
 
   /** Última falha de transporte (diagnóstico na status bar). */
@@ -148,12 +148,17 @@ export class CoreTransport {
     return this.lastError;
   }
 
+  /** Invoker cru (usado pelos comandos de exportação, que têm payload próprio). */
+  get invoker(): CoreInvoker | null {
+    return this.invokerRef;
+  }
+
   private async call(command: string, args?: Record<string, unknown>): Promise<unknown> {
-    if (!this.invoker) {
+    if (!this.invokerRef) {
       throw new CoreBridgeError("core_unavailable", `${command} requires the Rust core`);
     }
     try {
-      const result = await this.invoker(command, args);
+      const result = await this.invokerRef(command, args);
       this.lastError = null;
       return result;
     } catch (error) {
@@ -271,6 +276,14 @@ export class CoreSessionClient {
 
   get error(): string | null {
     return this.transport.error;
+  }
+
+  /**
+   * P0 §8: o invoker cru do núcleo, para serviços que chamam comandos próprios
+   * (exportação). Fica na sessão para que o App não monte um segundo transporte.
+   */
+  get invoker(): CoreInvoker | null {
+    return this.transport.invoker;
   }
 
   async applyCommand(command: CommandWire): Promise<CommandOutcomeWire> {

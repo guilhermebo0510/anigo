@@ -65,6 +65,15 @@
     resolveCoreInvoker,
     type CoreSnapshotDelivery,
   } from "./services/core_bridge";
+  import { computePasses, renderPasses } from "./contracts/render_contract.v1";
+  import {
+    ExportServiceError,
+    describeParity,
+    exportCanonicalFrame,
+    exportCanonicalGlb,
+    exportFileName,
+    type ExportParityReport,
+  } from "./services/export_service";
   import type { DiagnosticsSummary, RenderDiagnostic } from "./services/render_diagnostics";
   import { HistoryAlignment } from "./services/history_alignment";
   import { buildCommand, type CommandIntent } from "./services/command_builder";
@@ -592,6 +601,20 @@
   // snapshot que ele entrega. Sem núcleo (browser), a geometria canônica fica
   // indisponível e o viewport anuncia degradação — nunca deforma por conta própria.
   let coreClient: CoreSessionClient | null = null;
+
+  // P0 §8: exportação canônica (o arquivo é escrito pelo núcleo; a UI só escolhe
+  // o caminho, acompanha e mostra o relatório de paridade viewport ⇄ exportação).
+  type ExportResolution = "fhd" | "2k" | "4k";
+  const EXPORT_RESOLUTIONS: Record<ExportResolution, { label: string; width: number; height: number }> = {
+    fhd: { label: "1920×1080 (FHD)", width: 1920, height: 1080 },
+    "2k": { label: "2560×1440 (2K)", width: 2560, height: 1440 },
+    "4k": { label: "3840×2160 (4K)", width: 3840, height: 2160 },
+  };
+  let exportResolution = $state<ExportResolution>("fhd");
+  let exportBusy = $state(false);
+  let exportReport = $state<ExportParityReport | null>(null);
+  let exportMessage = $state("Exportação canônica: o núcleo escreve o arquivo e o viewport confere a paridade.");
+  let exportError = $state<string | null>(null);
   // P1-02: diagnóstico do renderer visível no shell (último evento + resumo).
   let lastDiagnostic = $state<RenderDiagnostic | null>(null);
   let viewportDiagnostics = $state<DiagnosticsSummary>({
@@ -945,6 +968,99 @@
     handleOutlineChange(false);
     handleShadowThresholdChange(false);
     reportLiveTelemetry();
+  }
+
+  /**
+   * P0 §8 — exportação canônica.
+   *
+   * O núcleo escreve o artefato (GLB da malha deformada ou PNG do renderer
+   * canônico) **e** o manifesto ao lado; aqui o manifesto é conferido contra a
+   * geometria que o viewport está desenhando. Sem núcleo (browser/dev server) o
+   * export é recusado explicitamente — nunca um segundo caminho de geometria.
+   */
+  async function runExport(kind: "glb" | "frame") {
+    if (exportBusy) return;
+    const invoker = coreClient?.invoker ?? null;
+    const { geometry, staticRevision } = viewportRef?.getCoreGeometry?.() ?? {
+      geometry: null,
+      staticRevision: 0,
+    };
+    exportBusy = true;
+    exportError = null;
+    exportReport = null;
+    try {
+      if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+        throw new ExportServiceError(
+          "core_unavailable",
+          "a exportação usa a sessão canônica do núcleo (disponível no app desktop Tauri)"
+        );
+      }
+      const { invoke } = await import("@tauri-apps/api/core");
+      const dirs = await invoke<{ exports_dir: string; renders_dir: string }>("get_studio_directories");
+      const revisions = {
+        staticRevision: staticRevision || coreClient?.static_revision || 0,
+        dynamicRevision: coreClient?.dynamic_revision || 0,
+      };
+
+      if (kind === "glb") {
+        const name = exportFileName(currentProjectName, revisions, "glb");
+        const path = joinStudioPath(dirs.exports_dir, name);
+        const result = await exportCanonicalGlb({
+          invoker,
+          path,
+          geometry,
+          staticRevision: revisions.staticRevision,
+          // O caminho CPU (WebGL2) acumula os deltas do núcleo: dá para comparar
+          // a malha deformada byte a byte. No WebGPU quem soma é o compute shader.
+          verifyDeformed: (viewportRef as any)?.renderer?.backend === "webgl2",
+        });
+        exportReport = result.parity;
+        exportMessage = result.parity.ok
+          ? `GLB exportado (${Math.round(result.glbBytes / 1024)} KB) em ${result.glbPath} — ${describeParity(result.parity)}`
+          : `GLB exportado em ${result.glbPath}, mas a paridade falhou: ${describeParity(result.parity)}`;
+        if (!result.parity.ok) {
+          viewportRef?.reportDiagnostic?.("contract_drift", "exportação divergiu do viewport", {
+            detail: describeParity(result.parity),
+          });
+          refreshViewportDiagnostics();
+        }
+      } else {
+        const resolution = EXPORT_RESOLUTIONS[exportResolution];
+        const name = exportFileName(currentProjectName, revisions, "png");
+        const path = joinStudioPath(dirs.renders_dir, name);
+        const result = await exportCanonicalFrame({
+          invoker,
+          path,
+          width: resolution.width,
+          height: resolution.height,
+          geometry,
+          staticRevision: revisions.staticRevision,
+        });
+        exportReport = result.parity;
+        exportMessage = result.parity.ok
+          ? `Frame ${resolution.label} renderizado pelo núcleo (${result.render.backend}, ${
+              result.render.draw_calls
+            } draw calls, ${result.render.render_time_ms.toFixed(1)} ms) em ${result.imagePath}`
+          : `Frame renderizado em ${result.imagePath}, mas a paridade falhou: ${describeParity(result.parity)}`;
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      exportError = detail;
+      exportMessage = "exportação não concluída";
+      // P1-02: falha de exportação vai para o mesmo canal de diagnóstico.
+      viewportRef?.reportDiagnostic?.("unexpected_error", "falha na exportação canônica", {
+        detail,
+      });
+      refreshViewportDiagnostics();
+    } finally {
+      exportBusy = false;
+    }
+  }
+
+  /** Junta pasta + nome sem depender de separador do sistema. */
+  function joinStudioPath(directory: string, name: string): string {
+    const separator = directory.includes("\\") ? "\\" : "/";
+    return directory.endsWith(separator) ? `${directory}${name}` : `${directory}${separator}${name}`;
   }
 
   function handleUndo() {
@@ -3684,30 +3800,67 @@
           <div class="control-group">
             <div class="group-title">RESOLUÇÃO DE EXPORTAÇÃO</div>
             <div class="btn-grid">
-              <button class="btn-secondary selected">1920×1080 (FHD)</button>
-              <button class="btn-secondary">2560×1440 (2K)</button>
-              <button class="btn-secondary">3840×2160 (4K)</button>
+              {#each Object.entries(EXPORT_RESOLUTIONS) as [key, resolution] (key)}
+                <button
+                  class="btn-secondary"
+                  class:selected={exportResolution === key}
+                  onclick={() => (exportResolution = key as ExportResolution)}
+                >
+                  {resolution.label}
+                </button>
+              {/each}
             </div>
           </div>
 
           <div class="control-group">
             <div class="group-title">PASSES DE RENDERIZAÇÃO NPR</div>
-            <label class="check-row">
-              <input type="checkbox" checked />
-              <span>Beauty Toon Completo</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" checked />
-              <span>Linhas Inverted Hull Isoladas</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" />
-              <span>Pass de Sombra Flat</span>
-            </label>
+            {#each renderPasses() as pass (pass.name)}
+              <label class="check-row">
+                <input type="checkbox" checked disabled />
+                <span>
+                  {pass.name === "cel" ? "Beauty Toon Completo" : "Linhas Inverted Hull"} · {pass.shader}
+                </span>
+              </label>
+            {/each}
+            {#each computePasses() as pass (pass.name)}
+              <label class="check-row">
+                <input type="checkbox" checked disabled />
+                <span>Morphs esparsos (compute canônico) · {pass.shader}</span>
+              </label>
+            {/each}
           </div>
 
           <div class="control-group">
-            <button class="btn-action">Renderizar Imagem Atual</button>
+            <button class="btn-action" disabled={exportBusy} onclick={() => runExport("frame")}>
+              {exportBusy ? "Exportando…" : "Renderizar Imagem Atual"}
+            </button>
+            <button class="btn-secondary" disabled={exportBusy} onclick={() => runExport("glb")}>
+              Exportar GLB Canônico (malha + manifesto)
+            </button>
+          </div>
+
+          <div class="control-group">
+            <div class="group-title">RELATÓRIO DE EXPORTAÇÃO</div>
+            <p class="export-message" data-testid="export-message">{exportMessage}</p>
+            {#if exportError}
+              <p class="export-error" data-testid="export-error">{exportError}</p>
+            {/if}
+            {#if exportReport}
+              {#if exportReport.problems.length > 0}
+                <div class="export-problems">
+                  {#each exportReport.problems as problem (problem.code + problem.field)}
+                    <div class="export-problem">
+                      <code>[{problem.code}]</code>
+                      <span>{problem.field}: arquivo {problem.expected} × viewport {problem.actual}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <p class="export-checks">
+                {exportReport.checks.length} campo(s) conferido(s) contra o manifesto do núcleo{#if exportReport.skipped.length > 0},
+                  {exportReport.skipped.length} não conferível(is) neste backend: {exportReport.skipped.join("; ")}{/if}.
+              </p>
+            {/if}
           </div>
 
         {/if}
@@ -4448,6 +4601,56 @@
     background: #392453;
     border-color: #c084fc;
     color: #ffffff;
+  }
+
+  .btn-secondary:disabled,
+  .btn-action:disabled {
+    opacity: 0.55;
+    cursor: progress;
+  }
+
+  /* Relatório de exportação canônica (§8) — paridade viewport × manifesto. */
+  .export-message {
+    margin: 0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #cbd5e1;
+    word-break: break-word;
+  }
+
+  .export-error {
+    margin: 6px 0 0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #fca5a5;
+    word-break: break-word;
+  }
+
+  .export-problems {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .export-problem {
+    font-size: 0.68rem;
+    color: #fca5a5;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    border-radius: 4px;
+    padding: 4px 6px;
+  }
+
+  .export-problem code {
+    color: #fdba74;
+    margin-right: 4px;
+  }
+
+  .export-checks {
+    margin: 6px 0 0;
+    font-size: 0.66rem;
+    color: #94a3b8;
   }
 
   .btn-action {

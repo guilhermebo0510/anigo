@@ -11,6 +11,9 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    // Ambientes de preview (Arena/sandbox, túneis) servem o dev server por um
+    // host externo: sem isto o Vite devolve 403 e a página não carrega.
+    allowedHosts: true,
     hmr: host
       ? {
           protocol: "ws",

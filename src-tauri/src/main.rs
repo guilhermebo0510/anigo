@@ -16,6 +16,31 @@ use anigo_core::scene::Scene;
 use anigo_renderer::HeadlessRenderer;
 use bridge::{LiveBridgeServer, LiveWindowState};
 
+/// P0 §7/§8: resposta da exportação de GLB (o arquivo é escrito pelo **núcleo**;
+/// o frontend só escolhe o caminho e confere o manifesto).
+#[derive(Serialize, Deserialize)]
+pub struct ExportGlbResponse {
+    pub glb_path: String,
+    pub manifest_path: String,
+    pub glb_bytes: u64,
+    pub glb_checksum: String,
+    pub manifest: serde_json::Value,
+}
+
+/// Resposta da exportação de frame (PNG renderizado pelo renderer canônico).
+#[derive(Serialize, Deserialize)]
+pub struct ExportFrameResponse {
+    pub image_path: String,
+    pub manifest_path: String,
+    pub image_bytes: u64,
+    pub adapter_name: String,
+    pub backend: String,
+    pub draw_calls: u32,
+    pub triangle_count: usize,
+    pub render_time_ms: f64,
+    pub manifest: serde_json::Value,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ViewportFrameResponse {
     pub image_base64: String,
@@ -376,6 +401,8 @@ pub struct StudioDirectories {
     pub assets_dir: String,
     pub autosave_dir: String,
     pub renders_dir: String,
+    /// P0 §8: pasta canônica de exportação (GLB/PNG + manifesto ao lado).
+    pub exports_dir: String,
 }
 
 #[tauri::command]
@@ -385,17 +412,20 @@ async fn get_studio_directories() -> Result<StudioDirectories, String> {
     let assets = base.join("Assets");
     let autosave = base.join("Autosave");
     let renders = base.join("Renders");
+    let exports = base.join("Exports");
 
     let _ = std::fs::create_dir_all(&projects);
     let _ = std::fs::create_dir_all(&assets);
     let _ = std::fs::create_dir_all(&autosave);
     let _ = std::fs::create_dir_all(&renders);
+    let _ = std::fs::create_dir_all(&exports);
 
     Ok(StudioDirectories {
         projects_dir: projects.to_string_lossy().to_string(),
         assets_dir: assets.to_string_lossy().to_string(),
         autosave_dir: autosave.to_string_lossy().to_string(),
         renders_dir: renders.to_string_lossy().to_string(),
+        exports_dir: base.join("Exports").to_string_lossy().to_string(),
     })
 }
 
@@ -572,6 +602,147 @@ async fn core_load_document(
 }
 
 /// Devolve o documento canônico serializado (fonte da verdade ao salvar).
+/// Exporta o GLB canônico (malha deformada pelo núcleo) + o manifesto.
+///
+/// A pasta de exportação aparece no erro quando o caminho é inválido — nada de
+/// falha silenciosa com arquivo ausente (P1-01).
+#[tauri::command]
+async fn core_export_glb(
+    path: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<ExportGlbResponse, String> {
+    let mut state = state.lock().await;
+    let (glb_path, manifest_path, glb_bytes, glb_checksum) =
+        state.session.export_glb_to_file(&path).map_err(|error| {
+            format!(
+                "falha ao exportar GLB em '{}': {}",
+                std::path::Path::new(&path)
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string()),
+                error
+            )
+        })?;
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&manifest_path)
+            .map_err(|error| format!("manifesto não legível em '{manifest_path}': {error}"))?,
+    )
+    .map_err(|error| format!("manifesto inválido em '{manifest_path}': {error}"))?;
+
+    tracing::info!(
+        target: "anigo::export",
+        glb = %glb_path,
+        bytes = glb_bytes,
+        checksum = %glb_checksum,
+        "canonical GLB exported"
+    );
+
+    Ok(ExportGlbResponse {
+        glb_path,
+        manifest_path,
+        glb_bytes,
+        glb_checksum,
+        manifest,
+    })
+}
+
+/// Renderiza o frame de exportação com o renderer canônico e grava PNG +
+/// manifesto (mesma geometria, mesmos shaders e mesmo contrato do viewport).
+#[tauri::command]
+async fn core_export_frame(
+    path: String,
+    width: u32,
+    height: u32,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<ExportFrameResponse, String> {
+    let mut state = state.lock().await;
+    state.ensure_scene_current();
+
+    if state.renderer.is_none() {
+        state.renderer = HeadlessRenderer::new().await.ok();
+    }
+    let renderer = state
+        .renderer
+        .as_ref()
+        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+
+    let width = width.max(64);
+    let height = height.max(64);
+    let (image_buf, metrics) = renderer
+        .render_scene(&state.scene, width, height)
+        .await
+        .map_err(|e| format!("Render error: {:#}", e))?;
+
+    let render_info = anigo_core::export::ExportRenderInfo {
+        width,
+        height,
+        color_format: format!(
+            "{:?}",
+            anigo_renderer::render_contract::offscreen_color_format()
+        ),
+        depth_format: format!("{:?}", anigo_renderer::render_contract::depth_format()),
+        msaa_samples: anigo_renderer::render_contract::msaa_sample_count(),
+        render_passes: anigo_renderer::render_contract::render_pass_order()
+            .into_iter()
+            .map(|name| name.to_string())
+            .collect(),
+        clear_source: anigo_renderer::render_contract::clear_color_source().to_string(),
+        clear_color: state.scene.background_color,
+        adapter_name: metrics.adapter_name.clone(),
+        backend: metrics.backend.clone(),
+        render_time_ms: metrics.render_time_ms,
+    };
+
+    let manifest = state
+        .session
+        .export_frame_manifest(render_info)
+        .map_err(|error| format!("manifesto da exportação de frame falhou: {error}"))?;
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("manifesto não serializou: {error}"))?;
+
+    let image_path = std::path::PathBuf::from(&path);
+    if let Some(parent) = image_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Erro ao criar pasta de export: {error}"))?;
+        }
+    }
+
+    let mut png_bytes = Vec::new();
+    let encoder = PngEncoder::new(&mut png_bytes);
+    encoder
+        .write_image(&image_buf, width, height, ColorType::Rgba8.into())
+        .map_err(|e| format!("PNG encode error: {:#}", e))?;
+    std::fs::write(&image_path, &png_bytes)
+        .map_err(|error| format!("Erro ao gravar o PNG: {error}"))?;
+
+    let manifest_path = core_session::manifest_path_for(&image_path);
+    std::fs::write(&manifest_path, &manifest_json)
+        .map_err(|error| format!("Erro ao gravar o manifesto: {error}"))?;
+
+    tracing::info!(
+        target: "anigo::export",
+        png = %image_path.to_string_lossy(),
+        width,
+        height,
+        triangles = metrics.triangle_count,
+        "canonical export frame rendered"
+    );
+
+    Ok(ExportFrameResponse {
+        image_path: image_path.to_string_lossy().to_string(),
+        manifest_path: manifest_path.to_string_lossy().to_string(),
+        image_bytes: png_bytes.len() as u64,
+        adapter_name: metrics.adapter_name,
+        backend: metrics.backend,
+        draw_calls: metrics.draw_calls,
+        triangle_count: metrics.triangle_count,
+        render_time_ms: metrics.render_time_ms,
+        manifest: serde_json::from_str(&manifest_json)
+            .map_err(|error| format!("manifesto inválido: {error}"))?,
+    })
+}
+
 #[tauri::command]
 async fn core_document(state: State<'_, Arc<Mutex<AppState>>>) -> Result<String, String> {
     let state = state.lock().await;
@@ -676,6 +847,8 @@ fn main() {
             core_load_document,
             core_document,
             core_deformed_mesh,
+            core_export_glb,
+            core_export_frame,
         ])
         .build(tauri::generate_context!());
 

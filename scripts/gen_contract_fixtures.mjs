@@ -73,6 +73,16 @@ export function identityPalette(boneCount) {
   return palette;
 }
 
+/** FNV-1a-64 de bytes crus, em hex de 16 dígitos (mesmo algoritmo do Rust/TS). */
+export function fnv1a64Bytes(bytes) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
 /** Packs sparse morph deltas into the frozen 32-byte layout. */
 export function packDeltas(deltas) {
   const buffer = Buffer.alloc(deltas.length * MORPH_DELTA_STRIDE_BYTES);
@@ -85,6 +95,9 @@ export function packDeltas(deltas) {
   });
   return buffer;
 }
+
+/** Dados crus do fixture (o manifesto de exportação reusa a mesma malha). */
+let fixtureData;
 
 const fixture = (() => {
   // 1-triangle mesh — enough to exercise every field of the vertex layout.
@@ -134,6 +147,8 @@ const fixture = (() => {
       delta_count: 1,
     },
   ];
+
+  fixtureData = { vertices, indices, deltas, channels };
 
   return {
     $comment:
@@ -313,6 +328,125 @@ export function assetIdForUri(uri) {
   return `ast_${fnv1a64(normalizeUri(uri)).toString(16).padStart(16, "0")}`;
 }
 
+/**
+ * Manifesto de exportação (P0 "Consolidar o renderer" / §8 "viewport e
+ * exportação passarem teste de paridade").
+ *
+ * Derivado do fixture do snapshot — o manifesto **é** a identidade verificável
+ * do artefato exportado, então os checksums da geometria base saem exatamente
+ * dos bytes que o snapshot entrega ao viewport (`vertex_buffer_base64` /
+ * `index_buffer_base64`). Quem confere do lado Rust: `crates/anigo-core/src/
+ * export.rs::tests::fixture_manifest_agrees_with_the_snapshot_fixture`.
+ *
+ * A parte deformada segue a regra canônica de acumulação (a mesma do WGSL e do
+ * `apply_cpu` do núcleo): `p += w · Δp` e `n = normalize(n + Σ w · Δn)`, com
+ * canais de |w| ≤ 1e-6 ignorados. O teste do TypeScript reproduz esses dois
+ * checksums passando pelo caminho real do viewport (`applyDeltasCpu`).
+ */
+export function applyFixtureMorphs(vertices, deltas, morphWeights, channels) {
+  // Aritmética em **float32**, exatamente como o buffer do viewport: as posições,
+  // normais e deltas vêm de bytes f32 (`Buffer.writeFloatLE`/`Math.fround`), e
+  // cada acumulação é arredondada ao ser gravada de volta no buffer. Sem isso o
+  // checksum do fixture não bateria com o `applyDeltasCpu` do viewport.
+  const f32 = Math.fround;
+  const out = vertices.map((vertex) => ({
+    ...vertex,
+    position: vertex.position.map(f32),
+    normal: vertex.normal.map(f32),
+  }));
+  for (const channel of channels) {
+    const entry = morphWeights.find((weight) => weight.slider_id === channel.slider_id);
+    // O peso chega como número de JSON (f64) — o mesmo que o viewport usa.
+    const weight = entry ? entry.weight : 0;
+    if (Math.abs(weight) <= 1e-6) continue;
+    for (let index = 0; index < channel.delta_count; index++) {
+      const delta = deltas[channel.start_offset + index];
+      if (!delta) continue;
+      const vertex = out[delta.vertexIndex];
+      if (!vertex) continue;
+      for (let axis = 0; axis < 3; axis++) {
+        const dpos = f32(delta.position[axis]);
+        const dnorm = f32(delta.normal[axis]);
+        vertex.position[axis] = f32(vertex.position[axis] + f32(weight * dpos));
+        vertex.normal[axis] = f32(vertex.normal[axis] + f32(weight * dnorm));
+      }
+    }
+  }
+  for (const vertex of out) {
+    const squared =
+      vertex.normal[0] * vertex.normal[0] +
+      vertex.normal[1] * vertex.normal[1] +
+      vertex.normal[2] * vertex.normal[2];
+    if (squared > 1e-12) {
+      const inverse = 1 / Math.sqrt(squared);
+      vertex.normal = vertex.normal.map((value) => f32(value * inverse));
+    }
+  }
+  return out;
+}
+
+const exportManifestFixture = (() => {
+  const { vertices, indices, deltas, channels } = fixtureData;
+  const staticPayload = fixture.static_payload;
+  const dynamic = fixture.dynamic;
+  const deformed = applyFixtureMorphs(vertices, deltas, dynamic.morph_weights, channels);
+  const vertexBytes = Buffer.from(staticPayload.vertex_buffer_base64, "base64");
+  const indexBytes = Buffer.from(staticPayload.index_buffer_base64, "base64");
+  const deformedBytes = packVertices(deformed);
+  const deformedPositions = Buffer.alloc(deformed.length * 12);
+  deformed.forEach((vertex, i) => {
+    vertex.position.forEach((value, axis) => deformedPositions.writeFloatLE(value, i * 12 + axis * 4));
+  });
+
+  return {
+    $comment:
+      "Export manifest v1 fixture — a identidade verificável do artefato exportado. " +
+      "Decodificado por src/contracts/export_manifest.v1.ts (viewport) e por " +
+      "crates/anigo-core/src/export.rs (Rust); os checksums da base são os bytes do " +
+      "core_snapshot_v1.json, então o teste de paridade do frontend compara o que o " +
+      "viewport desenha com o que foi exportado usando dados reais.",
+    format_version: 1,
+    generator: "anigo-core/export",
+    project: {
+      project_id: dynamic.project_id,
+      project_name: dynamic.project_name,
+      character_id: dynamic.character_id,
+      base_gender: dynamic.base_gender,
+      static_revision: staticPayload.static_revision,
+      dynamic_revision: dynamic.dynamic_revision,
+      snapshot_version: fixture.snapshot_version,
+    },
+    geometry: {
+      vertex_count: vertices.length,
+      index_count: indices.length,
+      triangle_count: indices.length / 3,
+      vertex_stride_bytes: VERTEX_STRIDE_BYTES,
+      topology_hash: staticPayload.topology_hash,
+      base_vertex_checksum: fnv1a64Bytes(vertexBytes),
+      base_index_checksum: fnv1a64Bytes(indexBytes),
+      catalog_fingerprint: staticPayload.catalog_fingerprint,
+      mesh_uri: staticPayload.mesh_uri,
+      mesh_asset_id: staticPayload.mesh_asset_id,
+    },
+    deformation: {
+      authority: "core",
+      morph_total_deltas: staticPayload.morph_total_deltas,
+      active_channels: dynamic.morph_weights.length,
+      morph_weights: dynamic.morph_weights,
+      deformed_vertex_checksum: fnv1a64Bytes(deformedBytes),
+      deformed_position_checksum: fnv1a64Bytes(deformedPositions),
+    },
+    skin: {
+      bone_count: BONE_COUNT,
+      bind_pose: staticPayload.skin.bind_pose,
+      palette_is_identity: staticPayload.skin.palette_is_identity,
+      palette_checksum: fnv1a64Bytes(Buffer.from(new Float32Array(identityPalette(BONE_COUNT)).buffer)),
+      skinned_vertices: vertices.length,
+      unskinned_vertices: 0,
+    },
+  };
+})();
+
 const assetIdsFixture = (() => {
   const uris = [
     "anigo://base/anigo_base_male.glb",
@@ -460,6 +594,8 @@ function compactNumberArrays(json) {
 
 const serialized = `${JSON.stringify(fixture, null, 2)}\n`;
 const target = path.join(outDir, "core_snapshot_v1.json");
+const exportManifestSerialized = `${JSON.stringify(exportManifestFixture, null, 2)}\n`;
+const exportManifestTarget = path.join(outDir, "export_manifest_v1.json");
 const assetIdsSerialized = `${JSON.stringify(assetIdsFixture, null, 2)}\n`;
 const assetIdsTarget = path.join(outDir, "asset_ids_v1.json");
 const commandLogSerialized = `${JSON.stringify(commandLogFixture, null, 2)}\n`;
@@ -470,6 +606,7 @@ const outputs = [
   { target, serialized },
   { target: assetIdsTarget, serialized: assetIdsSerialized },
   { target: commandLogTarget, serialized: commandLogSerialized },
+  { target: exportManifestTarget, serialized: exportManifestSerialized },
   { target: renderContractFile, serialized: renderContractSerialized },
   { target: renderContractTsTarget, serialized: renderContractTsSerialized },
 ];

@@ -827,6 +827,22 @@ export class WebGpuViewportRenderer {
     this.report(code, message, options);
   }
 
+  /**
+   * P0 §8: geometria canônica que está na GPU — a mesma que o compute deforma.
+   *
+   * É a fonte do teste de paridade viewport ⇄ exportação: o manifesto exportado
+   * pelo núcleo é conferido contra estes bytes (checksum de vértices, índices e
+   * paleta). `null` = modo degradado (sem núcleo).
+   */
+  public getCoreGeometry(): ViewportGeometry | null {
+    return this.coreGeometry;
+  }
+
+  /** Revisão estática que o viewport recebeu (comparada com a do manifesto). */
+  public getCoreStaticRevision(): number {
+    return this.coreStaticRevision;
+  }
+
   /** Diagnósticos acumulados (status bar, telemetria, testes). */
   public getDiagnostics(): { summary: DiagnosticsSummary; entries: readonly RenderDiagnostic[] } {
     return { summary: this.diagnostics.summary(), entries: this.diagnostics.entries };
