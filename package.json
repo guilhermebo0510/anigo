@@ -10,7 +10,9 @@
     "tauri": "tauri",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint src --ext .ts,.svelte || true",
-    "test": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/character/*.test.ts\" \"tests/e2e/*.test.ts\""
+    "test": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/character/*.test.ts\" \"tests/contracts/*.test.ts\" \"tests/e2e/*.test.ts\"",
+    "test:contracts": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/contracts/*.test.ts\"",
+    "check:rust": "node scripts/check_rust_syntax.mjs && node scripts/audit_calls.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

@@ -32,6 +32,11 @@ export type StableIdKind = keyof typeof ID_PREFIXES;
 
 const SLUG_PATTERN = /^[a-z0-9_]+$/;
 
+/** Type guard for untrusted kind strings (e.g. coming from a plugin or a file). */
+export function isStableIdKind(value: unknown): value is StableIdKind {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(ID_PREFIXES, value);
+}
+
 /** Validates the `<prefix>_<slug>` rule for a given entity kind. */
 export function isValidStableId(raw: unknown, kind: StableIdKind): raw is string {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > ID_MAX_LEN) return false;
