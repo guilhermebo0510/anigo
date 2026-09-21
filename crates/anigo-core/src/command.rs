@@ -20,12 +20,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{LightId, MaterialId, MorphId, NodeId};
+use crate::ids::{AssetId, LightId, MaterialId, MorphId, NodeId};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
 use crate::project::{
-    AssetEntry, AssetKind, MeshRef, NodeSlot, ProjectError, ProjectState, SceneState,
-    URI_BASE_FEMALE, URI_BASE_MALE, URI_PRESET_CUBE, URI_PRESET_SPHERE,
+    MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
+    URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
 use crate::scene::StylizedMaterial;
 use crate::somatotype::SomatotypeCoords;
@@ -693,9 +693,25 @@ impl Command {
                         )));
                     }
                 }
+                if let Command::SetNodeMesh { mesh, .. } = self {
+                    if let Some(reference) = mesh {
+                        // The registry is authoritative project data: a command
+                        // *references* an asset, it never fabricates one. An
+                        // entry created during `apply` could not be removed on
+                        // undo, which would break the exactness of the history.
+                        require_known_asset(state, &reference.asset_id)?;
+                    }
+                }
                 Ok(())
             }
-            Command::LoadMeshPreset { .. } => Ok(()),
+            Command::LoadMeshPreset { preset } => {
+                // Presets resolve to their canonical built-in asset, which every
+                // well-formed project registers (`BUILTIN_MESH_URIS`).
+                require_known_asset(
+                    state,
+                    &AssetId::for_uri(preset.uri(state.character.base_gender)),
+                )
+            }
             Command::SetBackgroundColor { color } => {
                 for component in color {
                     require_finite("background_color", *component)?;
@@ -886,20 +902,34 @@ impl Command {
                     mesh: node.mesh.clone(),
                 })
             }
-            Command::LoadMeshPreset { .. } => {
+            Command::LoadMeshPreset { preset } => {
                 let node_id = NodeId::canonical_character();
                 let node = find_node(state, &node_id)?;
-                Ok(Command::Batch {
-                    commands: vec![
-                        Command::SetNodeMesh {
-                            node_id: node_id.clone(),
-                            mesh: node.mesh.clone(),
-                        },
-                        Command::SetBaseGender {
-                            gender: state.character.base_gender,
-                        },
-                    ],
-                })
+                let mut commands = Vec::new();
+                // The gender command may rewrite the node mesh when the node
+                // still points at a canonical base (`SetBaseGender` keeps the
+                // mesh and the archetype in sync), so it must run *before* the
+                // explicit mesh restore below, which has the last word.
+                commands.push(Command::SetBaseGender {
+                    gender: state.character.base_gender,
+                });
+                if !preset.supports_morphs() {
+                    // Loading a non-mannequin preset clears every morph override
+                    // (those presets have no sparse morph channels), so the
+                    // inverse has to put all of them back — otherwise undoing
+                    // "load preset" would silently discard the user's sliders.
+                    for (slider_id, value) in state.active_morph_values() {
+                        commands.push(Command::SetMorphValue {
+                            target: MorphId::for_slider(slider_id),
+                            value,
+                        });
+                    }
+                }
+                commands.push(Command::SetNodeMesh {
+                    node_id: node_id.clone(),
+                    mesh: node.mesh.clone(),
+                });
+                Ok(Command::Batch { commands })
             }
             Command::SetBackgroundColor { .. } => Ok(Command::SetBackgroundColor {
                 color: state.render.background_color,
@@ -1111,14 +1141,12 @@ impl Command {
                 Ok(())
             }
             Command::SetNodeMesh { node_id, mesh } => {
+                // Pure node mutation: the asset registry is never written here.
+                // Registering an asset under its own id but with a URI-derived
+                // key would either invalidate the project (`asset_id` and the
+                // map key must match) or leave an entry behind after undo.
                 let node = find_node_mut(state, node_id)?;
                 node.mesh = mesh.clone();
-                if let Some(reference) = mesh {
-                    state
-                        .assets
-                        .entry(reference.asset_id.clone())
-                        .or_insert_with(|| AssetEntry::from_uri(AssetKind::Mesh, format!("anigo://asset/{}", reference.asset_id)));
-                }
                 Ok(())
             }
             Command::LoadMeshPreset { preset } => {
@@ -1261,6 +1289,18 @@ fn slider_def_or_err(
     })
 }
 
+/// Rejects a mesh reference to an asset that is not part of the project.
+fn require_known_asset(state: &ProjectState, asset_id: &AssetId) -> Result<(), CommandError> {
+    if state.assets.contains_key(asset_id) {
+        Ok(())
+    } else {
+        Err(CommandError::UnknownTarget {
+            kind: "asset",
+            target: asset_id.to_string(),
+        })
+    }
+}
+
 fn find_node<'a>(state: &'a ProjectState, node_id: &NodeId) -> Result<&'a NodeSlot, CommandError> {
     state
         .scene
@@ -1297,6 +1337,13 @@ fn find_node_mut<'a>(
 pub struct CommandHistory {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
+    /// Accepted commands of the session, oldest first (§2.5 operation log).
+    ///
+    /// The undo stack is a *position* in the session; the log is the session
+    /// itself. Undoing does not erase it, so a project saved after some undos
+    /// still replays as the session that produced it. It is intentionally not
+    /// trimmed by `limit` (that bound is the undo depth, not the log).
+    log: Vec<CommandLogEntry>,
     limit: usize,
     sequence: u64,
     revision: Revision,
@@ -1334,6 +1381,7 @@ impl CommandHistory {
         Self {
             undo: Vec::new(),
             redo: Vec::new(),
+            log: Vec::new(),
             limit: limit.max(1),
             sequence: 0,
             revision: 0,
@@ -1381,9 +1429,9 @@ impl CommandHistory {
         self.redo.last().map(|entry| entry.description.as_str())
     }
 
-    /// Serializes the history log (deterministic; used by tests + autosave).
+    /// Serializes the session log (deterministic; used by tests + autosave).
     pub fn log_json(&self) -> Result<String, CommandError> {
-        serde_json::to_string_pretty(&self.undo).map_err(|e| CommandError::HistoryFailed(e.to_string()))
+        serde_json::to_string_pretty(&self.log).map_err(|e| CommandError::HistoryFailed(e.to_string()))
     }
 
     /// Executes a command, pushing it onto the undo stack.
@@ -1416,6 +1464,15 @@ impl CommandHistory {
             self.undo.remove(0);
         }
         self.redo.clear();
+        // Only *accepted* commands enter the operation log, and redo/undo never
+        // do: a redone command is the same entry of the session, not a new one.
+        self.log.push(CommandLogEntry {
+            sequence: self.sequence,
+            revision: self.revision,
+            description: applied.description.clone(),
+            scope: applied.scope,
+            command: applied.command.clone(),
+        });
 
         Ok(self.outcome(&applied))
     }
@@ -1462,10 +1519,11 @@ impl CommandHistory {
         Ok(outcome)
     }
 
-    /// Clears both stacks (project load / new project).
+    /// Clears both stacks and the session log (project load / new project).
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.log.clear();
         self.sequence = 0;
     }
 
@@ -1580,21 +1638,12 @@ impl CommandHistory {
     /// Exports the accepted commands as a persisted log.
     ///
     /// Only *valid* commands can be here: an entry is pushed after a successful
-    /// apply and never for a rejected command.
+    /// apply and never for a rejected command, and undoing does not remove it
+    /// (the log is the session, not the undo stack).
     pub fn export_log(&self) -> CommandLog {
         CommandLog {
             version: COMMAND_LOG_VERSION,
-            entries: self
-                .undo
-                .iter()
-                .map(|entry| CommandLogEntry {
-                    sequence: entry.sequence,
-                    revision: entry.revision,
-                    description: entry.description.clone(),
-                    scope: entry.scope,
-                    command: entry.command.clone(),
-                })
-                .collect(),
+            entries: self.log.clone(),
         }
     }
 }
@@ -2485,8 +2534,11 @@ mod tests {
                     description: "morph".to_string(),
                     scope: ChangeScope::Deformation,
                     command: Command::SetMorphValue {
+                        // Within the catalog range of `head_width` (0.75..1.35):
+                        // the *first* entry has to be valid for the test to
+                        // reach the corrupted second one.
                         target: MorphId::for_slider("head_width"),
-                        value: 1.4,
+                        value: 1.3,
                     },
                 },
                 CommandLogEntry {
@@ -2512,7 +2564,7 @@ mod tests {
         let recovered = restore_from_log(&project(), &prefix, 64).unwrap();
         assert_eq!(
             recovered.state.morph_value("head_width"),
-            1.4,
+            1.3,
             "the recoverable prefix restores the session"
         );
     }

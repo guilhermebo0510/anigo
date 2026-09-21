@@ -61,11 +61,13 @@ def annotate(path: str, label: str) -> int:
             index += 1
 
     # Falhas de teste não produzem `error[...]`: o cargo imprime os blocos
-    # `---- teste stdout ----` e a lista em `failures:`. Isto vira uma anotação
-    # própria para que o nome do teste e a asserção fiquem legíveis na aba Checks.
-    summary = test_failure_summary(lines)
-    if summary:
-        print(escape(f"{label}: falhas de teste\n\n{summary}", prefix="::error::"))
+    # `---- teste stdout ----` e a lista em `failures:`. Isto vira anotação
+    # própria (uma por bloco, em várias anotações) para que *todos* os testes
+    # quebrados fiquem legíveis na aba Checks — antes só o primeiro aparecia,
+    # o que escondia o resto da suíte.
+    test_annotations = test_failure_annotations(lines, label)
+    for message in test_annotations:
+        print(escape(message, prefix="::error::"))
 
     if not blocks:
         tail = "\n".join(lines[-400:]) or "(log vazio)"
@@ -96,22 +98,87 @@ def annotate(path: str, label: str) -> int:
     return 1
 
 
-def test_failure_summary(lines: list[str]) -> str:
-    """Trecho do log com o primeiro teste que falhou (+ lista final)."""
+BLOCK_HEADER = re.compile(r"^----\s+.+\s+stdout\s+----$")
+# O que interessa de um teste quebrado: onde estourou e a asserção. Os dumps de
+# `left:`/`right:` podem trazer um `ProjectState` inteiro (milhares de
+# caracteres) e são truncados.
+KEEP_LINE = re.compile(r"^(thread '|assertion |panicked at|called `|note: |\s*(left|right):)")
+
+
+def _truncate(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def failing_test_blocks(lines: list[str]) -> list[str]:
+    """Blocos `---- <teste> stdout ----` condensados (um por teste quebrado)."""
+    blocks: list[str] = []
+    index = 0
+    while index < len(lines) and len(blocks) < MAX_BLOCKS:
+        if not BLOCK_HEADER.match(lines[index]):
+            index += 1
+            continue
+        kept = [lines[index].strip()]
+        index += 1
+        while index < len(lines) and not BLOCK_HEADER.match(lines[index]):
+            if len(kept) < MAX_BLOCK_LINES and KEEP_LINE.match(lines[index]):
+                kept.append(_truncate(lines[index].strip(), 220))
+            index += 1
+        blocks.append("\n".join(kept))
+    return blocks
+
+
+def failing_test_names(lines: list[str]) -> list[str]:
+    """Nomes da lista final de `failures:` do cargo (a suíte inteira)."""
     start = None
     for index, line in enumerate(lines):
-        if line.startswith("---- ") and "stdout" in line:
-            start = index
+        if line.strip() == "failures:":
+            start = index + 1
+    if start is None:
+        return []
+    names: list[str] = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("test result"):
             break
-    if start is None:
-        for index, line in enumerate(lines):
-            if line.strip() == "failures:":
-                start = index
-                break
-    if start is None:
-        return ""
-    tail = "\n".join(lines[start : start + 60])
-    return tail[:ANNOTATION_CHARS]
+        names.append(stripped)
+    return names
+
+
+def test_failure_annotations(lines: list[str], label: str) -> list[str]:
+    """Anotações com *todos* os testes que falharam (nomes + asserção de cada um)."""
+    blocks = failing_test_blocks(lines)
+    names = failing_test_names(lines)
+    if not blocks and not names:
+        return []
+
+    header = f"{label}: falhas de teste"
+    annotations: list[str] = []
+    if names:
+        # A lista de nomes é compacta e completa: é o que garante que nenhum
+        # teste quebrado fique invisível, mesmo com o limite de anotações.
+        annotations.append(f"{header} — {len(names)} teste(s) falharam:\n\n" + "\n".join(names))
+
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        if current and len(current) + len(block) + 2 > ANNOTATION_CHARS:
+            chunks.append(current)
+            current = ""
+        current += block + "\n\n"
+    if current:
+        chunks.append(current)
+
+    for index, chunk in enumerate(chunks):
+        if len(annotations) >= MAX_ANNOTATIONS:
+            annotations.append(
+                f"{header}: blocos de saída além do limite de {MAX_ANNOTATIONS} "
+                "anotações — veja o log do job"
+            )
+            break
+        suffix = f" [{index + 1}/{len(chunks)}]" if len(chunks) > 1 else ""
+        annotations.append(f"{header}{suffix}:\n\n{chunk.rstrip()}")
+
+    return annotations[:MAX_ANNOTATIONS]
 
 
 def escape(message: str, prefix: str) -> str:

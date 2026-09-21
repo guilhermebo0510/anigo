@@ -53,6 +53,22 @@ pub const URI_PRESET_CUBE: &str = "anigo://preset/cube";
 /// Canonical URI of the UV sphere preset mesh.
 pub const URI_PRESET_SPHERE: &str = "anigo://preset/uv_sphere";
 
+/// Built-in (procedural) mesh assets that ship with the editor.
+///
+/// They are registered by [`ProjectState::default`] and repaired by
+/// [`ProjectState::sanitize`] so that every `MeshRef` of a well-formed project
+/// resolves *without a command ever mutating the asset registry*: a command
+/// that fabricated an entry could not remove it again on undo, which would
+/// break the "undo reproduces the exact previous state" invariant of the
+/// history. Loading a preset or pointing a node at a built-in mesh is
+/// therefore a pure node/gender change.
+pub const BUILTIN_MESH_URIS: [&str; 4] = [
+    URI_BASE_MALE,
+    URI_BASE_FEMALE,
+    URI_PRESET_CUBE,
+    URI_PRESET_SPHERE,
+];
+
 /// Everything that can go wrong while loading, validating or migrating a project.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ProjectError {
@@ -585,7 +601,10 @@ impl Default for ProjectState {
         );
 
         let mut assets = BTreeMap::new();
-        for uri in [URI_BASE_MALE, URI_BASE_FEMALE] {
+        // Every built-in asset is registered from the start, so presets and
+        // canonical bases are referenced without a command having to touch the
+        // registry (see `BUILTIN_MESH_URIS`).
+        for uri in BUILTIN_MESH_URIS {
             let entry = AssetEntry::from_uri(AssetKind::Mesh, uri);
             assets.insert(entry.asset_id.clone(), entry);
         }
@@ -1013,8 +1032,10 @@ impl ProjectState {
             entry.name = id.to_string();
         }
 
-        // Ensure the canonical assets exist so references stay resolvable.
-        for uri in [URI_BASE_MALE, URI_BASE_FEMALE] {
+        // Ensure the built-in assets exist so every `MeshRef` stays resolvable
+        // (a geometry command never fabricates registry entries — see
+        // `BUILTIN_MESH_URIS`).
+        for uri in BUILTIN_MESH_URIS {
             let entry = AssetEntry::from_uri(AssetKind::Mesh, uri);
             self.assets.entry(entry.asset_id.clone()).or_insert(entry);
         }

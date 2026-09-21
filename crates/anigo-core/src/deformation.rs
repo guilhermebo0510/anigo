@@ -523,11 +523,49 @@ mod tests {
         let overridden = DeformationInputs::from_project(&project);
         assert!(near(overridden.weight_of("somatotype_endomorph"), 0.25, 1e-4));
 
-        // Defaults produce no active weights at all.
+        // Neutral somatotype: the pad's balanced triple (1/3, 1/3, 1/3) is
+        // expanded into the three macro sliders (somatotype policy v1) — that
+        // *is* the canonical silhouette, and the legacy TypeScript pipeline
+        // transmitted those three pseudo-channels in the default state too
+        // (`__soma_endo/meso/ecto`). No morph override is fabricated, and no
+        // other slider becomes active.
         let neutral = ProjectState::default();
-        let mut neutral_inputs = DeformationInputs::from_project(&neutral);
-        neutral_inputs.weights.retain(|(_, weight)| weight.abs() > 1e-6);
-        assert_eq!(neutral_inputs.weights.len(), 0);
+        let neutral_inputs = DeformationInputs::from_project(&neutral);
+        let active: Vec<&str> = neutral_inputs
+            .weights
+            .iter()
+            .filter(|(_, weight)| weight.abs() > 1e-6)
+            .map(|(slider_id, _)| slider_id.as_str())
+            .collect();
+        assert_eq!(
+            active,
+            vec![
+                "somatotype_endomorph",
+                "somatotype_mesomorph",
+                "somatotype_ectomorph"
+            ],
+            "only the three somatotype macro sliders are active by default"
+        );
+        for slider_id in [
+            "somatotype_endomorph",
+            "somatotype_mesomorph",
+            "somatotype_ectomorph",
+        ] {
+            assert!(
+                near(neutral_inputs.weight_of(slider_id), 1.0 / 3.0, 1e-4),
+                "{slider_id} must carry its neutral component"
+            );
+        }
+        assert_eq!(
+            neutral_inputs.weight_of("head_width"),
+            0.0,
+            "a default project has no morph override"
+        );
+        assert_eq!(
+            neutral_inputs.weight_of("gender_dimorphism"),
+            0.0,
+            "gender dimorphism is base geometry, never a morph weight"
+        );
     }
 
     #[test]
