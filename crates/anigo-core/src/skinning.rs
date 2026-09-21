@@ -251,9 +251,24 @@ impl PartBounds {
     /// A extensão sai das posições dos próprios vértices, então a atribuição
     /// acompanha a malha se a escala mudar — nenhum limite hard-coded.
     pub fn measure(mesh: &Mesh) -> Self {
+        let legacy_ids: Vec<u16> = mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.joints[0])
+            .collect();
+        Self::measure_with(mesh, &legacy_ids)
+    }
+
+    /// Mede a extensão de cada parte a partir dos ids legados **explícitos**.
+    ///
+    /// A atribuição canônica sobrescreve `joints[0]`, então medir a partir da
+    /// malha depois de uma primeira passada leria ids canônicos como se fossem
+    /// legados (as duas numerações se sobrepõem) e a segunda passada daria
+    /// outro resultado — a idempotência depende de usar a mesma entrada.
+    pub fn measure_with(mesh: &Mesh, legacy_ids: &[u16]) -> Self {
         let mut bounds = vec![[[f32::INFINITY, f32::NEG_INFINITY]; 3]; BODY_PARTS.len()];
-        for vertex in &mesh.vertices {
-            let Some(part) = part_of(vertex.joints[0]) else {
+        for (index, vertex) in mesh.vertices.iter().enumerate() {
+            let Some(part) = legacy_ids.get(index).copied().and_then(part_of) else {
                 continue;
             };
             let index = part_index(part);
@@ -325,7 +340,7 @@ pub fn assign_canonical_skin_weights(
     mesh: &mut Mesh,
     legacy_ids: &[u16],
 ) -> SkinAssignmentSummary {
-    let bounds = PartBounds::measure(mesh);
+    let bounds = PartBounds::measure_with(mesh, legacy_ids);
     assign_with_bounds(mesh, legacy_ids, &bounds)
 }
 
@@ -581,8 +596,15 @@ mod tests {
     use crate::deformation::canonical_base_mesh;
     use crate::mesh::BaseGender;
 
+    /// Malha do gerador **antes** da atribuição canônica: é a numeração legada
+    /// que `assign_legacy_skin_weights` espera como entrada (a produção já
+    /// entrega a malha atribuída — ver `Mesh::create_canonical_base`).
+    fn unskinned_canonical() -> Mesh {
+        Mesh::create_canonical_base_unskinned(BaseGender::Male)
+    }
+
     fn skinned_canonical() -> (Mesh, SkinAssignmentSummary) {
-        let mut mesh = canonical_base_mesh(BaseGender::Male);
+        let mut mesh = unskinned_canonical();
         let summary = assign_legacy_skin_weights(&mut mesh);
         (mesh, summary)
     }
@@ -801,7 +823,7 @@ mod tests {
         // membro rasga na junta.
         // Os limites saem de uma malha **fresca** (ids legados); medir depois da
         // atribuição leria ids canônicos como se fossem legados.
-        let fresh = canonical_base_mesh(BaseGender::Male);
+        let fresh = unskinned_canonical();
         let bounds = PartBounds::measure(&fresh);
         let extreme = |id: u16, axis: usize, highest: bool| -> [f32; 3] {
             fresh
@@ -863,7 +885,7 @@ mod tests {
 
     #[test]
     fn assignment_is_deterministic_and_idempotent() {
-        let mut first_mesh = canonical_base_mesh(BaseGender::Male);
+        let mut first_mesh = unskinned_canonical();
         let legacy = legacy_ids_of(&first_mesh);
         let first = assign_canonical_skin_weights(&mut first_mesh, &legacy);
         let before: Vec<([u16; 4], [f32; 4])> = first_mesh
@@ -883,7 +905,7 @@ mod tests {
         assert_eq!(first, second);
 
         // e uma malha nova (outro processo de geração) dá o mesmo mapa
-        let mut other = canonical_base_mesh(BaseGender::Male);
+        let mut other = unskinned_canonical();
         assign_canonical_skin_weights(&mut other, &legacy);
         let elsewhere: Vec<([u16; 4], [f32; 4])> = other
             .vertices
@@ -895,7 +917,7 @@ mod tests {
 
     #[test]
     fn missing_legacy_ids_are_counted_instead_of_silently_hitting_bone_zero() {
-        let mut mesh = canonical_base_mesh(BaseGender::Male);
+        let mut mesh = unskinned_canonical();
         let short = vec![legacy::HEAD; 10];
         let summary = assign_canonical_skin_weights(&mut mesh, &short);
         assert_eq!(summary.unmapped_vertices, mesh.vertices.len() - 10);

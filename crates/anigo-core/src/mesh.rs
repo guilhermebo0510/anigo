@@ -369,7 +369,8 @@ impl Mesh {
         Self::create_uv_sphere_at(radius, rings, sectors, [0.0, 0.0, 0.0])
     }
 
-    /// Generates the canonical isomorphic humanoid base mesh for either Male or Female.
+    /// Generates the canonical isomorphic humanoid base mesh for either Male or Female,
+    /// **without** the canonical skin assignment.
     ///
     /// Both sexes share:
     /// - Exactly the same vertex count $N$ (4,070 vertices)
@@ -378,7 +379,14 @@ impl Mesh {
     /// - Exactly the same joint index bindings and skinning weights
     ///
     /// The geometric coordinates implement sexual dimorphism according to Section 3 of SPRINT_03.md.
-    pub fn create_canonical_base(gender: BaseGender) -> Self {
+    ///
+    /// `joints[0]` still carries the **legacy** part numbering written by the
+    /// generator (0 = pelvis, 2 = torso, … 18 = right foot). The canonical skin
+    /// assignment *overwrites* those ids and needs exactly this numbering as its
+    /// input, so both meshes exist: production uses
+    /// [`Mesh::create_canonical_base`], and the assignment path (plus its tests)
+    /// uses this one — a mesh that is still "before any canonical assignment".
+    pub fn create_canonical_base_unskinned(gender: BaseGender) -> Self {
         let is_female = gender == BaseGender::Female;
         let mut vertices = Vec::with_capacity(4200);
         let mut indices = Vec::with_capacity(24000);
@@ -756,13 +764,23 @@ impl Mesh {
         }
 
         let name = if is_female { "AnigoBaseFemale" } else { "AnigoBaseMale" };
-        let mut mesh = Self::new(name, vertices, indices);
-        // P1-04: a malha canônica nasce **com skin de verdade**. Antes disto o
-        // atributo de skin do vértice (16 dos 72 B) era sempre `joints = 0`,
-        // então nenhum shader podia deformar por osso. A atribuição segue as
-        // faixas canônicas de corpo do catálogo de morphs (ver `skinning.rs`);
-        // com a paleta neutra entregue pelo núcleo, o resultado visual é o
-        // mesmo de antes (Σ wᵢ·(I·p) = p).
+        Self::new(name, vertices, indices)
+    }
+
+    /// Generates the canonical isomorphic humanoid base mesh for either Male or Female.
+    ///
+    /// P1-04: a malha canônica nasce **com skin de verdade**. Antes disto o
+    /// atributo de skin do vértice (16 dos 72 B) era sempre `joints = 0`,
+    /// então nenhum shader podia deformar por osso. A atribuição segue as
+    /// faixas canônicas de corpo do catálogo de morphs (ver `skinning.rs`);
+    /// com a paleta neutra entregue pelo núcleo, o resultado visual é o
+    /// mesmo de antes (Σ wᵢ·(I·p) = p).
+    ///
+    /// Como a atribuição substitui a numeração legada do gerador, quem precisa
+    /// dela como **entrada** (a própria atribuição, e os testes de isomerismo
+    /// entre as duas bases) usa [`Mesh::create_canonical_base_unskinned`].
+    pub fn create_canonical_base(gender: BaseGender) -> Self {
+        let mut mesh = Self::create_canonical_base_unskinned(gender);
         crate::skinning::assign_legacy_skin_weights(&mut mesh);
         mesh
     }
@@ -1472,8 +1490,12 @@ mod tests {
 
     #[test]
     fn test_canonical_base_meshes_generation_and_isomorphism() {
-        let male = Mesh::create_canonical_base(BaseGender::Male);
-        let female = Mesh::create_canonical_base(BaseGender::Female);
+        // Bases do gerador (numeração legada, `weights = [1,0,0,0]`): é o que as
+        // duas seções precisam compartilhar. A atribuição canônica de skin
+        // sobrescreve os ids e — por medir as faixas na própria malha — dá
+        // pesos diferentes à masculina e à feminina, de propósito.
+        let male = Mesh::create_canonical_base_unskinned(BaseGender::Male);
+        let female = Mesh::create_canonical_base_unskinned(BaseGender::Female);
 
         assert_eq!(male.vertices.len(), female.vertices.len());
         assert_eq!(male.indices.len(), female.indices.len());
@@ -1617,8 +1639,12 @@ mod tests {
 
         loaded_male.validate_isomorphism(&loaded_female).expect("Loaded disk assets must be 1:1 isomorphic");
 
-        let canonical_male = Mesh::create_canonical_base(BaseGender::Male);
-        let canonical_female = Mesh::create_canonical_base(BaseGender::Female);
+        // O `.glb` embarcado guarda a saída do gerador sem atribuição canônica
+        // (`weights = [1,0,0,0]`, numeração legada), então a comparação é com a
+        // mesma etapa do gerador — comparar com a malha já atribuída acusaria
+        // divergência que não existe no arquivo.
+        let canonical_male = Mesh::create_canonical_base_unskinned(BaseGender::Male);
+        let canonical_female = Mesh::create_canonical_base_unskinned(BaseGender::Female);
         loaded_male.validate_isomorphism(&canonical_male).expect("Disk male must match canonical generator");
         loaded_female.validate_isomorphism(&canonical_female).expect("Disk female must match canonical generator");
     }
