@@ -492,12 +492,16 @@ pub fn export_vrm_glb(base_glb: &[u8], options: &VrmExportOptions) -> Result<Vec
     }));
     vrm_object.insert("humanoid".to_string(), json!({ "humanBones": humanoid }));
     if !preset_expressions.is_empty() { vrm_object.insert("expressions".to_string(), json!({ "preset": preset_expressions, "custom": {} })); }
+    // Read the material count before borrowing the root extensions mutably.
+    // Rust's borrow checker correctly prevents inspecting `document.json` while
+    // the extension map is being edited.
+    let material_count = document.json.get("materials").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0);
     let extensions = document.json.as_object_mut().ok_or_else(|| VrmError::InvalidGltf("glTF root must be an object".to_string()))?.entry("extensions").or_insert_with(|| json!({}));
     let extensions_object = extensions.as_object_mut().ok_or_else(|| VrmError::InvalidGltf("extensions must be an object".to_string()))?;
     extensions_object.insert(VRM_EXTENSION.to_string(), Value::Object(vrm_object.clone()));
 
     if !options.mtoon_materials.is_empty() {
-        let materials = document.json.get("materials").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0);
+        let materials = material_count;
         let mut mtoon_map = Map::new();
         mtoon_map.insert("specVersion".to_string(), Value::String("1.0".to_string()));
         mtoon_map.insert("materials".to_string(), Value::Array(options.mtoon_materials.iter().filter_map(|profile| {
