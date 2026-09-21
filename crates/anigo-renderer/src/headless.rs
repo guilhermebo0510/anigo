@@ -19,6 +19,13 @@ use crate::uniforms::{
 pub struct RenderMetrics {
     pub render_time_ms: f64,
     pub draw_calls: u32,
+    /// Issue #13: draw calls que o frustum culling suprimiu neste quadro.
+    /// `draw_calls` conta só o que de fato entrou no `RenderPass`, então a soma
+    /// dos dois é o total de nós desenháveis considerados.
+    ///
+    /// `serde(default)`: telemetria antiga (sem o campo) continua desserializável.
+    #[serde(default)]
+    pub culled_draw_calls: u32,
     pub triangle_count: usize,
     pub adapter_name: String,
     pub backend: String,
@@ -986,6 +993,12 @@ impl HeadlessRenderer {
 
         let mut draw_calls = 0;
         let mut triangle_count = 0;
+        // Issue #13: o frustum sai da mesma `view_proj` que o shader recebe, e
+        // cada nó vira um volume em espaço de mundo (uma vez por quadro, nunca
+        // por vértice). O contador vive fora do escopo do passe porque a
+        // telemetria é montada depois dele.
+        let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
+        let mut culled_draw_calls = 0u32;
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1043,6 +1056,17 @@ impl HeadlessRenderer {
                         .get(&node.id)
                         .copied()
                         .unwrap_or_else(|| node.transform.to_matrix());
+
+                    // Issue #13: filtro antes de qualquer trabalho de GPU — um nó
+                    // fora do cone não cria buffer nem entra no `RenderPass`.
+                    if let Some(local_bounds) = mesh.local_bounds() {
+                        let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
+                        if !volume.is_visible(&frustum) {
+                            culled_draw_calls += 1;
+                            continue;
+                        }
+                    }
+
                     let normal_mat = model_mat.inverse().transpose();
                     let camera_uniform = CameraUniform {
                         view_proj: camera_view_proj,
@@ -1246,6 +1270,7 @@ impl HeadlessRenderer {
         let metrics = RenderMetrics {
             render_time_ms: elapsed,
             draw_calls,
+            culled_draw_calls,
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
@@ -1464,6 +1489,10 @@ impl HeadlessRenderer {
 
         let mut draw_calls = 0;
         let mut triangle_count = 0;
+        // Issue #13: o mesmo filtro de frustum do caminho principal — os dois
+        // caminhos do headless não podem divergir no que desenham.
+        let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
+        let mut culled_draw_calls = 0u32;
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1521,6 +1550,16 @@ impl HeadlessRenderer {
                         .get(&node.id)
                         .copied()
                         .unwrap_or_else(|| node.transform.to_matrix());
+
+                    // Issue #13: fora do frustum não há buffer nem draw call.
+                    if let Some(local_bounds) = mesh.local_bounds() {
+                        let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
+                        if !volume.is_visible(&frustum) {
+                            culled_draw_calls += 1;
+                            continue;
+                        }
+                    }
+
                     let normal_mat = model_mat.inverse().transpose();
                     let camera_uniform = CameraUniform {
                         view_proj: camera_view_proj,
@@ -1731,6 +1770,7 @@ impl HeadlessRenderer {
         let metrics = RenderMetrics {
             render_time_ms: elapsed,
             draw_calls,
+            culled_draw_calls,
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
@@ -1743,7 +1783,7 @@ impl HeadlessRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anigo_core::scene::{Scene, StylizedMaterial};
+    use anigo_core::scene::{Scene, SceneNode, StylizedMaterial};
 
     #[test]
     fn test_headless_renderer_initialization_and_render() {
@@ -1770,6 +1810,43 @@ mod tests {
                 assert!(metrics.triangle_count > 0);
                 assert!(metrics.draw_calls >= 1);
             }
+        });
+    }
+
+    #[test]
+    fn frustum_culling_suppresses_draw_calls_for_offscreen_nodes() {
+        // Critério de aceitação #1/#3 do issue #13: um nó fora do cone perde a
+        // draw call **na telemetria** (e um nó visível continua desenhando).
+        let _guard = crate::diagnostics::test_guard();
+        pollster::block_on(async {
+            let renderer = match HeadlessRenderer::new().await {
+                Ok(renderer) => renderer,
+                Err(_) => return, // sem adaptador: o teste de GPU se pula
+            };
+
+            let mut scene = Scene::default();
+            let visible_node = scene.nodes[0].id.clone();
+            let mut far = SceneNode::new("nod_far", "Far Away");
+            far.mesh = scene.nodes[0].mesh.clone();
+            far.transform.translation = glam::Vec3::new(0.0, 0.0, -100.0);
+            scene.nodes.push(far);
+            scene.rebuild_children();
+
+            let (_, metrics) = renderer.render_scene(&scene, 64, 64).await.unwrap();
+            assert!(
+                metrics.culled_draw_calls >= 1,
+                "o nó em z = -100 precisa ser recusado pelo frustum (culled = {})",
+                metrics.culled_draw_calls
+            );
+            // O nó visível segue desenhando: o filtro não comeu o personagem.
+            assert!(metrics.draw_calls >= 1);
+
+            // A mesma cena sem o nó distante não tem nada para filtrar.
+            scene.nodes.retain(|node| node.id == visible_node);
+            scene.rebuild_children();
+            let (_, clean) = renderer.render_scene(&scene, 64, 64).await.unwrap();
+            assert_eq!(clean.culled_draw_calls, 0);
+            assert!(clean.draw_calls >= 1);
         });
     }
 

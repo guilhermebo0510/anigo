@@ -157,6 +157,11 @@ export interface RenderContractV1 {
   };
   camera: {
     projection: string;
+    /** Issue #13: os dois modos de projeção e a matriz de cada um. */
+    projection_modes: {
+      perspective: { matrix: string; params: string };
+      orthographic: { matrix: string; params: string };
+    };
     clip_depth: string;
     matrix_layout: string;
     up_axis: string;
@@ -165,6 +170,15 @@ export interface RenderContractV1 {
     z_far_default: number;
     model_from: string;
     uniform: string;
+    /** Issue #13: onde e como o frustum culling acontece. */
+    culling: {
+      volume: string;
+      planes_from: string;
+      plane_count: number;
+      test: string;
+      space: string;
+      metrics: string;
+    };
   };
   toon_ramp: {
     width: number;

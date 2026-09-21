@@ -130,6 +130,50 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
     rejected({ kind: "reset_morphs", override_count: 0 }, "no_op");
   });
 
+  it("câmera: modo de projeção entra como patch validado (issue #13)", () => {
+    assert.deepEqual(built({ kind: "camera", projection: { orthographic: true } }), {
+      kind: "set_camera",
+      projection: { orthographic: true },
+    });
+    assert.deepEqual(
+      built({ kind: "camera", projection: { orthographic: true, ortho_height: 2.0 } }),
+      { kind: "set_camera", projection: { orthographic: true, ortho_height: 2.0 } }
+    );
+    const bounds = { left: -1, right: 1, bottom: -0.5, top: 0.5 };
+    assert.deepEqual(built({ kind: "camera", projection: { ortho_bounds: bounds } }), {
+      kind: "set_camera",
+      projection: { ortho_bounds: bounds },
+    });
+
+    // Repetir o modo atual sem volume é no-op local (o core recusaria do mesmo jeito).
+    rejected(
+      { kind: "camera", projection: { orthographic: true }, current_projection: "orthographic" },
+      "no_op"
+    );
+    // Ajustar o volume do modo atual continua sendo comando.
+    assert.deepEqual(
+      built({
+        kind: "camera",
+        projection: { orthographic: true, ortho_height: 1.5 },
+        current_projection: "orthographic",
+      }),
+      { kind: "set_camera", projection: { orthographic: true, ortho_height: 1.5 } }
+    );
+    // Voltar para perspectiva é sempre um comando válido.
+    assert.deepEqual(
+      built({ kind: "camera", projection: { orthographic: false }, current_projection: "orthographic" }),
+      { kind: "set_camera", projection: { orthographic: false } }
+    );
+
+    rejected({ kind: "camera", projection: {} }, "no_op");
+    rejected({ kind: "camera", projection: { ortho_height: 0 } }, "invalid_value");
+    rejected({ kind: "camera", projection: { ortho_height: Number.NaN } }, "non_finite");
+    rejected(
+      { kind: "camera", projection: { ortho_bounds: { left: 1, right: -1, bottom: -1, top: 1 } } },
+      "invalid_value"
+    );
+  });
+
   it("gênero, somatótipo e dimorfismo", () => {
     assert.deepEqual(built({ kind: "base_gender", gender: "female" }), {
       kind: "set_base_gender",

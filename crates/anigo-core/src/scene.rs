@@ -267,7 +267,7 @@ impl Scene {
             .map(|(index, node)| (node.id.clone(), index))
             .collect();
         let mut children: Vec<Vec<String>> = vec![Vec::new(); self.nodes.len()];
-        for (index, node) in self.nodes.iter().enumerate() {
+        for node in &self.nodes {
             if let Some(parent) = &node.parent_id {
                 if let Some(parent_index) = index_of.get(parent) {
                     children[*parent_index].push(node.id.clone());

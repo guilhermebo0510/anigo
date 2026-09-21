@@ -56,6 +56,27 @@ export const NODE_KINDS = [
   "group",
 ] as const satisfies readonly NodeKindWire[];
 
+/** Volume ortográfico (issue #13) — espelha Rust `math::OrthographicBounds`. */
+export interface OrthographicBoundsWire {
+  left: number;
+  right: number;
+  bottom: number;
+  top: number;
+}
+
+/**
+ * Patch do modo de projeção da câmera (issue #13).
+ *
+ * `orthographic` + `ortho_height` é o que a UI manda (volume simétrico que
+ * preserva o enquadramento); `ortho_bounds` existe para o inverso restaurar o
+ * volume exato de um undo.
+ */
+export interface CameraProjectionPatchWire {
+  orthographic?: boolean;
+  ortho_height?: number;
+  ortho_bounds?: OrthographicBoundsWire;
+}
+
 /** Local transform of a node (mirrors Rust `math::Transform`). */
 export interface TransformWire {
   translation: [number, number, number];
@@ -118,6 +139,7 @@ export type CommandWire =
       target?: [number, number, number];
       up?: [number, number, number];
       fov_degrees?: number;
+      projection?: CameraProjectionPatchWire;
     }
   | { kind: "orbit_camera"; azimuth: number; elevation: number }
   | { kind: "zoom_camera"; factor: number }
