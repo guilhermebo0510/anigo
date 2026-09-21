@@ -380,7 +380,7 @@ mod tests {
         );
         assert_eq!(
             payload.morph_channels.len(),
-            snapshot.dynamic.deformation_coverage.morph_targets
+            snapshot.dynamic.deformation_coverage.morph_targets as usize
         );
         assert_eq!(
             payload.catalog_fingerprint,
