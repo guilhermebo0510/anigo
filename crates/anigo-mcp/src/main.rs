@@ -1422,7 +1422,7 @@ async fn handle_tool_call(
 
             let (vertex_count, tri_count, active_count) = {
                 let base_mesh = state.base_mesh.read().await.clone();
-                let mut catalog = state.morph_catalog.write().await;
+                let catalog = state.morph_catalog.write().await;
                 let mut morphed_mesh = base_mesh.clone();
                 catalog.apply_to_mesh(&base_mesh, &mut morphed_mesh);
                 let mut scene = state.scene.write().await;
@@ -1577,12 +1577,18 @@ async fn handle_tool_call(
             })])
         }
         "anigo_get_active_morphs" => {
-            let active = {
+            // `get_active_morphs` empresta o catálogo (elided lifetime do `&self`),
+            // então os ids viram `String` dentro do guard: nada escapa do lock.
+            let active: Vec<(String, f32)> = {
                 let catalog = state.morph_catalog.read().await;
-                catalog.get_active_morphs()
+                catalog
+                    .get_active_morphs()
+                    .into_iter()
+                    .map(|(id, value)| (id.to_string(), value))
+                    .collect()
             };
             let list: Vec<Value> = active.into_iter().map(|(id, val)| {
-                let zone = find_slider_def(id).map(|d| d.zone.name()).unwrap_or("Unknown");
+                let zone = find_slider_def(&id).map(|d| d.zone.name()).unwrap_or("Unknown");
                 json!({
                     "id": id,
                     "value": val,
@@ -1842,12 +1848,13 @@ async fn handle_tool_call(
             validate::clamp_i32(x as i64, -10000, 10000, "x")?;
             validate::clamp_i32(y as i64, -10000, 10000, "y")?;
 
+            let click_button = button.clone();
             let result = tokio::task::spawn_blocking(move || -> Result<(i32,i32)> {
                 let (hwnd, _title, _rect, _is_min) = Win32Harness::find_anigo_window()?;
                 let active_rect = Win32Harness::ensure_window_active(hwnd)?;
                 let screen_x = active_rect.left + x;
                 let screen_y = active_rect.top + y;
-                Win32Harness::mouse_click(screen_x, screen_y, &button);
+                Win32Harness::mouse_click(screen_x, screen_y, &click_button);
                 Ok((screen_x, screen_y))
             }).await.context("Join error in mouse_click")??;
 
@@ -1869,6 +1876,7 @@ async fn handle_tool_call(
                 anyhow::bail!("steps out of range 1..100: {} (code -32602)", steps);
             }
 
+            let drag_button = button.clone();
             tokio::task::spawn_blocking(move || -> Result<()> {
                 let (hwnd, _title, _rect, _is_min) = Win32Harness::find_anigo_window()?;
                 let active_rect = Win32Harness::ensure_window_active(hwnd)?;
@@ -1876,7 +1884,7 @@ async fn handle_tool_call(
                 let s_y = active_rect.top + start_y;
                 let e_x = active_rect.left + end_x;
                 let e_y = active_rect.top + end_y;
-                Win32Harness::mouse_drag(s_x, s_y, e_x, e_y, &button, steps);
+                Win32Harness::mouse_drag(s_x, s_y, e_x, e_y, &drag_button, steps);
                 Ok(())
             }).await.context("Join error in mouse_drag")??;
 
