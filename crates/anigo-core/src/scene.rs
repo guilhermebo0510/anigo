@@ -1,5 +1,6 @@
 use crate::math::{Camera, Transform};
 use crate::mesh::Mesh;
+use crate::snapshot::SkinPayload;
 use serde::{Deserialize, Serialize};
 
 fn default_shadow_saturation() -> f32 { 1.0 }
@@ -155,6 +156,12 @@ pub struct Scene {
     pub camera: Camera,
     pub light: StylizedLight,
     pub background_color: [f32; 4],
+    /// P1-04: paleta de skinning da cena. Sai do núcleo (a mesma que o snapshot
+    /// entrega), então viewport e headless deformam com a mesma matriz. Sem o
+    /// campo no JSON, volta para a paleta canônica (identidade enquanto as
+    /// proporções são assadas na malha base).
+    #[serde(default = "SkinPayload::canonical_base")]
+    pub skin: SkinPayload,
 }
 
 impl Default for Scene {
@@ -168,6 +175,7 @@ impl Default for Scene {
             camera: Camera::default(),
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0], // P0-04: unified with viewport clearColor (was 0.12,0.13,0.16)
+            skin: SkinPayload::canonical_base(),
         }
     }
 }
@@ -179,6 +187,7 @@ impl Scene {
             camera: Camera::default(),
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0],
+            skin: SkinPayload::canonical_base(),
         }
     }
 

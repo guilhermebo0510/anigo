@@ -53,6 +53,8 @@ export interface UniformFieldV1 {
 }
 
 export interface UniformLayoutV1 {
+  /** Nome da struct no WGSL (`CameraUniform`, `BonePalette`, ...). */
+  struct?: string;
   /** "uniform" | "storage_read" | "vertex_and_storage_read". */
   address_space: string;
   size: number;
@@ -104,10 +106,35 @@ export interface DiagnosticCodeSpecV1 {
   severity: "info" | "warning" | "error";
 }
 
+/**
+ * P1-04: skinning linear (LBS) — paleta de ossos compartilhada com o Rust.
+ *
+ * `joints_location`/`weights_location` são os atributos de vértice que o layout
+ * de 72 B carrega, e `block_markers` delimita o trecho que precisa ser
+ * **idêntico** entre os shaders WGSL (o checker `scripts/check_wgsl.mjs`
+ * compara byte a byte).
+ */
+export interface SkinningSpecV1 {
+  algorithm: string;
+  joint_count: number;
+  max_influences: number;
+  matrices_per_joint: number;
+  palette_uniform: string;
+  palette_bytes: number;
+  joints_location: number;
+  weights_location: number;
+  weights_normalization: string;
+  unskinned_fallback: string;
+  index_clamp: string;
+  block_markers: string[];
+}
+
 export interface RenderContractV1 {
   version: number;
   /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
   diagnostics?: { note: string; codes: DiagnosticCodeSpecV1[] };
+  /** P1-04: skinning (paleta de ossos + atributos de vértice). */
+  skinning?: SkinningSpecV1;
   /** P1-03: códigos de validação de malha antes de criar buffers. */
   mesh_validation?: {
     note: string;
@@ -256,7 +283,72 @@ export function readRenderContract(value: unknown = RENDER_CONTRACT_DATA): Rende
       }
     }
   }
+  validateSkinning(contract);
   return contract;
+}
+
+/**
+ * P1-04: o skinning do contrato precisa apontar para blocos/bindings/atributos
+ * que existem de verdade — paleta com tamanho diferente do uniform, binding
+ * ausente ou atributo trocado viram erro de contrato (e não um vértice parado
+ * na pose de repouso).
+ */
+function validateSkinning(contract: RenderContractV1): void {
+  const skinning = contract.skinning;
+  if (!skinning) {
+    throw new RenderContractError("missing_skinning", "render contract sem a seção 'skinning'");
+  }
+  if (skinning.matrices_per_joint !== 16) {
+    throw new RenderContractError(
+      "bad_skinning",
+      `skinning.matrices_per_joint = ${skinning.matrices_per_joint} (mat4 tem 16 floats)`
+    );
+  }
+  if (skinning.joint_count < 1 || skinning.max_influences < 1 || skinning.max_influences > 4) {
+    throw new RenderContractError(
+      "bad_skinning",
+      `skinning com ${skinning.joint_count} ossos e ${skinning.max_influences} influências por vértice`
+    );
+  }
+  const palette = contract.uniforms[skinning.palette_uniform];
+  if (!palette) {
+    throw new RenderContractError(
+      "bad_skinning",
+      `skinning.palette_uniform '${skinning.palette_uniform}' não é um bloco do contrato`
+    );
+  }
+  const expectedBytes = skinning.joint_count * skinning.matrices_per_joint * 4;
+  if (palette.size !== expectedBytes || skinning.palette_bytes !== expectedBytes) {
+    throw new RenderContractError(
+      "bad_skinning",
+      `paleta de ${skinning.joint_count} ossos precisa de ${expectedBytes} B ` +
+        `(contrato diz ${skinning.palette_bytes} B, bloco '${palette.address_space}' tem ${palette.size} B)`
+    );
+  }
+  for (const [locationKey, expectedName] of [
+    ["joints_location", "joints"],
+    ["weights_location", "weights"],
+  ] as const) {
+    const location = skinning[locationKey];
+    const attribute = contract.vertex_layout.attributes.find(
+      (candidate) => candidate.shader_location === location
+    );
+    if (!attribute || attribute.name !== expectedName) {
+      throw new RenderContractError(
+        "bad_skinning",
+        `skinning.${locationKey} = ${location} não é o atributo '${expectedName}' do vertex layout`
+      );
+    }
+  }
+  const bound = contract.bind_groups.some((group) =>
+    group.entries.some((entry) => entry.declaration.includes(`${skinning.palette_uniform}:`))
+  );
+  if (!bound) {
+    throw new RenderContractError(
+      "bad_skinning",
+      `nenhum bind group declara '${skinning.palette_uniform}'`
+    );
+  }
 }
 
 export const RENDER_CONTRACT: RenderContractV1 = readRenderContract();
@@ -312,6 +404,41 @@ export function bindGroup(name: string): BindGroupV1 {
   const group = RENDER_CONTRACT.bind_groups.find((candidate) => candidate.name === name);
   if (!group) throw new RenderContractError("unknown_bind_group", `bind group '${name}' não está no contrato`);
   return group;
+}
+
+/** P1-04: especificação de skinning do contrato. */
+export function skinning(): SkinningSpecV1 {
+  const spec = RENDER_CONTRACT.skinning;
+  if (!spec) throw new RenderContractError("missing_skinning", "render contract sem a seção 'skinning'");
+  return spec;
+}
+
+/** Bytes da paleta de ossos (1536 = 24 × mat4). */
+export function bonePaletteBytes(): number {
+  return skinning().palette_bytes;
+}
+
+/** Floats da paleta de ossos. */
+export function bonePaletteFloats(): number {
+  return bonePaletteBytes() / 4;
+}
+
+/**
+ * Binding do uniform da paleta dentro de um bind group — o número sai do
+ * contrato (5 no cel, 2 no outline) em vez de literal no renderer.
+ */
+export function skinningBinding(groupName: string): number {
+  const uniform = skinning().palette_uniform;
+  const entry = bindGroup(groupName).entries.find((candidate) =>
+    candidate.declaration.includes(`${uniform}:`)
+  );
+  if (!entry) {
+    throw new RenderContractError(
+      "bad_skinning",
+      `bind group '${groupName}' não declara '${uniform}'`
+    );
+  }
+  return entry.binding;
 }
 
 export function shaderOf(name: string): ShaderSourceV1 {

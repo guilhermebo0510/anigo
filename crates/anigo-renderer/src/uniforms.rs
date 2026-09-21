@@ -110,6 +110,59 @@ impl Default for OutlineUniform {
     }
 }
 
+/// P1-04: paleta de skinning — `joint_count` matrizes de 16 floats, no layout
+/// do bloco `bones` do contrato (`array<mat4x4<f32>, 24>` = 1536 B).
+pub const MAX_PALETTE_JOINTS: usize = 24;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct BonePaletteUniform {
+    pub matrices: [[f32; 16]; MAX_PALETTE_JOINTS],
+}
+
+impl BonePaletteUniform {
+    /// Paleta neutra: `Σ wᵢ · (I · p) = p` — não deforma nada.
+    pub fn identity(joint_count: usize) -> Self {
+        let mut matrices = [[0.0f32; 16]; MAX_PALETTE_JOINTS];
+        let count = joint_count.min(MAX_PALETTE_JOINTS);
+        for matrix in matrices.iter_mut().take(count) {
+            matrix[0] = 1.0;
+            matrix[5] = 1.0;
+            matrix[10] = 1.0;
+            matrix[15] = 1.0;
+        }
+        Self { matrices }
+    }
+
+    /// Constrói a partir de `joint_count * 16` floats (ignora o excedente).
+    pub fn from_floats(floats: &[f32]) -> Self {
+        let mut uniform = Self::identity(0);
+        for (index, matrix) in uniform.matrices.iter_mut().enumerate() {
+            let start = index * 16;
+            if start + 16 > floats.len() {
+                break;
+            }
+            matrix.copy_from_slice(&floats[start..start + 16]);
+        }
+        uniform
+    }
+
+    /// Achata de volta (o que é enviado ao buffer de GPU).
+    pub fn to_floats(&self) -> Vec<f32> {
+        self.matrices.iter().flat_map(|matrix| matrix.iter().copied()).collect()
+    }
+
+    pub fn stride_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl Default for BonePaletteUniform {
+    fn default() -> Self {
+        Self::identity(MAX_PALETTE_JOINTS)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +181,27 @@ mod tests {
 
         assert_eq!(std::mem::size_of::<OutlineUniform>(), 48);
         assert_eq!(std::mem::size_of::<OutlineUniform>() % 16, 0);
+    }
+
+    #[test]
+    fn test_bone_palette_uniform_matches_contract_size() {
+        // 24 matrizes × 64 B = 1536 B, o mesmo `uniforms.bones.size` do contrato
+        assert_eq!(BonePaletteUniform::stride_bytes(), 1536);
+        assert_eq!(BonePaletteUniform::stride_bytes() % 16, 0);
+        let identity = BonePaletteUniform::identity(MAX_PALETTE_JOINTS);
+        let floats = identity.to_floats();
+        assert_eq!(floats.len(), MAX_PALETTE_JOINTS * 16);
+        for matrix in floats.chunks_exact(16) {
+            assert_eq!(matrix, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        }
+        // ida e volta mantém os valores
+        let round_trip = BonePaletteUniform::from_floats(&floats);
+        assert_eq!(round_trip.to_floats(), floats);
+        // paleta curta não estoura e devolve o resto neutro
+        let short = BonePaletteUniform::from_floats(&[2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(short.matrices[0][0], 2.0);
+        assert_eq!(short.matrices[1][0], 1.0);
+        assert_eq!(short.matrices[1][5], 1.0);
     }
 
     #[test]

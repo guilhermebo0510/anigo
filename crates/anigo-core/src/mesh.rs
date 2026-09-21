@@ -756,7 +756,15 @@ impl Mesh {
         }
 
         let name = if is_female { "AnigoBaseFemale" } else { "AnigoBaseMale" };
-        Self::new(name, vertices, indices)
+        let mut mesh = Self::new(name, vertices, indices);
+        // P1-04: a malha canônica nasce **com skin de verdade**. Antes disto o
+        // atributo de skin do vértice (16 dos 72 B) era sempre `joints = 0`,
+        // então nenhum shader podia deformar por osso. A atribuição segue as
+        // faixas canônicas de corpo do catálogo de morphs (ver `skinning.rs`);
+        // com a paleta neutra entregue pelo núcleo, o resultado visual é o
+        // mesmo de antes (Σ wᵢ·(I·p) = p).
+        crate::skinning::assign_legacy_skin_weights(&mut mesh);
+        mesh
     }
 
     /// Serializes this mesh to a fully compliant Khronos glTF 2.0 Binary container (.glb).

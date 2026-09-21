@@ -23,6 +23,7 @@ import {
   type CoreGeometry,
   type CoreSnapshotWire,
 } from "../contracts/core_snapshot.v1";
+import { bonePaletteFloats, skinning } from "../contracts/render_contract.v1";
 
 /** Um canal de morph pronto para o buffer de canais do shader. */
 export interface ViewportMorphChannel {
@@ -61,6 +62,16 @@ export interface ViewportGeometry {
   meshUri: string;
   /** Valores de slider autorais do núcleo (`slider_id` → `value`). */
   morphValues: Map<string, number>;
+  /**
+   * P1-04: paleta de skinning do núcleo (`world × inverse bind` por osso, 16
+   * floats cada) — exatamente o bloco `bones` do render contract. O viewport só
+   * a sobe para a GPU; quem calcula é o núcleo.
+   */
+  skinPalette: Float32Array;
+  /** Ossos da paleta (24 no esqueleto canônico). */
+  boneCount: number;
+  /** A paleta é a identidade (as proporções são assadas na malha base). */
+  paletteIsIdentity: boolean;
 }
 
 /** Raised when a snapshot cannot be turned into viewport geometry. */
@@ -149,6 +160,53 @@ export function viewportGeometryFromSnapshot(snapshot: CoreSnapshotWire): Viewpo
 }
 
 /** Mesma conversão, a partir da geometria já decodificada. */
+/**
+ * P1-04: paleta neutra (uma matriz identidade por osso) com o tamanho do
+ * contrato. É o que o modo degradado e os caminhos sem snapshot usam — nenhum
+ * vértice é deformado por engano nem colapsa na origem.
+ */
+export function identitySkinPalette(): Float32Array {
+  const floats = bonePaletteFloats();
+  const bones = skinning().joint_count;
+  if (floats !== bones * skinning().matrices_per_joint) {
+    throw new ViewportGeometryError(
+      "BAD_SKIN_PALETTE",
+      `paleta do contrato com ${floats} floats (esperado ${bones * skinning().matrices_per_joint})`
+    );
+  }
+  const palette = new Float32Array(floats);
+  for (let bone = 0; bone < bones; bone++) {
+    const base = bone * 16;
+    palette[base] = 1;
+    palette[base + 5] = 1;
+    palette[base + 10] = 1;
+    palette[base + 15] = 1;
+  }
+  return palette;
+}
+
+/** Valida a paleta de skinning antes de qualquer buffer/uniform. */
+export function validateSkinPalette(palette: Float32Array, boneCount: number): void {
+  const spec = skinning();
+  if (boneCount !== spec.joint_count) {
+    throw new ViewportGeometryError(
+      "BAD_SKIN_PALETTE",
+      `snapshot com ${boneCount} ossos, render contract declara ${spec.joint_count}`
+    );
+  }
+  if (palette.length !== bonePaletteFloats()) {
+    throw new ViewportGeometryError(
+      "BAD_SKIN_PALETTE",
+      `paleta com ${palette.length} floats, contrato espera ${bonePaletteFloats()} (${spec.joint_count} ossos × ${spec.matrices_per_joint})`
+    );
+  }
+  for (let index = 0; index < palette.length; index++) {
+    if (!Number.isFinite(palette[index])) {
+      throw new ViewportGeometryError("BAD_SKIN_PALETTE", `paleta com valor não finito no índice ${index}`);
+    }
+  }
+}
+
 export function viewportGeometryFromDecoded(
   geometry: CoreGeometry,
   morphWeights: Map<string, number>,
@@ -193,6 +251,9 @@ export function viewportGeometryFromDecoded(
 
   assertChannelsSorted(geometry.deltaWords, channels);
 
+  // P1-04: a paleta é validada contra o contrato antes de virar uniform buffer.
+  validateSkinPalette(geometry.skin.palette, geometry.skin.boneCount);
+
   const active = channels.filter((channel) => channel.weight !== 0 && channel.deltaCount > 0);
 
   return {
@@ -212,6 +273,9 @@ export function viewportGeometryFromDecoded(
     baseGender: geometry.baseGender,
     meshUri: geometry.meshUri,
     morphValues: options.morphValues ?? new Map(),
+    skinPalette: geometry.skin.palette,
+    boneCount: geometry.skin.boneCount,
+    paletteIsIdentity: geometry.skin.paletteIsIdentity,
   };
 }
 

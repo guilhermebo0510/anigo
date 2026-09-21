@@ -10,7 +10,9 @@ use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Verte
 use crate::diagnostics;
 use crate::mesh_validation;
 use crate::render_contract as contract;
-use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
+use crate::uniforms::{
+    BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderMetrics {
@@ -21,6 +23,28 @@ pub struct RenderMetrics {
     pub backend: String,
 }
 
+/// P1-04: paleta de skinning entregue pelo núcleo (a mesma do snapshot).
+///
+/// Tamanho diferente do contrato vira diagnóstico `contract_drift` e a paleta
+/// neutra assume: melhor um quadro sem deformação do que um buffer curto
+/// interpretado como matrizes pela GPU.
+fn bone_palette_uniform(scene: &Scene) -> BonePaletteUniform {
+    let joints = contract::skinning_joint_count().max(1) as usize;
+    let expected = joints * 16;
+    if scene.skin.palette.len() != expected {
+        diagnostics::report_with_detail(
+            "contract_drift",
+            "paleta de skinning fora do tamanho declarado no contrato",
+            Some(format!(
+                "{} floats (esperado {expected} = {joints} ossos × 16)",
+                scene.skin.palette.len()
+            )),
+        );
+        return BonePaletteUniform::identity(joints);
+    }
+    BonePaletteUniform::from_floats(&scene.skin.palette)
+}
+
 pub struct HeadlessRenderer {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
@@ -29,6 +53,9 @@ pub struct HeadlessRenderer {
     outline_pipeline: wgpu::RenderPipeline,
     cel_bind_group_layout: wgpu::BindGroupLayout,
     outline_bind_group_layout: wgpu::BindGroupLayout,
+    /// P1-04: binding da paleta de ossos em cada passe (vem do contrato).
+    cel_skin_binding: u32,
+    outline_skin_binding: u32,
     pub morph_compute_pipeline: wgpu::ComputePipeline,
     pub morph_bind_group_layout: wgpu::BindGroupLayout,
     pub toon_ramp_view: wgpu::TextureView,
@@ -166,10 +193,15 @@ impl HeadlessRenderer {
             source: wgpu::ShaderSource::Wgsl(outline_shader_src.into()),
         });
 
-        // Cel Bind Group Layout (Camera, Light, Material, ToonRampTexture, ToonRampSampler)
-        let cel_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Cel Bind Group Layout"),
-            entries: &[
+        // P1-04: o binding da paleta de skinning vem do contrato (5 no cel, 2 no
+        // outline). Se o contrato trocar o número, o layout e o WGSL mudam juntos
+        // — o que não pode é o headless fixar um literal.
+        let cel_skin_binding = contract::skinning_binding("cel").unwrap_or(5);
+        let outline_skin_binding = contract::skinning_binding("outline").unwrap_or(2);
+        let skin_min_binding = wgpu::BufferSize::new(contract::skinning_palette_bytes() as u64);
+
+        // Cel Bind Group Layout (Camera, Light, Material, ToonRampTexture, ToonRampSampler, Bones)
+        let cel_layout_entries = vec![
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -216,13 +248,24 @@ impl HeadlessRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-            ],
+                wgpu::BindGroupLayoutEntry {
+                    binding: cel_skin_binding,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: skin_min_binding,
+                    },
+                    count: None,
+                },
+        ];
+        let cel_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Cel Bind Group Layout"),
+            entries: &cel_layout_entries,
         });
 
-        // Outline Bind Group Layout (Camera, OutlineUniform)
-        let outline_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Outline Bind Group Layout"),
-            entries: &[
+        // Outline Bind Group Layout (Camera, OutlineUniform, Bones)
+        let outline_layout_entries = vec![
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -243,7 +286,20 @@ impl HeadlessRenderer {
                     },
                     count: None,
                 },
-            ],
+                wgpu::BindGroupLayoutEntry {
+                    binding: outline_skin_binding,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: skin_min_binding,
+                    },
+                    count: None,
+                },
+        ];
+        let outline_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Outline Bind Group Layout"),
+            entries: &outline_layout_entries,
         });
 
         // Vertex buffer layout (72 B) exatamente como o contrato declara
@@ -453,6 +509,8 @@ impl HeadlessRenderer {
             outline_pipeline,
             cel_bind_group_layout,
             outline_bind_group_layout,
+            cel_skin_binding,
+            outline_skin_binding,
             morph_compute_pipeline,
             morph_bind_group_layout,
             toon_ramp_view,
@@ -735,6 +793,16 @@ impl HeadlessRenderer {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
+        // P1-04: paleta de ossos (24 × mat4 = 1536 B) entregue pelo núcleo. Sem
+        // ela o WGSL não compila (binding 5/2) e o vértice ficaria na pose de
+        // repouso.
+        let bone_palette = bone_palette_uniform(scene);
+        let bones_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Bone Palette Uniform Buffer"),
+            contents: cast_slice(&[bone_palette]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
         // 4. Setup Output Buffer with row pitch alignment (wgpu requires 256 byte alignment)
         let unpadded_bytes_per_row = width * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -867,6 +935,10 @@ impl HeadlessRenderer {
                                 binding: 4,
                                 resource: wgpu::BindingResource::Sampler(&self.toon_ramp_sampler),
                             },
+                            wgpu::BindGroupEntry {
+                                binding: self.cel_skin_binding,
+                                resource: bones_buffer.as_entire_binding(),
+                            },
                         ],
                     });
 
@@ -881,6 +953,10 @@ impl HeadlessRenderer {
                             wgpu::BindGroupEntry {
                                 binding: 1,
                                 resource: outline_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: self.outline_skin_binding,
+                                resource: bones_buffer.as_entire_binding(),
                             },
                         ],
                     });
@@ -1174,6 +1250,16 @@ impl HeadlessRenderer {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
+        // P1-04: paleta de ossos (24 × mat4 = 1536 B) entregue pelo núcleo. Sem
+        // ela o WGSL não compila (binding 5/2) e o vértice ficaria na pose de
+        // repouso.
+        let bone_palette = bone_palette_uniform(scene);
+        let bones_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Bone Palette Uniform Buffer"),
+            contents: cast_slice(&[bone_palette]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
         // 5. Setup Output Download Buffer
         let unpadded_bytes_per_row = width * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -1315,6 +1401,10 @@ impl HeadlessRenderer {
                                 binding: 4,
                                 resource: wgpu::BindingResource::Sampler(&self.toon_ramp_sampler),
                             },
+                            wgpu::BindGroupEntry {
+                                binding: self.cel_skin_binding,
+                                resource: bones_buffer.as_entire_binding(),
+                            },
                         ],
                     });
 
@@ -1329,6 +1419,10 @@ impl HeadlessRenderer {
                             wgpu::BindGroupEntry {
                                 binding: 1,
                                 resource: outline_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: self.outline_skin_binding,
+                                resource: bones_buffer.as_entire_binding(),
                             },
                         ],
                     });

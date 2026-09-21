@@ -14,7 +14,8 @@
     "test:contracts": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/contracts/*.test.ts\"",
     "check:rust": "node scripts/check_rust_syntax.mjs && node scripts/audit_calls.mjs",
     "test:persistence": "node --import ./tests/register.mjs --experimental-strip-types --test \"tests/persistence/*.test.ts\"",
-    "fixtures:check": "node scripts/gen_contract_fixtures.mjs --check"
+    "fixtures:check": "node scripts/gen_contract_fixtures.mjs --check",
+    "check:wgsl": "node scripts/check_wgsl.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

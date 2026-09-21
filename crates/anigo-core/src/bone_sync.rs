@@ -1,6 +1,12 @@
 use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
+/// Ossos do esqueleto humanoide canônico (VRM 1.0): 24.
+///
+/// É o tamanho da paleta de skinning entregue ao renderer — o WGSL declara
+/// `array<mat4x4<f32>, 24>` e o contrato congela 1536 B.
+pub const CANONICAL_JOINT_COUNT: usize = 24;
+
 /// Proportion sliders for Joint Translation Offsets (BOND) system.
 /// Values represent multipliers relative to canonical rest pose (1.0 = standard reference).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -297,6 +303,43 @@ impl BondSyncManager {
         }
 
         world_transforms
+    }
+
+    /// Matrizes de skinning (`world × inverse bind`) na ordem dos ossos.
+    ///
+    /// `bind_world` são os world transforms da **pose de bind** (repouso); o
+    /// estado atual do manager é a pose em vigor. Com `bind == atual` o
+    /// resultado é a identidade, que é exatamente o que o núcleo precisa
+    /// enquanto assa as proporções na malha base.
+    pub fn skinning_matrices(&self, bind_world: &[Mat4]) -> Vec<Mat4> {
+        let world = self.compute_world_transforms();
+        world
+            .iter()
+            .enumerate()
+            .map(|(index, current)| {
+                let bind_inverse = bind_world
+                    .get(index)
+                    .copied()
+                    .unwrap_or(Mat4::IDENTITY)
+                    .inverse();
+                *current * bind_inverse
+            })
+            .collect()
+    }
+
+    /// Matrizes de skinning neutras (identidade) para todos os ossos.
+    pub fn identity_palette(&self) -> Vec<Mat4> {
+        vec![Mat4::IDENTITY; self.joints.len()]
+    }
+
+    /// Achata as matrizes no layout do buffer do shader: 16 floats por osso, na
+    /// mesma ordem de colunas que o `wgpu`/`glam` usam (`to_cols_array`).
+    pub fn palette_floats(matrices: &[Mat4]) -> Vec<f32> {
+        let mut floats = Vec::with_capacity(matrices.len() * 16);
+        for matrix in matrices {
+            floats.extend_from_slice(&matrix.to_cols_array());
+        }
+        floats
     }
 
     /// Computes dynamic inverse bind pose matrices:

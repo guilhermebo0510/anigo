@@ -35,7 +35,9 @@ import {
 import {
   applyDeltasCpu,
   geometrySignature,
+  identitySkinPalette,
   packChannelRecordsWithWeights,
+  validateSkinPalette,
   viewportGeometryFromDecoded,
   type ViewportGeometry,
 } from "../../services/viewport_mesh";
@@ -75,6 +77,9 @@ import {
   msaaSampleCount,
   renderPasses,
   RENDER_CONTRACT,
+  bonePaletteBytes,
+  skinning,
+  skinningBinding,
   toonRampBytes,
   toonRampFingerprint,
   expectedToonRampFingerprint,
@@ -174,6 +179,10 @@ export class WebGpuViewportRenderer {
   // WebGPU Handles
   private adapter: GPUAdapter | null = null;
   private device: GPUDevice | null = null;
+  /** P1-04: paleta de ossos (bloco `bones`, 1536 B) — igual no WGSL e no GLSL. */
+  private bonesBuffer: any = null;
+  /** Cópia corrente da paleta (caminho WebGL2, onde não há buffer de storage). */
+  private skinPalette: Float32Array = identitySkinPalette();
   private context: GPUCanvasContext | null = null;
   private format: GPUTextureFormat = "bgra8unorm";
   private depthTexture: GPUTexture | null = null;
@@ -1011,11 +1020,33 @@ export class WebGpuViewportRenderer {
   }
 
   /**
+   * P1-04: sobe a paleta de ossos para a GPU (e guarda a cópia do caminho
+   * WebGL2). A paleta vem pronta do núcleo; o viewport não calcula matriz de osso.
+   */
+  private uploadSkinPalette(palette: Float32Array): void {
+    let safe = palette;
+    try {
+      validateSkinPalette(palette, palette.length / skinning().matrices_per_joint);
+    } catch (error) {
+      this.report("snapshot_invalid", "paleta de skinning recusada — usando a neutra", {
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      safe = identitySkinPalette();
+    }
+    this.skinPalette = safe;
+    if (this.bonesBuffer && this.device) {
+      this.device.queue.writeBuffer(this.bonesBuffer, 0, safe);
+    }
+  }
+
+  /**
    * Sobe a geometria canônica na GPU: VBO/IBO de base + canais e deltas do
    * compute. Nenhum byte é recalculado no TypeScript.
    */
   private uploadCoreGeometry(geometry: ViewportGeometry): void {
     const t0 = performance.now();
+    // P1-04: a paleta acompanha a geometria — sem ela os shaders não têm ossos.
+    this.uploadSkinPalette(geometry.skinPalette);
     this.canonicalVertices = geometry.vertices;
     this.canonicalIndices = geometry.indices;
     this.morphVertexCount = geometry.vertexCount;
@@ -1048,6 +1079,9 @@ export class WebGpuViewportRenderer {
   public applyBaseMesh(vertices: Float32Array, indices: Uint32Array, meshUri: string): void {
     this.coreGeometry = null;
     this.coreAuthority = "unavailable";
+    // P1-04: sem snapshot não há paleta — a neutra mantém a malha na pose de
+    // repouso (nunca matrizes zeradas, que colapsariam os vértices na origem).
+    this.uploadSkinPalette(identitySkinPalette());
     this.canonicalVertices = vertices;
     this.canonicalIndices = indices;
     this.morphVertexCount = 0;
@@ -1572,6 +1606,17 @@ export class WebGpuViewportRenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // P1-04: paleta de skinning — tamanho do contrato (24 × mat4 = 1536 B). O
+    // buffer existe desde a inicialização porque os pipelines declaram o binding
+    // no layout: um bind group sem ele não é válido.
+    // `destroy()` é idempotente no WebGPU: sem try/catch silencioso por aqui.
+    if (this.bonesBuffer) this.bonesBuffer.destroy();
+    this.bonesBuffer = this.device.createBuffer({
+      size: bonePaletteBytes(),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.uploadSkinPalette(this.skinPalette);
+
     // 256x4 2D Toon Ramp Texture
     // Row 0: Continuous ramp, Row 1: 1-step harsh anime cel, Row 2: 2-step Ghibli penumbra, Row 3: 3-step high-key
     if (this.toonRampTexture) {
@@ -1607,6 +1652,11 @@ export class WebGpuViewportRenderer {
       addressModeV: addressMode(rampSpec.address_mode),
     });
 
+    // P1-04: o binding da paleta vem do contrato (5 no cel, 2 no outline) —
+    // nunca um literal solto no renderer.
+    const celSkinBinding = skinningBinding("cel");
+    const outlineSkinBinding = skinningBinding("outline");
+
     this.celBindGroup = this.device.createBindGroup({
       layout: this.celPipeline.getBindGroupLayout(0),
       entries: [
@@ -1615,6 +1665,7 @@ export class WebGpuViewportRenderer {
         { binding: 2, resource: { buffer: this.materialBuffer } },
         { binding: 3, resource: this.toonRampTexture.createView() },
         { binding: 4, resource: this.toonRampSampler },
+        { binding: celSkinBinding, resource: { buffer: this.bonesBuffer } },
       ],
     });
 
@@ -1623,6 +1674,7 @@ export class WebGpuViewportRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.outlineBuffer } },
+        { binding: outlineSkinBinding, resource: { buffer: this.bonesBuffer } },
       ],
     });
   }
@@ -2174,6 +2226,9 @@ export class WebGpuViewportRenderer {
 
     gl.useProgram(this.glCelProgram);
     gl.uniformMatrix4fv(gl.getUniformLocation(this.glCelProgram, "u_view_proj"), false, viewProj);
+    // P1-04: paleta de ossos (24 matrizes). Sem este upload as matrizes ficam
+    // zeradas e cada vértice colapsa na origem.
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.glCelProgram, "u_bones"), false, this.skinPalette);
     gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_light_dir"), this.lightDir[0], this.lightDir[1], this.lightDir[2]);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_light_intensity"), this.lightIntensity);
     gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_light_color"), this.lightColor[0], this.lightColor[1], this.lightColor[2]);
@@ -2203,6 +2258,7 @@ export class WebGpuViewportRenderer {
 
     gl.useProgram(this.glOutlineProgram);
     gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_view_proj"), false, viewProj);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_bones"), false, this.skinPalette);
     gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_width"), this.outlineWidth);
     gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_aspect"), aspect);
     gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_depth_bias"), this.outlineDepthBias);
@@ -2393,7 +2449,11 @@ export class WebGpuViewportRenderer {
     if (this.gl) {
       try {
         const gl = this.gl;
-        if (this.glVao) gl.deleteVertexArray(this.glVao);
+        if (this.bonesBuffer) {
+      this.bonesBuffer.destroy();
+      this.bonesBuffer = null;
+    }
+    if (this.glVao) gl.deleteVertexArray(this.glVao);
         if (this.glVbo) gl.deleteBuffer(this.glVbo);
         if (this.glIbo) gl.deleteBuffer(this.glIbo);
         if (this.glCelProgram) gl.deleteProgram(this.glCelProgram);

@@ -120,6 +120,7 @@ export function renderContractFixture() {
     },
     uniforms: {
       camera: {
+        struct: "CameraUniform",
         address_space: "uniform",
         size: 208,
         fields: [
@@ -130,6 +131,7 @@ export function renderContractFixture() {
         ],
       },
       light: {
+        struct: "LightUniform",
         address_space: "uniform",
         size: 80,
         fields: [
@@ -141,6 +143,7 @@ export function renderContractFixture() {
         ],
       },
       material: {
+        struct: "MaterialUniform",
         address_space: "uniform",
         size: 112,
         fields: [
@@ -154,6 +157,7 @@ export function renderContractFixture() {
         ],
       },
       outline: {
+        struct: "OutlineUniform",
         address_space: "uniform",
         size: 48,
         fields: [
@@ -163,6 +167,7 @@ export function renderContractFixture() {
         ],
       },
       sparse_morph_header: {
+        struct: "SparseMorphHeader",
         address_space: "uniform",
         size: 16,
         fields: [
@@ -173,6 +178,7 @@ export function renderContractFixture() {
         ],
       },
       morph_channel: {
+        struct: "MorphChannel",
         address_space: "storage_read",
         size: 16,
         fields: [
@@ -183,6 +189,7 @@ export function renderContractFixture() {
         ],
       },
       sparse_morph_delta: {
+        struct: "SparseMorphDelta",
         address_space: "storage_read",
         size: 32,
         fields: [
@@ -196,7 +203,20 @@ export function renderContractFixture() {
           { name: "_pad", kind: "f32", offset: 28, size: 4 },
         ],
       },
+      // P1-04: paleta de skinning (24 ossos × mat4 = 1536 B). Vai como `uniform`
+      // porque o WebGPU não permite storage buffer no estágio de vértice — e é
+      // no vértice que a pele é aplicada.
+      bones: {
+        struct: "BonePalette",
+        address_space: "uniform",
+        size: 1536,
+        note: "array<mat4x4<f32>, 24>: stride 64 B por osso, sem padding entre elementos",
+        fields: [
+          { name: "matrices", kind: "array_mat4_f32_24", offset: 0, size: 1536, meaning: "world × inverse bind por osso, na ordem do esqueleto" },
+        ],
+      },
       vertex_raw: {
+        struct: "VertexRaw",
         address_space: "vertex_and_storage_read",
         size: 72,
         note: "same 72 bytes in the vertex buffer and in array<VertexRaw>; the WGSL struct declares scalar members (no vec3), so align == 4 and the 72-byte array stride stays legal",
@@ -220,6 +240,7 @@ export function renderContractFixture() {
           { binding: 2, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> material: MaterialUniform" },
           { binding: 3, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var toon_ramp_tex: texture_2d<f32>" },
           { binding: 4, kind: "sampler", stages: ["fragment"], declaration: "var toon_ramp_sampler: sampler" },
+          { binding: 5, kind: "uniform", stages: ["vertex"], declaration: "var<uniform> bones: BonePalette" },
         ],
       },
       {
@@ -228,6 +249,7 @@ export function renderContractFixture() {
         entries: [
           { binding: 0, kind: "uniform", stages: ["vertex"], declaration: "var<uniform> camera: CameraUniform" },
           { binding: 1, kind: "uniform", stages: ["vertex", "fragment"], declaration: "var<uniform> outline: OutlineUniform" },
+          { binding: 2, kind: "uniform", stages: ["vertex"], declaration: "var<uniform> bones: BonePalette" },
         ],
       },
       {
@@ -331,6 +353,25 @@ export function renderContractFixture() {
         { code: "NON_FINITE_VALUE", meaning: "posição/normal/uv/peso com NaN ou infinito" },
         { code: "BAD_VERTEX_STRIDE", meaning: "tamanho do buffer não é múltiplo do stride do vértice" },
       ],
+    },
+    // ---------------------------------------------------------------------
+    // P1-04: skinning de verdade (LBS). O núcleo entrega a paleta; o shader só
+    // aplica. O bloco de código de skinning é **idêntico** em cel_shading.wgsl e
+    // inverted_hull.wgsl (delimitado por marcadores): uma definição, dois usos.
+    // ---------------------------------------------------------------------
+    skinning: {
+      algorithm: "linear_blend_skinning",
+      joint_count: 24,
+      max_influences: 4,
+      matrices_per_joint: 16,
+      palette_uniform: "bones",
+      palette_bytes: 1536,
+      joints_location: 4,
+      weights_location: 5,
+      weights_normalization: "soma dos pesos normalizada no shader antes de combinar as matrizes",
+      unskinned_fallback: "peso total < 1e-5 devolve a matriz identidade (vértice sem influência não colapsa na origem)",
+      index_clamp: "índice de osso limitado a joint_count-1 antes de indexar a paleta",
+      block_markers: ["// ANIGO-SKINNING-BEGIN", "// ANIGO-SKINNING-END"],
     },
     targets: {
       offscreen_color_format: "rgba8unorm",

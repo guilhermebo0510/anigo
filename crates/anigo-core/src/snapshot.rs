@@ -34,6 +34,7 @@ use crate::deformation::{
     SOMATOTYPE_POLICY_VERSION,
 };
 use crate::ids::{AssetId, CharacterId, LightId, MaterialId, MorphId, ProjectId};
+use crate::bone_sync::BondSyncManager;
 use crate::mesh::{BaseGender, Mesh, Vertex};
 use crate::morph::SparseMorphSet;
 use crate::morph_catalog::{find_slider_def, ALL_MORPH_SLIDERS};
@@ -187,6 +188,42 @@ pub struct StaticGeometryPayload {
     pub morph_total_deltas: u32,
     /// Fingerprint of the canonical morph catalog used to build the channels.
     pub catalog_fingerprint: String,
+    /// P1-04: paleta de skinning + estado do rig (a malha já vem atribuída).
+    pub skin: SkinPayload,
+}
+
+/// Skinning entregue junto da geometria estática (P1-04).
+///
+/// A paleta é `world × inverse bind` por osso, 16 floats por osso (ordem de
+/// colunas), pronta para o bloco `bones` do contrato. A malha carrega até 4
+/// influências por vértice nos atributos 4 e 5 do layout de 72 B.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkinPayload {
+    /// Ossos na paleta (24 no esqueleto canônico).
+    pub bone_count: u32,
+    /// Matrizes de skinning: `bone_count * 16` floats.
+    pub palette: Vec<f32>,
+    /// Nome da pose de bind (`canonical_rest`).
+    pub bind_pose: String,
+    /// As proporções estão assadas na malha base (o bake está ligado).
+    pub proportions_baked: bool,
+    /// A paleta entregue é a identidade — skinning não deforma duas vezes.
+    pub palette_is_identity: bool,
+}
+
+impl SkinPayload {
+    /// Paleta canônica enquanto o núcleo assa as proporções na malha base.
+    pub fn canonical_base() -> Self {
+        let skeleton = BondSyncManager::create_canonical_humanoid();
+        let palette = crate::skinning::identity_palette_floats(skeleton.joints.len());
+        Self {
+            bone_count: skeleton.joints.len() as u32,
+            palette,
+            bind_pose: "canonical_rest".to_string(),
+            proportions_baked: crate::skinning::PROPORTIONS_BAKED_INTO_BASE_MESH,
+            palette_is_identity: true,
+        }
+    }
 }
 
 /// Camera state handed to the renderer.
@@ -570,6 +607,7 @@ pub fn build_static_payload(
         morph_deltas_base64: encode_bytes(&pack_deltas(&deltas)),
         morph_total_deltas: deltas.len() as u32,
         catalog_fingerprint: catalog_fingerprint(),
+        skin: SkinPayload::canonical_base(),
     }
 }
 
@@ -839,6 +877,55 @@ mod tests {
     }
 
     #[test]
+    fn production_snapshot_carries_the_bone_palette() {
+        // P1-04: a paleta sai do núcleo junto da geometria estática, então o
+        // renderer nunca precisa inventar ossos.
+        let project = ProjectState::default();
+        let mesh = crate::deformation::prepare_base_mesh(&project).expect("base mesh");
+        let morph_set = build_canonical_sparse_morph_set(&mesh);
+        let snapshot = build_snapshot_for_project(
+            &project,
+            &morph_set,
+            1,
+            1,
+            true,
+            "anigo://canonical/base",
+        )
+        .expect("snapshot do projeto padrão");
+
+        let payload = snapshot
+            .static_payload
+            .as_ref()
+            .expect("snapshot com geometria estática");
+        assert_eq!(payload.vertex_count, 4070);
+        assert_eq!(
+            payload.morph_channels.len(),
+            crate::morph_catalog::ALL_MORPH_SLIDERS.len()
+        );
+        assert_eq!(
+            payload.skin.bone_count as usize,
+            crate::bone_sync::CANONICAL_JOINT_COUNT
+        );
+        assert_eq!(payload.skin.palette.len(), 384);
+        assert!(crate::skinning::flat_palette_is_identity(&payload.skin.palette));
+        assert!(payload.skin.palette_is_identity);
+        assert_eq!(payload.skin.bind_pose, "canonical_rest");
+
+        // Os 16 B de skin do vértice já significam algo: nenhum vértice fica sem
+        // osso, e o buffer continua múltiplo do stride de 72 B.
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|vertex| (vertex.weights.iter().sum::<f32>() - 1.0).abs() < 1e-5));
+        let vertex_bytes = decode_buffer(&payload.vertex_buffer_base64, VERTEX_STRIDE_BYTES)
+            .expect("o buffer de vértices do snapshot decodifica");
+        assert_eq!(
+            vertex_bytes.len(),
+            mesh.vertices.len() * VERTEX_STRIDE_BYTES as usize
+        );
+    }
+
+    #[test]
     fn fixture_deserializes_into_the_rust_contract_types() {
         // Guards the fixture against drifting away from the Rust structs: a
         // renamed/removed field or a wrong enum spelling fails here.
@@ -857,6 +944,17 @@ mod tests {
                 + static_payload.morph_channels[0].delta_count,
             static_payload.morph_channels[1].start_offset
         );
+
+        // P1-04: o fixture carrega a paleta de skinning (a mesma que o
+        // viewport/headless consomem no bloco `bones` do render contract).
+        let skin = &static_payload.skin;
+        assert_eq!(skin.bone_count as usize, crate::bone_sync::CANONICAL_JOINT_COUNT);
+        assert_eq!(skin.palette.len(), skin.bone_count as usize * 16);
+        assert_eq!(skin.palette.len(), 384);
+        assert!(skin.proportions_baked);
+        assert!(skin.palette_is_identity);
+        assert_eq!(skin.bind_pose, "canonical_rest");
+        assert!(crate::skinning::flat_palette_is_identity(&skin.palette));
 
         let dynamic = &snapshot.dynamic;
         assert_eq!(dynamic.project_id.as_str(), "prj_fixture");

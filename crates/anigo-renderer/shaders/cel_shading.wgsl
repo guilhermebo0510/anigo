@@ -49,6 +49,39 @@ var toon_ramp_tex: texture_2d<f32>;
 @group(0) @binding(4)
 var toon_ramp_sampler: sampler;
 
+struct BonePalette {
+    matrices: array<mat4x4<f32>, 24>,
+};
+
+@group(0) @binding(5)
+var<uniform> bones: BonePalette;
+
+// ANIGO-SKINNING-BEGIN — bloco compartilhado (byte a byte igual entre shaders; conferido por scripts/check_wgsl.mjs)
+const PALETTE_JOINT_COUNT: u32 = 24u;
+
+// Linear Blend Skinning: soma ponderada das matrizes dos ossos com peso > 0.
+// Os pesos são normalizados **aqui** (o buffer de vértice carrega o peso cru do
+// GLB), então peso total nulo (vértice sem skin) devolve a identidade em vez de
+// colapsar o vértice na origem.
+fn skin_palette(joints: vec4<u32>, weights: vec4<f32>) -> mat4x4<f32> {
+    var blend = mat4x4<f32>(0.0);
+    var total = 0.0;
+    for (var slot = 0u; slot < 4u; slot = slot + 1u) {
+        let weight = weights[slot];
+        if (weight <= 1e-6) {
+            continue;
+        }
+        let bone = min(joints[slot], PALETTE_JOINT_COUNT - 1u);
+        blend = blend + bones.matrices[bone] * weight;
+        total = total + weight;
+    }
+    if (total < 1e-5) {
+        return mat4x4<f32>(1.0);
+    }
+    return blend / total;
+}
+// ANIGO-SKINNING-END
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -69,10 +102,15 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let world_pos = camera.model * vec4<f32>(in.position, 1.0);
+    // P1-04: deformação por osso antes do model matrix. A matriz é rígida, então
+    // serve para posição (w = 1) e para direção (w = 0).
+    let skin = skin_palette(in.joints, in.weights);
+    let skinned_position = (skin * vec4<f32>(in.position, 1.0)).xyz;
+    let skinned_normal = (skin * vec4<f32>(in.normal, 0.0)).xyz;
+    let world_pos = camera.model * vec4<f32>(skinned_position, 1.0);
     out.clip_position = camera.view_proj * world_pos;
     out.world_position = world_pos.xyz;
-    out.world_normal = normalize((camera.normal_mat * vec4<f32>(in.normal, 0.0)).xyz);
+    out.world_normal = normalize((camera.normal_mat * vec4<f32>(skinned_normal, 0.0)).xyz);
     out.uv = in.uv;
     out.anime_attr = in.color;
     return out;

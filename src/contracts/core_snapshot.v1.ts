@@ -61,6 +61,22 @@ export interface MorphWeightWire {
   weight: number;
 }
 
+/**
+ * P1-04: skinning entregue pelo núcleo junto da geometria estática.
+ *
+ * `palette` é `world × inverse bind` por osso (16 floats por osso, ordem de
+ * colunas), o mesmo layout do bloco `bones` do render contract. Enquanto o
+ * núcleo assa as proporções na malha base, a paleta é a identidade — e a
+ * atribuição de ossos é neutra (`Σ wᵢ · (I · p) = p`).
+ */
+export interface SkinPayloadWire {
+  bone_count: number;
+  palette: number[];
+  bind_pose: string;
+  proportions_baked: boolean;
+  palette_is_identity: boolean;
+}
+
 export interface StaticGeometryPayloadWire {
   format_version: number;
   static_revision: number;
@@ -78,6 +94,8 @@ export interface StaticGeometryPayloadWire {
   morph_deltas_base64: string;
   morph_total_deltas: number;
   catalog_fingerprint: string;
+  /** P1-04: paleta de skinning (a malha já vem com joints/weights atribuídos). */
+  skin: SkinPayloadWire;
 }
 
 export interface CameraSnapshotWire {
@@ -248,6 +266,20 @@ export interface CoreGeometry {
   catalogFingerprint: string;
   baseGender: BaseGenderWire;
   meshUri: string;
+  /** P1-04: paleta de ossos pronta para o uniform buffer (1536 B). */
+  skin: DecodedSkin;
+}
+
+/** Paleta de ossos decodificada do snapshot. */
+export interface DecodedSkin {
+  boneCount: number;
+  /** `boneCount * 16` floats, layout do shader (colunas). */
+  palette: Float32Array;
+  bindPose: string;
+  /** O núcleo assa as proporções na malha base (skinning não deforma de novo). */
+  proportionsBaked: boolean;
+  /** A paleta entregue é a identidade. */
+  paletteIsIdentity: boolean;
 }
 
 /** Decodes the static geometry payload of a snapshot. */
@@ -319,6 +351,44 @@ export function decodeStaticGeometry(payload: StaticGeometryPayloadWire): CoreGe
     normals[v * 3 + 2] = packedVertices[base + 5];
   }
 
+  // P1-04: a paleta precisa ter exatamente bone_count × 16 floats — uma paleta
+  // torta deslocaria todas as matrizes seguintes em silêncio.
+  if (!payload.skin) {
+    throw new SnapshotContractError(
+      "MISSING_SKIN",
+      "static payload sem a seção 'skin' (paleta de skinning do núcleo)"
+    );
+  }
+  const boneCount = payload.skin.bone_count;
+  const paletteFloats = payload.skin.palette;
+  if (!Number.isInteger(boneCount) || boneCount < 1) {
+    throw new SnapshotContractError("BAD_SKIN", `skin.bone_count inválido: ${boneCount}`);
+  }
+  if (!Array.isArray(paletteFloats) || paletteFloats.length !== boneCount * 16) {
+    throw new SnapshotContractError(
+      "BAD_SKIN",
+      `paleta com ${Array.isArray(paletteFloats) ? paletteFloats.length : "?"} floats, ` +
+        `esperado ${boneCount * 16} (${boneCount} ossos × 16)`
+    );
+  }
+  const palette = new Float32Array(paletteFloats);
+  for (let index = 0; index < palette.length; index++) {
+    if (!Number.isFinite(palette[index])) {
+      throw new SnapshotContractError("BAD_SKIN", `paleta com valor não finito no índice ${index}`);
+    }
+  }
+  const isIdentity =
+    Math.abs(palette[0] - 1) < 1e-5 &&
+    Math.abs(palette[5] - 1) < 1e-5 &&
+    Math.abs(palette[10] - 1) < 1e-5 &&
+    Math.abs(palette[15] - 1) < 1e-5;
+  if (payload.skin.palette_is_identity !== isIdentity) {
+    throw new SnapshotContractError(
+      "BAD_SKIN",
+      `skin.palette_is_identity = ${payload.skin.palette_is_identity}, mas a matriz 0 ${isIdentity ? "é" : "não é"} a identidade`
+    );
+  }
+
   // Channels must be contiguous and ordered (the shader binary-searches them).
   let expectedOffset = 0;
   for (const channel of payload.morph_channels) {
@@ -354,6 +424,13 @@ export function decodeStaticGeometry(payload: StaticGeometryPayloadWire): CoreGe
     catalogFingerprint: payload.catalog_fingerprint,
     baseGender: payload.base_gender,
     meshUri: payload.mesh_uri,
+    skin: {
+      boneCount,
+      palette,
+      bindPose: payload.skin.bind_pose,
+      proportionsBaked: payload.skin.proportions_baked,
+      paletteIsIdentity: payload.skin.palette_is_identity,
+    },
   };
 }
 

@@ -24,6 +24,10 @@ const outDir = path.join(root, "contracts", "fixtures");
 
 const VERTEX_STRIDE_BYTES = 72;
 const MORPH_DELTA_STRIDE_BYTES = 32;
+// P1-04: paleta de skinning (24 ossos × mat4) — mesmo tamanho do bloco `bones`
+// do render contract e do `SkinPayload` do core.
+const BONE_COUNT = 24;
+const MATRIX_FLOATS = 16;
 
 /** Packs vertices into the frozen 72-byte layout (pos f32x3 | normal f32x3 | uv
  *  f32x2 | color f32x4 | joints u16x4 | weights f32x4). */
@@ -50,6 +54,23 @@ export function packIndices(indices) {
   const buffer = Buffer.alloc(indices.length * 4);
   indices.forEach((value, i) => buffer.writeUInt32LE(value >>> 0, i * 4));
   return buffer;
+}
+
+/**
+ * P1-04: paleta neutra (`boneCount` matrizes identidade, 16 floats cada).
+ * Mesmo layout do bloco `bones` do render contract e do `SkinPayload` do core.
+ */
+export function identityPalette(boneCount) {
+  const palette = [];
+  for (let bone = 0; bone < boneCount; bone++) {
+    palette.push(
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    );
+  }
+  return palette;
 }
 
 /** Packs sparse morph deltas into the frozen 32-byte layout. */
@@ -135,6 +156,15 @@ const fixture = (() => {
       morph_deltas_base64: packDeltas(deltas).toString("base64"),
       morph_total_deltas: deltas.length,
       catalog_fingerprint: "0123456789abcdef",
+      skin: {
+        bone_count: BONE_COUNT,
+        // Identidade por osso: é o que o núcleo entrega enquanto as proporções
+        // são assadas na malha base (skinning neutro, Σ wᵢ·(I·p) = p).
+        palette: identityPalette(BONE_COUNT),
+        bind_pose: "canonical_rest",
+        proportions_baked: true,
+        palette_is_identity: true,
+      },
     },
     dynamic: {
       dynamic_revision: 7,

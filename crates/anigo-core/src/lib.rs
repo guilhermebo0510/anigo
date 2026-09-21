@@ -8,11 +8,12 @@ pub mod morph;
 pub mod morph_catalog;
 pub mod project;
 pub mod scene;
+pub mod skinning;
 pub mod snapshot;
 pub mod somatotype;
 pub mod tactile;
 
-pub use bone_sync::{BondJoint, BondProportions, BondSyncManager};
+pub use bone_sync::{BondJoint, BondProportions, BondSyncManager, CANONICAL_JOINT_COUNT};
 pub use command::{
     execute_command, restore_from_log, AppliedCommand, ChangeScope, Command, CommandError,
     CommandHistory, CommandLog, CommandLogEntry, CommandOutcome, HistoryEntry, MaterialPatch,
@@ -50,7 +51,7 @@ pub use snapshot::{
     decode_buffer, decode_f32_buffer, encode_buffer, mesh_topology_hash, pack_indices,
     pack_vertices, CameraSnapshot, CoreSnapshot, DeformationAuthority, DeformationCoverage,
     DynamicStatePayload, LightSnapshot, MaterialSnapshot, MorphChannelDescriptor, MorphWeight,
-    NodeSnapshot, RenderSnapshot, StaticGeometryPayload, MORPH_CHANNEL_STRIDE_BYTES,
+    NodeSnapshot, RenderSnapshot, SkinPayload, StaticGeometryPayload, MORPH_CHANNEL_STRIDE_BYTES,
     MORPH_DELTA_STRIDE_BYTES, SNAPSHOT_FORMAT_VERSION, VERTEX_STRIDE_BYTES,
 };
 pub use somatotype::{SomatotypeCoords, SomatotypeState, V_ECTO, V_ENDO, V_MESO};

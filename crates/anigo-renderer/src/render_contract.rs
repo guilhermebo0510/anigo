@@ -586,6 +586,86 @@ pub fn texture_format(format: &str) -> wgpu::TextureFormat {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Skinning (P1-04): paleta de ossos compartilhada por viewport e headless
+// ---------------------------------------------------------------------------
+
+/// Ossos da paleta declarados no contrato (24 no esqueleto canônico).
+pub fn skinning_joint_count() -> u32 {
+    skinning()["joint_count"].as_u64().unwrap_or(24) as u32
+}
+
+/// Nome da variável da paleta no WGSL (`bones`).
+pub fn skinning_palette_uniform() -> &'static str {
+    skinning()["palette_uniform"].as_str().unwrap_or("bones")
+}
+
+/// Tamanho da paleta em bytes (24 × mat4 = 1536).
+pub fn skinning_palette_bytes() -> usize {
+    skinning()["palette_bytes"].as_u64().unwrap_or(1536) as usize
+}
+
+/// Influências por vértice (o layout de vértice guarda quatro).
+pub fn skinning_max_influences() -> u32 {
+    skinning()["max_influences"].as_u64().unwrap_or(4) as u32
+}
+
+/// Marcadores do bloco de skinning que precisa ser idêntico entre os shaders.
+pub fn skinning_block_markers() -> (&'static str, &'static str) {
+    let markers = skinning()["block_markers"].as_array();
+    let open = markers
+        .and_then(|values| values.first())
+        .and_then(|value| value.as_str())
+        .unwrap_or("// ANIGO-SKINNING-BEGIN");
+    let close = markers
+        .and_then(|values| values.get(1))
+        .and_then(|value| value.as_str())
+        .unwrap_or("// ANIGO-SKINNING-END");
+    (open, close)
+}
+
+/// Bindings (em ordem crescente) que um bind group declara no contrato.
+pub fn bind_group_bindings(group: &str) -> Vec<u32> {
+    let mut bindings: Vec<u32> = contract()["bind_groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["name"].as_str() == Some(group))
+        .flat_map(|entry| {
+            entry["entries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value["binding"].as_u64())
+                .map(|binding| binding as u32)
+                .collect::<Vec<u32>>()
+        })
+        .collect();
+    bindings.sort_unstable();
+    bindings.dedup();
+    bindings
+}
+
+/// Binding do uniform de skinning dentro de um bind group (`None` se ausente).
+pub fn skinning_binding(group: &str) -> Option<u32> {
+    let uniform = skinning_palette_uniform();
+    contract()["bind_groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["name"].as_str() == Some(group))
+        .and_then(|entry| entry["entries"].as_array())
+        .into_iter()
+        .flatten()
+        .find(|value| value["name"].as_str() == Some(uniform))
+        .and_then(|value| value["binding"].as_u64())
+        .map(|binding| binding as u32)
+}
+
+fn skinning() -> &'static Value {
+    &contract()["skinning"]
+}
+
 pub fn toon_ramp_spec() -> &'static Value {
     &contract()["toon_ramp"]
 }

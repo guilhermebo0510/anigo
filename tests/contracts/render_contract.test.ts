@@ -182,6 +182,11 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformFloats("material"), 28);
   assert.equal(uniformFloats("outline"), 12);
   assert.equal(uniformFloats("sparse_morph_header"), 4);
+  // P1-04: paleta de skinning — 24 ossos × mat4 (16 floats) = 384 floats
+  assert.equal(uniformSize("bones"), 1536);
+  assert.equal(uniformFloats("bones"), 384);
+  assert.equal(uniformOffset("bones", "matrices"), 0);
+  assert.equal(RENDER_CONTRACT.uniforms.bones.struct, "BonePalette");
 
   assert.equal(uniformOffset("camera", "view_proj"), 0);
   assert.equal(uniformOffset("camera", "camera_pos"), 64);
@@ -197,6 +202,7 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
     Object.entries(RENDER_CONTRACT.uniforms).map(([name, layout]) => [name, layout.address_space])
   );
   assert.deepEqual(spaces, {
+    bones: "uniform",
     camera: "uniform",
     light: "uniform",
     material: "uniform",

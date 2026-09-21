@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 290,
-      "fnv1a64": "7287946c304c838b"
+      "lines": 328,
+      "fnv1a64": "59049335784d09c1"
     },
     {
       "name": "inverted_hull",
@@ -31,8 +31,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 76,
-      "fnv1a64": "d2108952af6f57c4"
+      "lines": 114,
+      "fnv1a64": "775bb012202b2c82"
     },
     {
       "name": "morph_sparse_compute",
@@ -65,8 +65,8 @@ export const RENDER_CONTRACT_DATA = {
       "entry_points": {
         "vertex": "main"
       },
-      "lines": 21,
-      "fnv1a64": "6552564beadabdc9"
+      "lines": 43,
+      "fnv1a64": "0befca84c6990db3"
     },
     {
       "name": "webgl2_fallback/cel_fragment",
@@ -87,8 +87,8 @@ export const RENDER_CONTRACT_DATA = {
       "entry_points": {
         "vertex": "main"
       },
-      "lines": 27,
-      "fnv1a64": "25fab7a3353c1af9"
+      "lines": 47,
+      "fnv1a64": "0bf2171b4bb5f3ea"
     },
     {
       "name": "webgl2_fallback/outline_fragment",
@@ -146,6 +146,7 @@ export const RENDER_CONTRACT_DATA = {
   },
   "uniforms": {
     "camera": {
+      "struct": "CameraUniform",
       "address_space": "uniform",
       "size": 208,
       "fields": [
@@ -176,6 +177,7 @@ export const RENDER_CONTRACT_DATA = {
       ]
     },
     "light": {
+      "struct": "LightUniform",
       "address_space": "uniform",
       "size": 80,
       "fields": [
@@ -215,6 +217,7 @@ export const RENDER_CONTRACT_DATA = {
       ]
     },
     "material": {
+      "struct": "MaterialUniform",
       "address_space": "uniform",
       "size": 112,
       "fields": [
@@ -266,6 +269,7 @@ export const RENDER_CONTRACT_DATA = {
       ]
     },
     "outline": {
+      "struct": "OutlineUniform",
       "address_space": "uniform",
       "size": 48,
       "fields": [
@@ -292,6 +296,7 @@ export const RENDER_CONTRACT_DATA = {
       ]
     },
     "sparse_morph_header": {
+      "struct": "SparseMorphHeader",
       "address_space": "uniform",
       "size": 16,
       "fields": [
@@ -322,6 +327,7 @@ export const RENDER_CONTRACT_DATA = {
       ]
     },
     "morph_channel": {
+      "struct": "MorphChannel",
       "address_space": "storage_read",
       "size": 16,
       "fields": [
@@ -352,6 +358,7 @@ export const RENDER_CONTRACT_DATA = {
       ]
     },
     "sparse_morph_delta": {
+      "struct": "SparseMorphDelta",
       "address_space": "storage_read",
       "size": 32,
       "fields": [
@@ -405,7 +412,23 @@ export const RENDER_CONTRACT_DATA = {
         }
       ]
     },
+    "bones": {
+      "struct": "BonePalette",
+      "address_space": "uniform",
+      "size": 1536,
+      "note": "array<mat4x4<f32>, 24>: stride 64 B por osso, sem padding entre elementos",
+      "fields": [
+        {
+          "name": "matrices",
+          "kind": "array_mat4_f32_24",
+          "offset": 0,
+          "size": 1536,
+          "meaning": "world × inverse bind por osso, na ordem do esqueleto"
+        }
+      ]
+    },
     "vertex_raw": {
+      "struct": "VertexRaw",
       "address_space": "vertex_and_storage_read",
       "size": 72,
       "note": "same 72 bytes in the vertex buffer and in array<VertexRaw>; the WGSL struct declares scalar members (no vec3), so align == 4 and the 72-byte array stride stays legal",
@@ -494,6 +517,14 @@ export const RENDER_CONTRACT_DATA = {
             "fragment"
           ],
           "declaration": "var toon_ramp_sampler: sampler"
+        },
+        {
+          "binding": 5,
+          "kind": "uniform",
+          "stages": [
+            "vertex"
+          ],
+          "declaration": "var<uniform> bones: BonePalette"
         }
       ]
     },
@@ -517,6 +548,14 @@ export const RENDER_CONTRACT_DATA = {
             "fragment"
           ],
           "declaration": "var<uniform> outline: OutlineUniform"
+        },
+        {
+          "binding": 2,
+          "kind": "uniform",
+          "stages": [
+            "vertex"
+          ],
+          "declaration": "var<uniform> bones: BonePalette"
         }
       ]
     },
@@ -730,6 +769,23 @@ export const RENDER_CONTRACT_DATA = {
         "code": "BAD_VERTEX_STRIDE",
         "meaning": "tamanho do buffer não é múltiplo do stride do vértice"
       }
+    ]
+  },
+  "skinning": {
+    "algorithm": "linear_blend_skinning",
+    "joint_count": 24,
+    "max_influences": 4,
+    "matrices_per_joint": 16,
+    "palette_uniform": "bones",
+    "palette_bytes": 1536,
+    "joints_location": 4,
+    "weights_location": 5,
+    "weights_normalization": "soma dos pesos normalizada no shader antes de combinar as matrizes",
+    "unskinned_fallback": "peso total < 1e-5 devolve a matriz identidade (vértice sem influência não colapsa na origem)",
+    "index_clamp": "índice de osso limitado a joint_count-1 antes de indexar a paleta",
+    "block_markers": [
+      "// ANIGO-SKINNING-BEGIN",
+      "// ANIGO-SKINNING-END"
     ]
   },
   "targets": {
