@@ -1,3 +1,8 @@
+// O catálogo de ferramentas MCP é um `json!` literal grande (main.rs:275 até
+// ~721). O macro expande recursivamente por elemento, então o limite padrão de
+// 128 estoura; 256 dá folga para o catálogo crescer sem surpresa.
+#![recursion_limit = "256"]
+
 mod bridge_client;
 #[cfg(target_os = "windows")]
 mod win32_interact;
