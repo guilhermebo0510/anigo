@@ -121,6 +121,7 @@ export const pt_BR: Record<string, string> = {
   "status.project": "Projeto",
   "status.untitled": "Sem Título.anigo",
   "status.model": "Modelo",
+  "status.diagnostics": "Diagnósticos",
   "status.ready": "Pronto",
   "status.autosave": "Autosave",
   "status.saved_at": "Salvo às",

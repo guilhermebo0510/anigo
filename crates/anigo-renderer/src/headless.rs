@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use wgpu::util::DeviceExt;
 
 use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Vertex};
-use glam::Mat4;
+use crate::diagnostics;
 use crate::render_contract as contract;
 use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
 
@@ -36,23 +36,38 @@ pub struct HeadlessRenderer {
 
 impl HeadlessRenderer {
     pub async fn new() -> Result<Self> {
+        // P1-02: um contrato em drift aparece na telemetria antes de qualquer
+        // coisa ser criada (o resto do quadro fica suspeito).
+        diagnostics::report_contract_health();
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
 
-        let adapter = instance
+        // P1-01/P1-02: falha de ambiente vira diagnóstico observável (com código)
+        // antes de virar `anyhow::Error`.
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
             })
             .await
-            .context("Failed to find suitable GPU adapter for ANIGO engine")?;
+        {
+            Some(adapter) => adapter,
+            None => {
+                diagnostics::report(
+                    "device_unavailable",
+                    "nenhum adaptador wgpu compatível encontrado (headless não pode renderizar)",
+                );
+                anyhow::bail!("Failed to find suitable GPU adapter for ANIGO engine");
+            }
+        };
 
         let adapter_info = adapter.get_info();
 
-        let (device, queue) = adapter
+        let (device, queue) = match adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("ANIGO Headless Device"),
@@ -63,7 +78,17 @@ impl HeadlessRenderer {
                 None,
             )
             .await
-            .context("Failed to create wgpu device and queue")?;
+        {
+            Ok(pair) => pair,
+            Err(error) => {
+                diagnostics::report_with_detail(
+                    "device_unavailable",
+                    "falha ao criar o device wgpu",
+                    Some(error.to_string()),
+                );
+                return Err(anyhow::Error::new(error).context("Failed to create wgpu device and queue"));
+            }
+        };
 
         let device = Arc::new(device);
         let queue = Arc::new(queue);
@@ -481,6 +506,9 @@ impl HeadlessRenderer {
         compute_pass.set_bind_group(0, &bind_group, &[]);
         let workgroups = vertex_count.div_ceil(64);
         compute_pass.dispatch_workgroups(workgroups, 1, 1);
+        // wgpu 24 encerra o passe no drop (não existe mais `end()`); o drop
+        // explícito garante que o encoder ficou livre para novos comandos.
+        drop(compute_pass);
     }
 
     /// Uploads buffers, runs sparse morph compute pass on GPU, and reads back transformed vertices.
@@ -567,8 +595,20 @@ impl HeadlessRenderer {
         self.device.poll(wgpu::Maintain::Wait);
 
         rx.recv()
-            .context("Channel receive failed while waiting for GPU morph buffer mapping")?
-            .context("Failed to map GPU buffer for morph verification")?;
+            .context("Channel receive failed while waiting for GPU morph buffer mapping")
+            .and_then(|result| {
+                result.context("Failed to map GPU buffer for morph verification")
+            })
+            .map_err(|error| {
+                // P1-02: falha de readback é observável (código + detalhe), não
+                // só uma string no log de quem chamou.
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "falha ao mapear o buffer de morphs na GPU",
+                    Some(error.to_string()),
+                );
+                error
+            })?;
 
         let mapped = buffer_slice.get_mapped_range();
         let result_vertices: Vec<Vertex> = bytemuck::cast_slice(&mapped).to_vec();
@@ -658,20 +698,12 @@ impl HeadlessRenderer {
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
 
-        // P2-14 model matrix per node (was identity)
-        let model_mat = scene.nodes.first().map(|n| n.transform.to_matrix()).unwrap_or(glam::Mat4::IDENTITY);
-        let normal_mat = model_mat.inverse().transpose();
-        let camera_uniform = CameraUniform {
-            view_proj: view_proj.to_cols_array(),
-            camera_pos: [camera_copy.eye.x, camera_copy.eye.y, camera_copy.eye.z, 1.0],
-            model: model_mat.to_cols_array(),
-            normal_mat: normal_mat.to_cols_array(),
-        };
-        let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Uniform Buffer"),
-            contents: cast_slice(&[camera_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        // P1-05: `view_proj`/`camera_pos` são da cena; o **model matrix** é por
+        // nó e é montado no laço de desenho. Antes, o transform de
+        // `scene.nodes[0]` era aplicado a todos os nós (o nó 2 herdava o
+        // transform do nó 1).
+        let camera_view_proj = view_proj.to_cols_array();
+        let camera_pos = camera_copy.eye.extend(1.0).to_array();
 
         // 3. Setup Light Uniform
         let light_uniform = LightUniform {
@@ -759,6 +791,21 @@ impl HeadlessRenderer {
                     if mesh.vertices.is_empty() || mesh.indices.is_empty() {
                         continue;
                     }
+
+                    // P1-05: model/normal do nó atual (era o transform de nodes[0]).
+                    let model_mat = node.transform.to_matrix();
+                    let normal_mat = model_mat.inverse().transpose();
+                    let camera_uniform = CameraUniform {
+                        view_proj: camera_view_proj,
+                        camera_pos,
+                        model: model_mat.to_cols_array(),
+                        normal_mat: normal_mat.to_cols_array(),
+                    };
+                    let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Camera Uniform Buffer (node)"),
+                        contents: cast_slice(&[camera_uniform]),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
 
                     let mat = node.material.clone().unwrap_or_default();
 
@@ -851,7 +898,12 @@ impl HeadlessRenderer {
                                 render_pass.set_bind_group(0, &cel_bind_group, &[]);
                             }
                             other => {
-                                debug_assert!(false, "passe '{}' sem pipeline no headless", other);
+                                // P1-01: passe sem pipeline vira diagnóstico
+                                // observável (era `debug_assert!`).
+                                contract::report(format!(
+                                    "passe '{}' do render contract não tem pipeline no headless",
+                                    other
+                                ));
                                 continue;
                             }
                         }
@@ -898,8 +950,16 @@ impl HeadlessRenderer {
         self.device.poll(wgpu::Maintain::Wait);
 
         rx.recv()
-            .context("Channel receive failed while waiting for GPU buffer mapping")?
-            .context("Failed to map GPU buffer for image extraction")?;
+            .context("Channel receive failed while waiting for GPU buffer mapping")
+            .and_then(|result| result.context("Failed to map GPU buffer for image extraction"))
+            .map_err(|error| {
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "falha ao mapear o buffer de imagem na GPU",
+                    Some(error.to_string()),
+                );
+                error
+            })?;
 
         let padded_data = buffer_slice.get_mapped_range();
         let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -914,7 +974,15 @@ impl HeadlessRenderer {
         output_buffer.unmap();
 
         let image = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, unpadded_pixels)
-            .context("Failed to construct ImageBuffer from raw unpadded pixels")?;
+            .context("Failed to construct ImageBuffer from raw unpadded pixels")
+            .map_err(|error| {
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "pixels lidos da GPU não formam uma imagem válida",
+                    Some(error.to_string()),
+                );
+                error
+            })?;
 
         let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
 
@@ -1058,20 +1126,11 @@ impl HeadlessRenderer {
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
 
-        // P2-14 model matrix per node (was identity)
-        let model_mat = scene.nodes.first().map(|n| n.transform.to_matrix()).unwrap_or(glam::Mat4::IDENTITY);
-        let normal_mat = model_mat.inverse().transpose();
-        let camera_uniform = CameraUniform {
-            view_proj: view_proj.to_cols_array(),
-            camera_pos: [camera_copy.eye.x, camera_copy.eye.y, camera_copy.eye.z, 1.0],
-            model: model_mat.to_cols_array(),
-            normal_mat: normal_mat.to_cols_array(),
-        };
-        let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Uniform Buffer"),
-            contents: cast_slice(&[camera_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        // P1-05: `view_proj`/`camera_pos` são da cena; o **model matrix** é por
+        // nó e é montado no laço de desenho (antes o nó 2 herdava o transform
+        // do nó 1).
+        let camera_view_proj = view_proj.to_cols_array();
+        let camera_pos = camera_copy.eye.extend(1.0).to_array();
 
         // 4. Setup Light Uniform
         let light_uniform = LightUniform {
@@ -1171,6 +1230,21 @@ impl HeadlessRenderer {
                         continue;
                     }
 
+                    // P1-05: model/normal do nó atual (era o transform de nodes[0]).
+                    let model_mat = node.transform.to_matrix();
+                    let normal_mat = model_mat.inverse().transpose();
+                    let camera_uniform = CameraUniform {
+                        view_proj: camera_view_proj,
+                        camera_pos,
+                        model: model_mat.to_cols_array(),
+                        normal_mat: normal_mat.to_cols_array(),
+                    };
+                    let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Camera Uniform Buffer (node)"),
+                        contents: cast_slice(&[camera_uniform]),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
+
                     let mat = node.material.clone().unwrap_or_default();
                     let mat_uniform = MaterialUniform::from(&mat);
                     let mat_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1269,7 +1343,12 @@ impl HeadlessRenderer {
                                 render_pass.set_bind_group(0, &cel_bind_group, &[]);
                             }
                             other => {
-                                debug_assert!(false, "passe '{}' sem pipeline no headless", other);
+                                // P1-01: passe sem pipeline vira diagnóstico
+                                // observável (era `debug_assert!`).
+                                contract::report(format!(
+                                    "passe '{}' do render contract não tem pipeline no headless",
+                                    other
+                                ));
                                 continue;
                             }
                         }
@@ -1316,8 +1395,16 @@ impl HeadlessRenderer {
         self.device.poll(wgpu::Maintain::Wait);
 
         rx.recv()
-            .context("Channel receive failed while waiting for GPU buffer mapping")?
-            .context("Failed to map GPU buffer for image extraction")?;
+            .context("Channel receive failed while waiting for GPU buffer mapping")
+            .and_then(|result| result.context("Failed to map GPU buffer for image extraction"))
+            .map_err(|error| {
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "falha ao mapear o buffer de imagem na GPU",
+                    Some(error.to_string()),
+                );
+                error
+            })?;
 
         let padded_data = buffer_slice.get_mapped_range();
         let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -1332,7 +1419,15 @@ impl HeadlessRenderer {
         output_buffer.unmap();
 
         let image = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, unpadded_pixels)
-            .context("Failed to construct ImageBuffer from raw unpadded pixels")?;
+            .context("Failed to construct ImageBuffer from raw unpadded pixels")
+            .map_err(|error| {
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "pixels lidos da GPU não formam uma imagem válida",
+                    Some(error.to_string()),
+                );
+                error
+            })?;
 
         let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
 

@@ -99,8 +99,15 @@ export interface ToonRampRowV1 {
   base?: number;
 }
 
+export interface DiagnosticCodeSpecV1 {
+  code: string;
+  severity: "info" | "warning" | "error";
+}
+
 export interface RenderContractV1 {
   version: number;
+  /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
+  diagnostics?: { note: string; codes: DiagnosticCodeSpecV1[] };
   shaders: ShaderSourceV1[];
   vertex_layout: { stride: number; step_mode: string; attributes: VertexAttributeV1[] };
   uniforms: Record<string, UniformLayoutV1>;
@@ -253,6 +260,11 @@ export const RENDER_CONTRACT: RenderContractV1 = readRenderContract();
 // ---------------------------------------------------------------------------
 
 /** Layout do vertex buffer no formato aceito por `createRenderPipeline`. */
+/** Códigos de diagnóstico declarados no contrato (`[]` se a seção faltar). */
+export function diagnosticCodeSpecs(): DiagnosticCodeSpecV1[] {
+  return RENDER_CONTRACT.diagnostics?.codes ?? [];
+}
+
 export function vertexBufferLayout(): {
   arrayStride: number;
   stepMode: "vertex";

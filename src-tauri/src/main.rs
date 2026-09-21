@@ -347,8 +347,15 @@ async fn report_live_telemetry(
 async fn get_live_telemetry(
     live_state: State<'_, Arc<RwLock<LiveWindowState>>>,
 ) -> Result<LiveWindowState, String> {
-    let state = live_state.read().await;
-    Ok(state.clone())
+    let mut state = live_state.read().await.clone();
+    // P1-06: o diagnóstico do renderer nativo (headless + contrato) entra na
+    // telemetria como dado medido aqui, não como o que a UI supostamente viu.
+    let summary = anigo_renderer::diagnostics_summary();
+    state.native_diagnostics_errors = u32::try_from(summary.errors).unwrap_or(u32::MAX);
+    state.native_diagnostics_warnings = u32::try_from(summary.warnings).unwrap_or(u32::MAX);
+    state.native_diagnostic_codes = summary.codes;
+    state.native_contract_valid = anigo_renderer::render_contract::contract_is_valid();
+    Ok(state)
 }
 
 fn get_user_documents_dir() -> std::path::PathBuf {
@@ -670,14 +677,26 @@ fn main() {
             core_document,
             core_deformed_mesh,
         ])
-        .build(tauri::generate_context!())
-        .expect("error building tauri application")
-        .run(|_app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                let exit_path = bridge::log_dir().join("launch.log");
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&exit_path) {
-                    let _ = writeln!(f, "Tauri ExitRequested event received at {:?}", std::time::SystemTime::now());
-                }
+        .build(tauri::generate_context!());
+
+    // P1-01: falha ao construir a aplicação não é mais um `panic!` no caminho
+    // crítico — vira uma mensagem explícita no log e código de saída != 0.
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            let message = format!("erro ao construir a aplicação Tauri: {error}");
+            tracing::error!(target: "anigo::startup", "{message}");
+            eprintln!("[ANIGO] {message}");
+            std::process::exit(1);
+        }
+    };
+
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            let exit_path = bridge::log_dir().join("launch.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&exit_path) {
+                let _ = writeln!(f, "Tauri ExitRequested event received at {:?}", std::time::SystemTime::now());
             }
-        });
+        }
+    });
 }

@@ -3,6 +3,12 @@
   import { devicePixelRatioSafe } from "../../services/settings_persist";
   import { WebGpuViewportRenderer, type ViewportMetrics, type MeshPreset } from "./webgpu_renderer";
   import type { CoreSnapshotDelivery } from "../../services/core_bridge";
+  import {
+    RendererDiagnostics,
+    type DiagnosticCode,
+    type DiagnosticsSummary,
+    type RenderDiagnostic,
+  } from "../../services/render_diagnostics";
   import type { AnatomicalSegment } from "./tactile";
 
   let {
@@ -25,6 +31,8 @@
     onTactileDragStart?: (segment: AnatomicalSegment) => void;
     onTactileDragEnd?: () => void;
     onModelLoadError?: (message: string) => void;
+    /** P1-02: diagnóstico estruturado do renderer (status bar/telemetria). */
+    onDiagnostic?: (diagnostic: RenderDiagnostic) => void;
     /** P0-09: tactile manipulation is gated by the parent (personagem + body/face only). */
     tactileEnabled?: boolean;
     /**
@@ -357,6 +365,41 @@
     return coreSnapshotInFlight;
   }
 
+  /** Resumo dos diagnósticos do renderer (item 2 do P1). */
+  export function getDiagnostics(): { summary: DiagnosticsSummary; entries: readonly RenderDiagnostic[] } {
+    return (
+      renderer?.getDiagnostics?.() ?? {
+        summary: { total: 0, errors: 0, warnings: 0, codes: [], dropped: 0, degraded: false },
+        entries: [],
+      }
+    );
+  }
+
+  /**
+   * Reporta um diagnóstico originado fora do renderer (ex.: snapshot recusado
+   * pelo contrato). Passa pelo mesmo canal — um só lugar para a UI observar.
+   */
+  export function reportDiagnostic(
+    code: DiagnosticCode,
+    message: string,
+    options?: { detail?: string; context?: Record<string, string | number | boolean> }
+  ): void {
+    if (renderer?.reportDiagnostic) {
+      renderer.reportDiagnostic(code, message, options);
+      return;
+    }
+    console.warn(RendererDiagnostics.format({
+      code,
+      severity: "error",
+      message,
+      detail: options?.detail ?? null,
+      context: options?.context ?? null,
+      count: 1,
+      firstAt: 0,
+      lastAt: 0,
+    }));
+  }
+
   /** Autoridade de deformação em vigor no viewport (degradação explícita). */
   export function getDeformationAuthority() {
     return renderer?.getDeformationAuthority?.() ?? {
@@ -385,6 +428,8 @@
       renderer = new WebGpuViewportRenderer(canvas);
       // P0-10: surface model/GLB failures to the parent UI.
       renderer.onModelLoadError = (msg: string) => onModelLoadError?.(msg);
+      // P1-02: todo diagnóstico do renderer sobe para o shell.
+      renderer.onDiagnostic = (diagnostic: RenderDiagnostic) => onDiagnostic?.(diagnostic);
       // P0 §7.5: quando o renderer precisa de geometria canônica, o shell busca
       // o snapshot no núcleo (nunca há deformação local como plano B).
       renderer.onCoreGeometryRequired = () => {
@@ -395,6 +440,7 @@
         onMetrics?.(m);
         // Sync live telemetry back to Tauri's LiveWindowState in the background (no HUD overlay on canvas)
         if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+          const diagnostics = getDiagnostics().summary;
           import("@tauri-apps/api/core").then(({ invoke }) => {
             invoke("report_live_telemetry", {
               telemetry: {
@@ -414,6 +460,15 @@
                 head_scale: renderer?.headScale || 1.0,
                 head_ratio: renderer?.headRatio || 6.5,
                 webgpu_active: m.backend === "WebGPU",
+                // P1-06: telemetria com dados reais do renderer/núcleo, não estimativas.
+                diagnostics_errors: diagnostics.errors,
+                diagnostics_warnings: diagnostics.warnings,
+                diagnostic_codes: diagnostics.codes,
+                deformation_authority: getDeformationAuthority().authority,
+                core_static_revision: getDeformationAuthority().coreStaticRevision,
+                core_dynamic_revision: getDeformationAuthority().coreDynamicRevision,
+                morph_channels: getDeformationAuthority().channels,
+                vertex_count: getDeformationAuthority().vertexCount,
                 spec_intensity: renderer?.specIntensity ?? 0.4,
                 spec_power: renderer?.specExponent ?? 32.0,
                 rim_intensity: renderer?.rimIntensity ?? 0.8,

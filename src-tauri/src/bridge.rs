@@ -187,16 +187,63 @@ pub struct LiveWindowState {
     pub toon_steps: f32,
     #[serde(default = "default_light_color")]
     pub light_color: [f32; 3],
+
+    // ---------------------------------------------------------------------
+    // P1-06: telemetria com dados reais do renderer e do núcleo (antes só
+    // havia estimativas). Campos com `default` para compatibilidade com
+    // clientes antigos.
+    // ---------------------------------------------------------------------
+    /// Erros ativos no canal de diagnóstico do renderer.
+    #[serde(default)]
+    pub diagnostics_errors: u32,
+    /// Avisos ativos no canal de diagnóstico do renderer.
+    #[serde(default)]
+    pub diagnostics_warnings: u32,
+    /// Códigos de diagnóstico ativos (contrato `render_diagnostics.ts`).
+    #[serde(default)]
+    pub diagnostic_codes: Vec<String>,
+    /// Autoridade de deformação em vigor (`core`/`reference_ts`/`unavailable`).
+    #[serde(default)]
+    pub deformation_authority: String,
+    /// Revisão estática da geometria canônica em uso.
+    #[serde(default)]
+    pub core_static_revision: u64,
+    /// Revisão dinâmica do snapshot em uso.
+    #[serde(default)]
+    pub core_dynamic_revision: u64,
+    /// Canais de morph disponíveis no snapshot.
+    #[serde(default)]
+    pub morph_channels: u32,
+    /// Vértices da malha canônica em uso.
+    #[serde(default)]
+    pub vertex_count: u32,
+    /// P1-06: diagnóstico do renderer **nativo** (headless/contrato), separado do
+    /// diagnóstico do viewport — os dois são reais e não podem se sobrescrever.
+    #[serde(default)]
+    pub native_diagnostics_errors: u32,
+    #[serde(default)]
+    pub native_diagnostics_warnings: u32,
+    #[serde(default)]
+    pub native_diagnostic_codes: Vec<String>,
+    /// O render contract carregou sem drift neste processo.
+    #[serde(default = "default_true")]
+    pub native_contract_valid: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for LiveWindowState {
     fn default() -> Self {
         Self {
-            fps: 120.0,
-            frame_time_ms: 0.5,
-            draw_calls: 2,
-            triangle_count: 156,
-            adapter_name: "WebGPU Native Hardware".into(),
+            // P1-06: antes destes valores "bonitos" (120 fps / 156 tris) a
+            // telemetria mentia antes do primeiro frame. Zero = "não medido".
+            fps: 0.0,
+            frame_time_ms: 0.0,
+            draw_calls: 0,
+            triangle_count: 0,
+            adapter_name: "unknown".into(),
             camera_eye: [0.0, 1.5, 3.5],
             camera_target: [0.0, 1.0, 0.0],
             light_direction: [0.577, 0.577, 0.577],
@@ -214,6 +261,19 @@ impl Default for LiveWindowState {
             hue_shift: -15.0,
             toon_steps: 1.0,
             light_color: [1.0, 0.98, 0.95],
+            // P1-06: nada medido ainda ⇒ nada inventado.
+            diagnostics_errors: 0,
+            diagnostics_warnings: 0,
+            diagnostic_codes: Vec::new(),
+            deformation_authority: "unknown".into(),
+            core_static_revision: 0,
+            core_dynamic_revision: 0,
+            morph_channels: 0,
+            vertex_count: 0,
+            native_diagnostics_errors: 0,
+            native_diagnostics_warnings: 0,
+            native_diagnostic_codes: Vec::new(),
+            native_contract_valid: true,
         }
     }
 }

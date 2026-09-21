@@ -609,6 +609,95 @@
       "only_when": "gpu_morph_active"
     }
   ],
+  "diagnostics": {
+    "note": "Códigos estáveis compartilhados pelos dois lados. Severidade define se o renderer está degradado (error) ou apenas avisado (warning).",
+    "codes": [
+      {
+        "code": "webgpu_unavailable",
+        "severity": "warning"
+      },
+      {
+        "code": "backend_unavailable",
+        "severity": "error"
+      },
+      {
+        "code": "gpu_device_error",
+        "severity": "error"
+      },
+      {
+        "code": "pipeline_init_failed",
+        "severity": "error"
+      },
+      {
+        "code": "compute_init_failed",
+        "severity": "error"
+      },
+      {
+        "code": "channel_upload_failed",
+        "severity": "error"
+      },
+      {
+        "code": "context_configure_failed",
+        "severity": "warning"
+      },
+      {
+        "code": "frame_skipped",
+        "severity": "warning"
+      },
+      {
+        "code": "snapshot_invalid",
+        "severity": "error"
+      },
+      {
+        "code": "snapshot_stale",
+        "severity": "warning"
+      },
+      {
+        "code": "geometry_unavailable",
+        "severity": "warning"
+      },
+      {
+        "code": "mesh_invalid",
+        "severity": "error"
+      },
+      {
+        "code": "model_load_failed",
+        "severity": "error"
+      },
+      {
+        "code": "geometry_rejected",
+        "severity": "error"
+      },
+      {
+        "code": "channel_missing",
+        "severity": "warning"
+      },
+      {
+        "code": "unexpected_error",
+        "severity": "error"
+      },
+      {
+        "code": "contract_drift",
+        "severity": "error"
+      },
+      {
+        "code": "device_unavailable",
+        "severity": "error"
+      },
+      {
+        "code": "shader_compile_failed",
+        "severity": "error"
+      },
+      {
+        "code": "buffer_creation_failed",
+        "severity": "error"
+      },
+      {
+        "code": "readback_failed",
+        "severity": "error"
+      }
+    ]
+  },
   "targets": {
     "offscreen_color_format": "rgba8unorm",
     "viewport_color_format_policy": "surface_preferred",

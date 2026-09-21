@@ -22,6 +22,12 @@ import {
   type CoreSnapshotDelivery,
 } from "../../services/core_bridge";
 import {
+  RendererDiagnostics,
+  type DiagnosticCode,
+  type DiagnosticsSummary,
+  type RenderDiagnostic,
+} from "../../services/render_diagnostics";
+import {
   applyDeltasCpu,
   geometrySignature,
   packChannelRecordsWithWeights,
@@ -221,6 +227,9 @@ export class WebGpuViewportRenderer {
   private indexCapacityBytes: number = 0;
   /** P0-10: model load failures surface here (and throw to the caller). */
   public onModelLoadError?: (message: string) => void;
+  /** P1-02: diagnóstico estruturado (nada de falha silenciosa no caminho crítico). */
+  public onDiagnostic?: (diagnostic: RenderDiagnostic) => void;
+  private diagnostics = new RendererDiagnostics();
   /**
    * P0 §7.5: chamado quando o viewport precisa de um snapshot novo do núcleo
    * (geometria ausente/desatualizada). O shell é quem fala com o núcleo.
@@ -338,7 +347,9 @@ export class WebGpuViewportRenderer {
     try {
       await this.loadCanonicalModel("male");
     } catch (e) {
-      console.warn("[ANIGO 3D] Pre-loading canonical model warning:", e);
+      this.report("model_load_failed", "falha ao pré-carregar a malha canônica", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
     }
 
     // 1. Attempt Native WebGPU
@@ -362,7 +373,9 @@ export class WebGpuViewportRenderer {
             // P0-06: observe GPU validation errors (was silent black screen)
             try {
               (this.device as any).addEventListener?.("uncapturederror", (e: any) => {
-                console.error("[ANIGO][GPU] uncaptured error:", e?.error || e);
+                this.report("gpu_device_error", "erro não capturado do device WebGPU", {
+                  detail: String(e?.error?.message ?? e?.error ?? e ?? "uncaptured"),
+                });
                 // surface as observable metric fallback
                 this.onMetricsUpdate?.({
                   fps: 0,
@@ -375,7 +388,11 @@ export class WebGpuViewportRenderer {
               });
               // push validation scope to surface pipeline errors
               (this.device as any).pushErrorScope?.("validation");
-            } catch (_) {}
+            } catch (e) {
+              this.report("gpu_device_error", "não foi possível instalar o observador de erros da GPU", {
+                detail: e instanceof Error ? e.message : String(e),
+              });
+            }
 
             this.buildShadersAndPipelines();
             this.buildGeometryBuffers();
@@ -392,7 +409,9 @@ export class WebGpuViewportRenderer {
           }
         }
       } catch (e) {
-        console.warn("[ANIGO 3D] WebGPU initialization failed, switching to WebGL2 fallback:", e);
+        this.report("webgpu_unavailable", "WebGPU indisponível — usando o fallback WebGL2", {
+          detail: e instanceof Error ? e.message : String(e),
+        });
       }
     }
 
@@ -556,7 +575,9 @@ export class WebGpuViewportRenderer {
         },
       });
     } catch (e) {
-      console.warn("[ANIGO 3D] Compute pipeline initialization fallback:", e);
+      this.report("compute_init_failed", "compute canônico de morphs não inicializou (sem morphs na GPU)", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -583,14 +604,18 @@ export class WebGpuViewportRenderer {
       }
     }
     if (!gl) {
-      console.error("[ANIGO 3D] WebGL2 not supported in this environment — both backends failed (observable fallback).");
+      this.report("backend_unavailable", "WebGPU e WebGL2 falharam: não há backend para desenhar");
       // P0-06: surface black-screen failure as observable DOM overlay instead of silent
       try {
         const overlay = document.createElement("div");
         overlay.textContent = "[ANIGO] Falha ao inicializar WebGPU e WebGL2 — verifique driver/GPU. Veja console para detalhes.";
         overlay.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1d2e;color:#ff6b6b;padding:16px;text-align:center;font:13px sans-serif;z-index:9999";
         this.canvas.parentElement?.appendChild(overlay);
-      } catch (_) {}
+      } catch (e) {
+        this.report("unexpected_error", "não foi possível exibir o aviso de falha de backend", {
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
       return false;
     }
     this.gl = gl as any;
@@ -759,6 +784,46 @@ export class WebGpuViewportRenderer {
   // ------------------------------------------------------------------
 
   /**
+   * Registra um diagnóstico do renderer.
+   *
+   * Todo erro tratado no caminho crítico passa por aqui: código estável +
+   * contexto, agregado por repetição, mais um log legível (o `console.warn`
+   * sozinho não é observável pela UI nem pela telemetria).
+   */
+  private report(
+    code: DiagnosticCode,
+    message: string,
+    options: { detail?: string; context?: Record<string, string | number | boolean> } = {}
+  ): void {
+    try {
+      const diagnostic = this.diagnostics.report(code, message, options);
+      if (diagnostic.count === 1) console.warn(RendererDiagnostics.format(diagnostic));
+      this.onDiagnostic?.(diagnostic);
+    } catch (error) {
+      console.error("[ANIGO] diagnostics dispatcher failed:", error);
+    }
+  }
+
+  /** Reporta um diagnóstico originado fora do renderer (mesmo canal/contrato). */
+  public reportDiagnostic(
+    code: DiagnosticCode,
+    message: string,
+    options: { detail?: string; context?: Record<string, string | number | boolean> } = {}
+  ): void {
+    this.report(code, message, options);
+  }
+
+  /** Diagnósticos acumulados (status bar, telemetria, testes). */
+  public getDiagnostics(): { summary: DiagnosticsSummary; entries: readonly RenderDiagnostic[] } {
+    return { summary: this.diagnostics.summary(), entries: this.diagnostics.entries };
+  }
+
+  /** Limpa o histórico de diagnósticos (após o usuário reconhecer o aviso). */
+  public clearDiagnostics(): void {
+    this.diagnostics.clear();
+  }
+
+  /**
    * Cobertura autorais do núcleo (não há mais "explicito" do lado TypeScript:
    * toda geometria de morph vem do núcleo).
    */
@@ -810,7 +875,9 @@ export class WebGpuViewportRenderer {
     try {
       this.onCoreGeometryRequired?.();
     } catch (e) {
-      console.warn("[ANIGO 3D] core geometry hook failed:", e);
+      this.report("unexpected_error", "o shell não conseguiu atender o pedido de geometria canônica", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -836,6 +903,9 @@ export class WebGpuViewportRenderer {
   public setChannelWeight(sliderId: string, weight: number): void {
     if (!Number.isFinite(weight)) return;
     if (!this.coreGeometry?.channels.some((channel) => channel.sliderId === sliderId)) {
+      this.report("channel_missing", "slider sem canal canônico no snapshot atual", {
+        context: { slider: sliderId },
+      });
       this.requestCoreGeometry(`canal canônico ausente: ${sliderId}`);
       return;
     }
@@ -961,9 +1031,9 @@ export class WebGpuViewportRenderer {
     this.liveWeights.clear();
     this.channelWeights.clear();
     this.buildGeometryBuffers();
-    console.warn(
-      `[ANIGO 3D] modo degradado: renderizando ${meshUri} sem deformação canônica (núcleo indisponível)`
-    );
+    this.report("geometry_unavailable", "modo degradado: malha base sem deformação canônica", {
+      context: { mesh_uri: meshUri },
+    });
   }
 
   /**
@@ -1430,7 +1500,10 @@ export class WebGpuViewportRenderer {
     } catch (e) {
       // P0-10: failures propagate (caller + UI callback) — never silent cube.
       if (e instanceof DOMException && e.name === "AbortError") return;
-      console.error("[ANIGO 3D] Failed to load canonical model:", e);
+      this.report("model_load_failed", "falha ao carregar a malha base (GLB)", {
+        detail: e instanceof Error ? e.message : String(e),
+        context: { gender },
+      });
       this.onModelLoadError?.(e instanceof Error ? e.message : String(e));
       throw e;
     }
@@ -1586,7 +1659,11 @@ export class WebGpuViewportRenderer {
             alphaMode: "premultiplied",
             presentMode: enabled ? "fifo" : "immediate", // P2-11 check caps, fallback if unsupported
           });
-        } catch (_) {}
+        } catch (e) {
+          this.report("context_configure_failed", "não foi possível reconfigurar o canvas (vsync/present)", {
+            detail: e instanceof Error ? e.message : String(e),
+          });
+        }
       }
     }
   }
@@ -1873,7 +1950,12 @@ export class WebGpuViewportRenderer {
     let currentTexture: GPUTexture;
     try {
       currentTexture = this.context.getCurrentTexture();
-    } catch (_) {
+    } catch (e) {
+      // Frame pulado: não é fatal, mas não pode ser silencioso (agregado para
+      // não inundar a lista a 60 fps).
+      this.report("frame_skipped", "o swap chain não devolveu textura neste frame", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
       return;
     }
     const textureView = currentTexture.createView();
@@ -1954,7 +2036,9 @@ export class WebGpuViewportRenderer {
             packChannelRecordsWithWeights(this.coreGeometry.channels, this.effectiveChannelWeights())
           );
         } catch (e) {
-          console.warn("[ANIGO 3D] channel weight upload failed:", e);
+          this.report("channel_upload_failed", "falha ao subir pesos de canal para a GPU", {
+            detail: e instanceof Error ? e.message : String(e),
+          });
         }
         this.gpuMorphDirty = false;
       }

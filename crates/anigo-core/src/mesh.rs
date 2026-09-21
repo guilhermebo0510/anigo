@@ -783,7 +783,13 @@ impl Mesh {
                 "byteLength": byte_length,
             });
             if let Some(t) = target {
-                bv.as_object_mut().unwrap().insert("target".into(), serde_json::json!(t));
+                // P1-01: sem `unwrap` no caminho crítico do export.
+                let object = bv.as_object_mut().ok_or_else(|| {
+                    GltfMeshError::InvalidBufferView(
+                        "buffer view recém-criado não é um objeto JSON".into(),
+                    )
+                })?;
+                object.insert("target".into(), serde_json::json!(t));
             }
             buffer_views.push(bv);
             idx
@@ -920,7 +926,14 @@ impl Mesh {
                 "count": attr.count,
                 "type": attr.attribute_type,
             }));
-            primitive_attrs.as_object_mut().unwrap().insert(name.clone(), serde_json::json!(acc_idx));
+            // P1-01: `unwrap` removido; um atributo customizado sem objeto
+            // `attributes` vira erro explícito (o GLB não é gravado errado).
+            let attrs_object = primitive_attrs.as_object_mut().ok_or_else(|| {
+                GltfMeshError::InvalidAccessor(
+                    "bloco `attributes` da primitive não é um objeto JSON".into(),
+                )
+            })?;
+            attrs_object.insert(name.clone(), serde_json::json!(acc_idx));
         }
 
         // Indices (Uint32 scalar)

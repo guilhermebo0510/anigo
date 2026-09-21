@@ -56,56 +56,161 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 // Acesso cru ao documento
 // ---------------------------------------------------------------------------
 
-/// Contrato parseado uma única vez por processo.
+/// Documento mínimo usado quando o contrato não carrega.
+///
+/// P1-01: o caminho crítico do renderer **não** aborta o processo nem falha em
+/// silêncio — um contrato ilegível vira diagnóstico (consultável em
+/// [`diagnostics`]) e o renderer cai nos defaults declarados aqui.
+const FALLBACK_CONTRACT_JSON: &str = r#"{
+  "version": 1,
+  "shaders": [],
+  "passes": [],
+  "bind_groups": [],
+  "uniforms": {},
+  "vertex_layout": { "stride": 72, "attributes": [] },
+  "targets": {},
+  "toon_ramp": {}
+}"#;
+
+/// Diagnósticos acumulados (problemas do contrato, deduplicados).
+fn feedback() -> &'static std::sync::Mutex<Vec<String>> {
+    static FEEDBACK: OnceLock<std::sync::Mutex<Vec<String>>> = OnceLock::new();
+    FEEDBACK.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Registra um problema do contrato sem `panic!`.
+fn diag(message: impl Into<String>) {
+    let message = message.into();
+    let mut log = match feedback().lock() {
+        Ok(log) => log,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if !log.iter().any(|existing| existing == &message) {
+        tracing::error!(target: "anigo::render_contract", "{message}");
+        log.push(message);
+    }
+}
+
+/// Registra um problema do renderer/contrato sem `panic!`.
+///
+/// Usado pelo headless quando encontra um passe sem pipeline correspondente:
+/// um contrato em drift precisa virar diagnóstico observável, não um
+/// `debug_assert!` que só aparece em build de debug.
+pub fn report(message: impl Into<String>) {
+    diag(message);
+}
+
+/// Problemas encontrados ao ler o contrato (vazio quando está tudo certo).
+pub fn diagnostics() -> Vec<String> {
+    match feedback().lock() {
+        Ok(log) => log.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// `true` quando o contrato carregou e nenhum problema foi registrado.
+pub fn contract_is_valid() -> bool {
+    diagnostics().is_empty()
+}
+
+/// Valor nulo estático para accessors que não encontram o que procuram.
+fn empty() -> &'static Value {
+    static EMPTY: Value = Value::Null;
+    &EMPTY
+}
+
+/// Contrato parseado uma única vez por processo (nunca aborta: ver `diag`).
 pub fn contract() -> &'static Value {
     static PARSED: OnceLock<Value> = OnceLock::new();
     PARSED.get_or_init(|| {
-        let parsed: Value =
-            serde_json::from_str(CONTRACT_JSON).expect("render contract v1 precisa ser JSON válido");
-        let version = parsed["version"].as_u64().unwrap_or(0);
-        assert_eq!(
-            version, CONTRACT_VERSION,
-            "render contract v{} não é suportado por este build",
-            version
-        );
-        parsed
+        match serde_json::from_str::<Value>(CONTRACT_JSON) {
+            Ok(parsed) => {
+                let version = parsed["version"].as_u64().unwrap_or(0);
+                if version != CONTRACT_VERSION {
+                    diag(format!(
+                        "render contract v{} não é suportado por este build (esperado v{})",
+                        version, CONTRACT_VERSION
+                    ));
+                    return fallback_contract();
+                }
+                parsed
+            }
+            Err(error) => {
+                diag(format!("render contract v{CONTRACT_VERSION} é JSON inválido: {error}"));
+                fallback_contract()
+            }
+        }
     })
 }
 
+fn fallback_contract() -> Value {
+    serde_json::from_str(FALLBACK_CONTRACT_JSON)
+        .unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
+}
+
 fn shader_value(name: &str) -> &'static Value {
-    let shaders = contract()["shaders"]
-        .as_array()
-        .expect("render contract sem `shaders`");
-    shaders
+    let shaders = match contract()["shaders"].as_array() {
+        Some(shaders) => shaders,
+        None => {
+            diag("render contract sem `shaders`");
+            return empty();
+        }
+    };
+    match shaders
         .iter()
         .find(|shader| shader["name"].as_str() == Some(name))
-        .unwrap_or_else(|| panic!("shader '{}' não está no render contract", name))
+    {
+        Some(shader) => shader,
+        None => {
+            diag(format!("shader '{name}' não está no render contract"));
+            empty()
+        }
+    }
 }
 
 /// Caminho do shader relativo à raiz do repositório.
 pub fn shader_path(name: &str) -> &'static str {
-    shader_value(name)["path"].as_str().expect("shader sem path")
+    match shader_value(name)["path"].as_str() {
+        Some(path) => path,
+        None => {
+            diag(format!("shader '{name}' sem `path`"));
+            ""
+        }
+    }
 }
 
 /// FNV-1a-64 congelado do shader (hex de 16 dígitos, como no contrato).
 pub fn shader_hash(name: &str) -> &'static str {
-    shader_value(name)["fnv1a64"]
-        .as_str()
-        .expect("shader sem fnv1a64")
+    match shader_value(name)["fnv1a64"].as_str() {
+        Some(hash) => hash,
+        None => {
+            diag(format!("shader '{name}' sem `fnv1a64`"));
+            ""
+        }
+    }
 }
 
 /// Nome do entry point de um estágio do shader (`vertex`/`fragment`/`compute`).
 pub fn shader_entry_point(name: &str, stage: &str) -> &'static str {
-    shader_value(name)["entry_points"][stage]
-        .as_str()
-        .unwrap_or_else(|| panic!("shader '{}' não declara entry point '{}'", name, stage))
+    match shader_value(name)["entry_points"][stage].as_str() {
+        Some(entry) => entry,
+        None => {
+            diag(format!("shader '{name}' não declara entry point '{stage}'"));
+            ""
+        }
+    }
 }
 
 /// Todos os shaders de um papel (`production`, `fallback_webgl2`, `library`).
 pub fn shaders_with_role(role: &str) -> Vec<(&'static str, &'static str)> {
-    contract()["shaders"]
-        .as_array()
-        .expect("render contract sem `shaders`")
+    let shaders = match contract()["shaders"].as_array() {
+        Some(shaders) => shaders,
+        None => {
+            diag("render contract sem `shaders`");
+            return Vec::new();
+        }
+    };
+    shaders
         .iter()
         .filter(|shader| shader["role"].as_str() == Some(role))
         .map(|shader| {
@@ -123,8 +228,16 @@ pub fn shaders_with_role(role: &str) -> Vec<(&'static str, &'static str)> {
 
 fn uniform_value(name: &str) -> &'static Value {
     let block = &contract()["uniforms"][name];
-    assert!(!block.is_null(), "uniform '{}' não está no render contract", name);
+    if block.is_null() {
+        diag(format!("uniform '{name}' não está no render contract"));
+    }
     block
+}
+
+/// Array estático vazio (default de accessors quando o contrato está quebrado).
+fn empty_array() -> &'static Vec<Value> {
+    static EMPTY: OnceLock<Vec<Value>> = OnceLock::new();
+    EMPTY.get_or_init(Vec::new)
 }
 
 pub fn uniform_size(name: &str) -> u32 {
@@ -136,14 +249,23 @@ pub fn uniform_address_space(name: &str) -> &'static str {
 }
 
 pub fn uniform_offset(name: &str, field: &str) -> u32 {
-    uniform_value(name)["fields"]
-        .as_array()
-        .expect("uniform sem `fields`")
+    let fields = match uniform_value(name)["fields"].as_array() {
+        Some(fields) => fields,
+        None => {
+            diag(format!("uniform '{name}' sem `fields`"));
+            empty_array()
+        }
+    };
+    match fields
         .iter()
         .find(|entry| entry["name"].as_str() == Some(field))
-        .unwrap_or_else(|| panic!("campo '{}.{}' não está no render contract", name, field))["offset"]
-        .as_u64()
-        .unwrap_or(0) as u32
+    {
+        Some(entry) => entry["offset"].as_u64().unwrap_or(0) as u32,
+        None => {
+            diag(format!("campo '{name}.{field}' não está no render contract"));
+            0
+        }
+    }
 }
 
 /// Bytes do buffer de vértice (72 no layout NPR canônico).
@@ -153,9 +275,14 @@ pub fn vertex_stride() -> u64 {
 
 /// `(shader_location, offset, formato)` de cada atributo, na ordem declarada.
 pub fn vertex_attributes() -> Vec<(u32, u64, wgpu::VertexFormat)> {
-    contract()["vertex_layout"]["attributes"]
-        .as_array()
-        .expect("render contract sem `vertex_layout.attributes`")
+    let attributes = match contract()["vertex_layout"]["attributes"].as_array() {
+        Some(attributes) => attributes,
+        None => {
+            diag("render contract sem `vertex_layout.attributes`");
+            empty_array()
+        }
+    };
+    attributes
         .iter()
         .map(|attribute| {
             (
@@ -174,7 +301,10 @@ pub fn vertex_format(format: &str) -> wgpu::VertexFormat {
         "float32x3" => wgpu::VertexFormat::Float32x3,
         "float32x4" => wgpu::VertexFormat::Float32x4,
         "uint16x4" => wgpu::VertexFormat::Uint16x4,
-        other => panic!("formato de vértice '{}' não é suportado", other),
+        other => {
+            diag(format!("formato de vértice '{other}' não é suportado"));
+            wgpu::VertexFormat::Float32x3
+        }
     }
 }
 
@@ -210,18 +340,32 @@ pub struct PassSpec {
 }
 
 fn pass_value(name: &str) -> &'static Value {
-    let passes = contract()["passes"].as_array().expect("render contract sem `passes`");
-    passes
-        .iter()
-        .find(|pass| pass["name"].as_str() == Some(name))
-        .unwrap_or_else(|| panic!("passe '{}' não está no render contract", name))
+    let passes = match contract()["passes"].as_array() {
+        Some(passes) => passes,
+        None => {
+            diag("render contract sem `passes`");
+            return empty();
+        }
+    };
+    match passes.iter().find(|pass| pass["name"].as_str() == Some(name)) {
+        Some(pass) => pass,
+        None => {
+            diag(format!("passe '{name}' não está no render contract"));
+            empty()
+        }
+    }
 }
 
 /// Todos os passes declarados, ordenados por `order` (compute vem antes).
 pub fn passes() -> Vec<PassSpec> {
-    let mut specs: Vec<PassSpec> = contract()["passes"]
-        .as_array()
-        .expect("render contract sem `passes`")
+    let declared = match contract()["passes"].as_array() {
+        Some(declared) => declared,
+        None => {
+            diag("render contract sem `passes`");
+            empty_array()
+        }
+    };
+    let mut specs: Vec<PassSpec> = declared
         .iter()
         .map(pass_spec)
         .collect();
@@ -263,42 +407,49 @@ pub fn render_pass_order() -> Vec<&'static str> {
         .collect()
 }
 
+/// Especificação de um passe de render (sem `panic!`: um passe trocado no
+/// contrato vira diagnóstico, não derruba o processo no meio de um frame).
 pub fn render_pass(name: &str) -> PassSpec {
-    let spec = pass_value(name);
-    let parsed = pass_spec(spec);
-    assert_eq!(
-        parsed.kind,
-        PassKind::Render,
-        "passe '{}' não é de render",
-        name
-    );
+    let parsed = pass_spec(pass_value(name));
+    if parsed.kind != PassKind::Render {
+        diag(format!("passe '{name}' deveria ser de render"));
+    }
     parsed
 }
 
+/// Especificação de um passe de compute (idem: diagnóstico em vez de `panic!`).
 pub fn compute_pass(name: &str) -> PassSpec {
-    let spec = pass_value(name);
-    let parsed = pass_spec(spec);
-    assert_eq!(
-        parsed.kind,
-        PassKind::Compute,
-        "passe '{}' não é compute",
-        name
-    );
+    let parsed = pass_spec(pass_value(name));
+    if parsed.kind != PassKind::Compute {
+        diag(format!("passe '{name}' deveria ser compute"));
+    }
     parsed
 }
 
 /// Grupo de bind groups declarados por passe (bindings do WGSL).
 pub fn bind_group_entries(name: &str) -> Vec<(u32, &'static str)> {
-    let groups = contract()["bind_groups"]
-        .as_array()
-        .expect("render contract sem `bind_groups`");
-    let group = groups
-        .iter()
-        .find(|group| group["name"].as_str() == Some(name))
-        .unwrap_or_else(|| panic!("bind group '{}' não está no render contract", name));
-    group["entries"]
-        .as_array()
-        .expect("bind group sem `entries`")
+    let groups = match contract()["bind_groups"].as_array() {
+        Some(groups) => groups,
+        None => {
+            diag("render contract sem `bind_groups`");
+            return Vec::new();
+        }
+    };
+    let group = match groups.iter().find(|group| group["name"].as_str() == Some(name)) {
+        Some(group) => group,
+        None => {
+            diag(format!("bind group '{name}' não está no render contract"));
+            return Vec::new();
+        }
+    };
+    let entries = match group["entries"].as_array() {
+        Some(entries) => entries,
+        None => {
+            diag(format!("bind group '{name}' sem `entries`"));
+            return Vec::new();
+        }
+    };
+    entries
         .iter()
         .map(|entry| (entry["binding"].as_u64().unwrap_or(0) as u32, entry["kind"].as_str().unwrap_or("")))
         .collect()
@@ -308,7 +459,10 @@ pub fn cull_mode(mode: &str) -> wgpu::Face {
     match mode {
         "front" => wgpu::Face::Front,
         "back" => wgpu::Face::Back,
-        other => panic!("cull_mode '{}' não é suportado", other),
+        other => {
+            diag(format!("cull_mode '{other}' não é suportado"));
+            wgpu::Face::Back
+        }
     }
 }
 
@@ -319,7 +473,10 @@ pub fn compare_function(value: &str) -> wgpu::CompareFunction {
         "greater" => wgpu::CompareFunction::Greater,
         "greater-equal" | "greater_equal" => wgpu::CompareFunction::GreaterEqual,
         "always" => wgpu::CompareFunction::Always,
-        other => panic!("depth_compare '{}' não é suportado", other),
+        other => {
+            diag(format!("depth_compare '{other}' não é suportado"));
+            wgpu::CompareFunction::LessEqual
+        }
     }
 }
 
@@ -327,7 +484,10 @@ pub fn blend_state(value: &str) -> Option<wgpu::BlendState> {
     match value {
         "none" => None,
         "src_alpha_one_minus_src_alpha" => Some(wgpu::BlendState::ALPHA_BLENDING),
-        other => panic!("blend '{}' não é suportado", other),
+        other => {
+            diag(format!("blend '{other}' não é suportado"));
+            None
+        }
     }
 }
 
@@ -337,6 +497,40 @@ pub fn depth_bias(value: &Value) -> wgpu::DepthBiasState {
         slope_scale: value["slope_scale"].as_f64().unwrap_or(0.0) as f32,
         clamp: value["clamp"].as_f64().unwrap_or(0.0) as f32,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo de diagnósticos (P1-02: um só vocabulário para Rust ⇄ TypeScript)
+// ---------------------------------------------------------------------------
+
+/// `(code, severity)` de cada diagnóstico declarado no contrato.
+pub fn diagnostic_codes() -> Vec<(&'static str, &'static str)> {
+    let codes = match contract()["diagnostics"]["codes"].as_array() {
+        Some(codes) => codes,
+        None => {
+            diag("render contract sem `diagnostics.codes`");
+            return Vec::new();
+        }
+    };
+    codes
+        .iter()
+        .map(|entry| {
+            (
+                entry["code"].as_str().unwrap_or(""),
+                entry["severity"].as_str().unwrap_or(""),
+            )
+        })
+        .collect()
+}
+
+/// Severidade de um código de diagnóstico (`None` quando não existe no contrato).
+pub fn diagnostic_severity(code: &str) -> Option<crate::diagnostics::Severity> {
+    let codes = contract()["diagnostics"]["codes"].as_array()?;
+    codes
+        .iter()
+        .find(|entry| entry["code"].as_str() == Some(code))
+        .and_then(|entry| entry["severity"].as_str())
+        .and_then(crate::diagnostics::Severity::from_str)
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +579,10 @@ pub fn texture_format(format: &str) -> wgpu::TextureFormat {
         "bgra8unorm-srgb" => wgpu::TextureFormat::Bgra8UnormSrgb,
         "depth24plus" => wgpu::TextureFormat::Depth24Plus,
         "depth32float" => wgpu::TextureFormat::Depth32Float,
-        other => panic!("formato de textura '{}' não é suportado", other),
+        other => {
+            diag(format!("formato de textura '{other}' não é suportado"));
+            wgpu::TextureFormat::Rgba8Unorm
+        }
     }
 }
 
@@ -397,7 +594,10 @@ pub fn filter_mode(value: &str) -> wgpu::FilterMode {
     match value {
         "linear" => wgpu::FilterMode::Linear,
         "nearest" => wgpu::FilterMode::Nearest,
-        other => panic!("filtro '{}' não é suportado", other),
+        other => {
+            diag(format!("filtro '{other}' não é suportado"));
+            wgpu::FilterMode::Linear
+        }
     }
 }
 
@@ -406,7 +606,10 @@ pub fn address_mode(value: &str) -> wgpu::AddressMode {
         "clamp_to_edge" | "clamp-to-edge" => wgpu::AddressMode::ClampToEdge,
         "repeat" => wgpu::AddressMode::Repeat,
         "mirror_repeat" | "mirror-repeat" => wgpu::AddressMode::MirrorRepeat,
-        other => panic!("address mode '{}' não é suportado", other),
+        other => {
+            diag(format!("address mode '{other}' não é suportado"));
+            wgpu::AddressMode::ClampToEdge
+        }
     }
 }
 
@@ -420,14 +623,23 @@ pub fn toon_ramp_bytes() -> Vec<u8> {
     let width = spec["width"].as_u64().unwrap_or(256) as usize;
     let height = spec["height"].as_u64().unwrap_or(4) as usize;
     let rows = spec["rows"].as_array().cloned().unwrap_or_default();
+    if width == 0 || height == 0 {
+        diag("toon_ramp sem width/height utilizáveis");
+        return Vec::new();
+    }
     let mut data = vec![0u8; width * height * 4];
+    let empty_row = Value::Object(serde_json::Map::new());
 
     for y in 0..height {
-        let row = &rows[y];
+        let row = rows.get(y).unwrap_or(&empty_row);
         let identity = row["kind"].as_str() == Some("identity");
         let steps = row["steps"].as_array().cloned().unwrap_or_default();
         for x in 0..width {
-            let u = x as f64 / (width as f64 - 1.0);
+            let u = if width > 1 {
+                x as f64 / (width as f64 - 1.0)
+            } else {
+                0.0
+            };
             let mut factor = if identity {
                 u
             } else {
@@ -458,9 +670,13 @@ pub fn toon_ramp_fingerprint() -> u64 {
 
 /// Impressão digital congelada no contrato (hex).
 pub fn expected_toon_ramp_fingerprint() -> &'static str {
-    contract()["toon_ramp"]["bytes_fnv1a64"]
-        .as_str()
-        .expect("toon_ramp sem bytes_fnv1a64")
+    match contract()["toon_ramp"]["bytes_fnv1a64"].as_str() {
+        Some(hash) => hash,
+        None => {
+            diag("toon_ramp sem `bytes_fnv1a64`");
+            ""
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +705,13 @@ mod tests {
     use super::*;
 
     fn contract_hash_as_u64(hash: &str) -> u64 {
-        u64::from_str_radix(hash, 16).expect("hash do contrato precisa ser hex")
+        match u64::from_str_radix(hash, 16) {
+            Ok(value) => value,
+            Err(_) => {
+                diag(format!("hash do contrato não é hex: '{hash}'"));
+                0
+            }
+        }
     }
 
     #[test]
@@ -637,6 +859,22 @@ mod tests {
         assert_eq!(bind_group_entries("cel").len(), 5);
         assert_eq!(bind_group_entries("outline"), vec![(0, "uniform"), (1, "uniform")]);
         assert_eq!(bind_group_entries("sparse_morph").len(), 5);
+    }
+
+    #[test]
+    fn diagnostic_codes_are_unique_and_typed() {
+        let codes = diagnostic_codes();
+        assert!(codes.len() >= 20);
+        let mut seen: Vec<&str> = Vec::new();
+        for (code, severity) in &codes {
+            assert!(!code.is_empty(), "código de diagnóstico vazio");
+            assert!(!seen.contains(code), "código '{code}' duplicado");
+            seen.push(code);
+            assert!(
+                diagnostic_severity(code).is_some(),
+                "'{code}' com severidade '{severity}' não reconhecida"
+            );
+        }
     }
 
     #[test]

@@ -60,10 +60,12 @@
   import { historyService, type HistoryStateSnapshot } from "./services/history_service";
   import { CommandHistoryService, CommandHistoryError } from "./services/command_history";
   import {
+    CoreBridgeError,
     CoreSessionClient,
     resolveCoreInvoker,
     type CoreSnapshotDelivery,
   } from "./services/core_bridge";
+  import type { DiagnosticsSummary, RenderDiagnostic } from "./services/render_diagnostics";
   import { HistoryAlignment } from "./services/history_alignment";
   import { buildCommand, type CommandIntent } from "./services/command_builder";
   import { previewHistoryOutcome, previewOutcome } from "./services/command_scope";
@@ -571,6 +573,7 @@
   let currentProjectName = $state("Sem Título.anigo");
   let currentProjectPath = $state<string | null>(null);
   let isProjectDirty = $state(false);
+  let isDiagnosticsPopoverOpen = $state(false);
   let isProjectPopoverOpen = $state(false);
   let isPresetPopoverOpen = $state(false);
   let isQuickStartOpen = $state(false);
@@ -589,6 +592,28 @@
   // snapshot que ele entrega. Sem núcleo (browser), a geometria canônica fica
   // indisponível e o viewport anuncia degradação — nunca deforma por conta própria.
   let coreClient: CoreSessionClient | null = null;
+  // P1-02: diagnóstico do renderer visível no shell (último evento + resumo).
+  let lastDiagnostic = $state<RenderDiagnostic | null>(null);
+  let viewportDiagnostics = $state<DiagnosticsSummary>({
+    total: 0,
+    errors: 0,
+    warnings: 0,
+    codes: [],
+    dropped: 0,
+    degraded: false,
+  });
+
+  /** Atualiza o resumo a partir do viewport (fonte é o canal de diagnóstico). */
+  function refreshViewportDiagnostics(): void {
+    const summary = viewportRef?.getDiagnostics?.().summary;
+    if (summary) viewportDiagnostics = summary;
+  }
+
+  /** Handler de diagnóstico do viewport. */
+  function handleViewportDiagnostic(diagnostic: RenderDiagnostic): void {
+    lastDiagnostic = diagnostic;
+    refreshViewportDiagnostics();
+  }
   /** Sliders movidos pelo gesto tátil atual (um gesto = um comando). */
   let tactileTouchedSliders: string[] = [];
 
@@ -976,10 +1001,33 @@
     }
   }
 
-  /** Diagnóstico de falha do núcleo (nunca silenciosa, nunca fatal para o UI). */
+  /**
+   * Diagnóstico de falha do núcleo (nunca silenciosa, nunca fatal para o UI).
+   *
+   * Vai para o mesmo canal do renderer: a status bar e a telemetria veem tudo
+   * num lugar só (P1-02/P1-06).
+   */
   function reportCoreFailure(error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
-    console.warn(`[ANIGO][Core] ${detail}`);
+    const stale = detail.includes("fora de ordem");
+    viewportRef?.reportDiagnostic?.(
+      stale ? "snapshot_stale" : "snapshot_invalid",
+      stale ? "snapshot do núcleo chegou fora de ordem e foi descartado" : "falha ao obter/decodificar o snapshot do núcleo",
+      { detail }
+    );
+    refreshViewportDiagnostics();
+    if (error instanceof CoreBridgeError && error.code === "core_unavailable") {
+      lastDiagnostic = {
+        code: "geometry_unavailable",
+        severity: "warning",
+        message: "núcleo indisponível",
+        detail,
+        context: null,
+        count: 1,
+        firstAt: 0,
+        lastAt: 0,
+      };
+    }
   }
 
   /**
@@ -2395,6 +2443,7 @@
           onTactileDragEnd={handleTactileDragEnd}
           tactileEnabled={activeWorkspace === "personagem" && (activeTool === "body" || activeTool === "face")}
           onModelLoadError={(msg) => alert("Erro ao carregar modelo: " + msg)}
+          onDiagnostic={handleViewportDiagnostic}
           coreSnapshotProvider={coreSnapshotProvider}
         />
       </div>
@@ -3717,6 +3766,40 @@
 
     <!-- Right: Status & Autosave (Moved here as requested!) -->
     <div class="status-right">
+      <!-- P1-02: falha de renderer/núcleo não é mais silenciosa -->
+      {#if viewportDiagnostics.degraded || lastDiagnostic}
+        <button
+          class="status-btn status-diagnostics"
+          class:status-diagnostics-error={viewportDiagnostics.degraded}
+          class:status-diagnostics-warn={!viewportDiagnostics.degraded}
+          onclick={() => (isDiagnosticsPopoverOpen = !isDiagnosticsPopoverOpen)}
+          title={lastDiagnostic
+            ? `[${lastDiagnostic.code}] ${lastDiagnostic.message}`
+            : "diagnósticos do renderer"}
+          aria-label="Diagnósticos do renderer"
+        >
+          <span class="status-label">{t("status.diagnostics")}:</span>
+          <span class="status-val">
+            {viewportDiagnostics.errors}E / {viewportDiagnostics.warnings}W
+          </span>
+        </button>
+        {#if isDiagnosticsPopoverOpen}
+          <div class="status-diagnostics-panel" role="log" aria-live="polite">
+            <strong>{t("status.diagnostics")}</strong>
+            {#each viewportRef?.getDiagnostics?.().entries ?? [] as entry (entry.code + entry.message)}
+              <div class="status-diagnostics-entry" data-severity={entry.severity}>
+                <code>[{entry.code}]</code>
+                <span>{entry.message}{entry.count > 1 ? ` (×${entry.count})` : ""}</span>
+                {#if entry.detail}<em>{entry.detail}</em>{/if}
+              </div>
+            {/each}
+            {#if viewportDiagnostics.dropped > 0}
+              <em>{viewportDiagnostics.dropped} diagnóstico(s) descartado(s) por limite</em>
+            {/if}
+          </div>
+        {/if}
+        <span class="status-sep">•</span>
+      {/if}
       <span class="status-ready">{t("status.ready")}</span>
       {#if lastAutosaveTime}
         <span class="status-sep">•</span>
@@ -4548,6 +4631,32 @@
 
 
   /* 4. Bottom Status Bar */
+  .status-diagnostics {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 2px 8px;
+    cursor: pointer;
+    background: transparent;
+  }
+  .status-diagnostics-error { color: #ff7b72; border-color: rgba(255, 123, 114, 0.5); }
+  .status-diagnostics-warn { color: #e3b341; border-color: rgba(227, 179, 65, 0.5); }
+  .status-diagnostics-panel {
+    position: absolute;
+    bottom: 32px;
+    right: 12px;
+    max-width: 460px;
+    max-height: 220px;
+    overflow: auto;
+    background: #171a26;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 11px;
+    z-index: 40;
+  }
+  .status-diagnostics-entry { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+  .status-diagnostics-entry[data-severity="error"] code { color: #ff7b72; }
+  .status-diagnostics-entry[data-severity="warning"] code { color: #e3b341; }
   .app-statusbar {
     height: 28px;
     margin: 0 6px 6px 6px;

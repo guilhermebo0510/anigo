@@ -549,9 +549,22 @@ impl Win32Harness {
             serde_json::Value::String(log_dir.to_string_lossy().to_string()),
         );
 
+        // P1-01: endereço inválido não derruba o diagnóstico com `unwrap`.
+        let bridge_socket = match bridge_addr.parse::<std::net::SocketAddr>() {
+            Ok(addr) => addr,
+            Err(_) => {
+                tracing::warn!(
+                    target: "anigo::mcp",
+                    %bridge_addr,
+                    "ANIGO_BRIDGE_ADDR inválido; usando o endereço padrão 127.0.0.1:39090"
+                );
+                std::net::SocketAddr::from(([127, 0, 0, 1], 39090))
+            }
+        };
+
         // P1-10: Teste de conexão com timeout curto (estamos em spawn_blocking, então std::net é OK aqui)
         let bridge_live = std::net::TcpStream::connect_timeout(
-            &bridge_addr.parse().unwrap_or_else(|_| "127.0.0.1:39090".parse().unwrap()),
+            &bridge_socket,
             Duration::from_millis(500),
         ).map(|mut s| {
             let _ = s.set_read_timeout(Some(Duration::from_millis(300)));
