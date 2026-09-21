@@ -373,7 +373,9 @@ pub fn passes() -> Vec<PassSpec> {
     specs
 }
 
-fn pass_spec(pass: &Value) -> PassSpec {
+/// O contrato é um JSON `'static` (uma única `OnceLock`), então as especificações
+/// podem guardar `&'static str` e o renderer não guarda cópia própria dos nomes.
+fn pass_spec(pass: &'static Value) -> PassSpec {
     let kind = match pass["kind"].as_str() {
         Some("compute") => PassKind::Compute,
         _ => PassKind::Render,
