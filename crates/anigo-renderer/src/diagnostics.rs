@@ -225,12 +225,26 @@ pub fn report_contract_health() -> bool {
     false
 }
 
+/// Serializa os testes que **observam** o coletor global de diagnósticos.
+///
+/// O coletor é global por design (telemetria do processo). Sem exclusão mútua,
+/// um teste que afirma uma contagem (`warnings == 1`) corre em paralelo com
+/// qualquer outro que reporte — inclusive os de `headless`, que reportam
+/// `device_unavailable` quando o runner não tem adaptador — e a contagem vira
+/// sorte de escalonamento.
+#[cfg(test)]
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn known_code_records_a_diagnostic_with_contract_severity() {
+        let _guard = test_guard();
         clear();
         let diagnostic = report("geometry_unavailable", "modo degradado no teste");
         let diagnostic = diagnostic.expect("diagnóstico registrado");
@@ -242,6 +256,7 @@ mod tests {
 
     #[test]
     fn errors_degrade_the_summary() {
+        let _guard = test_guard();
         clear();
         report("device_unavailable", "sem adaptador no teste");
         let summary = summary();
@@ -253,6 +268,7 @@ mod tests {
 
     #[test]
     fn repeated_reports_aggregate_instead_of_growing() {
+        let _guard = test_guard();
         clear();
         report("frame_skipped", "frame pulado no teste");
         report("frame_skipped", "frame pulado no teste");
@@ -264,6 +280,7 @@ mod tests {
 
     #[test]
     fn unknown_code_is_contract_drift() {
+        let _guard = test_guard();
         clear();
         assert!(report("codigo_que_nao_existe", "teste").is_none());
         let entries = entries();

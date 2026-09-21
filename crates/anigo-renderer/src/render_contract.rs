@@ -939,8 +939,23 @@ mod tests {
         assert_eq!(morph.only_when, Some("gpu_morph_active"));
         assert_eq!(morph.compute_entry, Some("cs_accumulate_morphs"));
 
-        assert_eq!(bind_group_entries("cel").len(), 5);
-        assert_eq!(bind_group_entries("outline"), vec![(0, "uniform"), (1, "uniform")]);
+        // P1-04 acrescentou o palette de ossos ao grupo 0: `bones` é o binding 5
+        // do cel e o 2 do contorno (é o que o WGSL declara e o contrato congela).
+        assert_eq!(
+            bind_group_entries("cel"),
+            vec![
+                (0, "uniform"),
+                (1, "uniform"),
+                (2, "uniform"),
+                (3, "texture_2d<f32>"),
+                (4, "sampler"),
+                (5, "uniform"),
+            ]
+        );
+        assert_eq!(
+            bind_group_entries("outline"),
+            vec![(0, "uniform"), (1, "uniform"), (2, "uniform")]
+        );
         assert_eq!(bind_group_entries("sparse_morph").len(), 5);
     }
 

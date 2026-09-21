@@ -75,6 +75,22 @@ impl HeadlessRenderer {
 
         // P1-01/P1-02: falha de ambiente vira diagnóstico observável (com código)
         // antes de virar `anyhow::Error`.
+        //
+        // A checagem é feita por `enumerate_adapters` de propósito: sem nenhum
+        // adaptador, `request_adapter` **entra em pânico dentro do wgpu** (não
+        // devolve `None`), e um runner sem GPU derrubava os testes de GPU em vez
+        // de fazê-los pular pelo caminho de erro previsto aqui.
+        if instance
+            .enumerate_adapters(wgpu::Backends::all())
+            .is_empty()
+        {
+            diagnostics::report(
+                "device_unavailable",
+                "nenhum adaptador wgpu compatível encontrado (headless não pode renderizar)",
+            );
+            anyhow::bail!("Failed to find suitable GPU adapter for ANIGO engine");
+        }
+
         let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -1569,6 +1585,9 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_initialization_and_render() {
+        // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
+        // de `diagnostics` enquanto este teste reporta `device_unavailable`.
+        let _guard = crate::diagnostics::test_guard();
         pollster::block_on(async {
             let renderer = HeadlessRenderer::new().await;
             if let Ok(renderer) = renderer {
@@ -1594,6 +1613,9 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_canonical_base_mesh() {
+        // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
+        // de `diagnostics` enquanto este teste reporta `device_unavailable`.
+        let _guard = crate::diagnostics::test_guard();
         pollster::block_on(async {
             let renderer = HeadlessRenderer::new().await;
             if let Ok(renderer) = renderer {
@@ -1615,6 +1637,9 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_sparse_morph_compute_matches_cpu() {
+        // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
+        // de `diagnostics` enquanto este teste reporta `device_unavailable`.
+        let _guard = crate::diagnostics::test_guard();
         pollster::block_on(async {
             let renderer = HeadlessRenderer::new().await;
             if let Ok(renderer) = renderer {
@@ -1686,6 +1711,9 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_render_scene_with_sparse_morphs() {
+        // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
+        // de `diagnostics` enquanto este teste reporta `device_unavailable`.
+        let _guard = crate::diagnostics::test_guard();
         pollster::block_on(async {
             let renderer = HeadlessRenderer::new().await;
             if let Ok(renderer) = renderer {

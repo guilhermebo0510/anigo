@@ -135,8 +135,13 @@ impl BonePaletteUniform {
     }
 
     /// Constrói a partir de `joint_count * 16` floats (ignora o excedente).
+    ///
+    /// O que a fatia não cobre fica com a matriz **identidade**, não com zeros:
+    /// uma paleta curta (por exemplo um buffer de tamanho errado) somaria zeros
+    /// e colapsaria o vértice para a origem, enquanto a identidade mantém o
+    /// vértice no lugar (mesma escolha da paleta neutra de `skinning`).
     pub fn from_floats(floats: &[f32]) -> Self {
-        let mut uniform = Self::identity(0);
+        let mut uniform = Self::identity(MAX_PALETTE_JOINTS);
         for (index, matrix) in uniform.matrices.iter_mut().enumerate() {
             let start = index * 16;
             if start + 16 > floats.len() {
