@@ -344,7 +344,7 @@ impl RateLimiter {
 /// (e.g. sandboxed / restricted environments).
 fn generate_token() -> String {
     let mut bytes = [0u8; 16];
-    match std::fs::read("/dev/urandom") {
+    match std::fs::File::open("/dev/urandom") {
         Ok(mut f) => {
             use std::io::Read;
             // read exactly 16 bytes from urandom
@@ -431,7 +431,7 @@ pub struct LiveBridgeServer {
     /// P2-14: per-IP rate limiter (30 req/s per peer).
     rate_limiter: Arc<RateLimiter>,
     /// P2: runtime metrics.
-    metrics: Arc<crate::bridge_metrics::BridgeMetrics>,
+    metrics: Arc<bridge_metrics::BridgeMetrics>,
 }
 
 impl LiveBridgeServer {
@@ -455,7 +455,7 @@ impl LiveBridgeServer {
             token: Arc::from(token),
             request_count: AtomicU64::new(1),
             rate_limiter: Arc::new(RateLimiter::new(30)),
-            metrics: Arc::new(crate::bridge_metrics::BridgeMetrics::new()),
+            metrics: Arc::new(bridge_metrics::BridgeMetrics::new()),
         }
     }
 
@@ -657,7 +657,12 @@ impl LiveBridgeServer {
     }
 
     /// Helper to serialize + write + flush a BridgeResponse (with size cap + timeouts).
-    async fn write_response(writer: &mut tokio::io::WriteHalf<TcpStream>, resp: &BridgeResponse) {
+    /// Aceita qualquer metade de escrita: a conexão do cliente usa
+    /// `OwnedWriteHalf` e o servidor `WriteHalf<TcpStream>`.
+    async fn write_response<W>(writer: &mut W, resp: &BridgeResponse)
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
         use tokio::time::{timeout, Duration};
         const MAX_LINE: usize = 1 << 20;
         let mut resp_bytes = match serde_json::to_vec(resp) {
@@ -880,6 +885,7 @@ impl LiveBridgeServer {
                         let _ = win.set_focus();
                         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
+                        #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
                         let save_path = req.params.get("save_path").and_then(|v| v.as_str());
 
                         #[cfg(target_os = "windows")]

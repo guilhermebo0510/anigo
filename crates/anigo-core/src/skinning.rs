@@ -743,12 +743,12 @@ mod tests {
         }
         assert!(left_count > 100 && right_count > 100, "{left_count}/{right_count}");
         assert!(
-            left_sum / left_count as f32 > 0.0,
+            left_sum / (left_count as f32) > 0.0,
             "cadeia LEFT_* precisa ficar em +X (média {})",
             left_sum / left_count as f32
         );
         assert!(
-            right_sum / right_count as f32 < 0.0,
+            right_sum / (right_count as f32) < 0.0,
             "cadeia RIGHT_* precisa ficar em −X (média {})",
             right_sum / right_count as f32
         );
@@ -901,7 +901,7 @@ mod tests {
         assert_eq!(summary.unmapped_vertices, mesh.vertices.len() - 10);
         assert!(!summary.is_complete());
         for vertex in mesh.vertices.iter().take(10) {
-            assert_ne!(vertex.joints[0] as usize, joints::ROOT);
+            assert_ne!(u32::from(vertex.joints[0]), joints::ROOT);
         }
         for vertex in mesh.vertices.iter().skip(10) {
             assert_eq!(vertex.joints[0], joints::HIPS as u16);

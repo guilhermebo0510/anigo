@@ -454,6 +454,9 @@ async fn autosave_project(
 }
 
 #[tauri::command]
+// Fora do Windows o parâmetro não é usado (não há Explorer) — mas a assinatura
+// do comando é a mesma, porque é o contrato com o frontend.
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
 async fn open_directory_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -807,7 +810,7 @@ fn main() {
     let live_state = Arc::new(RwLock::new(LiveWindowState::default()));
     let live_state_bridge = Arc::clone(&live_state);
 
-    tauri::Builder::default()
+    let built = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .manage(live_state)
@@ -854,7 +857,7 @@ fn main() {
 
     // P1-01: falha ao construir a aplicação não é mais um `panic!` no caminho
     // crítico — vira uma mensagem explícita no log e código de saída != 0.
-    let app = match app {
+    let app = match built {
         Ok(app) => app,
         Err(error) => {
             let message = format!("erro ao construir a aplicação Tauri: {error}");

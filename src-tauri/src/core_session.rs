@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn document_round_trips_through_the_session() {
-        let mut session = session_with_slider("height_overall", 1.8);
+        let session = session_with_slider("height_overall", 1.8);
         let json = session.document().expect("document");
         let mut restored = CoreSession::new();
         restored.load_document(&json).expect("load");
