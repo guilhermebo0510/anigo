@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 328,
-      "fnv1a64": "59049335784d09c1"
+      "lines": 334,
+      "fnv1a64": "1a0ecf840a8e4016"
     },
     {
       "name": "inverted_hull",
@@ -31,8 +31,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 114,
-      "fnv1a64": "775bb012202b2c82"
+      "lines": 120,
+      "fnv1a64": "c5830c7c18e31a6b"
     },
     {
       "name": "morph_sparse_compute",
@@ -55,7 +55,7 @@ export const RENDER_CONTRACT_DATA = {
         "sample": "sample_face_shadow"
       },
       "lines": 19,
-      "fnv1a64": "24256bd0e7ab0990"
+      "fnv1a64": "bbb3c31fbae06467"
     },
     {
       "name": "webgl2_fallback/cel_vertex",
@@ -66,7 +66,7 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "main"
       },
       "lines": 43,
-      "fnv1a64": "0befca84c6990db3"
+      "fnv1a64": "ae295f9a3186af80"
     },
     {
       "name": "webgl2_fallback/cel_fragment",
@@ -77,7 +77,7 @@ export const RENDER_CONTRACT_DATA = {
         "fragment": "main"
       },
       "lines": 171,
-      "fnv1a64": "2ad671261efabdfa"
+      "fnv1a64": "9600d4c7dac173a5"
     },
     {
       "name": "webgl2_fallback/outline_vertex",
@@ -88,7 +88,7 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "main"
       },
       "lines": 47,
-      "fnv1a64": "0bf2171b4bb5f3ea"
+      "fnv1a64": "15c4a484dd593747"
     },
     {
       "name": "webgl2_fallback/outline_fragment",
@@ -99,7 +99,7 @@ export const RENDER_CONTRACT_DATA = {
         "fragment": "main"
       },
       "lines": 15,
-      "fnv1a64": "bd0901e958cd0081"
+      "fnv1a64": "1771e92e441386fc"
     }
   ],
   "vertex_layout": {

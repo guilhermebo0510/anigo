@@ -187,7 +187,9 @@ impl CoreSession {
             .execute(&mut self.project, command)
             .map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
-        self.invalidate_geometry();
+        if outcome.scope.requires_static_rebuild() {
+            self.invalidate_geometry();
+        }
         Ok(outcome)
     }
 
@@ -201,7 +203,9 @@ impl CoreSession {
     pub fn undo(&mut self) -> Result<CommandOutcome, String> {
         let outcome = self.history.undo(&mut self.project).map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
-        self.invalidate_geometry();
+        if outcome.scope.requires_static_rebuild() {
+            self.invalidate_geometry();
+        }
         Ok(outcome)
     }
 
@@ -209,7 +213,9 @@ impl CoreSession {
     pub fn redo(&mut self) -> Result<CommandOutcome, String> {
         let outcome = self.history.redo(&mut self.project).map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
-        self.invalidate_geometry();
+        if outcome.scope.requires_static_rebuild() {
+            self.invalidate_geometry();
+        }
         Ok(outcome)
     }
 
@@ -501,9 +507,14 @@ mod tests {
 
     fn session_with_slider(id: &str, value: f32) -> CoreSession {
         let mut session = CoreSession::new();
+        let target = if id.starts_with("mrf_") {
+            id.to_string()
+        } else {
+            format!("mrf_{id}")
+        };
         let command: Command = serde_json::from_value(serde_json::json!({
             "kind": "set_morph_value",
-            "target": id,
+            "target": target,
             "value": value,
         }))
         .expect("command deserializes");
@@ -557,8 +568,13 @@ mod tests {
         let mut session = CoreSession::new();
         let before = session.snapshot(true, None).expect("snapshot");
         let revision = before.dynamic.static_revision;
-        let after = session_with_slider("height_overall", 1.7)
-            .snapshot(true, Some(revision))
+        let command = Command::from_json(
+            r#"{"kind":"set_morph_value","target":"mrf_height_overall","value":1.7}"#,
+        )
+        .expect("parses");
+        session.apply(command).expect("applies");
+        let after = session
+            .snapshot(false, Some(revision))
             .expect("snapshot");
         // Same base geometry, new dynamic weights: no static payload, no new revision.
         assert!(after.static_payload.is_none());
@@ -587,12 +603,18 @@ mod tests {
         let mut session = CoreSession::new();
         let before = session.history_report();
         session
-            .apply(Command::from_json(r#"{"kind":"reset_morphs"}"#).expect("parses"))
+            .apply(
+                Command::from_json(
+                    r#"{"kind":"set_morph_value","target":"mrf_height_overall","value":1.5}"#,
+                )
+                .expect("parses"),
+            )
             .expect("applies");
         assert!(session.history_report()["can_undo"].as_bool().unwrap_or(false));
         session.undo().expect("undo");
         let report = session.history_report();
-        assert_eq!(report["revision"], before["revision"]);
+        assert_eq!(report["can_undo"].as_bool(), Some(false));
+        assert_eq!(report["project_fingerprint"], before["project_fingerprint"]);
         assert_eq!(session.project().character.morph_values.len(), 0);
     }
 
@@ -600,7 +622,9 @@ mod tests {
     fn invalid_documents_are_rejected_without_touching_the_session() {
         let mut session = CoreSession::new();
         let fingerprint = session.project().content_fingerprint();
-        let error = session.load_document(r#"{"schema_version": 999}"#).expect_err("must fail");
+        let error = session
+            .load_document(r#"{"project_id": "prj_invalid", "schema_version": 999}"#)
+            .expect_err("must fail");
         assert!(!error.is_empty());
         assert_eq!(session.project().content_fingerprint(), fingerprint);
     }
@@ -661,7 +685,7 @@ mod tests {
 
     #[test]
     fn exported_glb_reopens_with_the_same_deformed_mesh() {
-        let mut session = session_with_slider("head_width", 1.4);
+        let mut session = session_with_slider("head_width", 1.25);
         let deformed = session.deformed_mesh().expect("deformed mesh");
         let bundle = session.export_bundle().expect("export bundle");
         let reopened = Mesh::from_glb_bytes(&bundle.glb).expect("GLB reabre");

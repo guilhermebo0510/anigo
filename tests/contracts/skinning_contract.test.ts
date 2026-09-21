@@ -38,7 +38,7 @@ import {
 import { checkContract } from "../../scripts/check_wgsl.mjs";
 
 const readRepoFile = (relative: string): string =>
-  readFileSync(fileURLToPath(new URL(`../../${relative}`, import.meta.url)), "utf8");
+  readFileSync(fileURLToPath(new URL(`../../${relative}`, import.meta.url)), "utf8").replace(/\r\n/g, "\n");
 
 const CEL_WGSL = "crates/anigo-renderer/shaders/cel_shading.wgsl";
 const OUTLINE_WGSL = "crates/anigo-renderer/shaders/inverted_hull.wgsl";
@@ -116,10 +116,11 @@ test("shaders WGSL: bloco de skinning idêntico e LBS sem repetição de conta",
   assert.ok(outline.includes("struct BonePalette {\n    matrices: array<mat4x4<f32>, 24>,"));
 
   // LBS: pesos normalizados, índice limitado, identidade quando não há peso
-  assert.match(block, /return blend \/ total;/);
+  assert.match(block, /return blend \* inv_total;/);
   assert.match(block, /min\(joints\[slot\], PALETTE_JOINT_COUNT - 1u\)/);
-  assert.match(block, /if \(total < 1e-5\) \{\n        return mat4x4<f32>\(1\.0\);/);
-  assert.equal(block.match(/blend \/ total/g)?.length, 1, "a normalização aparece uma vez só");
+  assert.match(block, /if \(total < 1e-5\) \{\n\s+return mat4x4<f32>\(/);
+  assert.match(block, /vec4<f32>\(1\.0, 0\.0, 0\.0, 0\.0\)/);
+  assert.equal(block.match(/blend \* inv_total/g)?.length, 1, "a normalização aparece uma vez só");
 
   // posição (w = 1) e direção (w = 0) passam pela mesma matriz, nos dois passes
   for (const source of [cel, outline]) {

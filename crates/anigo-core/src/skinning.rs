@@ -593,7 +593,6 @@ pub fn flat_palette_is_identity(palette: &[f32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deformation::canonical_base_mesh;
     use crate::mesh::BaseGender;
 
     /// Malha do gerador **antes** da atribuição canônica: é a numeração legada

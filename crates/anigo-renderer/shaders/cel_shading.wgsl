@@ -64,7 +64,7 @@ const PALETTE_JOINT_COUNT: u32 = 24u;
 // GLB), então peso total nulo (vértice sem skin) devolve a identidade em vez de
 // colapsar o vértice na origem.
 fn skin_palette(joints: vec4<u32>, weights: vec4<f32>) -> mat4x4<f32> {
-    var blend = mat4x4<f32>(0.0);
+    var blend = mat4x4<f32>();
     var total = 0.0;
     for (var slot = 0u; slot < 4u; slot = slot + 1u) {
         let weight = weights[slot];
@@ -76,9 +76,15 @@ fn skin_palette(joints: vec4<u32>, weights: vec4<f32>) -> mat4x4<f32> {
         total = total + weight;
     }
     if (total < 1e-5) {
-        return mat4x4<f32>(1.0);
+        return mat4x4<f32>(
+            vec4<f32>(1.0, 0.0, 0.0, 0.0),
+            vec4<f32>(0.0, 1.0, 0.0, 0.0),
+            vec4<f32>(0.0, 0.0, 1.0, 0.0),
+            vec4<f32>(0.0, 0.0, 0.0, 1.0),
+        );
     }
-    return blend / total;
+    let inv_total = 1.0 / total;
+    return blend * inv_total;
 }
 // ANIGO-SKINNING-END
 

@@ -90,7 +90,9 @@ extern "system" {
 }
 
 // GetSystemMetrics constants for multi-monitor (P2-15)
+#[allow(dead_code)]
 const SM_CXSCREEN: i32 = 0;
+#[allow(dead_code)]
 const SM_CYSCREEN: i32 = 1;
 const SM_XVIRTUALSCREEN: i32 = 76;
 const SM_YVIRTUALSCREEN: i32 = 77;
@@ -168,10 +170,11 @@ unsafe extern "system" fn enum_window_callback(h_wnd: *mut std::ffi::c_void, l_p
 
 pub struct Win32Harness;
 
+/// P2-15: one-time DPI initialization flag. SetProcessDPIAware must be called
+/// once, early in the process; subsequent calls return 0 but are harmless.
+static DPI_INIT: std::sync::Once = std::sync::Once::new();
+
 impl Win32Harness {
-    /// P2-15: one-time DPI initialization flag. SetProcessDPIAware must be called
-    /// once, early in the process; subsequent calls return 0 but are harmless.
-    static DPI_INIT: std::sync::Once = std::sync::Once::new();
 
     /// Conecta a thread atual ao desktop interativo 'default' da estação WinSta0.
     /// Também chama SetProcessDPIAware uma única vez para que GetWindowRect e

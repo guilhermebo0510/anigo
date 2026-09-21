@@ -1656,6 +1656,7 @@ fn camel_key(canonical: &str) -> String {
 }
 
 /// snake_cases a legacy camelCase field name (`headScale` → `head_scale`).
+#[allow(dead_code)]
 fn slug_key(legacy: &str) -> String {
     let mut out = String::with_capacity(legacy.len() + 4);
     for (index, ch) in legacy.chars().enumerate() {

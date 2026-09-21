@@ -427,6 +427,7 @@ pub struct LiveBridgeServer {
     /// P2-14: auth token. Empty means auth disabled (legacy/dev mode).
     token: Arc<str>,
     /// P2-14: monotonic request counter for server-assigned correlation ids.
+    #[allow(dead_code)]
     request_count: AtomicU64,
     /// P2-14: per-IP rate limiter (30 req/s per peer).
     rate_limiter: Arc<RateLimiter>,
