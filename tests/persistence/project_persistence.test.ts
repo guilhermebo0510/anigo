@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   AUTOSAVE_ENVELOPE_VERSION,
   PersistenceError,
+  commandLogOf,
   createEnvelope,
   defaultSceneDomain,
   detectEnvelopeVersion,
@@ -38,6 +39,9 @@ import {
   createDefaultCharacterState,
 } from "../../src/services/character_state.ts";
 import { CANONICAL_SLIDERS } from "../../src/services/morph_catalog.ts";
+import { CommandHistoryService, parseCommandLog } from "../../src/services/command_history.ts";
+import { COMMAND_LOG_VERSION } from "../../src/contracts/command_log.v1.ts";
+import type { CommandOutcomeWire, CommandWire } from "../../src/contracts/commands.v1.ts";
 import { CANONICAL_IDS, PROJECT_SCHEMA_VERSION } from "../../src/contracts/project_state.v1.ts";
 
 /** A session with every domain touched (character, camera, light, materials, scene). */
@@ -393,5 +397,100 @@ describe("P0 persistência — recuperação de sessão", () => {
     const degraded = failing.buildEnvelope({ ...alteredSession().session, schemaVersion: CHARACTER_SNAPSHOT_SCHEMA_VERSION } as never);
     assert.equal(degraded.source, "preview", "a failing core must not lose the session");
     failing.destroy();
+  });
+});
+
+describe("Envelope v3 — o log de comandos viaja com a sessão (P0 undo/redo)", () => {
+  const commands: CommandWire[] = [
+    { kind: "set_morph_value", target: "mrf_head_width", value: 1.15 },
+    { kind: "set_material_params", patch: { outline_width: 2 } },
+  ];
+
+  function filledHistory(): CommandHistoryService {
+    const history = new CommandHistoryService(16);
+    commands.forEach((command, index) => {
+      const outcome: CommandOutcomeWire = {
+        sequence: index + 1,
+        revision: index + 1,
+        base_geometry_revision: 0,
+        description: `Comando ${index + 1}`,
+        scope: index === 0 ? "deformation" : "shading",
+        affected: [],
+        can_undo: true,
+        can_redo: false,
+        undo_depth: index + 1,
+        redo_depth: 0,
+      };
+      history.push(command, outcome);
+    });
+    return history;
+  }
+
+  it("só comandos aceitos chegam ao envelope, e voltam pelo replay", () => {
+    const history = filledHistory();
+    const service = new AutoSaveService();
+    service.configure(false, 5, () => alteredSession().session as never, undefined, {
+      getCommandLog: () => history.exportLog(),
+    });
+
+    const envelope = service.buildEnvelope(alteredSession().session as never);
+    assert.equal(envelope.session.command_log?.version, COMMAND_LOG_VERSION);
+    assert.deepEqual(
+      envelope.session.command_log?.entries.map((entry) => entry.command.kind),
+      ["set_morph_value", "set_material_params"]
+    );
+
+    // Round-trip: serialize → parse → log validado → replay no histórico.
+    const restored = parseEnvelope(serializeEnvelope(envelope)).envelope;
+    const log = commandLogOf(restored);
+    assert.ok(log, "o log precisa sobreviver ao disco");
+    const replay = new CommandHistoryService(16);
+    replay.restoreLog(parseCommandLog(log));
+    assert.deepEqual(
+      replay.exportLog().entries.map((entry) => entry.command),
+      commands,
+      "base + log reconstroem a sessão"
+    );
+    assert.equal(replay.revision, 2);
+    service.destroy();
+  });
+
+  it("log corrompido ou de versão futura é descartado, a sessão continua válida", () => {
+    const history = filledHistory();
+    const service = new AutoSaveService();
+    service.configure(false, 5, () => alteredSession().session as never, undefined, {
+      getCommandLog: () => history.exportLog(),
+    });
+    const envelope = service.buildEnvelope(alteredSession().session as never);
+    service.destroy();
+
+    assert.equal(commandLogOf(envelope)?.entries.length, 2);
+    assert.equal(commandLogOf(null), null);
+    assert.equal(commandLogOf({ ...envelope, session: { ...envelope.session, command_log: undefined } }), null);
+
+    const newer = JSON.parse(JSON.stringify(envelope)) as typeof envelope;
+    (newer.session.command_log as { version: number }).version = COMMAND_LOG_VERSION + 1;
+    assert.equal(commandLogOf(newer), null, "um log mais novo nunca é lido pela metade");
+    assert.equal(newer.session.character !== undefined, true, "a sessão em si continua legível");
+
+    const corrupt = JSON.parse(JSON.stringify(envelope)) as typeof envelope;
+    (corrupt.session.command_log as { entries: unknown[] }).entries[1] = { sequence: "dois" };
+    assert.equal(commandLogOf(corrupt), null, "uma entrada inválida invalida o log inteiro");
+
+    // Envelope antigo (sem o campo) continua válido: o campo é aditivo.
+    const legacy = createEnvelope({ session: toSessionState(alteredSession().session as never) });
+    assert.equal(legacy.session.command_log, undefined);
+    assert.equal(commandLogOf(legacy), null);
+    assert.equal(parseEnvelope(serializeEnvelope(legacy)).envelope.source, "preview");
+  });
+
+  it("uma sessão sem comandos não escreve o campo (envelope mínimo)", () => {
+    const service = new AutoSaveService();
+    service.configure(false, 5, () => alteredSession().session as never, undefined, {
+      getCommandLog: () => new CommandHistoryService(8).exportLog(),
+    });
+    const envelope = service.buildEnvelope(alteredSession().session as never);
+    assert.equal(envelope.session.command_log, undefined);
+    service.destroy();
   });
 });

@@ -14,8 +14,9 @@ pub mod tactile;
 
 pub use bone_sync::{BondJoint, BondProportions, BondSyncManager};
 pub use command::{
-    execute_command, AppliedCommand, ChangeScope, Command, CommandError, CommandHistory,
-    CommandOutcome, HistoryEntry, MaterialPatch, MeshPreset, Revision,
+    execute_command, restore_from_log, AppliedCommand, ChangeScope, Command, CommandError,
+    CommandHistory, CommandLog, CommandLogEntry, CommandOutcome, HistoryEntry, MaterialPatch,
+    MeshPreset, ReplayedLog, Revision, COMMAND_LOG_VERSION,
 };
 pub use deformation::{
     apply_proportions, canonical_base_mesh, catalog_weights, interpolate_gender, prepare_base_mesh,

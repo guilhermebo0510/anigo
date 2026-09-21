@@ -308,14 +308,88 @@ const assetIdsFixture = (() => {
   };
 })();
 
+/**
+ * Command-log fixture (P0 undo/redo item 3).
+ *
+ * The log stores the commands that were **accepted** by the history, in order,
+ * so replaying it rebuilds the session. Both sides validate the same payload:
+ * `crates/anigo-core/src/command.rs` (`CommandLog::from_json` + byte-parity test)
+ * and `src/services/command_history.ts` (`parseCommandLog`).
+ */
+const commandLogFixture = (() => {
+  const entries = [
+    {
+      sequence: 1,
+      revision: 1,
+      description: "Morph head_width",
+      scope: "deformation",
+      command: { kind: "set_morph_value", target: "mrf_head_width", value: 1.25 },
+    },
+    {
+      sequence: 2,
+      revision: 2,
+      description: "Somatotype",
+      scope: "deformation",
+      command: { kind: "set_somatotype", endomorph: 0.4, mesomorph: 0.35, ectomorph: 0.25 },
+    },
+    {
+      sequence: 3,
+      revision: 3,
+      description: "Material outline",
+      scope: "shading",
+      command: {
+        kind: "set_material_params",
+        material_id: "mat_default_anime",
+        patch: { outline_width: 2.0, toon_steps: 2.0 },
+      },
+    },
+    {
+      sequence: 4,
+      revision: 4,
+      description: "Proporções",
+      scope: "base_geometry",
+      command: {
+        kind: "set_proportions",
+        head_scale: 1.2,
+        shoulder_width: 1.15,
+        height_overall: 1.05,
+      },
+    },
+    {
+      sequence: 5,
+      revision: 5,
+      description: "Visibilidade",
+      scope: "presentation",
+      command: { kind: "set_node_visibility", node_id: "nod_character_base", visible: false },
+    },
+  ];
+  return {
+    $comment:
+      "Command log v1: accepted commands in application order. Decoded by " +
+      "crates/anigo-core/src/command.rs (`CommandLog::from_json`) and " +
+      "src/services/command_history.ts (`parseCommandLog`).",
+    version: 1,
+    entries,
+    // Invariants the decoders must observe.
+    expected_entry_count: entries.length,
+    expected_undo_depth: entries.length,
+    expected_kinds: entries.map((entry) => entry.command.kind),
+    expected_scopes: entries.map((entry) => entry.scope),
+    expected_sequences: entries.map((entry) => entry.sequence),
+  };
+})();
+
 const serialized = `${JSON.stringify(fixture, null, 2)}\n`;
 const target = path.join(outDir, "core_snapshot_v1.json");
 const assetIdsSerialized = `${JSON.stringify(assetIdsFixture, null, 2)}\n`;
 const assetIdsTarget = path.join(outDir, "asset_ids_v1.json");
+const commandLogSerialized = `${JSON.stringify(commandLogFixture, null, 2)}\n`;
+const commandLogTarget = path.join(outDir, "command_log_v1.json");
 
 const outputs = [
   { target, serialized },
   { target: assetIdsTarget, serialized: assetIdsSerialized },
+  { target: commandLogTarget, serialized: commandLogSerialized },
 ];
 
 if (process.argv.includes("--check")) {

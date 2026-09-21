@@ -15,6 +15,7 @@ import {
   type SessionState,
 } from "./project_persistence";
 import type { CanonicalProjectDocumentV1 } from "../contracts/project_state.v1";
+import type { CommandLogWire } from "../contracts/command_log.v1";
 
 /** Storage key for the crash-recovery cache (P0-08: now actually restored). */
 export const AUTOSAVE_CACHE_KEY = "anigo_autosave_cache";
@@ -74,6 +75,11 @@ export interface AutoSaveOptions {
   getCoreProject?: () => CanonicalProjectDocumentV1 | null;
   /** Opaque UI preferences persisted with the session. */
   getUiState?: () => Record<string, unknown>;
+  /**
+   * P0 undo/redo: accepted commands of the session. Persisted inside the session
+   * block so the whole session can be rebuilt by replaying it (base + log).
+   */
+  getCommandLog?: () => CommandLogWire | null;
   appVersion?: string;
 }
 
@@ -172,8 +178,14 @@ export class AutoSaveService {
         coreProject = null;
       }
     }
+    const session = toSessionState(state);
+    const commandLog = this.options.getCommandLog?.() ?? null;
+    if (commandLog && commandLog.entries.length > 0) {
+      // Only commands that the history accepted ever reach this point.
+      session.command_log = commandLog;
+    }
     return createEnvelope({
-      session: toSessionState(state),
+      session,
       coreProject,
       ui: this.options.getUiState?.() ?? {},
       savedAt: state.timestamp ?? Date.now(),

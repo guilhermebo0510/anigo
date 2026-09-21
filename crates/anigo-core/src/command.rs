@@ -511,6 +511,15 @@ impl Command {
                         detail: format!("must be within [{}, {}], found {}", slider.min, slider.max, value),
                     });
                 }
+                // P0 undo/redo: a command that changes nothing must not enter the
+                // history (a slider drag that returns to its previous value, a
+                // panel that re-emits the current value, …).
+                if (state.morph_value(slider.id) - *value).abs() <= 1e-6 {
+                    return Err(CommandError::NoOp(format!(
+                        "morph '{}' already has the value {value}",
+                        slider.id
+                    )));
+                }
                 Ok(())
             }
             Command::ResetMorphs => {
@@ -554,10 +563,51 @@ impl Command {
                         detail: format!("must be within [0, 1], found {value}"),
                     });
                 }
+                if (state.character.gender_dimorphism - *value).abs() <= 1e-6 {
+                    return Err(CommandError::NoOp(format!(
+                        "gender dimorphism is already {value}"
+                    )));
+                }
                 Ok(())
             }
-            Command::SetProportions { .. } => Ok(()),
-            Command::SetCamera { .. } => Ok(()),
+            Command::SetProportions {
+                head_scale,
+                head_ratio,
+                shoulder_width,
+                leg_length,
+                arm_length,
+                neck_length,
+                torso_length,
+                height_overall,
+            } => {
+                if [
+                    head_scale,
+                    head_ratio,
+                    shoulder_width,
+                    leg_length,
+                    arm_length,
+                    neck_length,
+                    torso_length,
+                    height_overall,
+                ]
+                .iter()
+                .all(|field| field.is_none())
+                {
+                    return Err(CommandError::NoOp("empty proportions patch".to_string()));
+                }
+                Ok(())
+            }
+            Command::SetCamera {
+                eye,
+                target,
+                up,
+                fov_degrees,
+            } => {
+                if eye.is_none() && target.is_none() && up.is_none() && fov_degrees.is_none() {
+                    return Err(CommandError::NoOp("empty camera patch".to_string()));
+                }
+                Ok(())
+            }
             Command::OrbitCamera { azimuth, elevation } => {
                 require_finite("azimuth", *azimuth)?;
                 require_finite("elevation", *elevation)
@@ -576,13 +626,38 @@ impl Command {
                 require_finite("dx", *dx)?;
                 require_finite("dy", *dy)
             }
-            Command::SetLight { light_id, .. } => {
+            Command::SetLight {
+                light_id,
+                direction,
+                color,
+                intensity,
+                shadow_color,
+                ambient_intensity,
+                shadow_saturation,
+                ambient_sky,
+                ambient_ground,
+            } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
                 if state.light(&id).is_none() && id != LightId::canonical_key() {
                     return Err(CommandError::UnknownTarget {
                         kind: "light",
                         target: id.to_string(),
                     });
+                }
+                if [
+                    direction,
+                    color,
+                    intensity,
+                    shadow_color,
+                    ambient_intensity,
+                    shadow_saturation,
+                    ambient_sky,
+                    ambient_ground,
+                ]
+                .iter()
+                .all(|field| field.is_none())
+                {
+                    return Err(CommandError::NoOp("empty light patch".to_string()));
                 }
                 Ok(())
             }
@@ -605,11 +680,22 @@ impl Command {
                 Ok(())
             }
             Command::SetNodeVisibility { node_id, .. } | Command::SetNodeMesh { node_id, .. } => {
-                if !state.scene.nodes.iter().any(|node| &node.node_id == node_id) {
-                    return Err(CommandError::UnknownTarget {
+                let node = state
+                    .scene
+                    .nodes
+                    .iter()
+                    .find(|node| &node.node_id == node_id)
+                    .ok_or_else(|| CommandError::UnknownTarget {
                         kind: "scene node",
                         target: node_id.to_string(),
-                    });
+                    })?;
+                if let Command::SetNodeVisibility { visible, .. } = self {
+                    if node.visible == *visible {
+                        return Err(CommandError::NoOp(format!(
+                            "node '{node_id}' is already {}",
+                            if *visible { "visible" } else { "hidden" }
+                        )));
+                    }
                 }
                 Ok(())
             }
@@ -624,9 +710,17 @@ impl Command {
                         });
                     }
                 }
+                if state.render.background_color == *color {
+                    return Err(CommandError::NoOp(
+                        "background color is already set to that value".to_string(),
+                    ));
+                }
                 Ok(())
             }
-            Command::SetRenderSettings { msaa_samples, .. } => {
+            Command::SetRenderSettings {
+                msaa_samples,
+                tonemap,
+            } => {
                 if let Some(samples) = msaa_samples {
                     if !matches!(samples, 1 | 2 | 4 | 8 | 16) {
                         return Err(CommandError::InvalidValue {
@@ -634,6 +728,9 @@ impl Command {
                             detail: format!("must be one of 1, 2, 4, 8, 16, found {samples}"),
                         });
                     }
+                }
+                if msaa_samples.is_none() && tonemap.is_none() {
+                    return Err(CommandError::NoOp("empty render settings patch".to_string()));
                 }
                 Ok(())
             }
@@ -643,6 +740,11 @@ impl Command {
                         field: "name".to_string(),
                         detail: "must not be empty".to_string(),
                     });
+                }
+                if state.name == *name {
+                    return Err(CommandError::NoOp(format!(
+                        "project is already named '{name}'"
+                    )));
                 }
                 Ok(())
             }
@@ -1392,6 +1494,160 @@ impl CommandHistory {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Persistent command log (P0 undo/redo item 3: only valid commands are kept)
+// ---------------------------------------------------------------------------
+
+/// Version of the persisted command-log format.
+pub const COMMAND_LOG_VERSION: u32 = 1;
+
+/// One command that was **accepted** by the history.
+///
+/// The log stores *commands*, not snapshots: replaying it on a base project
+/// rebuilds the session, and because entries only enter the log after a
+/// successful apply, a log is valid by construction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandLogEntry {
+    /// Monotonic sequence number assigned by the history.
+    pub sequence: u64,
+    /// Project revision produced by this command.
+    pub revision: Revision,
+    /// Description shown in the undo UI.
+    pub description: String,
+    /// Change scope of the command.
+    pub scope: ChangeScope,
+    /// The command itself.
+    pub command: Command,
+}
+
+/// Serializable command log (operation log of §2.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandLog {
+    /// Wire format version of the log.
+    pub version: u32,
+    /// Accepted commands, oldest first.
+    pub entries: Vec<CommandLogEntry>,
+}
+
+impl CommandLog {
+    /// Empty log at the current format version.
+    pub fn new() -> Self {
+        Self {
+            version: COMMAND_LOG_VERSION,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// `true` when no command was recorded.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Serializes the log for autosave.
+    pub fn to_json(&self) -> Result<String, CommandError> {
+        serde_json::to_string_pretty(self).map_err(|e| CommandError::HistoryFailed(e.to_string()))
+    }
+
+    /// Parses a persisted log, refusing unknown versions.
+    pub fn from_json(raw: &str) -> Result<Self, CommandError> {
+        let log: Self = serde_json::from_str(raw)
+            .map_err(|e| CommandError::HistoryFailed(format!("invalid command log: {e}")))?;
+        if log.version > COMMAND_LOG_VERSION {
+            return Err(CommandError::HistoryFailed(format!(
+                "command log version {} is newer than the supported {}",
+                log.version, COMMAND_LOG_VERSION
+            )));
+        }
+        for (index, entry) in log.entries.iter().enumerate() {
+            if entry.sequence == 0 {
+                return Err(CommandError::HistoryFailed(format!(
+                    "command log entry {index} has no sequence number"
+                )));
+            }
+        }
+        Ok(log)
+    }
+
+    /// The command of every entry, in order.
+    pub fn commands(&self) -> Vec<Command> {
+        self.entries.iter().map(|entry| entry.command.clone()).collect()
+    }
+}
+
+impl Default for CommandLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommandHistory {
+    /// Exports the accepted commands as a persisted log.
+    ///
+    /// Only *valid* commands can be here: an entry is pushed after a successful
+    /// apply and never for a rejected command.
+    pub fn export_log(&self) -> CommandLog {
+        CommandLog {
+            version: COMMAND_LOG_VERSION,
+            entries: self
+                .undo
+                .iter()
+                .map(|entry| CommandLogEntry {
+                    sequence: entry.sequence,
+                    revision: entry.revision,
+                    description: entry.description.clone(),
+                    scope: entry.scope,
+                    command: entry.command.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Result of replaying a persisted command log.
+#[derive(Debug, Clone)]
+pub struct ReplayedLog {
+    /// Project after every accepted command was applied.
+    pub state: ProjectState,
+    /// History rebuilt from the replayed commands (undo/redo work on it).
+    pub history: CommandHistory,
+    /// Outcome of each replayed command, in order.
+    pub outcomes: Vec<CommandOutcome>,
+}
+
+/// Replays a persisted log onto `base`, validating every entry.
+///
+/// A log written by this module is valid by construction, so a failure means
+/// the file was edited or produced by a different build: the error names the
+/// offending index, and the caller can keep the prefix (`index` entries) that
+/// was already applied — the recovery path required by §3.1.
+pub fn restore_from_log(
+    base: &ProjectState,
+    log: &CommandLog,
+    limit: usize,
+) -> Result<ReplayedLog, (usize, CommandError)> {
+    let mut state = base.clone();
+    let mut history = CommandHistory::new(limit);
+    let mut outcomes = Vec::with_capacity(log.entries.len());
+
+    for (index, entry) in log.entries.iter().enumerate() {
+        match history.execute(&mut state, entry.command.clone()) {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(error) => return Err((index, error)),
+        }
+    }
+
+    Ok(ReplayedLog {
+        state,
+        history,
+        outcomes,
+    })
+}
+
 /// Convenience helper used by the Tauri layer and tests.
 pub fn execute_command(
     state: &mut ProjectState,
@@ -1893,6 +2149,451 @@ mod tests {
             )
             .unwrap();
         assert!((state.morph_value("head_width") - 1.2).abs() < 1e-6);
+    }
+
+    /// P0 undo/redo item 4: the full `apply → undo → redo → undo` sequence, on a
+    /// deep stack, must reproduce every intermediate fingerprint exactly.
+    #[test]
+    fn apply_undo_redo_sequence_restores_every_intermediate_fingerprint() {
+        let mut state = project();
+        let mut history = CommandHistory::new(64);
+
+        let commands = vec![
+            Command::SetMorphValue {
+                target: MorphId::for_slider("head_width"),
+                value: 1.35,
+            },
+            Command::SetSomatotype {
+                endomorph: 0.5,
+                mesomorph: 0.3,
+                ectomorph: 0.2,
+            },
+            Command::SetProportions {
+                head_scale: Some(1.2),
+                head_ratio: None,
+                shoulder_width: Some(1.15),
+                leg_length: None,
+                arm_length: None,
+                neck_length: None,
+                torso_length: None,
+                height_overall: Some(1.05),
+            },
+            Command::SetLight {
+                light_id: None,
+                direction: None,
+                color: None,
+                intensity: Some(1.4),
+                shadow_color: None,
+                ambient_intensity: Some(0.2),
+                shadow_saturation: None,
+                ambient_sky: None,
+                ambient_ground: None,
+            },
+            Command::SetMaterialParams {
+                material_id: None,
+                patch: MaterialPatch {
+                    outline_width: Some(2.0),
+                    toon_steps: Some(2.0),
+                    ..MaterialPatch::default()
+                },
+            },
+            Command::SetBackgroundColor {
+                color: [0.2, 0.3, 0.4, 1.0],
+            },
+            Command::SetNodeVisibility {
+                node_id: NodeId::canonical_character(),
+                visible: false,
+            },
+            Command::RenameProject {
+                name: "Sessão 07".to_string(),
+            },
+        ];
+
+        // apply — record the fingerprint reached by every command
+        let mut fingerprints = vec![state.content_fingerprint()];
+        let mut descriptions = Vec::new();
+        for (index, command) in commands.iter().cloned().enumerate() {
+            let before = state.content_fingerprint();
+            let outcome = history.execute(&mut state, command).expect("command applies");
+            let after = state.content_fingerprint();
+            assert_ne!(before, after, "command {index} must change the project");
+            assert_eq!(outcome.undo_depth, index + 1, "one undo entry per command");
+            assert_eq!(outcome.sequence, index as u64 + 1);
+            assert!(!outcome.can_redo, "a new command clears the redo stack");
+            descriptions.push(outcome.description);
+            fingerprints.push(after);
+        }
+
+        // undo — walk back through every intermediate state
+        for index in (0..commands.len()).rev() {
+            let undone = history.undo(&mut state).expect("undo works");
+            assert_eq!(state.content_fingerprint(), fingerprints[index]);
+            assert_eq!(undone.description, format!("Undo {}", descriptions[index]));
+            assert_eq!(undone.undo_depth, index);
+            assert!(undone.can_redo);
+        }
+        assert!(!history.can_undo());
+        assert_eq!(history.redo_depth(), commands.len());
+        assert_eq!(state.content_fingerprint(), fingerprints[0]);
+
+        // redo — walk forward again, same fingerprints
+        for index in 0..commands.len() {
+            let redone = history.redo(&mut state).expect("redo works");
+            assert_eq!(state.content_fingerprint(), fingerprints[index + 1]);
+            assert_eq!(redone.description, format!("Redo {}", descriptions[index]));
+            assert_eq!(redone.redo_depth, commands.len() - index - 1);
+        }
+        assert!(!history.can_redo());
+        assert_eq!(history.undo_depth(), commands.len());
+
+        // undo once more — the sequence is repeatable, not a one-shot
+        for index in (0..commands.len()).rev() {
+            history.undo(&mut state).expect("second undo pass");
+            assert_eq!(state.content_fingerprint(), fingerprints[index]);
+        }
+        assert_eq!(state.content_fingerprint(), project().content_fingerprint());
+
+        // The log grew one entry per accepted command (never for the undos).
+        assert_eq!(history.export_log().len(), commands.len());
+    }
+
+    /// P0 undo/redo item 1/3: a command that would change nothing is rejected
+    /// and never becomes part of the session history.
+    #[test]
+    fn no_op_commands_are_rejected_and_never_recorded() {
+        let mut state = project();
+        let mut history = CommandHistory::new(16);
+
+        let current_name = state.name.clone();
+        let current_background = state.render.background_color;
+        let current_dimorphism = state.character.gender_dimorphism;
+        let current_head_width = state.morph_value("head_width");
+
+        let no_ops = vec![
+            Command::SetMorphValue {
+                target: MorphId::for_slider("head_width"),
+                value: current_head_width,
+            },
+            Command::SetProportions {
+                head_scale: None,
+                head_ratio: None,
+                shoulder_width: None,
+                leg_length: None,
+                arm_length: None,
+                neck_length: None,
+                torso_length: None,
+                height_overall: None,
+            },
+            Command::SetCamera {
+                eye: None,
+                target: None,
+                up: None,
+                fov_degrees: None,
+            },
+            Command::SetLight {
+                light_id: None,
+                direction: None,
+                color: None,
+                intensity: None,
+                shadow_color: None,
+                ambient_intensity: None,
+                shadow_saturation: None,
+                ambient_sky: None,
+                ambient_ground: None,
+            },
+            Command::SetRenderSettings {
+                msaa_samples: None,
+                tonemap: None,
+            },
+            Command::SetNodeVisibility {
+                node_id: NodeId::canonical_character(),
+                visible: true, // the node is visible by default
+            },
+            Command::SetBackgroundColor {
+                color: current_background,
+            },
+            Command::RenameProject {
+                name: current_name,
+            },
+            Command::SetGenderDimorphism {
+                value: current_dimorphism,
+            },
+        ];
+
+        for command in no_ops {
+            let error = history
+                .execute(&mut state, command.clone())
+                .expect_err(&format!("{command:?} must be rejected as a no-op"));
+            assert!(
+                matches!(error, CommandError::NoOp(_)),
+                "{command:?} produced {error:?}, expected NoOp"
+            );
+        }
+
+        assert_eq!(history.undo_depth(), 0, "no-ops never enter the history");
+        assert_eq!(history.export_log().len(), 0, "no-ops never enter the log");
+        assert_eq!(history.revision(), 0);
+
+        // And a command that *does* change something still works afterwards.
+        history
+            .execute(
+                &mut state,
+                Command::SetMorphValue {
+                    target: MorphId::for_slider("head_width"),
+                    value: current_head_width + 0.2,
+                },
+            )
+            .expect("a real change is accepted");
+        assert_eq!(history.undo_depth(), 1);
+        assert_eq!(history.export_log().len(), 1);
+    }
+
+    /// P0 undo/redo item 3: the persisted log holds commands, never snapshots,
+    /// and only commands that were actually applied.
+    #[test]
+    fn command_log_only_contains_accepted_commands() {
+        let mut state = project();
+        let mut history = CommandHistory::new(64);
+
+        let accepted = Command::SetMorphValue {
+            target: MorphId::for_slider("head_width"),
+            value: 1.25,
+        };
+        history.execute(&mut state, accepted.clone()).unwrap();
+
+        // Rejected commands must not enter the log nor the stacks.
+        let depth_before = history.undo_depth();
+        let rejected: Vec<Command> = vec![
+            Command::SetMorphValue {
+                target: MorphId::for_slider("not_a_real_slider"),
+                value: 1.0,
+            },
+            Command::SetMorphValue {
+                target: MorphId::for_slider("head_width"),
+                value: f32::NAN,
+            },
+            Command::SetMorphValue {
+                target: MorphId::for_slider("head_width"),
+                value: 1.25, // identical to the current value → NoOp
+            },
+            Command::Batch { commands: vec![] },
+        ];
+        for command in rejected {
+            assert!(
+                history.execute(&mut state, command).is_err(),
+                "invalid command must be rejected"
+            );
+        }
+        assert_eq!(history.undo_depth(), depth_before, "rejected commands are not recorded");
+
+        let log = history.export_log();
+        assert_eq!(log.version, COMMAND_LOG_VERSION);
+        assert_eq!(log.len(), 1, "only the accepted command is logged");
+        assert_eq!(log.entries[0].command, accepted);
+        assert_eq!(log.entries[0].sequence, 1);
+        assert_eq!(log.entries[0].revision, 1);
+        assert!(!log.entries[0].description.is_empty());
+        assert_eq!(log.entries[0].scope, ChangeScope::Deformation);
+    }
+
+    #[test]
+    fn command_log_round_trips_and_replays_into_the_same_project() {
+        let mut state = project();
+        let mut history = CommandHistory::new(64);
+        for command in [
+            Command::SetMorphValue {
+                target: MorphId::for_slider("head_width"),
+                value: 1.3,
+            },
+            Command::SetSomatotype {
+                endomorph: 0.4,
+                mesomorph: 0.35,
+                ectomorph: 0.25,
+            },
+            Command::SetMaterialParams {
+                material_id: None,
+                patch: MaterialPatch {
+                    shadow_threshold: Some(0.42),
+                    ..MaterialPatch::default()
+                },
+            },
+            Command::SetGenderDimorphism { value: 0.35 },
+        ] {
+            history.execute(&mut state, command).unwrap();
+        }
+
+        let json = history.export_log().to_json().unwrap();
+        let reloaded = CommandLog::from_json(&json).unwrap();
+        assert_eq!(reloaded.len(), 4);
+
+        let replayed = restore_from_log(&project(), &reloaded, 64).unwrap();
+        assert_eq!(
+            replayed.state.content_fingerprint(),
+            state.content_fingerprint(),
+            "replaying the log must rebuild the session byte for byte"
+        );
+        assert_eq!(replayed.history.revision(), history.revision());
+        assert_eq!(replayed.history.undo_depth(), history.undo_depth());
+        assert_eq!(replayed.outcomes.len(), 4);
+        assert!(replayed.history.can_undo());
+
+        // The rebuilt history is fully functional: undo/redo work on it.
+        let mut rebuilt_state = replayed.state.clone();
+        let mut rebuilt = replayed.history;
+        rebuilt.undo(&mut rebuilt_state).unwrap();
+        rebuilt.redo(&mut rebuilt_state).unwrap();
+        assert_eq!(rebuilt_state.content_fingerprint(), state.content_fingerprint());
+    }
+
+    #[test]
+    fn command_log_rejects_corrupted_and_newer_logs() {
+        assert!(CommandLog::from_json("{not json").is_err());
+        assert!(CommandLog::from_json("").is_err());
+
+        let newer = format!(r#"{{"version":{},"entries":[]}}"#, COMMAND_LOG_VERSION + 1);
+        let error = CommandLog::from_json(&newer).unwrap_err();
+        assert!(matches!(error, CommandError::HistoryFailed(_)));
+
+        let no_sequence = r#"{"version":1,"entries":[{"sequence":0,"revision":1,"description":"x","scope":"deformation","command":{"kind":"reset_morphs"}}]}"#;
+        assert!(CommandLog::from_json(no_sequence).is_err());
+
+        // A valid-looking log whose command cannot be applied names the index.
+        let corrupt = CommandLog {
+            version: COMMAND_LOG_VERSION,
+            entries: vec![CommandLogEntry {
+                sequence: 1,
+                revision: 1,
+                description: "morph".to_string(),
+                scope: ChangeScope::Deformation,
+                command: Command::SetMorphValue {
+                    target: MorphId::for_slider("ghost_slider"),
+                    value: 1.0,
+                },
+            }],
+        };
+        let (index, error) = restore_from_log(&project(), &corrupt, 64).unwrap_err();
+        assert_eq!(index, 0, "the failing entry must be identified");
+        assert!(matches!(error, CommandError::UnknownTarget { .. }));
+    }
+
+    #[test]
+    fn restore_from_log_recovers_the_valid_prefix() {
+        let log = CommandLog {
+            version: COMMAND_LOG_VERSION,
+            entries: vec![
+                CommandLogEntry {
+                    sequence: 1,
+                    revision: 1,
+                    description: "morph".to_string(),
+                    scope: ChangeScope::Deformation,
+                    command: Command::SetMorphValue {
+                        target: MorphId::for_slider("head_width"),
+                        value: 1.4,
+                    },
+                },
+                CommandLogEntry {
+                    sequence: 2,
+                    revision: 2,
+                    description: "ghost".to_string(),
+                    scope: ChangeScope::Deformation,
+                    command: Command::SetMorphValue {
+                        target: MorphId::for_slider("ghost_slider"),
+                        value: 1.0,
+                    },
+                },
+            ],
+        };
+
+        let (index, _) = restore_from_log(&project(), &log, 64).unwrap_err();
+        assert_eq!(index, 1);
+        // The caller keeps the prefix: everything before `index` replays fine.
+        let prefix = CommandLog {
+            version: COMMAND_LOG_VERSION,
+            entries: log.entries[..index].to_vec(),
+        };
+        let recovered = restore_from_log(&project(), &prefix, 64).unwrap();
+        assert_eq!(
+            recovered.state.morph_value("head_width"),
+            1.4,
+            "the recoverable prefix restores the session"
+        );
+    }
+
+    #[test]
+    fn empty_log_serializes_and_replays_to_the_base_project() {
+        let history = CommandHistory::new(8);
+        let log = history.export_log();
+        assert!(log.is_empty());
+        assert!(log.commands().is_empty());
+        let json = log.to_json().unwrap();
+        let reloaded = CommandLog::from_json(&json).unwrap();
+        assert_eq!(reloaded, log);
+
+        let base = project();
+        let replayed = restore_from_log(&base, &reloaded, 8).unwrap();
+        assert_eq!(replayed.state.content_fingerprint(), base.content_fingerprint());
+        assert!(!replayed.history.can_undo());
+        assert!(!replayed.history.can_redo());
+    }
+
+    /// Cross-language fixture: the persisted log format must decode on both
+    /// sides (`src/services/command_history.ts::parseCommandLog`) and replay
+    /// into the canonical project.
+    #[test]
+    fn command_log_matches_the_frozen_fixture() {
+        const FIXTURE: &str = include_str!("../../../contracts/fixtures/command_log_v1.json");
+        let value: serde_json::Value =
+            serde_json::from_str(FIXTURE).expect("command log fixture must be valid JSON");
+
+        let log = CommandLog::from_json(&value.to_string()).expect("fixture must decode as a log");
+        assert_eq!(log.version, COMMAND_LOG_VERSION);
+
+        let expected_count = value["expected_entry_count"].as_u64().unwrap_or(0) as usize;
+        assert!(expected_count > 0, "fixture must declare its expectations");
+        assert_eq!(log.len(), expected_count);
+
+        let kinds: Vec<String> = log
+            .entries
+            .iter()
+            .map(|entry| {
+                serde_json::to_value(&entry.command).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        let expected_kinds: Vec<String> = value["expected_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|kind| kind.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(kinds, expected_kinds);
+
+        let expected_sequences: Vec<u64> = value["expected_sequences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|sequence| sequence.as_u64().unwrap())
+            .collect();
+        let sequences: Vec<u64> = log.entries.iter().map(|entry| entry.sequence).collect();
+        assert_eq!(sequences, expected_sequences);
+
+        // Replaying the fixture rebuilds the session recorded in it.
+        let replayed = restore_from_log(&ProjectState::default(), &log, 64)
+            .expect("every fixture command must be applicable");
+        assert_eq!(
+            replayed.history.undo_depth(),
+            value["expected_undo_depth"].as_u64().unwrap() as usize
+        );
+        assert_eq!(replayed.state.morph_value("head_width"), 1.25);
+        assert!(!replayed.state.scene.nodes[0].visible);
+        assert_eq!(replayed.outcomes.len(), log.len());
+        // Every replayed outcome reports a deeper undo stack than the previous.
+        for (index, outcome) in replayed.outcomes.iter().enumerate() {
+            assert_eq!(outcome.undo_depth, index + 1);
+            assert_eq!(outcome.sequence, index as u64 + 1);
+        }
     }
 
     #[test]

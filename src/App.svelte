@@ -9,7 +9,7 @@
   import { IBL_PROBES } from "./services/ibl_service";
   import { MATERIAL_LIBRARY } from "./services/material_library";
   import { autoSaveService, parseProjectSnapshot, type ProjectStateSnapshot } from "./services/autosave_service";
-  import { isDegradedRecovery, defaultSceneDomain, toProjectSnapshot, type SceneDomainSnapshot } from "./services/project_persistence";
+  import { commandLogOf, isDegradedRecovery, defaultSceneDomain, toProjectSnapshot, type SceneDomainSnapshot } from "./services/project_persistence";
   import type { CanonicalProjectDocumentV1 } from "./contracts/project_state.v1";
   import {
     CHARACTER_SNAPSHOT_SCHEMA_VERSION,
@@ -58,6 +58,11 @@
   import SettingsModal, { type StudioSettings } from "./components/settings/SettingsModal.svelte";
   import { loadSettings, saveSettings, devicePixelRatioSafe } from "./services/settings_persist";
   import { historyService, type HistoryStateSnapshot } from "./services/history_service";
+  import { CommandHistoryService, CommandHistoryError } from "./services/command_history";
+  import { HistoryAlignment } from "./services/history_alignment";
+  import { buildCommand, type CommandIntent } from "./services/command_builder";
+  import { previewHistoryOutcome, previewOutcome } from "./services/command_scope";
+  import type { CommandWire } from "./contracts/commands.v1";
   import ProjectMenuPopover from "./components/project/ProjectMenuPopover.svelte";
   import ModelPresetPopover from "./components/project/ModelPresetPopover.svelte";
   import QuickStartModal from "./components/project/QuickStartModal.svelte";
@@ -409,6 +414,8 @@
       const cur = morphSliders[id] ?? def.defaultValue;
       const next = clampNumber(cur + delta, def.min, def.max);
       morphSliders[id] = next;
+      // A gesture is one command: remember which sliders it moved.
+      if (!tactileTouchedSliders.includes(id)) tactileTouchedSliders.push(id);
       activeCharacterPreset = null;
       viewportRef?.setMorphSlider?.(id, next);
       try {
@@ -422,8 +429,21 @@
   }
 
   function handleTactileDragEnd() {
-    // P0-09: one history entry per tactile gesture.
-    recordHistory("Manipulação tátil do corpo");
+    // P0-09: one history entry per tactile gesture — and, since every gesture
+    // moves morph sliders, one command batch (P0 undo/redo item 1).
+    const intents: CommandIntent[] = tactileTouchedSliders.map((id) => ({
+      kind: "morph" as const,
+      slider_id: id,
+      value: morphSliders[id] ?? getSliderDef(id)?.defaultValue ?? 1,
+    }));
+    tactileTouchedSliders = [];
+    const command =
+      intents.length === 1
+        ? intentCommand(intents[0])
+        : intents.length > 1
+          ? intentCommand({ kind: "batch", intents })
+          : null;
+    recordHistory("Manipulação tátil do corpo", false, command);
   }
 
   // P2-15 sync html lang with i18n
@@ -555,6 +575,61 @@
   let canRedoAction = $state(false);
   let lastUndoDescription = $state<string | undefined>(undefined);
 
+  // P0 undo/redo: every persistent change is a command, and the command log is
+  // the session that gets persisted (base state + log ⇒ same session on replay).
+  // `HistoryAlignment` keeps the UI undo stack and the command log in lockstep.
+  const commandHistory = new CommandHistoryService();
+  const historyAlignment = new HistoryAlignment<CommandWire>();
+  /** Sliders movidos pelo gesto tátil atual (um gesto = um comando). */
+  let tactileTouchedSliders: string[] = [];
+
+  /** Converte uma intenção da UI em comando válido (nunca envia comando inválido). */
+  function intentCommand(intent: CommandIntent): CommandWire | null {
+    const result = buildCommand(intent);
+    if (result.ok) return result.command;
+    console.debug(`[ANIGO][History] intenção recusada (${result.code}): ${result.reason}`);
+    return null;
+  }
+
+  /**
+   * Registra no log de comandos algo que já foi aceito. Em modo preview (sem o
+   * core) o outcome é local; quando o core responde, é o outcome dele que entra.
+   */
+  function recordCommand(command: CommandWire, description: string): boolean {
+    try {
+      commandHistory.push(
+        command,
+        previewOutcome({
+          command,
+          description,
+          sequence: commandHistory.next_sequence,
+          revision: commandHistory.revision + 1,
+          undoDepth: commandHistory.undo_depth + 1,
+        })
+      );
+      return true;
+    } catch (error) {
+      const reason = error instanceof CommandHistoryError ? `${error.code}: ${error.message}` : String(error);
+      console.warn(`[ANIGO][History] comando não registrado (${reason})`);
+      return false;
+    }
+  }
+
+  /** Atualiza a entrada corrente quando um ajuste contínuo (drag) estabiliza. */
+  function coalesceCommand(command: CommandWire): void {
+    try {
+      commandHistory.replaceLast(command);
+    } catch (error) {
+      console.warn("[ANIGO][History] coalescência falhou:", error);
+    }
+  }
+
+  /** Log de comandos aceitos (replay = base + log), para o envelope da sessão. */
+  function exportCommandLogEntries() {
+    const log = commandHistory.exportLog();
+    return log.entries.length > 0 ? log : null;
+  }
+
   // Library Asset Inspector State
   let selectedLibraryAsset = $state<AssetRecord | null>(assetCatalog[0] || null);
   let assetBrowserRef: any = $state(null);
@@ -564,7 +639,18 @@
     if (asset.id === "char_01") {
       handlePreset("mannequin");
     }
-    recordHistory(`Vincular Ativo: ${asset.name}`);
+    const assetUri = (asset as { uri?: string; path?: string }).uri ?? (asset as { path?: string }).path;
+    recordHistory(
+      `Vincular Ativo: ${asset.name}`,
+      false,
+      assetUri
+        ? intentCommand({
+            kind: "node_mesh",
+            node_id: "nod_character_base",
+            mesh_uri: assetUri,
+          })
+        : null
+    );
     if (assetBrowserRef?.handleUse) {
       assetBrowserRef.handleUse(asset);
     }
@@ -668,8 +754,63 @@
     };
   }
 
-  function recordHistory(description: string, isContinuous = false) {
+  /**
+   * Single entry point for every persistent change (P0 undo/redo item 1).
+   *
+   * `command` is the versioned command that describes the change; when it is
+   * absent the change is UI-only (the snapshot history still records it so the
+   * viewport can be restored, but nothing enters the persisted command log).
+   */
+  /**
+   * Batch com os morphs fora do valor canônico — o estado persistente do corpo
+   * do personagem (usado quando um componente confirma a edição, ex.: o
+   * AnatomyInspector, que não informa quais sliders mudaram).
+   */
+  function morphStateCommand(): CommandWire | null {
+    const intents: CommandIntent[] = [];
+    for (const slider of CANONICAL_SLIDERS) {
+      const value = morphSliders[slider.id];
+      if (value === undefined || !Number.isFinite(value)) continue;
+      if (Math.abs(value - slider.defaultValue) <= 1e-6) continue;
+      intents.push({ kind: "morph", slider_id: slider.id, value });
+    }
+    if (intents.length === 0) return null;
+    if (intents.length === 1) return intentCommand(intents[0]);
+    return intentCommand({ kind: "batch", intents });
+  }
+
+  /** Resets both histories together (new/opened project). */
+  function resetHistories(): void {
+    historyService.init(getHistorySnapshot());
+    commandHistory.clear();
+    historyAlignment.clear();
+  }
+
+  function recordHistory(description: string, isContinuous = false, command: CommandWire | null = null) {
+    const depthBefore = historyService.undoDepth;
     historyService.push(getHistorySnapshot(), description, isContinuous);
+    const added = historyService.undoDepth > depthBefore;
+
+    if (command) {
+      if (added) {
+        // The UI history created an entry — the command log mirrors it 1:1. If
+        // the core refused the command (or the outcome was malformed) the entry
+        // is still undoable, but as a UI-only step: the stacks stay aligned.
+        if (recordCommand(command, description)) {
+          historyAlignment.markAdded("command", command);
+        } else {
+          historyAlignment.markAdded("ui");
+        }
+      } else if (isContinuous && historyAlignment.undo_depth > 0) {
+        // Continuous adjustment on the entry already open (slider drag): the
+        // log keeps one entry, with the value that settled.
+        coalesceCommand(command);
+        historyAlignment.markCoalesced(command);
+      }
+    } else if (added) {
+      historyAlignment.markAdded("ui");
+    }
+
     isProjectDirty = true;
   }
 
@@ -772,16 +913,45 @@
 
   function handleUndo() {
     const prev = historyService.undo();
-    if (prev) {
-      applySnapshot(prev);
+    if (!prev) return;
+    applySnapshot(prev);
+    // The command log follows the same step: only command-backed entries move
+    // (item 2 — apply and undo are symmetric).
+    const marker = historyAlignment.undo();
+    if (marker?.origin === "command" && commandHistory.can_undo) {
+      commandHistory.applyUndo(
+        previewHistoryOutcome({
+          description: `Undo ${marker.command ? describeCommand(marker.command) : "comando"}`,
+          revision: commandHistory.revision + 1,
+          undoDepth: commandHistory.undo_depth - 1,
+          redoDepth: commandHistory.redo_depth + 1,
+        })
+      );
     }
   }
 
   function handleRedo() {
     const next = historyService.redo();
-    if (next) {
-      applySnapshot(next);
+    if (!next) return;
+    applySnapshot(next);
+    const marker = historyAlignment.redo();
+    if (marker?.origin === "command" && commandHistory.can_redo) {
+      commandHistory.applyRedo(
+        previewHistoryOutcome({
+          description: `Redo ${marker.command ? describeCommand(marker.command) : "comando"}`,
+          revision: commandHistory.revision + 1,
+          undoDepth: commandHistory.undo_depth + 1,
+          redoDepth: commandHistory.redo_depth - 1,
+        })
+      );
     }
+  }
+
+  /** Rótulo curto de um comando, usado nas descrições de undo/redo. */
+  function describeCommand(command: CommandWire): string {
+    const record = command as Record<string, unknown>;
+    const target = (record.target ?? record.node_id ?? record.material_id ?? record.light_id) as string | undefined;
+    return target ? `${command.kind} ${target}` : command.kind;
   }
 
   function markCleanSave() {
@@ -866,7 +1036,7 @@
       const dpr = devicePixelRatioSafe();
       if (dpr !== window.devicePixelRatio) console.info('[P1-11] DPR clamped', window.devicePixelRatio, '->', dpr);
     } catch {}
-    historyService.init(getHistorySnapshot());
+    resetHistories();
       } catch (err) {
         alert("Erro ao carregar projeto: " + err);
       }
@@ -895,7 +1065,7 @@
       console.warn("[App] handleNewProject character reset failed:", e);
     }
     handlePreset("mannequin", false);
-    historyService.init(getHistorySnapshot());
+    resetHistories();
   }
 
   async function handleOpenProjectsFolder() {
@@ -1033,7 +1203,11 @@
       settings.autoSaveInterval,
       getProjectSnapshot,
       () => isProjectDirty,
-      { getCoreProject: getCoreProjectDocument, getUiState: getUiStateSnapshot }
+      {
+        getCoreProject: getCoreProjectDocument,
+        getUiState: getUiStateSnapshot,
+        getCommandLog: exportCommandLogEntries,
+      }
     );
   }
 
@@ -1251,7 +1425,11 @@
             } catch { /* inspector unmounted */ }
             inspectorCharacter = c;
             isProjectDirty = true;
-            recordHistory(`MCP: trocar modelo (${p.model_type})`);
+            recordHistory(
+              `MCP: trocar modelo (${p.model_type})`,
+              false,
+              intentCommand({ kind: "base_gender", gender: p.model_type })
+            );
           } else if (p.model_type !== undefined) {
             console.warn("[App] MCP set_character_model: invalid model_type", p.model_type);
           }
@@ -1275,7 +1453,16 @@
           } catch { /* inspector unmounted */ }
           inspectorCharacter = getAppCharacterState();
           isProjectDirty = true;
-          recordHistory("MCP: ajustar somatótipo", true);
+          recordHistory(
+            "MCP: ajustar somatótipo",
+            true,
+            intentCommand({
+              kind: "somatotype",
+              endo: somatotypeEndo,
+              meso: somatotypeMeso,
+              ecto: somatotypeEcto,
+            })
+          );
         });
 
         await listen("anigo://apply_morph_slider", (event: any) => {
@@ -1296,7 +1483,11 @@
             } catch { /* inspector unmounted */ }
             inspectorCharacter = getAppCharacterState();
             isProjectDirty = true;
-            recordHistory(`MCP: ${p.slider_id}`, true);
+            recordHistory(
+              `MCP: ${p.slider_id}`,
+              true,
+              intentCommand({ kind: "morph", slider_id: p.slider_id, value: clamped })
+            );
           }
         });
 
@@ -1308,7 +1499,7 @@
           c.activePresetId = null;
           applyCharacterState(c, { swapModel: false });
           isProjectDirty = true;
-          recordHistory("MCP: resetar morphs");
+          recordHistory("MCP: resetar morphs", false, intentCommand({ kind: "reset_morphs" }));
         });
 
         await listen("anigo://ui_action", (event: any) => {
@@ -1363,6 +1554,7 @@
     autoSaveService.configure(true, 5, getProjectSnapshot, () => isProjectDirty, {
       getCoreProject: getCoreProjectDocument,
       getUiState: getUiStateSnapshot,
+      getCommandLog: exportCommandLogEntries,
     });
     autoSaveService.onSaveCompleted = (_filePath: string, timeStr: string) => {
       lastAutosaveTime = timeStr;
@@ -1397,7 +1589,23 @@
         }
         const extra = notes.length > 0 ? `\n\n${notes.join("\n")}` : "";
         if (confirm(`Sessão não salva encontrada (autosave de ${when}). Deseja recuperar?${extra}`)) {
+          const restoredLog = commandLogOf(recovery.envelope);
           applySnapshot(toProjectSnapshot(recovery.envelope.session) as unknown as HistoryStateSnapshot);
+          historyService.init(getHistorySnapshot());
+          // Replay: the session comes back with its accepted commands, so undo
+          // history after the restore is the same as before the crash — and the
+          // command-backed marker keeps both stacks aligned.
+          if (restoredLog) {
+            try {
+              commandHistory.restoreLog(restoredLog);
+              historyAlignment.clear();
+              for (const entry of restoredLog.entries) {
+                historyAlignment.markAdded("command", entry.command);
+              }
+            } catch (error) {
+              console.warn("[App] log de comandos restaurado inválido:", error);
+            }
+          }
           isProjectDirty = true;
         } else {
           autoSaveService.clearRecoveryCache();
@@ -1408,7 +1616,7 @@
     }
 
     // Initialize history baseline
-    historyService.init(getHistorySnapshot());
+    resetHistories();
 
     // History stack change synchronization
     historyService.onStackChange = (canUndo, canRedo, desc) => {
@@ -1636,7 +1844,18 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Proporções Anatômicas", true);
+      const command = intentCommand({
+        kind: "proportions",
+        patch: {
+          head_scale: headScale,
+          head_ratio: headRatio,
+          shoulder_width: shoulderWidth,
+          leg_length: legLength,
+          arm_length: armLength,
+          neck_length: neckLength,
+        },
+      });
+      recordHistory("Ajustar Proporções Anatômicas", true, command);
     }
   }
 
@@ -1652,7 +1871,8 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory(`Alterar Modelo para ${presetLabels[preset]}`);
+      const command = intentCommand({ kind: "preset", preset });
+      recordHistory(`Alterar Modelo para ${presetLabels[preset]}`, false, command);
     }
   }
 
@@ -1686,7 +1906,22 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Iluminação Solar", isContinuous);
+      const command = intentCommand({
+        kind: "light",
+        patch: {
+          direction: [x, y, z],
+          intensity: lightIntensity,
+          color: [sunRgb[0], sunRgb[1], sunRgb[2]],
+          shadow_color: [
+            neutralShadowTint[0],
+            neutralShadowTint[1],
+            neutralShadowTint[2],
+          ],
+          ambient_intensity: ambientIntensity,
+          shadow_saturation: shadowSaturation,
+        },
+      });
+      recordHistory("Ajustar Iluminação Solar", isContinuous, command);
     }
   }
 
@@ -1751,7 +1986,33 @@
     }
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Material Toon", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: {
+          base_color: [baseRgb[0], baseRgb[1], baseRgb[2], 1.0],
+          shade_color: [shadeRgb[0], shadeRgb[1], shadeRgb[2], 1.0],
+          outline_color: [outlineRgb[0], outlineRgb[1], outlineRgb[2], 1.0],
+          specular_color: [specRgb[0], specRgb[1], specRgb[2], 1.0],
+          rim_color: [rimRgb[0], rimRgb[1], rimRgb[2], 1.0],
+          shadow_threshold: shadowThreshold,
+          shadow_smoothness: toonSmoothness,
+          spec_intensity: specIntensity,
+          spec_power: specExponent,
+          specular_softness: specSoftness,
+          specular_offset: specOffset,
+          specular_size: specularSize,
+          rim_intensity: rimIntensity,
+          rim_spread: rimSpread,
+          hue_shift: hueShift,
+          toon_steps: toonSteps,
+          outline_width: outlineWidth * 0.001,
+          outline_opacity: outlineOpacity,
+          outline_smoothness: outlineSmoothness,
+          outline_depth_bias: outlineDepthBias,
+          ao_intensity: aoIntensity,
+        },
+      });
+      recordHistory("Ajustar Material Toon", isContinuous, command);
     }
   }
 
@@ -1766,7 +2027,14 @@
     updateMaterial(false);
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Contorno Inverted Hull", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: {
+          outline_width: outlineWidth * 0.001,
+          outline_color: [outlineRgb[0], outlineRgb[1], outlineRgb[2], 1.0],
+        },
+      });
+      recordHistory("Ajustar Contorno Inverted Hull", isContinuous, command);
     }
   }
 
@@ -1777,7 +2045,11 @@
     updateMaterial(false);
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Limiar Toon Ramp", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: { shadow_threshold: shadowThreshold },
+      });
+      recordHistory("Ajustar Limiar Toon Ramp", isContinuous, command);
     }
   }
 
@@ -1788,7 +2060,11 @@
     updateMaterial(false);
     reportLiveTelemetry();
     if (record) {
-      recordHistory("Ajustar Suavidade Toon", isContinuous);
+      const command = intentCommand({
+        kind: "material",
+        patch: { shadow_smoothness: toonSmoothness },
+      });
+      recordHistory("Ajustar Suavidade Toon", isContinuous, command);
     }
   }
 
@@ -2139,7 +2415,7 @@
             {viewportRef}
             onModelChange={(g) => { loadedModelGender = g; }}
             onCharacterChange={handleInspectorCharacterChange}
-            onCharacterCommit={(desc) => recordHistory(desc)}
+            onCharacterCommit={(desc) => recordHistory(desc, false, morphStateCommand())}
             onProportionsChange={handleInspectorProportionsChange}
             onError={(msg) => alert(msg)}
           />

@@ -45,6 +45,8 @@ import {
   sanitizeCharacterState,
   type CharacterState,
 } from "./character_state";
+import { COMMAND_LOG_VERSION, type CommandLogWire } from "../contracts/command_log.v1";
+import { isCommandLogEntry } from "./command_history";
 import type { ProjectStateSnapshot } from "./autosave_service";
 
 /** Current version of the persisted envelope. */
@@ -109,6 +111,12 @@ export type SessionState = Omit<ProjectStateSnapshot, "schemaVersion"> & {
   /** Character schema version of this block (the envelope has its own). */
   characterSchemaVersion: number;
   scene: SceneDomainSnapshot;
+  /**
+   * P0 undo/redo: the accepted commands that rebuild this session by replay.
+   * Additive and optional — an envelope without it is still a valid session
+   * (older writers), and a session with it can be replayed onto the base state.
+   */
+  command_log?: CommandLogWire;
 };
 
 /** Persisted envelope (current version). */
@@ -776,6 +784,21 @@ export function toSessionState(
     character: character ?? sanitizeCharacterState(undefined),
     scene: parseSceneDomain(scene),
   };
+}
+
+/**
+ * Accepted-command log of a session, validated before it is handed to the
+ * history. A corrupt log is dropped (the session itself is still restored), and
+ * a log from a newer build is preserved on disk but never partially replayed.
+ */
+export function commandLogOf(envelope: ProjectEnvelopeV3 | null | undefined): CommandLogWire | null {
+  const raw = envelope?.session?.command_log;
+  if (!raw) return null;
+  if (typeof raw.version !== "number" || raw.version > COMMAND_LOG_VERSION) return null;
+  if (!Array.isArray(raw.entries)) return null;
+  const entries = raw.entries.filter((entry) => isCommandLogEntry(entry));
+  if (entries.length !== raw.entries.length) return null;
+  return { version: raw.version, entries };
 }
 
 /** Converts a session block back to the flat shape older readers expect. */
