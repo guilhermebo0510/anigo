@@ -783,8 +783,7 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                 // skinning lands (P1-04) their geometric counterpart lives here
                 // so no canonical slider is inert in the viewport/export.
                 _ => {
-                    {
-                        match slider.zone {
+                    match slider.zone {
                             AnatomicalZone::Craniofacial | AnatomicalZone::Eyes | AnatomicalZone::Nose | AnatomicalZone::MouthLips | AnatomicalZone::JawChin | AnatomicalZone::Ears | AnatomicalZone::Eyebrows => {
                                 if v_idx < 425 && z > 0.0 {
                                     Some(([nx * 0.008, ny * 0.008, nz * 0.008], [nx * 0.1, ny * 0.1, nz * 0.1]))
@@ -830,9 +829,6 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                             AnatomicalZone::GlobalSilhouette => {
                                 Some(([nx * 0.015, ny * 0.015, nz * 0.015], [nx * 0.1, ny * 0.1, nz * 0.1]))
                             }
-                        }
-                    } else {
-                        None
                     }
                 }
             };

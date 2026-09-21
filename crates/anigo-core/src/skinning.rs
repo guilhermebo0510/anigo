@@ -290,7 +290,7 @@ impl PartBounds {
         if part.uses_absolute_axis() {
             value = value.abs();
         }
-        let (min, max) = self.bounds[part_index(part)][axis];
+        let [min, max] = self.bounds[part_index(part)][axis];
         if (max - min).abs() < 1e-6 {
             return 0.5;
         }
@@ -376,9 +376,12 @@ fn assign_with_bounds(
             }
             None => unmapped_vertices += 1,
         }
+        // `joints` é `[u16; 4]` (layout do vértice); o resumo publica u32 para
+        // não depender da largura do atributo na GPU.
         for joint in joints.iter().take(influences) {
-            if !joints_used.contains(joint) {
-                joints_used.push(*joint);
+            let joint = u32::from(*joint);
+            if !joints_used.contains(&joint) {
+                joints_used.push(joint);
             }
         }
     }

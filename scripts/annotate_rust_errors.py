@@ -18,7 +18,7 @@ import re
 import sys
 
 MAX_BLOCKS = 40
-CONTEXT = 7
+MAX_BLOCK_LINES = 22
 MAX_CHARS = 60000
 
 # O cargo coloriza a saída mesmo em pipeline (o runner não é TTY, mas o cargo
@@ -40,14 +40,19 @@ def annotate(path: str, label: str) -> int:
     index = 0
     while index < len(lines) and len(blocks) < MAX_BLOCKS:
         if HEADER.match(lines[index]):
-            block = lines[index : index + CONTEXT]
-            # o "--> caminho:linha" vem logo abaixo da mensagem do rustc
-            for offset in range(1, CONTEXT):
-                if index + offset < len(lines) and LOCATION.match(lines[index + offset]):
-                    block = lines[index : index + offset + 2]
-                    break
-            blocks.append(block)
-            index += len(block)
+            # o bloco vai até o próximo erro/aviso (ou MAX_BLOCK_LINES linhas):
+            # inclui o caminho:linha, o trecho de código e as notas do rustc
+            end = index + 1
+            while (
+                end < len(lines)
+                and end - index < MAX_BLOCK_LINES
+                and not HEADER.match(lines[end])
+            ):
+                end += 1
+            while end > index and not lines[end - 1].strip():
+                end -= 1
+            blocks.append(lines[index:end])
+            index = end
         else:
             index += 1
 

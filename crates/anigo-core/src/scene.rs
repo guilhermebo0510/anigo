@@ -4,6 +4,15 @@ use crate::snapshot::SkinPayload;
 use serde::{Deserialize, Serialize};
 
 fn default_shadow_saturation() -> f32 { 1.0 }
+/// P2-04: ambiente hemisférico (céu claro/frio, chão escuro/quente).
+/// Espelha `ambientSky` do domínio TS (`project_persistence.ts`).
+fn default_ambient_sky() -> [f32; 3] { [0.52, 0.60, 0.78] }
+/// P2-04: idem para o hemisfério inferior. Espelha `ambientGround`.
+fn default_ambient_ground() -> [f32; 3] { [0.25, 0.20, 0.18] }
+/// P2-07: tamanho do especular separado da intensidade. Espelha `specularSize`.
+fn default_spec_size() -> f32 { 0.45 }
+/// P2-05: intensidade do AO (antes mistura fixa de 0.85). Espelha `aoIntensity`.
+fn default_ao_intensity() -> f32 { 0.85 }
 /// Stylized Anime Directional Light with Hue-Shifting parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StylizedLight {

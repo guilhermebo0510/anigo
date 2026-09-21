@@ -785,21 +785,16 @@ impl Mesh {
             bin_data.extend_from_slice(data);
 
             let idx = buffer_views.len();
-            let mut bv = serde_json::json!({
-                "buffer": 0,
-                "byteOffset": byte_offset,
-                "byteLength": byte_length,
-            });
+            // P1-01: montado como objeto desde o início — não existe caminho em
+            // que `as_object_mut` devolva `None` (e o closure continua infalível).
+            let mut bv = serde_json::Map::new();
+            bv.insert("buffer".into(), serde_json::json!(0));
+            bv.insert("byteOffset".into(), serde_json::json!(byte_offset));
+            bv.insert("byteLength".into(), serde_json::json!(byte_length));
             if let Some(t) = target {
-                // P1-01: sem `unwrap` no caminho crítico do export.
-                let object = bv.as_object_mut().ok_or_else(|| {
-                    GltfMeshError::InvalidBufferView(
-                        "buffer view recém-criado não é um objeto JSON".into(),
-                    )
-                })?;
-                object.insert("target".into(), serde_json::json!(t));
+                bv.insert("target".into(), serde_json::json!(t));
             }
-            buffer_views.push(bv);
+            buffer_views.push(serde_json::Value::Object(bv));
             idx
         };
 

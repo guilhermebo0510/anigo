@@ -1185,6 +1185,15 @@ fn number_at(object: &Map<String, Value>, key: &str, fallback: f32) -> f32 {
     }
 }
 
+/// Igual a [`string_at`], mas para um `Value` que pode não ser objeto (o
+/// "preservado" da migração é um objeto, mas a função não deve assumir).
+fn string_in(value: &Value, key: &str, fallback: &str) -> String {
+    match value.as_object() {
+        Some(object) => string_at(object, key, fallback),
+        None => fallback.to_string(),
+    }
+}
+
 fn string_at(object: &Map<String, Value>, key: &str, fallback: &str) -> String {
     match object.get(key) {
         Some(Value::String(value)) => value.clone(),
@@ -1541,7 +1550,11 @@ pub fn migrate_legacy_snapshot(mut object: Map<String, Value>) -> Result<Value, 
     let preserved = Value::Object(std::mem::take(&mut object));
     let project_id = ProjectId::from_slug(&format!(
         "legacy_{:016x}",
-        fnv1a64(&format!("{}|{}", preset, string_at(&preserved, "version", "0.1.0")))
+        fnv1a64(&format!(
+            "{}|{}",
+            preset,
+            string_in(&preserved, "version", "0.1.0")
+        ))
     ));
     let name = format!(
         "{} (migrado de schema TS {})",

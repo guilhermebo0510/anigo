@@ -644,18 +644,14 @@ impl Command {
                         target: id.to_string(),
                     });
                 }
-                if [
-                    direction,
-                    color,
-                    intensity,
-                    shadow_color,
-                    ambient_intensity,
-                    shadow_saturation,
-                    ambient_sky,
-                    ambient_ground,
-                ]
-                .iter()
-                .all(|field| field.is_none())
+                if direction.is_none()
+                    && color.is_none()
+                    && intensity.is_none()
+                    && shadow_color.is_none()
+                    && ambient_intensity.is_none()
+                    && shadow_saturation.is_none()
+                    && ambient_sky.is_none()
+                    && ambient_ground.is_none()
                 {
                     return Err(CommandError::NoOp("empty light patch".to_string()));
                 }
@@ -1443,12 +1439,11 @@ impl CommandHistory {
             self.base_geometry_revision += 1;
         }
 
-        Ok(CommandOutcome {
-            description: format!("Undo {}", entry.description),
-            scope: applied.scope,
-            affected: applied.affected,
-            ..self.outcome(&applied)
-        })
+        let mut outcome = self.outcome(&applied);
+        outcome.description = format!("Undo {}", entry.description);
+        outcome.scope = applied.scope;
+        outcome.affected = applied.affected;
+        Ok(outcome)
     }
 
     /// Re-applies the last undone command.
@@ -1463,12 +1458,11 @@ impl CommandHistory {
             self.base_geometry_revision += 1;
         }
 
-        Ok(CommandOutcome {
-            description: format!("Redo {}", entry.description),
-            scope: applied.scope,
-            affected: applied.affected,
-            ..self.outcome(&applied)
-        })
+        let mut outcome = self.outcome(&applied);
+        outcome.description = format!("Redo {}", entry.description);
+        outcome.scope = applied.scope;
+        outcome.affected = applied.affected;
+        Ok(outcome)
     }
 
     /// Clears both stacks (project load / new project).
