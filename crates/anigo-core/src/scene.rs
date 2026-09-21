@@ -47,6 +47,13 @@ impl Default for StylizedLight {
     }
 }
 
+fn default_mtoon_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
+fn default_mtoon_emission_intensity() -> f32 { 0.0 }
+fn default_mtoon_second_shade_shift() -> f32 { 0.0 }
+fn default_mtoon_second_shade_softness() -> f32 { 0.05 }
+fn default_mtoon_matcap_intensity() -> f32 { 0.0 }
+fn default_mtoon_matcap_mode() -> u8 { 0 } // 0 = normal (mult), 1 = additive
+fn default_mtoon_shade_toony() -> bool { true }
 fn default_spec_color() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
 fn default_spec_softness() -> f32 { 0.05 }
 fn default_spec_offset() -> f32 { 0.0 }
@@ -98,6 +105,33 @@ pub struct StylizedMaterial {
     // P2-05 AO intensity (was hardcoded 0.85 mix)
     #[serde(default = "default_ao_intensity")]
     pub ao_intensity: f32,
+    // Fase 2 (#18): material anime VRoid/MToon — slots de textura e
+    // parâmetros VRMC_materials_mtoon. Todos off por padrão: um material
+    // sem texturas renderiza exatamente como antes (frame congelado).
+    #[serde(default = "default_mtoon_emission_color")]
+    pub mtoon_emission_color: [f32; 4],
+    #[serde(default = "default_mtoon_emission_intensity")]
+    pub mtoon_emission_intensity: f32,
+    #[serde(default = "default_mtoon_second_shade_shift")]
+    pub mtoon_second_shade_shift: f32,
+    #[serde(default = "default_mtoon_second_shade_softness")]
+    pub mtoon_second_shade_softness: f32,
+    #[serde(default = "default_mtoon_matcap_intensity")]
+    pub mtoon_matcap_intensity: f32,
+    #[serde(default)]
+    pub mtoon_main_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_second_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_emission_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_matcap_enabled: bool,
+    #[serde(default = "default_mtoon_matcap_mode")]
+    pub mtoon_matcap_mode: u8,
+    #[serde(default = "default_mtoon_shade_toony")]
+    pub mtoon_shade_toony: bool,
 }
 
 impl Default for StylizedMaterial {
@@ -125,6 +159,18 @@ impl Default for StylizedMaterial {
             outline_depth_bias: default_outline_depth_bias(),
             specular_size: default_spec_size(),
             ao_intensity: default_ao_intensity(),
+            mtoon_emission_color: default_mtoon_emission_color(),
+            mtoon_emission_intensity: default_mtoon_emission_intensity(),
+            mtoon_second_shade_shift: default_mtoon_second_shade_shift(),
+            mtoon_second_shade_softness: default_mtoon_second_shade_softness(),
+            mtoon_matcap_intensity: default_mtoon_matcap_intensity(),
+            mtoon_main_texture_enabled: false,
+            mtoon_shade_texture_enabled: false,
+            mtoon_second_shade_texture_enabled: false,
+            mtoon_emission_texture_enabled: false,
+            mtoon_matcap_enabled: false,
+            mtoon_matcap_mode: default_mtoon_matcap_mode(),
+            mtoon_shade_toony: default_mtoon_shade_toony(),
         }
     }
 }

@@ -269,6 +269,9 @@ impl LightSnapshot {
     }
 }
 
+fn default_material_snapshot_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
+fn default_material_snapshot_shade_toony() -> bool { true }
+
 /// Material state handed to the renderer (canonical NPR parameters only).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaterialSnapshot {
@@ -295,6 +298,32 @@ pub struct MaterialSnapshot {
     pub hue_shift: f32,
     pub toon_steps: f32,
     pub ao_intensity: f32,
+    // Fase 2 (#18): parâmetros MToon (VRMC_materials_mtoon) — com defaults
+    // para snapshots antigos continuam abrindo intactos.
+    #[serde(default = "default_material_snapshot_emission_color")]
+    pub mtoon_emission_color: [f32; 4],
+    #[serde(default)]
+    pub mtoon_emission_intensity: f32,
+    #[serde(default)]
+    pub mtoon_second_shade_shift: f32,
+    #[serde(default)]
+    pub mtoon_second_shade_softness: f32,
+    #[serde(default)]
+    pub mtoon_matcap_intensity: f32,
+    #[serde(default)]
+    pub mtoon_main_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_second_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_emission_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_matcap_enabled: bool,
+    #[serde(default)]
+    pub mtoon_matcap_mode: u8,
+    #[serde(default = "default_material_snapshot_shade_toony")]
+    pub mtoon_shade_toony: bool,
 }
 
 impl MaterialSnapshot {
@@ -328,6 +357,18 @@ impl MaterialSnapshot {
             hue_shift: material.hue_shift,
             toon_steps: material.toon_steps,
             ao_intensity: material.ao_intensity,
+            mtoon_emission_color: material.mtoon_emission_color,
+            mtoon_emission_intensity: material.mtoon_emission_intensity,
+            mtoon_second_shade_shift: material.mtoon_second_shade_shift,
+            mtoon_second_shade_softness: material.mtoon_second_shade_softness,
+            mtoon_matcap_intensity: material.mtoon_matcap_intensity,
+            mtoon_main_texture_enabled: material.mtoon_main_texture_enabled,
+            mtoon_shade_texture_enabled: material.mtoon_shade_texture_enabled,
+            mtoon_second_shade_texture_enabled: material.mtoon_second_shade_texture_enabled,
+            mtoon_emission_texture_enabled: material.mtoon_emission_texture_enabled,
+            mtoon_matcap_enabled: material.mtoon_matcap_enabled,
+            mtoon_matcap_mode: material.mtoon_matcap_mode,
+            mtoon_shade_toony: material.mtoon_shade_toony,
         }
     }
 }

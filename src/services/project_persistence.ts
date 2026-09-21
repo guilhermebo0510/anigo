@@ -97,6 +97,20 @@ export interface SceneMaterialSnapshot {
   base_color: [number, number, number, number];
   shade_color: [number, number, number, number];
   outline_color: [number, number, number, number];
+  // Fase 2 (#18): material anime VRoid/MToon (default = slot off / off)
+  mtoon_emission_color: [number, number, number, number];
+  mtoon_emission_intensity: number;
+  mtoon_second_shade_shift: number;
+  mtoon_second_shade_softness: number;
+  mtoon_matcap_intensity: number;
+  mtoon_main_texture_enabled: boolean;
+  mtoon_shade_texture_enabled: boolean;
+  mtoon_second_shade_texture_enabled: boolean;
+  mtoon_emission_texture_enabled: boolean;
+  mtoon_matcap_enabled: boolean;
+  /** 0 = normal (mult), 1 = additive. */
+  mtoon_matcap_mode: number;
+  mtoon_shade_toony: boolean;
 }
 
 export interface SceneAssetSnapshot {
@@ -197,6 +211,19 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
         base_color: [0.98, 0.92, 0.85, 1.0],
         shade_color: [0.82, 0.73, 0.78, 1.0],
         outline_color: [0.25, 0.15, 0.2, 1.0],
+        // Fase 2 (#18): MToon off por padrão (slots de textura desabilitados)
+        mtoon_emission_color: [0.0, 0.0, 0.0, 0.0],
+        mtoon_emission_intensity: 0.0,
+        mtoon_second_shade_shift: 0.0,
+        mtoon_second_shade_softness: 0.05,
+        mtoon_matcap_intensity: 0.0,
+        mtoon_main_texture_enabled: false,
+        mtoon_shade_texture_enabled: false,
+        mtoon_second_shade_texture_enabled: false,
+        mtoon_emission_texture_enabled: false,
+        mtoon_matcap_enabled: false,
+        mtoon_matcap_mode: 0,
+        mtoon_shade_toony: true,
       },
     ],
     assets: [
@@ -323,6 +350,32 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
             base_color: vec4(material["base_color"], template.base_color),
             shade_color: vec4(material["shade_color"], template.shade_color),
             outline_color: vec4(material["outline_color"], template.outline_color),
+            // Fase 2 (#18): MToon — tolerante a blocos antigos (sem os campos)
+            mtoon_emission_color: vec4(
+              material["mtoon_emission_color"],
+              template.mtoon_emission_color
+            ),
+            mtoon_emission_intensity: num(
+              material["mtoon_emission_intensity"],
+              template.mtoon_emission_intensity
+            ),
+            mtoon_second_shade_shift: num(
+              material["mtoon_second_shade_shift"],
+              template.mtoon_second_shade_shift
+            ),
+            mtoon_second_shade_softness: num(
+              material["mtoon_second_shade_softness"],
+              template.mtoon_second_shade_softness
+            ),
+            mtoon_matcap_intensity: num(material["mtoon_matcap_intensity"], template.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: material["mtoon_main_texture_enabled"] === true,
+            mtoon_shade_texture_enabled: material["mtoon_shade_texture_enabled"] === true,
+            mtoon_second_shade_texture_enabled: material["mtoon_second_shade_texture_enabled"] === true,
+            mtoon_emission_texture_enabled: material["mtoon_emission_texture_enabled"] === true,
+            mtoon_matcap_enabled: material["mtoon_matcap_enabled"] === true,
+            mtoon_matcap_mode:
+              num(material["mtoon_matcap_mode"], template.mtoon_matcap_mode) === 1 ? 1 : 0,
+            mtoon_shade_toony: material["mtoon_shade_toony"] !== false,
           },
         ];
       })

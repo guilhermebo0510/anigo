@@ -52,6 +52,13 @@ pub struct MaterialUniform {
     pub params: [f32; 4],
     pub params2: [f32; 4],
     pub params3: [f32; 4],
+    // Fase 2 (#18): material anime VRoid/MToon — emission sub-color,
+    // intensidades/offsets do segundo shade, matcap (sphere add) e os flags
+    // de habilitação dos 5 slots de textura (main/shade/second/emission/sphere).
+    pub emission_color: [f32; 4],
+    pub params4: [f32; 4], // emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity
+    pub params5: [f32; 4], // main_tex, shade_tex, second_shade, emission (0/1)
+    pub params6: [f32; 4], // matcap_enabled, matcap_mode (0 mult/1 add), shade_toony, reserved
 }
 
 impl Default for MaterialUniform {
@@ -64,6 +71,12 @@ impl Default for MaterialUniform {
             params: [0.50, 0.02, 0.40, 32.0],
             params2: [0.80, 0.40, -15.0f32.to_radians(), 1.0],
             params3: [0.05, 0.0, 0.45, 0.85], // P2-07 spec_size 0.45, P2-05 ao_intensity 0.85
+            // MToon off por padrão: sem emissão, sem matcap, sem texturas —
+            // o frame congelado do render contract mantém 28 floats idênticos.
+            emission_color: [0.0, 0.0, 0.0, 0.0],
+            params4: [0.0, 0.0, 0.05, 0.0],
+            params5: [0.0, 0.0, 0.0, 0.0],
+            params6: [0.0, 0.0, 1.0, 0.0],
         }
     }
 }
@@ -88,6 +101,27 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
                 m.toon_steps,
             ],
             params3: [m.specular_softness, m.specular_offset, m.specular_size, m.ao_intensity],
+            // Fase 2 (#18): slots MToon. Texturas desabilitadas → o renderer
+            // ancora o neutro 1x1 branco e o shader ignora o slot.
+            emission_color: m.mtoon_emission_color,
+            params4: [
+                m.mtoon_emission_intensity,
+                m.mtoon_second_shade_shift,
+                m.mtoon_second_shade_softness,
+                m.mtoon_matcap_intensity,
+            ],
+            params5: [
+                m.mtoon_main_texture_enabled as f32,
+                m.mtoon_shade_texture_enabled as f32,
+                m.mtoon_second_shade_texture_enabled as f32,
+                m.mtoon_emission_texture_enabled as f32,
+            ],
+            params6: [
+                m.mtoon_matcap_enabled as f32,
+                m.mtoon_matcap_mode as f32,
+                m.mtoon_shade_toony as f32,
+                0.0,
+            ],
         }
     }
 }
@@ -97,7 +131,9 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
 pub struct OutlineUniform {
     pub color: [f32; 4],
     pub params: [f32; 4],  // x: width, y: aspect, z: depth_bias, w: opacity
-    pub params2: [f32; 4], // x: smoothness, yzw: unused (P0-09 dead control fix)
+    // x: smoothness, y: width_tex_enabled (Fase 2 #18 — mapa de espessura MToon),
+    // z/w: reserved (P0-09 dead control fix)
+    pub params2: [f32; 4],
 }
 
 impl Default for OutlineUniform {
@@ -174,14 +210,15 @@ mod tests {
 
     #[test]
     fn test_uniform_sizes_and_alignments() {
-        // P2-14 Camera 208 B (added model+normal_mat), Light 80 B (added sky/ground), Material 112 B
+        // P2-14 Camera 208 B (added model+normal_mat), Light 80 B (added sky/ground),
+        // Material 176 B (Fase 2 #18: +4 vec4s de MToon, 44 floats)
         assert_eq!(std::mem::size_of::<CameraUniform>(), 208);
         assert_eq!(std::mem::size_of::<CameraUniform>() % 16, 0);
 
         assert_eq!(std::mem::size_of::<LightUniform>(), 80);
         assert_eq!(std::mem::size_of::<LightUniform>() % 16, 0);
 
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 112);
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 176);
         assert_eq!(std::mem::size_of::<MaterialUniform>() % 16, 0);
 
         assert_eq!(std::mem::size_of::<OutlineUniform>(), 48);

@@ -554,7 +554,24 @@
         "rim_spread": 0.4,
         "hue_shift": -15,
         "toon_steps": 1,
-        "ao_intensity": 0.85
+        "ao_intensity": 0.85,
+        "mtoon_emission_color": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "mtoon_emission_intensity": 0,
+        "mtoon_second_shade_shift": 0,
+        "mtoon_second_shade_softness": 0.05,
+        "mtoon_matcap_intensity": 0,
+        "mtoon_main_texture_enabled": false,
+        "mtoon_shade_texture_enabled": false,
+        "mtoon_second_shade_texture_enabled": false,
+        "mtoon_emission_texture_enabled": false,
+        "mtoon_matcap_enabled": false,
+        "mtoon_matcap_mode": 0,
+        "mtoon_shade_toony": true
       }
     ],
     "nodes": [

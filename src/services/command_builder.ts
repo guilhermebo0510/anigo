@@ -363,7 +363,12 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
       let touched = 0;
       for (const [key, value] of Object.entries(intent.patch)) {
         if (value === undefined) continue;
-        const problem = Array.isArray(value) ? buildVec3w(value, key) : finite(value, key);
+        // Fase 2 (#18): flags MToon são booleanos; o resto do patch é número/vec4
+        const problem = Array.isArray(value)
+          ? buildVec3w(value, key)
+          : typeof value === "boolean"
+            ? null
+            : finite(value, key);
         if (problem) return problem;
         (patch as Record<string, unknown>)[key] = Array.isArray(value) ? [...value] : value;
         touched++;

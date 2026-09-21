@@ -280,6 +280,19 @@ async fn set_material_toon_params(
     outline_smoothness: Option<f32>,
     outline_depth_bias: Option<f32>,
     shadow_saturation: Option<f32>,
+    // Fase 2 (#18): material anime VRoid/MToon
+    mtoon_emission_color: Option<[f32; 4]>,
+    mtoon_emission_intensity: Option<f32>,
+    mtoon_second_shade_shift: Option<f32>,
+    mtoon_second_shade_softness: Option<f32>,
+    mtoon_matcap_intensity: Option<f32>,
+    mtoon_main_texture_enabled: Option<bool>,
+    mtoon_shade_texture_enabled: Option<bool>,
+    mtoon_second_shade_texture_enabled: Option<bool>,
+    mtoon_emission_texture_enabled: Option<bool>,
+    mtoon_matcap_enabled: Option<bool>,
+    mtoon_matcap_mode: Option<u8>,
+    mtoon_shade_toony: Option<bool>,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
@@ -305,6 +318,18 @@ async fn set_material_toon_params(
         outline_opacity,
         outline_smoothness,
         outline_depth_bias,
+        mtoon_emission_color,
+        mtoon_emission_intensity,
+        mtoon_second_shade_shift,
+        mtoon_second_shade_softness,
+        mtoon_matcap_intensity,
+        mtoon_main_texture_enabled,
+        mtoon_shade_texture_enabled,
+        mtoon_second_shade_texture_enabled,
+        mtoon_emission_texture_enabled,
+        mtoon_matcap_enabled,
+        mtoon_matcap_mode,
+        mtoon_shade_toony,
         ..Default::default()
     };
 

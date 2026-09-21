@@ -209,6 +209,23 @@ export class WebGpuViewportRenderer {
   // P1-04 ramp is now an asset (src/assets/toon_ramp.png) — loaded via fetch+createTexture; fallback procedural kept
   private toonRampSampler: GPUSampler | null = null;
 
+  // Fase 2 (#18): neutro 1x1 branco ancorado nos slots de textura MToon
+  // (cel 6–15) e no mapa de espessura do contorno (outline 3–4) enquanto o
+  // material não tem textura real. O shader só amostra o slot habilitado
+  // (material.params5/params6), então o frame com slots off não muda.
+  private mtoonNeutralTexture: GPUTexture | null = null;
+  private mtoonNeutralSampler: GPUSampler | null = null;
+
+  // Fase 2 (#18): parâmetros MToon do material (default = tudo off)
+  private mtoonEmissionColor: [number, number, number, number] = [0.0, 0.0, 0.0, 0.0];
+  private mtoonEmissionIntensity = 0.0;
+  private mtoonSecondShadeShift = 0.0;
+  private mtoonSecondShadeSoftness = 0.05;
+  private mtoonMatcapIntensity = 0.0;
+  private mtoonMatcapEnabled = false;
+  private mtoonMatcapMode = 0;
+  private mtoonShadeToony = true;
+
   // WebGPU Sparse Morph Compute Pipeline
   private morphPipeline: GPUComputePipeline | null = null;
   private morphBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1244,6 +1261,15 @@ export class WebGpuViewportRenderer {
     shadowSaturation?: number;
     specularSize?: number; // P2-07
     aoIntensity?: number; // P2-05
+    // Fase 2 (#18): material anime VRoid/MToon
+    mtoonEmissionColor?: [number, number, number, number];
+    mtoonEmissionIntensity?: number;
+    mtoonSecondShadeShift?: number;
+    mtoonSecondShadeSoftness?: number;
+    mtoonMatcapIntensity?: number;
+    mtoonMatcapEnabled?: boolean;
+    mtoonMatcapMode?: number;
+    mtoonShadeToony?: boolean;
   }) {
     if (params.baseColor) this.baseColor = params.baseColor;
     if (params.shadeColor) this.shadeColor = params.shadeColor;
@@ -1267,6 +1293,15 @@ export class WebGpuViewportRenderer {
     if (params.shadowSaturation !== undefined) this.shadowSaturation = params.shadowSaturation;
     if (params.specularSize !== undefined) this.specularSize = params.specularSize;
     if (params.aoIntensity !== undefined) this.aoIntensity = params.aoIntensity;
+    // Fase 2 (#18): parâmetros MToon
+    if (params.mtoonEmissionColor) this.mtoonEmissionColor = params.mtoonEmissionColor;
+    if (params.mtoonEmissionIntensity !== undefined) this.mtoonEmissionIntensity = params.mtoonEmissionIntensity;
+    if (params.mtoonSecondShadeShift !== undefined) this.mtoonSecondShadeShift = params.mtoonSecondShadeShift;
+    if (params.mtoonSecondShadeSoftness !== undefined) this.mtoonSecondShadeSoftness = params.mtoonSecondShadeSoftness;
+    if (params.mtoonMatcapIntensity !== undefined) this.mtoonMatcapIntensity = params.mtoonMatcapIntensity;
+    if (params.mtoonMatcapEnabled !== undefined) this.mtoonMatcapEnabled = params.mtoonMatcapEnabled;
+    if (params.mtoonMatcapMode !== undefined) this.mtoonMatcapMode = params.mtoonMatcapMode === 1 ? 1 : 0;
+    if (params.mtoonShadeToony !== undefined) this.mtoonShadeToony = params.mtoonShadeToony;
   }
 
   private buildGeometryBuffers() {
@@ -1668,10 +1703,41 @@ export class WebGpuViewportRenderer {
       addressModeV: addressMode(rampSpec.address_mode),
     });
 
+    // Fase 2 (#18): neutro 1x1 branco para os slots de textura MToon — uma
+    // vez por renderer, ancorado em todo bind group (mesma estratégia do
+    // headless Rust: sem textura real, o slot é ignorado pelo shader).
+    if (this.mtoonNeutralTexture) {
+      try { this.mtoonNeutralTexture.destroy(); } catch (_) {}
+    }
+    this.mtoonNeutralTexture = this.device.createTexture({
+      size: [1, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: this.mtoonNeutralTexture },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      [1, 1]
+    );
+    // GPUSampler não tem destroy() (spec) — o sampler antigo é liberado com o
+    // device; recriar apenas descarta a referência.
+    this.mtoonNeutralSampler = this.device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+
     // P1-04: o binding da paleta vem do contrato (5 no cel, 2 no outline) —
     // nunca um literal solto no renderer.
     const celSkinBinding = skinningBinding("cel");
     const outlineSkinBinding = skinningBinding("outline");
+
+    // Fase 2 (#18): slots MToon — main/shade/second_shade/emission/sphere_add
+    // ancoram o neutro 1x1 branco; o shader só amostra o slot habilitado.
+    const mtoonNeutralView = this.mtoonNeutralTexture.createView();
+    const mtoonNeutralSampler = this.mtoonNeutralSampler;
 
     this.celBindGroup = this.device.createBindGroup({
       layout: this.celPipeline.getBindGroupLayout(0),
@@ -1682,6 +1748,16 @@ export class WebGpuViewportRenderer {
         { binding: 3, resource: this.toonRampTexture.createView() },
         { binding: 4, resource: this.toonRampSampler },
         { binding: celSkinBinding, resource: { buffer: this.bonesBuffer } },
+        { binding: 6, resource: mtoonNeutralView },
+        { binding: 7, resource: mtoonNeutralSampler },
+        { binding: 8, resource: mtoonNeutralView },
+        { binding: 9, resource: mtoonNeutralSampler },
+        { binding: 10, resource: mtoonNeutralView },
+        { binding: 11, resource: mtoonNeutralSampler },
+        { binding: 12, resource: mtoonNeutralView },
+        { binding: 13, resource: mtoonNeutralSampler },
+        { binding: 14, resource: mtoonNeutralView },
+        { binding: 15, resource: mtoonNeutralSampler },
       ],
     });
 
@@ -1691,6 +1767,9 @@ export class WebGpuViewportRenderer {
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.outlineBuffer } },
         { binding: outlineSkinBinding, resource: { buffer: this.bonesBuffer } },
+        // Fase 2 (#18): mapa de espessura do contorno (neutro 1x1).
+        { binding: 3, resource: mtoonNeutralView },
+        { binding: 4, resource: mtoonNeutralSampler },
       ],
     });
   }
@@ -2104,6 +2183,20 @@ export class WebGpuViewportRenderer {
       specularOffset: this.specOffset,
       specularSize: this.specularSize,
       aoIntensity: this.aoIntensity,
+      // Fase 2 (#18): MToon — slots de textura ancoram o neutro 1x1; o shader
+      // só amostra o slot quando os flags (params5/params6) o habilitam.
+      mtoonEmissionColor: this.mtoonEmissionColor,
+      mtoonEmissionIntensity: this.mtoonEmissionIntensity,
+      mtoonSecondShadeShift: this.mtoonSecondShadeShift,
+      mtoonSecondShadeSoftness: this.mtoonSecondShadeSoftness,
+      mtoonMatcapIntensity: this.mtoonMatcapIntensity,
+      mtoonMainTextureEnabled: false,
+      mtoonShadeTextureEnabled: false,
+      mtoonSecondShadeTextureEnabled: false,
+      mtoonEmissionTextureEnabled: false,
+      mtoonMatcapEnabled: this.mtoonMatcapEnabled,
+      mtoonMatcapMode: this.mtoonMatcapMode,
+      mtoonShadeToony: this.mtoonShadeToony,
     });
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 
@@ -2452,6 +2545,8 @@ export class WebGpuViewportRenderer {
     if (this.depthTexture) { try { this.depthTexture.destroy(); } catch (_) {} this.depthTexture = null; this.depthView = null; }
     if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} this.msaaColorTexture = null; this.msaaColorView = null; }
     if (this.toonRampTexture) { try { this.toonRampTexture.destroy(); } catch (_) {} this.toonRampTexture = null; }
+    // Fase 2 (#18): neutro 1x1 dos slots MToon
+    if (this.mtoonNeutralTexture) { try { this.mtoonNeutralTexture.destroy(); } catch (_) {} this.mtoonNeutralTexture = null; }
     // compute pipeline resources
     if (this.morphHeaderBuffer) { try { this.morphHeaderBuffer.destroy(); } catch (_) {} this.morphHeaderBuffer = null; }
     if (this.morphBaseBuffer) { try { this.morphBaseBuffer.destroy(); } catch (_) {} this.morphBaseBuffer = null; }
@@ -2483,5 +2578,6 @@ export class WebGpuViewportRenderer {
     this.celPipeline = null; this.outlinePipeline = null;
     this.celBindGroup = null; this.outlineBindGroup = null;
     this.toonRampSampler = null;
+    this.mtoonNeutralSampler = null;
   }
 }

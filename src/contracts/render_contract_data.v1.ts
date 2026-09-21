@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 334,
-      "fnv1a64": "66244d2a7dfead0e"
+      "lines": 429,
+      "fnv1a64": "60f2526add3ed9d8"
     },
     {
       "name": "inverted_hull",
@@ -31,8 +31,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 120,
-      "fnv1a64": "bb9cbf1546c9e7f7"
+      "lines": 136,
+      "fnv1a64": "d0c5f653e26cc4f7"
     },
     {
       "name": "morph_sparse_compute",
@@ -219,7 +219,7 @@ export const RENDER_CONTRACT_DATA = {
     "material": {
       "struct": "MaterialUniform",
       "address_space": "uniform",
-      "size": 112,
+      "size": 176,
       "fields": [
         {
           "name": "base_color",
@@ -265,6 +265,34 @@ export const RENDER_CONTRACT_DATA = {
           "offset": 96,
           "size": 16,
           "meaning": "specular_softness, specular_offset, specular_size, ao_intensity"
+        },
+        {
+          "name": "emission_color",
+          "kind": "vec4",
+          "offset": 112,
+          "size": 16,
+          "meaning": "MToon subEmission (rgb sRGB, w alpha)"
+        },
+        {
+          "name": "params4",
+          "kind": "vec4",
+          "offset": 128,
+          "size": 16,
+          "meaning": "emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity"
+        },
+        {
+          "name": "params5",
+          "kind": "vec4",
+          "offset": 144,
+          "size": 16,
+          "meaning": "main_tex_enabled, shade_tex_enabled, second_shade_enabled, emission_enabled"
+        },
+        {
+          "name": "params6",
+          "kind": "vec4",
+          "offset": 160,
+          "size": 16,
+          "meaning": "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved"
         }
       ]
     },
@@ -291,7 +319,7 @@ export const RENDER_CONTRACT_DATA = {
           "kind": "vec4",
           "offset": 32,
           "size": 16,
-          "meaning": "smoothness"
+          "meaning": "smoothness, width_tex_enabled (Fase 2 #18)"
         }
       ]
     },
@@ -525,6 +553,86 @@ export const RENDER_CONTRACT_DATA = {
             "vertex"
           ],
           "declaration": "var<uniform> bones: BonePalette"
+        },
+        {
+          "binding": 6,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var main_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 7,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var main_sampler: sampler"
+        },
+        {
+          "binding": 8,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var shade_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 9,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var shade_sampler: sampler"
+        },
+        {
+          "binding": 10,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var second_shade_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 11,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var second_shade_sampler: sampler"
+        },
+        {
+          "binding": 12,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var emission_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 13,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var emission_sampler: sampler"
+        },
+        {
+          "binding": 14,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var sphere_add_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 15,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var sphere_add_sampler: sampler"
         }
       ]
     },
@@ -556,6 +664,22 @@ export const RENDER_CONTRACT_DATA = {
             "vertex"
           ],
           "declaration": "var<uniform> bones: BonePalette"
+        },
+        {
+          "binding": 3,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "vertex"
+          ],
+          "declaration": "var outline_width_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 4,
+          "kind": "sampler",
+          "stages": [
+            "vertex"
+          ],
+          "declaration": "var outline_width_sampler: sampler"
         }
       ]
     },
@@ -948,6 +1072,20 @@ export const RENDER_CONTRACT_DATA = {
       "specular_offset": 0.01,
       "specular_size": 0.4,
       "ao_intensity": 0.8,
+      "emission_color": [
+   0, 0, 0, 0
+  ],
+      "emission_intensity": 0,
+      "second_shade_shift": 0,
+      "second_shade_softness": 0.05,
+      "matcap_intensity": 0,
+      "main_texture_enabled": false,
+      "shade_texture_enabled": false,
+      "second_shade_texture_enabled": false,
+      "emission_texture_enabled": false,
+      "matcap_enabled": false,
+      "matcap_mode": 0,
+      "shade_toony": true,
       "outline_color": [
    0.25, 0.15, 0.2, 1
   ],
@@ -983,7 +1121,8 @@ export const RENDER_CONTRACT_DATA = {
       "material_uniform": [
    0.980000019, 0.920000017, 0.850000024, 1, 0.819999993, 0.730000019, 0.779999971, 1, 1, 1, 1, 1,
    0.575999975, 0.773000002, 0.991999984, 1, 0.579999983, 0.029999999, 0.550000012, 24, 0.699999988,
-   0.449999988, -0.383972436, 2, 0.059999999, 0.01, 0.400000006, 0.800000012
+   0.449999988, -0.383972436, 2, 0.059999999, 0.01, 0.400000006, 0.800000012, 0, 0, 0, 0, 0, 0,
+   0.050000001, 0, 0, 0, 0, 0, 0, 0, 1, 0
   ],
       "outline_uniform": [
    0.25, 0.150000006, 0.200000003, 1, 0.004, 1.777777791, 0.02, 0.899999976, 0.01, 0, 0, 0

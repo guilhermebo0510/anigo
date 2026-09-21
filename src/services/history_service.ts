@@ -53,6 +53,15 @@ export interface HistoryStateSnapshot {
   specColorHex?: string;
   rimColor?: string;
   lightColor?: [number, number, number];
+  // Fase 2 (#18): MToon (VRoid) — parâmetros VRMC_materials_mtoon
+  mtoonEmissionColorHex?: string;
+  mtoonEmissionIntensity?: number;
+  mtoonSecondShadeShift?: number;
+  mtoonSecondShadeSoftness?: number;
+  mtoonMatcapIntensity?: number;
+  mtoonMatcapEnabled?: boolean;
+  mtoonMatcapMode?: number;
+  mtoonShadeToony?: boolean;
 }
 
 export interface HistoryEntry {

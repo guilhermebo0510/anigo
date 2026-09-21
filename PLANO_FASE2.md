@@ -2,6 +2,12 @@
 
 Milestone GitHub #2 — 8 issues. Este arquivo acompanha o progresso.
 
+## Progresso
+
+- [x] #25 — parser glTF 2.0 + VRM 1.0 (TS, 16 testes) + espelho Rust anigo-vrm + comandos Tauri (commits 286a679, 99f0eeb)
+- [x] #18 — material anime VRoid/MToon (176 B de MaterialUniform, slots main/shade/2nd shade/emission/matcap/outline width, composição no cel_shading + inverted_hull, paridade headless↔viewport, frame congelado intacto)
+- [ ] #17 Face SDF · #43 Eye · #53 DoF · #42 CSM · #26 Texturas · #59 relatório
+
 ## Escopo por issue
 
 | # | Issue | Entrega principal | Verificação |

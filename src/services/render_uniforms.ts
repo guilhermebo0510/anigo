@@ -80,9 +80,24 @@ export interface MaterialUniformInput {
   specularOffset: number;
   specularSize: number;
   aoIntensity: number;
+  // Fase 2 (#18): material anime VRoid/MToon — opcionais com o default do
+  // `StylizedMaterial`: slots off, sem emissão/matcap, shade_toony = true.
+  mtoonEmissionColor?: [number, number, number, number];
+  mtoonEmissionIntensity?: number;
+  mtoonSecondShadeShift?: number;
+  mtoonSecondShadeSoftness?: number;
+  mtoonMatcapIntensity?: number;
+  mtoonMainTextureEnabled?: boolean;
+  mtoonShadeTextureEnabled?: boolean;
+  mtoonSecondShadeTextureEnabled?: boolean;
+  mtoonEmissionTextureEnabled?: boolean;
+  mtoonMatcapEnabled?: boolean;
+  /** 0 = normal (mult), 1 = additive. */
+  mtoonMatcapMode?: number;
+  mtoonShadeToony?: boolean;
 }
 
-/** Bloco `material` (112 B = 28 f32). */
+/** Bloco `material` (176 B = 44 f32). */
 export function materialUniformFloats(input: MaterialUniformInput): Float32Array {
   const data = new Float32Array(uniformFloats("material"));
   writeVec(data, "material", "base_color", input.baseColor);
@@ -106,6 +121,26 @@ export function materialUniformFloats(input: MaterialUniformInput): Float32Array
     input.specularOffset,
     input.specularSize,
     input.aoIntensity,
+  ]);
+  // Fase 2 (#18): MToon — emission, segundo shade, matcap e flags de textura.
+  writeVec(data, "material", "emission_color", input.mtoonEmissionColor ?? [0.0, 0.0, 0.0, 0.0]);
+  writeVec(data, "material", "params4", [
+    input.mtoonEmissionIntensity ?? 0.0,
+    input.mtoonSecondShadeShift ?? 0.0,
+    input.mtoonSecondShadeSoftness ?? 0.05,
+    input.mtoonMatcapIntensity ?? 0.0,
+  ]);
+  writeVec(data, "material", "params5", [
+    (input.mtoonMainTextureEnabled ?? false) ? 1.0 : 0.0,
+    (input.mtoonShadeTextureEnabled ?? false) ? 1.0 : 0.0,
+    (input.mtoonSecondShadeTextureEnabled ?? false) ? 1.0 : 0.0,
+    (input.mtoonEmissionTextureEnabled ?? false) ? 1.0 : 0.0,
+  ]);
+  writeVec(data, "material", "params6", [
+    (input.mtoonMatcapEnabled ?? false) ? 1.0 : 0.0,
+    input.mtoonMatcapMode ?? 0,
+    (input.mtoonShadeToony ?? true) ? 1.0 : 0.0,
+    0.0,
   ]);
   return data;
 }

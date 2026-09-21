@@ -60,6 +60,13 @@ pub struct HeadlessRenderer {
     pub morph_bind_group_layout: wgpu::BindGroupLayout,
     pub toon_ramp_view: wgpu::TextureView,
     pub toon_ramp_sampler: wgpu::Sampler,
+    /// Fase 2 (#18): neutro 1x1 branco ancorado nos slots de textura MToon
+    /// (cel 6–15) e no mapa de espessura do contorno (outline 3–4) quando o
+    /// material/nó não tem textura. Uma única textura + sampler para todos os
+    /// nós e passes; o shader só amostra o slot habilitado, então o neutro
+    /// nunca chega na imagem com os slots off.
+    pub mtoon_neutral_view: wgpu::TextureView,
+    pub mtoon_neutral_sampler: wgpu::Sampler,
 }
 
 impl HeadlessRenderer {
@@ -195,6 +202,55 @@ impl HeadlessRenderer {
             ..Default::default()
         });
 
+        // Fase 2 (#18): neutro 1x1 branco para os slots de textura MToon.
+        // Criado uma vez e ancorado em todo bind group sem textura; o shader
+        // só amostra o slot quando material.params5/params6 o habilita, então
+        // o frame congelado (slots off) permanece byte-idêntico ao anterior.
+        let neutral_desc = wgpu::TextureDescriptor {
+            label: Some("MToon Neutral 1x1 White"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // mesmo formato do alvo offscreen (rgba8unorm) — vindo do contrato
+            format: contract::offscreen_color_format(),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        };
+        let neutral_texture = device.create_texture(&neutral_desc);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &neutral_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: None,
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let mtoon_neutral_view = neutral_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mtoon_neutral_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("MToon Neutral Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         // Load Shaders — uma cópia só (crates/anigo-renderer/shaders via contrato)
         let cel_pass_spec = contract::render_pass("cel");
         let outline_pass_spec = contract::render_pass("outline");
@@ -276,6 +332,90 @@ impl HeadlessRenderer {
                     },
                     count: None,
                 },
+                // Fase 2 (#18): slots de textura do material anime (VRoid/MToon) —
+                // main/shade/second_shade/emission/sphere_add. O slot só entra
+                // no cálculo quando material.params5/params6 o habilita; sem
+                // textura o headless ancora o neutro 1x1 branco abaixo.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
         ];
         let cel_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cel Bind Group Layout"),
@@ -312,6 +452,24 @@ impl HeadlessRenderer {
                         has_dynamic_offset: false,
                         min_binding_size: skin_min_binding,
                     },
+                    count: None,
+                },
+                // Fase 2 (#18): mapa de espessura do contorno (MToon outlineWidth).
+                // Somente no vertex; quando outline.params2.y == 0 o shader ignora.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
         ];
@@ -533,6 +691,8 @@ impl HeadlessRenderer {
             morph_bind_group_layout,
             toon_ramp_view,
             toon_ramp_sampler,
+            mtoon_neutral_view,
+            mtoon_neutral_sampler,
         })
     }
 
@@ -957,6 +1117,48 @@ impl HeadlessRenderer {
                                 binding: self.cel_skin_binding,
                                 resource: bones_buffer.as_entire_binding(),
                             },
+                            // Fase 2 (#18): slots MToon ancoram o neutro 1x1 branco;
+                            // o shader só amostra o slot habilitado (params5/6).
+                            wgpu::BindGroupEntry {
+                                binding: 6,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 7,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 8,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 9,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 10,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 11,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 12,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 13,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 14,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 15,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
                         ],
                     });
 
@@ -975,6 +1177,15 @@ impl HeadlessRenderer {
                             wgpu::BindGroupEntry {
                                 binding: self.outline_skin_binding,
                                 resource: bones_buffer.as_entire_binding(),
+                            },
+                            // Fase 2 (#18): mapa de espessura do contorno (neutro 1x1).
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
                             },
                         ],
                     });
@@ -1423,6 +1634,48 @@ impl HeadlessRenderer {
                                 binding: self.cel_skin_binding,
                                 resource: bones_buffer.as_entire_binding(),
                             },
+                            // Fase 2 (#18): slots MToon ancoram o neutro 1x1 branco;
+                            // o shader só amostra o slot habilitado (params5/6).
+                            wgpu::BindGroupEntry {
+                                binding: 6,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 7,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 8,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 9,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 10,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 11,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 12,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 13,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 14,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 15,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
+                            },
                         ],
                     });
 
@@ -1441,6 +1694,15 @@ impl HeadlessRenderer {
                             wgpu::BindGroupEntry {
                                 binding: self.outline_skin_binding,
                                 resource: bones_buffer.as_entire_binding(),
+                            },
+                            // Fase 2 (#18): mapa de espessura do contorno (neutro 1x1).
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
                             },
                         ],
                     });

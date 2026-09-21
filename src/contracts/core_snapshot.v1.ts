@@ -144,6 +144,20 @@ export interface MaterialSnapshotWire {
   hue_shift: number;
   toon_steps: number;
   ao_intensity: number;
+  // Fase 2 (#18): material anime VRoid/MToon (VRMC_materials_mtoon)
+  mtoon_emission_color: [number, number, number, number];
+  mtoon_emission_intensity: number;
+  mtoon_second_shade_shift: number;
+  mtoon_second_shade_softness: number;
+  mtoon_matcap_intensity: number;
+  mtoon_main_texture_enabled: boolean;
+  mtoon_shade_texture_enabled: boolean;
+  mtoon_second_shade_texture_enabled: boolean;
+  mtoon_emission_texture_enabled: boolean;
+  mtoon_matcap_enabled: boolean;
+  /** 0 = normal (mult), 1 = additive. */
+  mtoon_matcap_mode: number;
+  mtoon_shade_toony: boolean;
 }
 
 export interface NodeSnapshotWire {

@@ -31,7 +31,12 @@ struct MaterialUniform {
     rim_color: vec4<f32>,       // P0-09: separate rim tint (was light.shadow_color)
     params: vec4<f32>,          // x: shadow_threshold, y: shadow_smoothness, z: spec_intensity, w: spec_power
     params2: vec4<f32>,         // x: rim_intensity, y: rim_spread, z: hue_shift_rad, w: toon_steps
-    params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: unused, w: unused
+    params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: spec_size, w: ao_intensity
+    // ── Fase 2 (#18) — material anime VRoid/MToon ─────────────────────────
+    emission_color: vec4<f32>,  // MToon subEmission (cor, HDR via intensity)
+    params4: vec4<f32>,         // x: emission_intensity, y: second_shade_shift, z: second_shade_softness, w: matcap_intensity
+    params5: vec4<f32>,         // x: main_tex_enabled, y: shade_tex_enabled, z: second_shade_enabled, w: emission_enabled
+    params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: reserved
 };
 
 @group(0) @binding(0)
@@ -48,6 +53,39 @@ var toon_ramp_tex: texture_2d<f32>;
 
 @group(0) @binding(4)
 var toon_ramp_sampler: sampler;
+
+// Fase 2 (#18): slots de textura do material anime (VRoid/MToon). Sem textura,
+// o slot é desativado pelo flag em material.params5 e o passe segue 100%
+// procedural (o renderer ancora um neutro 1x1 nesses bindings).
+@group(0) @binding(6)
+var main_tex: texture_2d<f32>;
+
+@group(0) @binding(7)
+var main_sampler: sampler;
+
+@group(0) @binding(8)
+var shade_tex: texture_2d<f32>;
+
+@group(0) @binding(9)
+var shade_sampler: sampler;
+
+@group(0) @binding(10)
+var second_shade_tex: texture_2d<f32>;
+
+@group(0) @binding(11)
+var second_shade_sampler: sampler;
+
+@group(0) @binding(12)
+var emission_tex: texture_2d<f32>;
+
+@group(0) @binding(13)
+var emission_sampler: sampler;
+
+@group(0) @binding(14)
+var sphere_add_tex: texture_2d<f32>;
+
+@group(0) @binding(15)
+var sphere_add_sampler: sampler;
 
 struct BonePalette {
     matrices: array<mat4x4<f32>, 24>,
@@ -273,7 +311,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 6. Base Lit and Shadow Blending + P2-04 Hemisphere Ambient
     let intensity = clamp(light.direction.w, 0.0, 3.0);
-    let base_lin = srgb_to_linear(material.base_color.rgb);
+    // Fase 2 (#18): albedo — MToon mainTex (slot ativado por params5.x) ou cor base.
+    // A textura modula a cor base (VRoid: mainTex × baseColorFactor).
+    var base_lin: vec3<f32>;
+    if (material.params5.x > 0.5) {
+        base_lin = srgb_to_linear(textureSample(main_tex, main_sampler, in.uv).rgb) * srgb_to_linear(material.base_color.rgb);
+    } else {
+        base_lin = srgb_to_linear(material.base_color.rgb);
+    }
     let light_lin = srgb_to_linear(light.color.rgb);
     var lit_color = base_lin * light_lin * intensity;
 
@@ -284,9 +329,37 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient_hemi = mix(ground_lin, sky_lin, hemi) * clamp(light.color.w, 0.0, 2.0);
     let ambient_term = ambient_hemi;
     // P2-05 AO modulates shadow/ambient, not spec/rim
-    let shadow_color = hue_shifted_shadow * ambient_term * ao;
+    var shadow_color = hue_shifted_shadow * ambient_term * ao;
+
+    // Fase 2 (#18): MToon shade map — quando habilitado (params5.y) substitui a
+    // sombra computada (VRoid: shadeTex define a cor da primeira banda).
+    // shade_toony (params6.z) quantiza a amostra em `toon_steps` bandas, a
+    // convenção VRoid de "shade toony".
+    if (material.params5.y > 0.5) {
+        var shade_sample = textureSample(shade_tex, shade_sampler, in.uv).rgb;
+        if (material.params6.z > 0.5) {
+            let shade_steps = max(toon_steps, 1.0);
+            shade_sample = floor(shade_sample * shade_steps + 0.5) / shade_steps;
+        }
+        shadow_color = srgb_to_linear(shade_sample) * ambient_term * ao;
+    }
+
     let lit_color_ao = lit_color; // direct light not occluded (only shadow)
-    let base_cel = mix(shadow_color, lit_color_ao, toon_factor);
+    var base_cel = mix(shadow_color, lit_color_ao, toon_factor);
+
+    // Fase 2 (#18): segunda banda de sombra (MToon second shade) — faixa profunda
+    // abaixo de (threshold - second_shade_shift). A textura do slot é multiplicada
+    // pela sombra base escurecida (0.45) — com o neutro branco ancorado o resultado
+    // é exatamente shade_lin × 0.45, a convenção de segunda sombra do VRoid.
+    if (material.params5.z > 0.5) {
+        let second_shift = max(material.params4.y, 0.0);
+        let second_threshold = max(threshold - second_shift, 0.001);
+        let second_soft = max(material.params4.z, 0.001);
+        let second_blend = smoothstep(second_threshold - second_soft, second_threshold + second_soft, half_lambert);
+        let deep_color = srgb_to_linear(textureSample(second_shade_tex, second_shade_sampler, in.uv).rgb) * shade_lin * 0.45;
+        let deep_band = deep_color * ambient_term * ao;
+        base_cel = mix(deep_band, base_cel, second_blend);
+    }
 
     // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")
     let H = normalize(L + V);
@@ -324,7 +397,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 9. Final Color Composition — P2-05 AO already in base_cel, not here
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
     let rim_rgb = srgb_to_linear(material.rim_color.rgb);
-    let with_rim = lit_highlighted + (rim_rgb * rim_term);
+    var with_rim = lit_highlighted + (rim_rgb * rim_term);
+
+    // Fase 2 (#18): matcap (MToon sphereAdd) — normal na base da câmera derivada
+    // de V e up (o uniform só carrega view_proj, então reconstruímos a base):
+    // uv = N_view.xy × 0.5 + 0.5. Modo normal multiplica, additive soma.
+    if (material.params6.x > 0.5) {
+        var cam_right = cross(vec3<f32>(0.0, 1.0, 0.0), V);
+        let cam_right_len = length(cam_right);
+        cam_right = cam_right_len > 1e-4 ? normalize(cam_right) : vec3<f32>(1.0, 0.0, 0.0);
+        let cam_up = cross(V, cam_right);
+        let n_view = vec3<f32>(dot(N, cam_right), dot(N, cam_up), dot(N, V));
+        let matcap_uv = clamp(n_view.xy * 0.5 + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
+        let matcap = srgb_to_linear(textureSample(sphere_add_tex, sphere_add_sampler, matcap_uv).rgb) * material.params4.w;
+        with_rim = mix(with_rim * matcap, with_rim + matcap, material.params6.y);
+    }
+
+    // Fase 2 (#18): sub-emission (MToon) — desacoplada da iluminação, somada em
+    // linear antes do tonemap (brilho persistente mesmo em sombra).
+    if (material.params5.w > 0.5) {
+        let emission_map = textureSample(emission_tex, emission_sampler, in.uv).rgb;
+        with_rim = with_rim + srgb_to_linear(material.emission_color.rgb) * emission_map * material.params4.x;
+    }
+
     // P1-01: linear→sRGB for display
     let exposure = exp2(light.ambient_sky.w); // P3-01 exposure EV stored in sky.w (fallback 0)
     let final_linear = clamp(with_rim * exposure, vec3<f32>(0.0), vec3<f32>(10.0));

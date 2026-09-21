@@ -122,6 +122,19 @@ pub struct MaterialPatch {
     pub outline_depth_bias: Option<f32>,
     pub specular_size: Option<f32>,
     pub ao_intensity: Option<f32>,
+    // Fase 2 (#18): material anime VRoid/MToon
+    pub mtoon_emission_color: Option<[f32; 4]>,
+    pub mtoon_emission_intensity: Option<f32>,
+    pub mtoon_second_shade_shift: Option<f32>,
+    pub mtoon_second_shade_softness: Option<f32>,
+    pub mtoon_matcap_intensity: Option<f32>,
+    pub mtoon_main_texture_enabled: Option<bool>,
+    pub mtoon_shade_texture_enabled: Option<bool>,
+    pub mtoon_second_shade_texture_enabled: Option<bool>,
+    pub mtoon_emission_texture_enabled: Option<bool>,
+    pub mtoon_matcap_enabled: Option<bool>,
+    pub mtoon_matcap_mode: Option<u8>,
+    pub mtoon_shade_toony: Option<bool>,
 }
 
 impl MaterialPatch {
@@ -190,6 +203,43 @@ impl MaterialPatch {
         if let Some(value) = self.ao_intensity {
             material.ao_intensity = value;
         }
+        // Fase 2 (#18): parâmetros MToon
+        if let Some(value) = self.mtoon_emission_color {
+            material.mtoon_emission_color = value;
+        }
+        if let Some(value) = self.mtoon_emission_intensity {
+            material.mtoon_emission_intensity = value;
+        }
+        if let Some(value) = self.mtoon_second_shade_shift {
+            material.mtoon_second_shade_shift = value;
+        }
+        if let Some(value) = self.mtoon_second_shade_softness {
+            material.mtoon_second_shade_softness = value;
+        }
+        if let Some(value) = self.mtoon_matcap_intensity {
+            material.mtoon_matcap_intensity = value;
+        }
+        if let Some(value) = self.mtoon_main_texture_enabled {
+            material.mtoon_main_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_shade_texture_enabled {
+            material.mtoon_shade_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_second_shade_texture_enabled {
+            material.mtoon_second_shade_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_emission_texture_enabled {
+            material.mtoon_emission_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_matcap_enabled {
+            material.mtoon_matcap_enabled = value;
+        }
+        if let Some(value) = self.mtoon_matcap_mode {
+            material.mtoon_matcap_mode = value;
+        }
+        if let Some(value) = self.mtoon_shade_toony {
+            material.mtoon_shade_toony = value;
+        }
     }
 
     /// Builds the inverse patch from the current material values.
@@ -216,6 +266,35 @@ impl MaterialPatch {
             outline_depth_bias: self.outline_depth_bias.map(|_| material.outline_depth_bias),
             specular_size: self.specular_size.map(|_| material.specular_size),
             ao_intensity: self.ao_intensity.map(|_| material.ao_intensity),
+            // Fase 2 (#18): parâmetros MToon
+            mtoon_emission_color: self.mtoon_emission_color.map(|_| material.mtoon_emission_color),
+            mtoon_emission_intensity: self
+                .mtoon_emission_intensity
+                .map(|_| material.mtoon_emission_intensity),
+            mtoon_second_shade_shift: self
+                .mtoon_second_shade_shift
+                .map(|_| material.mtoon_second_shade_shift),
+            mtoon_second_shade_softness: self
+                .mtoon_second_shade_softness
+                .map(|_| material.mtoon_second_shade_softness),
+            mtoon_matcap_intensity: self
+                .mtoon_matcap_intensity
+                .map(|_| material.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: self
+                .mtoon_main_texture_enabled
+                .map(|_| material.mtoon_main_texture_enabled),
+            mtoon_shade_texture_enabled: self
+                .mtoon_shade_texture_enabled
+                .map(|_| material.mtoon_shade_texture_enabled),
+            mtoon_second_shade_texture_enabled: self.mtoon_second_shade_texture_enabled
+                .map(|_| material.mtoon_second_shade_texture_enabled),
+            mtoon_emission_texture_enabled: self.mtoon_emission_texture_enabled
+                .map(|_| material.mtoon_emission_texture_enabled),
+            mtoon_matcap_enabled: self
+                .mtoon_matcap_enabled
+                .map(|_| material.mtoon_matcap_enabled),
+            mtoon_matcap_mode: self.mtoon_matcap_mode.map(|_| material.mtoon_matcap_mode),
+            mtoon_shade_toony: self.mtoon_shade_toony.map(|_| material.mtoon_shade_toony),
         }
     }
 

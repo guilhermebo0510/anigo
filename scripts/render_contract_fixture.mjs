@@ -146,7 +146,7 @@ export function renderContractFixture() {
       material: {
         struct: "MaterialUniform",
         address_space: "uniform",
-        size: 112,
+        size: 176,
         fields: [
           { name: "base_color", kind: "vec4", offset: 0, size: 16 },
           { name: "shade_color", kind: "vec4", offset: 16, size: 16 },
@@ -155,6 +155,11 @@ export function renderContractFixture() {
           { name: "params", kind: "vec4", offset: 64, size: 16, meaning: "shadow_threshold, shadow_smoothness, spec_intensity, spec_power" },
           { name: "params2", kind: "vec4", offset: 80, size: 16, meaning: "rim_intensity, rim_spread, hue_shift_rad, toon_steps" },
           { name: "params3", kind: "vec4", offset: 96, size: 16, meaning: "specular_softness, specular_offset, specular_size, ao_intensity" },
+          // Fase 2 (#18): material anime VRoid/MToon
+          { name: "emission_color", kind: "vec4", offset: 112, size: 16, meaning: "MToon subEmission (rgb sRGB, w alpha)" },
+          { name: "params4", kind: "vec4", offset: 128, size: 16, meaning: "emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity" },
+          { name: "params5", kind: "vec4", offset: 144, size: 16, meaning: "main_tex_enabled, shade_tex_enabled, second_shade_enabled, emission_enabled" },
+          { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved" },
         ],
       },
       outline: {
@@ -164,7 +169,7 @@ export function renderContractFixture() {
         fields: [
           { name: "color", kind: "vec4", offset: 0, size: 16 },
           { name: "params", kind: "vec4", offset: 16, size: 16, meaning: "width, aspect, depth_bias, opacity" },
-          { name: "params2", kind: "vec4", offset: 32, size: 16, meaning: "smoothness" },
+          { name: "params2", kind: "vec4", offset: 32, size: 16, meaning: "smoothness, width_tex_enabled (Fase 2 #18)" },
         ],
       },
       sparse_morph_header: {
@@ -242,6 +247,19 @@ export function renderContractFixture() {
           { binding: 3, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var toon_ramp_tex: texture_2d<f32>" },
           { binding: 4, kind: "sampler", stages: ["fragment"], declaration: "var toon_ramp_sampler: sampler" },
           { binding: 5, kind: "uniform", stages: ["vertex"], declaration: "var<uniform> bones: BonePalette" },
+          // Fase 2 (#18): slots de textura do material anime (VRoid/MToon).
+          // Sem textura, o slot é desativado via material.params5 e o renderer
+          // ancora um neutro 1x1 (branco) nesses bindings.
+          { binding: 6, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var main_tex: texture_2d<f32>" },
+          { binding: 7, kind: "sampler", stages: ["fragment"], declaration: "var main_sampler: sampler" },
+          { binding: 8, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var shade_tex: texture_2d<f32>" },
+          { binding: 9, kind: "sampler", stages: ["fragment"], declaration: "var shade_sampler: sampler" },
+          { binding: 10, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var second_shade_tex: texture_2d<f32>" },
+          { binding: 11, kind: "sampler", stages: ["fragment"], declaration: "var second_shade_sampler: sampler" },
+          { binding: 12, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var emission_tex: texture_2d<f32>" },
+          { binding: 13, kind: "sampler", stages: ["fragment"], declaration: "var emission_sampler: sampler" },
+          { binding: 14, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var sphere_add_tex: texture_2d<f32>" },
+          { binding: 15, kind: "sampler", stages: ["fragment"], declaration: "var sphere_add_sampler: sampler" },
         ],
       },
       {
@@ -251,6 +269,9 @@ export function renderContractFixture() {
           { binding: 0, kind: "uniform", stages: ["vertex"], declaration: "var<uniform> camera: CameraUniform" },
           { binding: 1, kind: "uniform", stages: ["vertex", "fragment"], declaration: "var<uniform> outline: OutlineUniform" },
           { binding: 2, kind: "uniform", stages: ["vertex"], declaration: "var<uniform> bones: BonePalette" },
+          // Fase 2 (#18): mapa de espessura do contorno (MToon outlineWidth)
+          { binding: 3, kind: "texture_2d<f32>", stages: ["vertex"], declaration: "var outline_width_tex: texture_2d<f32>" },
+          { binding: 4, kind: "sampler", stages: ["vertex"], declaration: "var outline_width_sampler: sampler" },
         ],
       },
       {
@@ -454,6 +475,22 @@ export function renderContractFixture() {
         specular_offset: 0.01,
         specular_size: 0.4,
         ao_intensity: 0.8,
+        // Fase 2 (#18): material anime VRoid/MToon — no frame congelado todos
+        // os slots de textura estão desativados, então os 16 floats novos do
+        // MaterialUniform são zero (exceto shade_toony = 1), e o visual do
+        // frame continua idêntico ao layout de 28 floats.
+        emission_color: [0.0, 0.0, 0.0, 0.0],
+        emission_intensity: 0.0,
+        second_shade_shift: 0.0,
+        second_shade_softness: 0.05,
+        matcap_intensity: 0.0,
+        main_texture_enabled: false,
+        shade_texture_enabled: false,
+        second_shade_texture_enabled: false,
+        emission_texture_enabled: false,
+        matcap_enabled: false,
+        matcap_mode: 0,
+        shade_toony: true,
         outline_color: [0.25, 0.15, 0.2, 1.0],
         outline_width: 0.004,
         outline_depth_bias: 0.02,
@@ -492,6 +529,11 @@ export function renderContractFixture() {
           1.0, 1.0, 1.0, 1.0, 0.575999975, 0.773000002, 0.991999984, 1.0,
           0.579999983, 0.029999999, 0.550000012, 24.0, 0.699999988, 0.449999988, -0.383972436, 2.0,
           0.059999999, 0.01, 0.400000006, 0.800000012,
+          // Fase 2 (#18): emission_color, params4 (emission, second_shade x2,
+          // matcap), params5 (4 slots de textura), params6 (matcap, mode,
+          // shade_toony, reserved) — frame congelado com tudo desativado.
+          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.050000001, 0.0, 0.0, 0.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
         ],
         outline_uniform: [
           0.25, 0.150000006, 0.200000003, 1.0, 0.004, 1.777777791, 0.02, 0.899999976,

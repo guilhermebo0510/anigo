@@ -554,6 +554,17 @@
   let baseColorHex = $state("#faeae0");
   let shadowColorHex = $state("#9995be");
 
+  // MToon (VRoid) — Fase 2 (#18): parâmetros VRMC_materials_mtoon.
+  // Defaults = material sem texturas (slots off), o mesmo do núcleo Rust.
+  let mtoonEmissionColorHex = $state("#000000");
+  let mtoonEmissionIntensity = $state(0.0);
+  let mtoonSecondShadeShift = $state(0.0);
+  let mtoonSecondShadeSoftness = $state(0.05);
+  let mtoonMatcapIntensity = $state(0.0);
+  let mtoonMatcapEnabled = $state(false);
+  let mtoonMatcapMode = $state(0);
+  let mtoonShadeToony = $state(true);
+
   // Timeline & Animation
   let currentFrame = $state(1);
   let isPlaying = $state(false);
@@ -806,6 +817,15 @@
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),
+      // Fase 2 (#18): MToon (VRoid)
+      mtoonEmissionColorHex,
+      mtoonEmissionIntensity,
+      mtoonSecondShadeShift,
+      mtoonSecondShadeSoftness,
+      mtoonMatcapIntensity,
+      mtoonMatcapEnabled,
+      mtoonMatcapMode,
+      mtoonShadeToony,
       // P0-07: the Personagem domain is part of every history entry.
       character: getAppCharacterState(),
     };
@@ -906,6 +926,15 @@
     if ((snap as any).ambientGround) ambientGround = (snap as any).ambientGround;
     if ((snap as any).specColorHex !== undefined) specColorHex = (snap as any).specColorHex;
     if ((snap as any).rimColor !== undefined) rimColor = (snap as any).rimColor;
+    // Fase 2 (#18): MToon (VRoid)
+    if ((snap as any).mtoonEmissionColorHex !== undefined) mtoonEmissionColorHex = (snap as any).mtoonEmissionColorHex;
+    if ((snap as any).mtoonEmissionIntensity !== undefined) mtoonEmissionIntensity = (snap as any).mtoonEmissionIntensity;
+    if ((snap as any).mtoonSecondShadeShift !== undefined) mtoonSecondShadeShift = (snap as any).mtoonSecondShadeShift;
+    if ((snap as any).mtoonSecondShadeSoftness !== undefined) mtoonSecondShadeSoftness = (snap as any).mtoonSecondShadeSoftness;
+    if ((snap as any).mtoonMatcapIntensity !== undefined) mtoonMatcapIntensity = (snap as any).mtoonMatcapIntensity;
+    if ((snap as any).mtoonMatcapEnabled !== undefined) mtoonMatcapEnabled = (snap as any).mtoonMatcapEnabled;
+    if ((snap as any).mtoonMatcapMode !== undefined) mtoonMatcapMode = (snap as any).mtoonMatcapMode;
+    if ((snap as any).mtoonShadeToony !== undefined) mtoonShadeToony = (snap as any).mtoonShadeToony;
     // P0-07: restore the full Personagem domain (undo/redo covers the body).
     if (snap.character) {
       try {
@@ -1608,6 +1637,17 @@
           if (p.outline_color && Array.isArray(p.outline_color) && p.outline_color.length >= 3) {
             outlineColor = rgbToHex(p.outline_color);
           }
+          // Fase 2 (#18): MToon — espelha os parâmetros vindos do núcleo
+          if (p.mtoon_emission_color && Array.isArray(p.mtoon_emission_color) && p.mtoon_emission_color.length >= 3) {
+            mtoonEmissionColorHex = rgbToHex(p.mtoon_emission_color);
+          }
+          if (p.mtoon_emission_intensity !== undefined) mtoonEmissionIntensity = p.mtoon_emission_intensity;
+          if (p.mtoon_second_shade_shift !== undefined) mtoonSecondShadeShift = p.mtoon_second_shade_shift;
+          if (p.mtoon_second_shade_softness !== undefined) mtoonSecondShadeSoftness = p.mtoon_second_shade_softness;
+          if (p.mtoon_matcap_intensity !== undefined) mtoonMatcapIntensity = p.mtoon_matcap_intensity;
+          if (p.mtoon_matcap_enabled !== undefined) mtoonMatcapEnabled = p.mtoon_matcap_enabled;
+          if (p.mtoon_matcap_mode !== undefined) mtoonMatcapMode = p.mtoon_matcap_mode;
+          if (p.mtoon_shade_toony !== undefined) mtoonShadeToony = p.mtoon_shade_toony;
           updateMaterial(false);
         });
 
@@ -2173,6 +2213,7 @@
     const shadeRgb = hexToRgb(shadowColorHex);
     const outlineRgb = hexToRgb(outlineColor);
     const specRgb = hexToRgb(specColorHex);
+    const mtoonEmissionRgb = hexToRgb(mtoonEmissionColorHex);
 
     const rimRgbLocal = hexToRgb(rimColor);
     if (viewportRef?.setMaterialParams) {
@@ -2197,6 +2238,16 @@
         outlineSmoothness,
         outlineDepthBias,
         shadowSaturation,
+        // Fase 2 (#18): MToon — textura real chega com o texture manager (#26);
+        // enquanto isso os slots ancoram o neutro 1x1 do renderer.
+        mtoonEmissionColor: [mtoonEmissionRgb[0], mtoonEmissionRgb[1], mtoonEmissionRgb[2], 1.0],
+        mtoonEmissionIntensity,
+        mtoonSecondShadeShift,
+        mtoonSecondShadeSoftness,
+        mtoonMatcapIntensity,
+        mtoonMatcapEnabled,
+        mtoonMatcapMode,
+        mtoonShadeToony,
       });
     }
 
@@ -2224,6 +2275,16 @@
           outline_smoothness: outlineSmoothness,
           outline_depth_bias: outlineDepthBias,
           shadow_saturation: shadowSaturation,
+          // Fase 2 (#18): MToon — o núcleo é a fonte do material que o
+          // headless desenha (paridade com o viewport).
+          mtoon_emission_color: [mtoonEmissionRgb[0], mtoonEmissionRgb[1], mtoonEmissionRgb[2], 1.0],
+          mtoon_emission_intensity: mtoonEmissionIntensity,
+          mtoon_second_shade_shift: mtoonSecondShadeShift,
+          mtoon_second_shade_softness: mtoonSecondShadeSoftness,
+          mtoon_matcap_intensity: mtoonMatcapIntensity,
+          mtoon_matcap_enabled: mtoonMatcapEnabled,
+          mtoon_matcap_mode: mtoonMatcapMode,
+          mtoon_shade_toony: mtoonShadeToony,
         }).catch(() => {});
       });
     }
@@ -2253,6 +2314,15 @@
           outline_smoothness: outlineSmoothness,
           outline_depth_bias: outlineDepthBias,
           ao_intensity: aoIntensity,
+          // Fase 2 (#18): MToon no history (undo/redo repõe os parâmetros)
+          mtoon_emission_color: [mtoonEmissionRgb[0], mtoonEmissionRgb[1], mtoonEmissionRgb[2], 1.0],
+          mtoon_emission_intensity: mtoonEmissionIntensity,
+          mtoon_second_shade_shift: mtoonSecondShadeShift,
+          mtoon_second_shade_softness: mtoonSecondShadeSoftness,
+          mtoon_matcap_intensity: mtoonMatcapIntensity,
+          mtoon_matcap_enabled: mtoonMatcapEnabled,
+          mtoon_matcap_mode: mtoonMatcapMode,
+          mtoon_shade_toony: mtoonShadeToony,
         },
       });
       recordHistory("Ajustar Material Toon", isContinuous, command);
@@ -2973,6 +3043,129 @@
                   onchange={() => { updateMaterial(true, false); updateLighting(true, false); }}
                 />
                 <span class="color-hex">{shadowColorHex.toUpperCase()}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fase 2 (#18): material anime VRoid/MToon (VRMC_materials_mtoon) -->
+          <div class="control-group">
+            <div class="group-title">
+              MTOON (VROID)
+              <span class="val-tag" style="opacity: 0.7;">emissão</span>
+            </div>
+            <div class="color-row">
+              <span class="label">Sub-Emissão</span>
+              <div class="color-input-wrapper">
+                <input
+                  type="color"
+                  bind:value={mtoonEmissionColorHex}
+                  oninput={() => updateMaterial(true, true)}
+                  onchange={() => updateMaterial(true, false)}
+                />
+                <span class="color-hex">{mtoonEmissionColorHex.toUpperCase()}</span>
+              </div>
+            </div>
+            <div class="slider-row">
+              <span class="label">Intensidade</span>
+              <input
+                type="range"
+                min="0.0"
+                max="2.0"
+                step="0.05"
+                bind:value={mtoonEmissionIntensity}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonEmissionIntensity.toFixed(2)}x</span>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <div class="group-title">SEGUNDO SHADE</div>
+            <div class="slider-row">
+              <span class="label">Offset da Bandas</span>
+              <input
+                type="range"
+                min="-1.0"
+                max="1.0"
+                step="0.01"
+                bind:value={mtoonSecondShadeShift}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonSecondShadeShift.toFixed(2)}</span>
+            </div>
+            <div class="slider-row">
+              <span class="label">Suavidade</span>
+              <input
+                type="range"
+                min="0.001"
+                max="0.5"
+                step="0.005"
+                bind:value={mtoonSecondShadeSoftness}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonSecondShadeSoftness.toFixed(3)}</span>
+            </div>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                bind:checked={mtoonShadeToony}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span>Shade Toony (banda dura na sombra)</span>
+            </label>
+          </div>
+
+          <div class="control-group">
+            <div class="group-title">
+              MATCAP (SPHERE ADD)
+              <span class="val-tag" class:on={mtoonMatcapEnabled} style="opacity: 0.7;">
+                {mtoonMatcapEnabled ? "on" : "off"}
+              </span>
+            </div>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                bind:checked={mtoonMatcapEnabled}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span>Habilitar Matcap</span>
+            </label>
+            <div class="slider-row">
+              <span class="label">Intensidade</span>
+              <input
+                type="range"
+                min="0.0"
+                max="2.0"
+                step="0.05"
+                bind:value={mtoonMatcapIntensity}
+                disabled={!mtoonMatcapEnabled}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonMatcapIntensity.toFixed(2)}x</span>
+            </div>
+            <div class="slider-row" style="grid-template-columns: 1fr auto;">
+              <span class="label">Modo</span>
+              <div class="btn-grid">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  class:selected={mtoonMatcapMode === 0}
+                  onclick={() => { mtoonMatcapMode = 0; updateMaterial(true, false); }}
+                >
+                  Mult
+                </button>
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  class:selected={mtoonMatcapMode === 1}
+                  onclick={() => { mtoonMatcapMode = 1; updateMaterial(true, false); }}
+                >
+                  Add
+                </button>
               </div>
             </div>
           </div>
@@ -4601,6 +4794,22 @@
     background: #392453;
     border-color: #c084fc;
     color: #ffffff;
+  }
+
+  /* Fase 2 (#18): toggle de flag MToon */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.74rem;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 2px 0;
+  }
+
+  .toggle-row input[type="checkbox"] {
+    accent-color: #c084fc;
+    cursor: pointer;
   }
 
   .btn-secondary:disabled,

@@ -179,7 +179,9 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformSize("camera"), 208);
   assert.equal(uniformFloats("camera"), 52);
   assert.equal(uniformFloats("light"), 20);
-  assert.equal(uniformFloats("material"), 28);
+  // Fase 2 (#18): MToon — 28 → 44 floats (176 B)
+  assert.equal(uniformSize("material"), 176);
+  assert.equal(uniformFloats("material"), 44);
   assert.equal(uniformFloats("outline"), 12);
   assert.equal(uniformFloats("sparse_morph_header"), 4);
   // P1-04: paleta de skinning — 24 ossos × mat4 (16 floats) = 384 floats
@@ -195,6 +197,11 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformOffset("material", "params"), 64);
   assert.equal(uniformOffset("material", "params2"), 80);
   assert.equal(uniformOffset("material", "params3"), 96);
+  // Fase 2 (#18): bloco MToon (112..176)
+  assert.equal(uniformOffset("material", "emission_color"), 112);
+  assert.equal(uniformOffset("material", "params4"), 128);
+  assert.equal(uniformOffset("material", "params5"), 144);
+  assert.equal(uniformOffset("material", "params6"), 160);
   assert.equal(uniformOffset("light", "ambient_ground"), 64);
   assert.equal(uniformOffset("outline", "params2"), 32);
 
@@ -222,7 +229,12 @@ test("os blocos de uniform batem com os structs #[repr(C)] do Rust", () => {
   const expected: Record<string, string[]> = {
     camera: ["view_proj", "camera_pos", "model", "normal_mat"],
     light: ["direction", "color", "shadow_color", "ambient_sky", "ambient_ground"],
-    material: ["base_color", "shade_color", "specular_color", "rim_color", "params", "params2", "params3"],
+    material: [
+      "base_color", "shade_color", "specular_color", "rim_color",
+      "params", "params2", "params3",
+      // Fase 2 (#18): MToon
+      "emission_color", "params4", "params5", "params6",
+    ],
     outline: ["color", "params", "params2"],
   };
   for (const [block, fields] of Object.entries(expected)) {
@@ -419,6 +431,19 @@ test("o frame congelado do contrato é reproduzido pelos packers do viewport", (
       specularOffset: material.specular_offset,
       specularSize: material.specular_size,
       aoIntensity: material.ao_intensity,
+      // Fase 2 (#18): MToon — frame congelado com slots de textura off
+      mtoonEmissionColor: material.emission_color as [number, number, number, number],
+      mtoonEmissionIntensity: material.emission_intensity,
+      mtoonSecondShadeShift: material.second_shade_shift,
+      mtoonSecondShadeSoftness: material.second_shade_softness,
+      mtoonMatcapIntensity: material.matcap_intensity,
+      mtoonMainTextureEnabled: material.main_texture_enabled,
+      mtoonShadeTextureEnabled: material.shade_texture_enabled,
+      mtoonSecondShadeTextureEnabled: material.second_shade_texture_enabled,
+      mtoonEmissionTextureEnabled: material.emission_texture_enabled,
+      mtoonMatcapEnabled: material.matcap_enabled,
+      mtoonMatcapMode: material.matcap_mode,
+      mtoonShadeToony: material.shade_toony,
     }),
     reference.expected.material_uniform,
     "material_uniform"
