@@ -1606,14 +1606,20 @@ pub fn migrate_legacy_snapshot(mut object: Map<String, Value>) -> Result<Value, 
     canonical.insert("render".to_string(), render_json);
     canonical.insert("assets".to_string(), Value::Object(assets));
     canonical.insert("settings".to_string(), settings_json);
+    // `ProjectState::extensions` é `#[serde(flatten)]`: as chaves estendidas
+    // vivem **no topo** do documento, não sob uma chave `extensions`. Gravar o
+    // objeto nomeado fazia o payload legado ser lido de volta um nível abaixo
+    // (`extensions.extensions.legacy_ts_snapshot`), ou seja a preservação
+    // prometida por §3.1 se perdia no primeiro save.
     canonical.insert(
-        "extensions".to_string(),
-        json!({
-            "migrated_from": "legacy_ts_snapshot",
-            "legacy_schema_version": legacy_schema_version,
-            "legacy_ts_snapshot": preserved,
-        }),
+        "migrated_from".to_string(),
+        json!("legacy_ts_snapshot"),
     );
+    canonical.insert(
+        "legacy_schema_version".to_string(),
+        json!(legacy_schema_version),
+    );
+    canonical.insert("legacy_ts_snapshot".to_string(), preserved);
 
     Ok(Value::Object(canonical))
 }
