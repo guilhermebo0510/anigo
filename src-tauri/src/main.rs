@@ -153,6 +153,71 @@ fn apply_session_command(
     state.apply_command(command).map(|_| ())
 }
 
+/// Um quadro renderizado, com o tempo de recuperação de device quando houve
+/// alguma (issue #11).
+struct RenderedFrame {
+    image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    metrics: anigo_renderer::RenderMetrics,
+    recovery_ms: Option<f64>,
+}
+
+/// Issue #11 — renderiza com recuperação automática de device.
+///
+/// Uma falha de quadro dispara `recreate_device_and_swapchain` (re-solicita
+/// adapter/device, reinstancia PSOs e realoca os buffers canônicos a partir do
+/// contrato) e o quadro é refeito antes de desistir; se a própria recuperação
+/// falhar, o erro sai como string do comando — nunca como crash do processo.
+///
+/// Os empréstimos entram separados (`&mut` do renderer, `&` da cena) para que o
+/// chamador possa segurar o `MutexGuard` sem conflito de `DerefMut`.
+async fn render_with_device_recovery(
+    renderer: &mut HeadlessRenderer,
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> Result<RenderedFrame, String> {
+    match renderer.render_scene(scene, width, height).await {
+        Ok((image, metrics)) => Ok(RenderedFrame {
+            image,
+            metrics,
+            recovery_ms: None,
+        }),
+        Err(first_error) => {
+            let report = renderer
+                .recreate_device_and_swapchain()
+                .await
+                .map_err(|recovery_error| {
+                    format!(
+                        "Render error (device recovery also failed: {:#}): {:#}",
+                        recovery_error, first_error
+                    )
+                })?;
+            tracing::info!(
+                target: "anigo::device",
+                adapter = %report.adapter_name,
+                duration_ms = report.duration_ms,
+                label,
+                "headless device recuperado após falha"
+            );
+            let (image, metrics) = renderer
+                .render_scene(scene, width, height)
+                .await
+                .map_err(|second_error| {
+                    format!(
+                        "Render error (device recovery took {:.1} ms, then failed): {:#}",
+                        report.duration_ms, second_error
+                    )
+                })?;
+            Ok(RenderedFrame {
+                image,
+                metrics,
+                recovery_ms: Some(report.duration_ms),
+            })
+        }
+    }
+}
+
 #[tauri::command]
 async fn render_viewport_frame(
     width: u32,
@@ -165,46 +230,28 @@ async fn render_viewport_frame(
     if state.renderer.is_none() {
         state.renderer = HeadlessRenderer::new().await.ok();
     }
-    let renderer = state
-        .renderer
-        .as_mut()
-        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
 
     let width = width.max(64);
     let height = height.max(64);
-    // Issue #11: falha de quadro dispara a recuperação do device (re-solicita
-    // adapter/device, re-instancia PSOs e re-aloca os buffers canônicos)
-    // antes de abrir mão do frame — sem crash do processo Tauri.
-    let scene = &state.scene;
-    let (image_buf, metrics) = match renderer.render_scene(scene, width, height).await {
-        Ok(ok) => ok,
-        Err(first_error) => match renderer.recreate_device_and_swapchain().await {
-            Ok(report) => {
-                state.last_recovery_ms = Some(report.duration_ms);
-                tracing::info!(
-                    target: "anigo::device",
-                    adapter = %report.adapter_name,
-                    duration_ms = report.duration_ms,
-                    "headless device recuperado após falha de frame"
-                );
-                renderer
-                    .render_scene(scene, width, height)
-                    .await
-                    .map_err(|second_error| {
-                        format!(
-                            "Render error (device recovery took {:.1} ms, then failed): {:#}",
-                            report.duration_ms, second_error
-                        )
-                    })?
-            }
-            Err(recovery_error) => {
-                return Err(format!(
-                    "Render error (device recovery also failed: {:#}): {:#}",
-                    recovery_error, first_error
-                ))
-            }
-        },
-    };
+    // Issue #11: empréstimos disjuntos explícitos (renderer mutável para a
+    // recuperação, cena lida, tempo de recuperação escrito). Através do
+    // `DerefMut` do `MutexGuard` o compilador não consegue provar a disjunção,
+    // então o destructuring por campo a torna explícita.
+    let AppState {
+        renderer,
+        scene,
+        last_recovery_ms,
+        ..
+    } = &mut *state;
+    let renderer = renderer
+        .as_mut()
+        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+    let frame = render_with_device_recovery(renderer, scene, width, height, "frame do viewport")
+        .await?;
+    if let Some(recovery_ms) = frame.recovery_ms {
+        *last_recovery_ms = Some(recovery_ms);
+    }
+    let (image_buf, metrics) = (frame.image, frame.metrics);
 
     let mut png_bytes = Vec::new();
     let encoder = PngEncoder::new(&mut png_bytes);
@@ -716,45 +763,26 @@ async fn core_export_frame(
     if state.renderer.is_none() {
         state.renderer = HeadlessRenderer::new().await.ok();
     }
-    let renderer = state
-        .renderer
-        .as_mut()
-        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
 
     let width = width.max(64);
     let height = height.max(64);
     // Issue #11: mesmo tratamento de recuperação do device do frame do
     // viewport — a exportação não pode falhar por crash de driver.
-    let scene = &state.scene;
-    let (image_buf, metrics) = match renderer.render_scene(scene, width, height).await {
-        Ok(ok) => ok,
-        Err(first_error) => match renderer.recreate_device_and_swapchain().await {
-            Ok(report) => {
-                state.last_recovery_ms = Some(report.duration_ms);
-                tracing::info!(
-                    target: "anigo::device",
-                    adapter = %report.adapter_name,
-                    duration_ms = report.duration_ms,
-                    "headless device recuperado após falha de exportação"
-                );
-                renderer
-                    .render_scene(scene, width, height)
-                    .await
-                    .map_err(|second_error| {
-                        format!(
-                            "Render error (device recovery took {:.1} ms, then failed): {:#}",
-                            report.duration_ms, second_error
-                        )
-                    })?
-            }
-            Err(recovery_error) => {
-                return Err(format!(
-                    "Render error (device recovery also failed: {:#}): {:#}",
-                    recovery_error, first_error
-                ))
-            }
-        },
-    };
+    let AppState {
+        renderer,
+        scene,
+        last_recovery_ms,
+        ..
+    } = &mut *state;
+    let renderer = renderer
+        .as_mut()
+        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+    let frame =
+        render_with_device_recovery(renderer, scene, width, height, "frame de exportação").await?;
+    if let Some(recovery_ms) = frame.recovery_ms {
+        *last_recovery_ms = Some(recovery_ms);
+    }
+    let (image_buf, metrics) = (frame.image, frame.metrics);
 
     let render_info = anigo_core::export::ExportRenderInfo {
         width,
