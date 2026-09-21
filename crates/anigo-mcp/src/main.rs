@@ -23,9 +23,9 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 #[cfg(target_os = "windows")]
-use win32_interact::Win32Harness;
+use win32_interact::{Win32Harness, RECT};
 #[cfg(not(target_os = "windows"))]
-use win32_stub::Win32Harness;
+use win32_stub::{Win32Harness, RECT};
 
 use anigo_core::mesh::{BaseGender, Mesh};
 use anigo_core::morph_catalog::{find_slider_def, MorphCatalog};
@@ -1749,8 +1749,12 @@ async fn handle_tool_call(
                 }
             };
 
-            let result = tokio::task::spawn_blocking(move || {
-                Win32Harness::find_anigo_window_with_hint(hwnd_hint)
+            // O HWND é `*mut c_void`, que não é `Send`: o closure devolve o
+            // ponteiro como `isize` (o harness Win32 continua sendo chamado fora
+            // do runtime, que é o motivo do `spawn_blocking`).
+            let result = tokio::task::spawn_blocking(move || -> Result<(isize, String, RECT, bool)> {
+                let (hwnd, title, rect, minimized) = Win32Harness::find_anigo_window_with_hint(hwnd_hint)?;
+                Ok((hwnd as isize, title, rect, minimized))
             }).await.context("Join error in find_anigo_window")??;
 
             let (_hwnd, title, rect, is_minimized) = result;
@@ -1962,13 +1966,14 @@ async fn handle_tool_call(
                     "text": serde_json::to_string_pretty(&resp)?
                 })])
             } else {
-                let result = tokio::task::spawn_blocking(|| {
-                    Win32Harness::find_anigo_window()
+                let result = tokio::task::spawn_blocking(|| -> Result<(isize, String, RECT, bool)> {
+                    let (hwnd, title, rect, minimized) = Win32Harness::find_anigo_window()?;
+                    Ok((hwnd as isize, title, rect, minimized))
                 }).await.context("Join error")??;
 
                 let (hwnd, title, rect, is_minimized) = result;
                 let report = json!({
-                    "hwnd": format!("{:?}", hwnd),
+                    "hwnd": format!("0x{:x}", hwnd),
                     "title": title,
                     "is_minimized": is_minimized,
                     "bounds": {
