@@ -259,6 +259,45 @@ impl SparseMorphSet {
                 delta.delta_normal = normal_delta;
                 changed = true;
             }
+
+            // Mover um vértice inclina as faces **vizinhas**: os vértices que não
+            // têm delta de posição mas cuja normal recalculada mudou precisam da
+            // delta de normal também, senão o caminho sem topologia
+            // (WGSL/WebGL2/headless) entrega a normal antiga nas costuras e
+            // diverge do recálculo por topologia (é o que o teste compara).
+            let mut additions: Vec<(u32, [f32; 3])> = Vec::new();
+            for (index, recomputed) in normals.iter().enumerate() {
+                if index >= base_vertices.len() {
+                    break;
+                }
+                if target
+                    .deltas
+                    .iter()
+                    .any(|delta| delta.vertex_index as usize == index)
+                {
+                    continue; // já recebeu a delta acima
+                }
+                let base = base_vertices[index].normal;
+                let normal_delta = [
+                    recomputed[0] - base[0],
+                    recomputed[1] - base[1],
+                    recomputed[2] - base[2],
+                ];
+                if normal_delta.iter().all(|value| value.abs() <= 1e-6) {
+                    continue; // normal inalterada: fora da meta (esparso)
+                }
+                additions.push((index as u32, normal_delta));
+            }
+            if !additions.is_empty() {
+                for (vertex_index, normal_delta) in additions {
+                    target.deltas.push(SparseMorphDelta::new(
+                        vertex_index,
+                        [0.0, 0.0, 0.0],
+                        normal_delta,
+                    ));
+                }
+                changed = true;
+            }
             if changed {
                 completed += 1;
             }

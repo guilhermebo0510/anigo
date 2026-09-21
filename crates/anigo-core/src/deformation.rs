@@ -328,6 +328,21 @@ pub fn recompute_normals(mesh: &mut Mesh) {
                 accumulated[1] / length,
                 accumulated[2] / length,
             ];
+        } else {
+            // Sem contribuição válida: as faces incidentes são degeneradas ou as
+            // normais se cancelam (há 3 vértices assim na malha canônica). A
+            // normal **não pode ficar como estava** — um valor herdado não
+            // unitário (ex.: depois de uma deformação anterior) sobreviveria e
+            // seria publicado. Renormaliza a entrada; se ela também não serve,
+            // deixa o placeholder zero.
+            let base = vertex.normal;
+            let base_length =
+                (base[0] * base[0] + base[1] * base[1] + base[2] * base[2]).sqrt();
+            vertex.normal = if base_length > 1e-6 {
+                [base[0] / base_length, base[1] / base_length, base[2] / base_length]
+            } else {
+                [0.0, 0.0, 0.0]
+            };
         }
     }
 }

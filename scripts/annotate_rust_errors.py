@@ -119,9 +119,14 @@ def failing_test_blocks(lines: list[str]) -> list[str]:
             continue
         kept = [lines[index].strip()]
         index += 1
+        # A mensagem do panic vem na linha seguinte ao cabeçalho e é curta
+        # (ex.: "assertion failed: …" ou o texto do `assert!(…)`) — sempre
+        # fica, mesmo quando não casa com KEEP_LINE.
+        keep_message = True
         while index < len(lines) and not BLOCK_HEADER.match(lines[index]):
-            if len(kept) < MAX_BLOCK_LINES and KEEP_LINE.match(lines[index]):
+            if len(kept) < MAX_BLOCK_LINES and (keep_message or KEEP_LINE.match(lines[index])):
                 kept.append(_truncate(lines[index].strip(), 220))
+            keep_message = False
             index += 1
         blocks.append("\n".join(kept))
     return blocks
