@@ -22,6 +22,7 @@ import {
   coverageIsComplete,
   type DeformationCoverage,
 } from "../../src/contracts/core_snapshot.v1.ts";
+import { readdirSync, readFileSync } from "node:fs";
 import {
   enumVariants,
   numericConst,
@@ -156,7 +157,7 @@ describe("Deformation authority — the gate is the only way in", () => {
     }
   });
 
-  it("the renderer calls the reference engine through the gate", () => {
+  it("the gate is the only door and production never imports the reference engine", () => {
     // The reference deformation is only reachable through the authority gate:
     // every call site must prove it went through `requireReferenceDeformation`.
     const source = readRepoFile("src/services/deformation_authority.ts");
@@ -168,5 +169,29 @@ describe("Deformation authority — the gate is the only way in", () => {
       false,
       "the authority module must not depend on the reference deformation engine"
     );
+
+    // P0 §7.4: the reference engine left `src/**` altogether.
+    const production = new URL("../../src/", import.meta.url);
+    const offenders: string[] = [];
+    const walk = (dir: URL) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const child = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+        if (entry.isDirectory()) walk(child);
+        else if (/\.(ts|svelte)$/.test(entry.name)) {
+          // Comentários podem citar o motor de referência; imports não podem.
+          const code = readFileSync(child, "utf8")
+            .split("\n")
+            .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+            .join("\n");
+          const importsEngine = /from\s+["'][^"']*morph_engine/.test(code);
+          const ownsDeformation = /applyAnatomicalDeformations|genericMorphDelta|recomputeNormals/.test(code);
+          if (importsEngine || ownsDeformation) {
+            offenders.push(child.pathname.replace(/.*\/src\//, "src/"));
+          }
+        }
+      }
+    };
+    walk(production);
+    assert.deepEqual(offenders, [], "production modules must not import the reference engine");
   });
 });

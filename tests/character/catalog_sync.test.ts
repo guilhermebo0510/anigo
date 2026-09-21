@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CANONICAL_SLIDERS } from "../../src/services/morph_catalog.ts";
-import { EXPLICIT_TS_MORPH_IDS } from "../../src/services/morph_engine.ts";
+import { EXPLICIT_TS_MORPH_IDS } from "../reference/morph_engine.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const rustPath = path.join(here, "..", "..", "crates", "anigo-core", "src", "morph_catalog.rs");
@@ -87,23 +87,22 @@ describe("P0-04 TS ≡ Rust catalog contract", () => {
     assert.deepEqual(diffs, []);
   });
 
-  it("explicit TS morph set matches the renderer's 36 hand-authored ids", () => {
-    // Guard against silent drift between morph_engine and webgpu_renderer:
-    // the renderer test below scans the source for activeMorphWeights.get("…").
+  it("the reference engine is test-only and every explicit id is canonical", () => {
+    // P0 §7.4: no production module may import the reference engine, so the
+    // hand-authored id set is documentation for the oracle — it must still be a
+    // subset of the canonical catalog (the core covers the whole catalog).
+    const catalogIds = new Set(CANONICAL_SLIDERS.map((s) => s.id));
+    for (const id of EXPLICIT_TS_MORPH_IDS) assert.ok(catalogIds.has(id), id);
+
     const rendererSrc = fs.readFileSync(
       path.join(here, "..", "..", "src", "components", "viewport", "webgpu_renderer.ts"),
       "utf8"
     );
-    const used = new Set<string>();
-    const re = /activeMorphWeights\.get\("([a-z_0-9]+)"\)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(rendererSrc)) !== null) used.add(m[1]);
-    assert.equal(used.size, EXPLICIT_TS_MORPH_IDS.size);
-    const missing = [...used].filter((id) => !EXPLICIT_TS_MORPH_IDS.has(id));
-    const extra = [...EXPLICIT_TS_MORPH_IDS].filter((id) => !used.has(id));
-    assert.deepEqual([missing, extra], [[], []]);
-    // And every explicit id exists in the catalog.
-    const catalogIds = new Set(CANONICAL_SLIDERS.map((s) => s.id));
-    for (const id of EXPLICIT_TS_MORPH_IDS) assert.ok(catalogIds.has(id), id);
+    assert.equal(
+      /applyAnatomicalDeformations|genericMorphDelta|recomputeNormals/.test(rendererSrc),
+      false,
+      "the renderer must not own a deformation implementation (core snapshots only)"
+    );
+    assert.match(rendererSrc, /applyCoreSnapshot\(/);
   });
 });

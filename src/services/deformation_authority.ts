@@ -2,14 +2,14 @@
  * ANIGO — Deformation authority gate.
  *
  * ARQUITETURA_CANONICA_ANIGO §2.2: the canonical mesh is deformed **only** by
- * the Rust core. The TypeScript deformation engine that still exists in
- * `services/morph_engine.ts` is a *reference implementation for the browser
- * preview only*; it must never be the authority of a production session.
+ * the Rust core. Since P0 §7.4 the TypeScript engine was removed from production
+ * entirely — it lives in `tests/reference/morph_engine.ts` as the oracle the
+ * contract tests compare against.
  *
- * This module is the single place that decides who is allowed to deform, and
- * the only door through which the reference engine can be reached. Every call
- * site of the reference engine is asserted (by a contract test) to go through
- * `requireReferenceDeformation()`.
+ * This module keeps the single place that decides who may deform a session, so
+ * that a future reference mode (dev preview) can never be reached implicitly:
+ * `requireReferenceDeformation()` is the only door, and the contract tests
+ * assert that no `src/**` module imports the reference engine at all.
  */
 
 import {

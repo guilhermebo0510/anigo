@@ -15,7 +15,7 @@ import {
   packChannelWeights,
   recomputeNormals,
   type MeshBounds,
-} from "../../src/services/morph_engine.ts";
+} from "../reference/morph_engine.ts";
 
 // ---------------------------------------------------------------------------
 // Synthetic body-like probe cloud covering every zone region.

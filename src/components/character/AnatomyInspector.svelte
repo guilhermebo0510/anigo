@@ -16,7 +16,6 @@
     type CharacterState,
     type SomatotypeUpdate,
   } from "../../services/character_state";
-  import { isExplicitMorph } from "../../services/morph_engine";
 
   let {
     viewportRef = null,
@@ -415,7 +414,7 @@
             {#each zone.sliders as slider (slider.id)}
               <div class="slider-item">
                 <div class="slider-meta">
-                  <span class="slider-label" title={`${slider.id} · ${isExplicitMorph(slider.id) ? "deformação anatômica" : "deformação procedural"} · [${slider.min}, ${slider.max}]`}>{slider.name}</span>
+                  <span class="slider-label" title={`${slider.id} · geometria canônica do núcleo · [${slider.min}, ${slider.max}]`}>{slider.name}</span>
                   <div class="slider-val-wrap">
                     {#if slider.dimorphism === "MaleOnly"}
                       <span class="tag-dimorphic male" title="Exclusivo Masculino">♂</span>

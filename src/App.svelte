@@ -59,6 +59,11 @@
   import { loadSettings, saveSettings, devicePixelRatioSafe } from "./services/settings_persist";
   import { historyService, type HistoryStateSnapshot } from "./services/history_service";
   import { CommandHistoryService, CommandHistoryError } from "./services/command_history";
+  import {
+    CoreSessionClient,
+    resolveCoreInvoker,
+    type CoreSnapshotDelivery,
+  } from "./services/core_bridge";
   import { HistoryAlignment } from "./services/history_alignment";
   import { buildCommand, type CommandIntent } from "./services/command_builder";
   import { previewHistoryOutcome, previewOutcome } from "./services/command_scope";
@@ -580,6 +585,10 @@
   // `HistoryAlignment` keeps the UI undo stack and the command log in lockstep.
   const commandHistory = new CommandHistoryService();
   const historyAlignment = new HistoryAlignment<CommandWire>();
+  // P0 §7.5: o shell é o único que fala com o núcleo; o viewport só consome o
+  // snapshot que ele entrega. Sem núcleo (browser), a geometria canônica fica
+  // indisponível e o viewport anuncia degradação — nunca deforma por conta própria.
+  let coreClient: CoreSessionClient | null = null;
   /** Sliders movidos pelo gesto tátil atual (um gesto = um comando). */
   let tactileTouchedSliders: string[] = [];
 
@@ -798,6 +807,8 @@
         // is still undoable, but as a UI-only step: the stacks stay aligned.
         if (recordCommand(command, description)) {
           historyAlignment.markAdded("command", command);
+          // Autoridade: o núcleo aplica o mesmo comando e devolve o snapshot.
+          void pushCommandToCore(command);
         } else {
           historyAlignment.markAdded("ui");
         }
@@ -915,6 +926,7 @@
     const prev = historyService.undo();
     if (!prev) return;
     applySnapshot(prev);
+    void pushHistoryStepToCore("undo");
     // The command log follows the same step: only command-backed entries move
     // (item 2 — apply and undo are symmetric).
     const marker = historyAlignment.undo();
@@ -934,6 +946,7 @@
     const next = historyService.redo();
     if (!next) return;
     applySnapshot(next);
+    void pushHistoryStepToCore("redo");
     const marker = historyAlignment.redo();
     if (marker?.origin === "command" && commandHistory.can_redo) {
       commandHistory.applyRedo(
@@ -944,6 +957,60 @@
           redoDepth: commandHistory.redo_depth - 1,
         })
       );
+    }
+  }
+
+  /**
+   * P0 §7.5 — busca um snapshot no núcleo e o devolve ao viewport.
+   *
+   * `force` pede a parte estática mesmo quando a revisão do cliente é a atual
+   * (recuperação de contexto GPU/perda de buffers).
+   */
+  async function coreSnapshotProvider(force: boolean = false): Promise<CoreSnapshotDelivery | null> {
+    if (!coreClient || !coreClient.available) return null;
+    try {
+      return await coreClient.pullSnapshot(force);
+    } catch (error) {
+      reportCoreFailure(error);
+      return null;
+    }
+  }
+
+  /** Diagnóstico de falha do núcleo (nunca silenciosa, nunca fatal para o UI). */
+  function reportCoreFailure(error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[ANIGO][Core] ${detail}`);
+  }
+
+  /**
+   * Manda o comando para o núcleo (autoridade) e atualiza o viewport com a
+   * geometria/pesos que ele devolver. O log local é um espelho: quando os
+   * revisões divergem, o núcleo vence e a divergência é registrada.
+   */
+  async function pushCommandToCore(command: CommandWire): Promise<void> {
+    if (!coreClient || !coreClient.available) return;
+    try {
+      const outcome = await coreClient.applyCommand(command);
+      if (outcome.revision !== commandHistory.revision) {
+        console.debug(
+          `[ANIGO][Core] revision do núcleo ${outcome.revision} ≠ espelho local ${commandHistory.revision}`
+        );
+      }
+      await viewportRef?.requestCoreSnapshot?.();
+    } catch (error) {
+      reportCoreFailure(error);
+    }
+  }
+
+  /** Undo/redo no núcleo (ele é quem decide o que é reversível) + refresh do viewport. */
+  async function pushHistoryStepToCore(kind: "undo" | "redo"): Promise<void> {
+    if (!coreClient || !coreClient.available) return;
+    try {
+      if (kind === "undo") await coreClient.undo();
+      else await coreClient.redo();
+      await viewportRef?.requestCoreSnapshot?.(true);
+    } catch (error) {
+      reportCoreFailure(error);
     }
   }
 
@@ -1301,6 +1368,18 @@
     updateLighting();
     handleOutlineChange();
     handleShadowThresholdChange();
+
+    // P0 §7.5: conecta a sessão canônica. Com núcleo, a geometria do viewport
+    // vem exclusivamente dos snapshots dele; sem núcleo (browser), o viewport
+    // anuncia autoridade indisponível e mostra a malha base sem deformação.
+    coreClient = new CoreSessionClient(await resolveCoreInvoker());
+    if (coreClient.available) {
+      await viewportRef?.requestCoreSnapshot?.(true);
+    } else {
+      console.warn(
+        "[ANIGO][Core] núcleo indisponível: viewport degradado (sem geometria canônica; nenhuma deformação local)"
+      );
+    }
 
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
       try {
@@ -2316,6 +2395,7 @@
           onTactileDragEnd={handleTactileDragEnd}
           tactileEnabled={activeWorkspace === "personagem" && (activeTool === "body" || activeTool === "face")}
           onModelLoadError={(msg) => alert("Erro ao carregar modelo: " + msg)}
+          coreSnapshotProvider={coreSnapshotProvider}
         />
       </div>
 

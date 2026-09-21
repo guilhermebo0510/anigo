@@ -18,16 +18,15 @@ import {
 } from "../../services/character_state";
 import { CANONICAL_SLIDERS, type MorphSlider } from "../../services/morph_catalog";
 import {
-  buildSparseMorphSet,
-  channelDenominator,
-  genericMorphDelta,
-  isExplicitMorph,
-  normalizeWeight,
-  packChannelWeights,
-  recomputeNormals,
-  type MeshBounds,
-  type SparseMorphSet,
-} from "../../services/morph_engine";
+  channelWeightOf,
+  type CoreSnapshotDelivery,
+} from "../../services/core_bridge";
+import {
+  geometrySignature,
+  packChannelRecordsWithWeights,
+  viewportGeometryFromDecoded,
+  type ViewportGeometry,
+} from "../../services/viewport_mesh";
 import { GlbParseError, loadGlbMesh } from "../../services/gltf_loader";
 import {
   DEFAULT_CAMERA_FAR,
@@ -146,11 +145,15 @@ export function packVertices(vertices: VertexData[]): Float32Array {
   return f32;
 }
 
-/** Scratch delta reused by the generic fallback (no per-vertex allocation). */
-const GENERIC_DELTA_TMP = { dx: 0, dy: 0, dz: 0 };
-
-/** Pseudo-channels for the linear somatotype components (GPU sparse path). */
-const SOMA_CHANNEL_IDS = ["__soma_endo", "__soma_meso", "__soma_ecto"] as const;
+/**
+ * Janela de feedback otimista (ms) para arrasto de slider.
+ *
+ * O peso aplicado na GPU é sempre um peso de canal do núcleo; durante o arrasto
+ * o viewport adianta localmente o *peso* (`valor − default`, a mesma definição
+ * de `DeformationInputs::weight_of`) para não esperar o ida-e-volta, e descarta
+ * esse adiantamento assim que o snapshot do núcleo chega.
+ */
+const LIVE_WEIGHT_WINDOW_MS = 300;
 
 export class WebGpuViewportRenderer {
   private canvas: HTMLCanvasElement;
@@ -193,26 +196,33 @@ export class WebGpuViewportRenderer {
   private morphDeltasBuffer: GPUBuffer | null = null;
   private morphChannelsBuffer: GPUBuffer | null = null;
   // P1-09: debounce morph churn — was recreating buffers every drag frame
-  private morphDirty: boolean = false;
-  private pendingMorph: Float32Array | null = null;
-  private pendingMorphCount: number = 0;
-  private morphRaf: number | null = null;
-  private pendingMorphSliders: Map<string, number> = new Map();
-  private pendingGender: number | null = null;
   private morphedVertexBuffer: GPUBuffer | null = null;
   private morphBindGroup: GPUBindGroup | null = null;
   private morphVertexCount: number = 0;
-  // P0-05: live GPU sparse-morph state (channels = 157 sliders + 3 somatotype).
-  private gpuMorphSet: SparseMorphSet | null = null;
+  // P0 §7.5: a geometria canônica do viewport vem do snapshot do núcleo.
+  private coreGeometry: ViewportGeometry | null = null;
+  private coreStaticRevision: number = 0;
+  private coreDynamicRevision: number = 0;
+  private coreAuthority: "core" | "reference_ts" | "unavailable" = "unavailable";
+  private coreCoverage: CoreSnapshotDelivery["coverage"] | null = null;
+  /** Pesos autorais do núcleo, por slider (domínio = canais do snapshot). */
+  private channelWeights: Map<string, number> = new Map();
+  /** Adiantamento local do arrasto (janela curta, nunca vira geometria). */
+  private liveWeights: Map<string, number> = new Map();
+  private liveWeightsExpiry: number = 0;
+  private coreGeometryRequested: boolean = false;
   private gpuMorphActive: boolean = false;
   private gpuMorphDirty: boolean = false;
-  private gpuRebuildTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingSomatotype: [number, number, number] | null = null;
   // P0-05: persistent buffer capacities (no destroy/create churn per event).
   private vertexCapacityBytes: number = 0;
   private indexCapacityBytes: number = 0;
   /** P0-10: model load failures surface here (and throw to the caller). */
   public onModelLoadError?: (message: string) => void;
+  /**
+   * P0 §7.5: chamado quando o viewport precisa de um snapshot novo do núcleo
+   * (geometria ausente/desatualizada). O shell é quem fala com o núcleo.
+   */
+  public onCoreGeometryRequired?: () => void;
 
   // Somatotype & Morphs State (Sub-Sprint 3.3 & 3.5)
   public somatotypeEndo: number = 0.33;
@@ -627,9 +637,13 @@ export class WebGpuViewportRenderer {
     this.currentPreset = preset;
     if (headScale !== undefined) this.headScale = headScale;
     if (headRatio !== undefined) this.headRatio = headRatio;
-    // P0-05: sparse morph channels only exist for the mannequin base.
-    if (preset !== "mannequin") this.gpuMorphActive = false;
-    else if (this.gpuMorphSet && this.morphBindGroup) this.gpuMorphActive = true;
+    // P0 §7.5: canais esparsos só existem para a malha canônica do núcleo.
+    if (preset !== "mannequin") {
+      this.gpuMorphActive = false;
+    } else if (this.coreGeometry && this.morphBindGroup && this.morphPipeline) {
+      this.gpuMorphActive = true;
+      this.morphVertexCount = this.coreGeometry.vertexCount;
+    }
     this.buildGeometryBuffers();
   }
 
@@ -656,12 +670,9 @@ export class WebGpuViewportRenderer {
     if (params.torsoLength !== undefined) this.torsoLength = sanitizeFinite(params.torsoLength, this.torsoLength);
     if (params.heightOverall !== undefined) this.heightOverall = sanitizeFinite(params.heightOverall, this.heightOverall);
 
-    if (this.currentPreset === "mannequin") {
-      // P0-05: proportions bake into the GPU base → invalidate + rebuild debounced.
-      this.gpuMorphActive = false;
-      this.scheduleGpuMorphRebuild();
-      this.buildGeometryBuffers();
-    }
+    // P0 §7.4: proporções entram na malha base do núcleo (`prepare_base_mesh`);
+    // o viewport não as aplica — pede o snapshot e reusa os deltas canônicos.
+    this.requestCoreGeometry("proporções");
   }
 
   public dispatchSparseMorphs(encoder: GPUCommandEncoder, vertexCount: number): boolean {
@@ -741,195 +752,246 @@ export class WebGpuViewportRenderer {
   }
 
   // ------------------------------------------------------------------
-  // P0-05: live GPU sparse-morph path (was dead code — upload never called)
+  // P0 §7.4/§7.5: o compute canônico aplica deltas do núcleo
   // ------------------------------------------------------------------
 
-  /** Coverage report: every catalog slider deforms (explicit or procedural). */
-  public getMorphCoverage(): { implemented: number; total: number; explicit: number } {
-    const total = CANONICAL_SLIDERS.length;
-    let explicit = 0;
-    for (const s of CANONICAL_SLIDERS) if (isExplicitMorph(s.id)) explicit++;
-    return { implemented: total, total, explicit };
+  /**
+   * Cobertura autorais do núcleo (não há mais "explicito" do lado TypeScript:
+   * toda geometria de morph vem do núcleo).
+   */
+  public getMorphCoverage(): {
+    implemented: number;
+    total: number;
+    explicit: number;
+    authority: string;
+    coverageComplete: boolean;
+  } {
+    const total = this.coreCoverage?.total_sliders ?? CANONICAL_SLIDERS.length;
+    const implemented = this.coreCoverage?.sliders_with_geometry ?? 0;
+    return {
+      implemented,
+      total,
+      explicit: implemented,
+      authority: this.coreAuthority,
+      coverageComplete: this.coreCoverage !== null && this.coreAuthority === "core",
+    };
   }
 
-  private gpuBuildPending: boolean = false;
-
-  private scheduleGpuMorphRebuild(): void {
-    if (this.gpuRebuildTimer !== null) clearTimeout(this.gpuRebuildTimer);
-    this.gpuRebuildTimer = setTimeout(() => {
-      this.gpuRebuildTimer = null;
-      if (!this.device || !this.morphPipeline) return;
-      if (this.currentPreset !== "mannequin") return;
-      if (!this.canonicalBaseVertices || !this.canonicalIndices) return;
-      try {
-        this.rebuildGpuMorphSet();
-      } catch (e) {
-        console.warn("[ANIGO 3D] scheduled GPU morph rebuild failed:", e);
-      }
-    }, 250);
+  /** Revisão da geometria canônica em uso (0 = nenhuma). */
+  public get core_static_revision(): number {
+    return this.coreStaticRevision;
   }
 
-  /** Channel weights for the current live state (sliders + 3 somatotype). */
-  private currentChannelWeights(): Map<string, number> {
-    const out = new Map<string, number>();
-    for (const def of CANONICAL_SLIDERS) {
-      const raw = this.activeMorphWeights.get(def.id);
-      if (raw === undefined) continue;
-      const denom = channelDenominator(def);
-      const w = (raw - def.defaultValue) / denom;
-      if (w !== 0 && Number.isFinite(w)) out.set(def.id, w);
+  /** Identidade autoridade/degradado do viewport (telemetria + status bar). */
+  public getDeformationAuthority(): {
+    authority: string;
+    degraded: boolean;
+    coreStaticRevision: number;
+    coreDynamicRevision: number;
+    channels: number;
+    vertexCount: number;
+  } {
+    return {
+      authority: this.coreAuthority,
+      degraded: this.coreAuthority !== "core",
+      coreStaticRevision: this.coreStaticRevision,
+      coreDynamicRevision: this.coreDynamicRevision,
+      channels: this.coreGeometry?.channels.length ?? 0,
+      vertexCount: this.coreGeometry?.vertexCount ?? 0,
+    };
+  }
+  /** Pede um snapshot ao shell (uma vez por necessidade, nunca por frame). */
+  private requestCoreGeometry(reason: string): void {
+    this.coreGeometryRequested = true;
+    console.info(`[ANIGO 3D] core snapshot requested (${reason})`);
+    try {
+      this.onCoreGeometryRequired?.();
+    } catch (e) {
+      console.warn("[ANIGO 3D] core geometry hook failed:", e);
     }
-    if (this.somatotypeEndo !== 0) out.set(SOMA_CHANNEL_IDS[0], this.somatotypeEndo);
-    if (this.somatotypeMeso !== 0) out.set(SOMA_CHANNEL_IDS[1], this.somatotypeMeso);
-    if (this.somatotypeEcto !== 0) out.set(SOMA_CHANNEL_IDS[2], this.somatotypeEcto);
-    return out;
+  }
+
+  /** Pesos efetivos: autorais do núcleo + adiantamento local dentro da janela. */
+  private effectiveChannelWeights(): Map<string, number> {
+    if (this.liveWeights.size === 0) return this.channelWeights;
+    if (performance.now() > this.liveWeightsExpiry) {
+      this.liveWeights.clear();
+      return this.channelWeights;
+    }
+    const merged = new Map(this.channelWeights);
+    for (const [id, weight] of this.liveWeights) merged.set(id, weight);
+    return merged;
   }
 
   /**
-   * Builds the SparseMorphSet for the current base mesh + proportions by
-   * numeric differentiation of the (linear) deformation engine, then uploads
-   * it via uploadSparseMorphData(). Falls back to CPU on any failure.
+   * Atualiza o peso de um canal canônico.
+   *
+   * Os deltas são sempre do núcleo; aqui só se escolhe *quanto* deles aplicar —
+   * é isso que permite o slider responder a 60 fps sem uma ida-e-volta ao
+   * núcleo por frame (o snapshot confirma o valor logo em seguida).
    */
-  private rebuildGpuMorphSet(): void {
-    this.gpuMorphActive = false;
-    this.gpuMorphSet = null;
-    if (!this.device || !this.morphPipeline || !this.morphBindGroupLayout) return;
-    if (this.currentPreset !== "mannequin") return;
-    const base = this.canonicalBaseVertices;
-    const indices = this.canonicalIndices;
-    if (!base || !indices) return;
-
-    const t0 = performance.now();
-    // Save live state (restored in `finally`).
-    const savedWeights = this.activeMorphWeights;
-    const savedEndo = this.somatotypeEndo;
-    const savedMeso = this.somatotypeMeso;
-    const savedEcto = this.somatotypeEcto;
-    const STRIDE = 18; // packVertices floats per vertex
-    // Capture live weights BEFORE the differentiation scratch state.
-    const liveWeights = this.currentChannelWeights();
-    try {
-      // Base at defaults (proportions stay baked in).
-      this.activeMorphWeights = new Map();
-      this.somatotypeEndo = 0;
-      this.somatotypeMeso = 0;
-      this.somatotypeEcto = 0;
-      const baseOut = this.applyAnatomicalDeformations(base, indices);
-      const vCount = Math.floor(baseOut.vertices.length / STRIDE);
-      const basePos = new Float32Array(vCount * 3);
-      const baseNorm = new Float32Array(vCount * 3);
-      for (let v = 0; v < vCount; v++) {
-        basePos[v * 3] = baseOut.vertices[v * STRIDE];
-        basePos[v * 3 + 1] = baseOut.vertices[v * STRIDE + 1];
-        basePos[v * 3 + 2] = baseOut.vertices[v * STRIDE + 2];
-        baseNorm[v * 3] = baseOut.vertices[v * STRIDE + 3];
-        baseNorm[v * 3 + 1] = baseOut.vertices[v * STRIDE + 4];
-        baseNorm[v * 3 + 2] = baseOut.vertices[v * STRIDE + 5];
-      }
-      const extract = (packed: Float32Array): { positions: Float32Array; normals: Float32Array } => {
-        const positions = new Float32Array(vCount * 3);
-        const normals = new Float32Array(vCount * 3);
-        for (let v = 0; v < vCount; v++) {
-          positions[v * 3] = packed[v * STRIDE];
-          positions[v * 3 + 1] = packed[v * STRIDE + 1];
-          positions[v * 3 + 2] = packed[v * STRIDE + 2];
-          normals[v * 3] = packed[v * STRIDE + 3];
-          normals[v * 3 + 1] = packed[v * STRIDE + 4];
-          normals[v * 3 + 2] = packed[v * STRIDE + 5];
-        }
-        return { positions, normals };
-      };
-
-      const perChannel: Array<{ sliderId: string; positions: Float32Array; normals: Float32Array }> = [];
-      for (const def of CANONICAL_SLIDERS) {
-        const denom = channelDenominator(def);
-        this.activeMorphWeights = new Map([[def.id, def.defaultValue + denom]]);
-        const ch = this.applyAnatomicalDeformations(base, indices);
-        const pn = extract(ch.vertices);
-        perChannel.push({ sliderId: def.id, positions: pn.positions, normals: pn.normals });
-      }
-      // Linear somatotype pseudo-channels.
-      this.activeMorphWeights = new Map();
-      this.somatotypeEndo = 1;
-      this.somatotypeMeso = 0;
-      this.somatotypeEcto = 0;
-      {
-        const pn = extract(this.applyAnatomicalDeformations(base, indices).vertices);
-        perChannel.push({ sliderId: SOMA_CHANNEL_IDS[0], positions: pn.positions, normals: pn.normals });
-      }
-      this.somatotypeEndo = 0;
-      this.somatotypeMeso = 1;
-      this.somatotypeEcto = 0;
-      {
-        const pn = extract(this.applyAnatomicalDeformations(base, indices).vertices);
-        perChannel.push({ sliderId: SOMA_CHANNEL_IDS[1], positions: pn.positions, normals: pn.normals });
-      }
-      this.somatotypeEndo = 0;
-      this.somatotypeMeso = 0;
-      this.somatotypeEcto = 1;
-      {
-        const pn = extract(this.applyAnatomicalDeformations(base, indices).vertices);
-        perChannel.push({ sliderId: SOMA_CHANNEL_IDS[2], positions: pn.positions, normals: pn.normals });
-      }
-
-      const set = buildSparseMorphSet(vCount, basePos, baseNorm, perChannel);
-      this.uploadSparseMorphData(
-        {
-          activeChannels: set.channels.length,
-          totalVertices: set.totalVertices,
-          totalDeltas: set.totalDeltas,
-        },
-        baseOut.vertices,
-        set.deltasF32,
-        packChannelWeights(set, liveWeights)
-      );
-      this.gpuMorphSet = set;
-      this.gpuMorphActive = true;
-      this.gpuMorphDirty = false;
-      const vramKB =
-        (baseOut.vertices.byteLength + set.deltasF32.byteLength + set.channels.length * 16) / 1024;
-      console.info(
-        `[ANIGO 3D] GPU sparse morphs live: ${set.channels.length} channels, ` +
-          `${set.totalDeltas} deltas, ~${vramKB.toFixed(0)} KB, built in ${(performance.now() - t0).toFixed(0)} ms`
-      );
-    } catch (e) {
-      console.warn("[ANIGO 3D] GPU morph build failed, CPU fallback:", e);
-      this.gpuMorphActive = false;
-      this.gpuMorphSet = null;
-    } finally {
-      this.activeMorphWeights = savedWeights;
-      this.somatotypeEndo = savedEndo;
-      this.somatotypeMeso = savedMeso;
-      this.somatotypeEcto = savedEcto;
+  public setChannelWeight(sliderId: string, weight: number): void {
+    if (!Number.isFinite(weight)) return;
+    if (!this.coreGeometry?.channels.some((channel) => channel.sliderId === sliderId)) {
+      this.requestCoreGeometry(`canal canônico ausente: ${sliderId}`);
+      return;
     }
+    this.liveWeights.set(sliderId, weight);
+    this.liveWeightsExpiry = performance.now() + LIVE_WEIGHT_WINDOW_MS;
+    this.gpuMorphDirty = true;
   }
 
+  /**
+   * P0 §7.5 — o viewport consome o snapshot canônico.
+   *
+   * O núcleo é a autoridade: a malha base (gênero + proporções já embutidos), os
+   * deltas esparsos e os pesos chegam prontos. O renderer apenas:
+   * 1. sobe vértices/índices/deltas/canais para a GPU;
+   * 2. deixa o compute canônico (`morph_sparse_compute.wgsl`) aplicar os pesos;
+   * 3. descarta qualquer adiantamento local de peso (a autoridade voltou a falar).
+   */
+  public applyCoreSnapshot(delivery: CoreSnapshotDelivery): {
+    applied: boolean;
+    geometryUploaded: boolean;
+    channelCount: number;
+    vertexCount: number;
+    authority: string;
+    staticRevision: number;
+    dynamicRevision: number;
+  } {
+    this.coreGeometryRequested = false;
+    this.coreAuthority = delivery.authority;
+    this.coreCoverage = delivery.coverage;
+    this.coreStaticRevision = Math.round(delivery.staticRevision);
+    this.coreDynamicRevision = Math.round(delivery.dynamicRevision);
+    this.liveWeights.clear();
+
+    let geometryUploaded = false;
+    let incoming: ViewportGeometry | null = null;
+    if (delivery.geometry) {
+      incoming = viewportGeometryFromDecoded(delivery.geometry, delivery.morphWeights, {
+        staticRevision: delivery.staticRevision,
+        morphValues: delivery.morphValues,
+      });
+    }
+
+    const domain = (incoming ?? this.coreGeometry)?.channels ?? [];
+    const weights = new Map<string, number>();
+    for (const channel of domain) {
+      weights.set(channel.sliderId, delivery.morphWeights.get(channel.sliderId) ?? 0);
+    }
+    this.channelWeights = weights;
+
+    if (incoming) {
+      const previous = this.coreGeometry ? geometrySignature(this.coreGeometry) : null;
+      const next = geometrySignature(incoming);
+      this.coreGeometry = incoming;
+      this.currentPreset = "mannequin";
+      if (previous !== next || !this.gpuMorphActive) {
+        this.uploadCoreGeometry(incoming);
+        geometryUploaded = true;
+      } else {
+        this.gpuMorphDirty = true;
+      }
+    } else if (this.coreGeometry) {
+      // Só a parte dinâmica mudou: pesos novos, mesmos buffers.
+      this.gpuMorphDirty = true;
+    }
+
+    return {
+      applied: true,
+      geometryUploaded,
+      channelCount: this.coreGeometry?.channels.length ?? 0,
+      vertexCount: this.coreGeometry?.vertexCount ?? 0,
+      authority: this.coreAuthority,
+      staticRevision: this.coreStaticRevision,
+      dynamicRevision: this.coreDynamicRevision,
+    };
+  }
+
+  /**
+   * Sobe a geometria canônica na GPU: VBO/IBO de base + canais e deltas do
+   * compute. Nenhum byte é recalculado no TypeScript.
+   */
+  private uploadCoreGeometry(geometry: ViewportGeometry): void {
+    const t0 = performance.now();
+    this.canonicalVertices = geometry.vertices;
+    this.canonicalIndices = geometry.indices;
+    this.morphVertexCount = geometry.vertexCount;
+    this.buildGeometryBuffers();
+    this.uploadSparseMorphData(
+      {
+        activeChannels: geometry.channels.length,
+        totalVertices: geometry.vertexCount,
+        totalDeltas: geometry.totalDeltas,
+      },
+      geometry.vertices,
+      geometry.deltas,
+      packChannelRecordsWithWeights(geometry.channels, this.effectiveChannelWeights())
+    );
+    this.gpuMorphActive = this.morphBindGroup !== null && this.morphPipeline !== null;
+    this.gpuMorphDirty = false;
+    const vramKB =
+      (geometry.vertices.byteLength + geometry.deltas.byteLength + geometry.channels.length * 16) / 1024;
+    console.info(
+      `[ANIGO 3D] core snapshot geometry: ${geometry.vertexCount} verts, ` +
+        `${geometry.channels.length} canais, ${geometry.totalDeltas} deltas, ~${vramKB.toFixed(0)} KB ` +
+        `(${geometry.meshUri}, static rev ${geometry.staticRevision}) em ${(performance.now() - t0).toFixed(0)} ms`
+    );
+  }
+
+  /**
+   * Modo degradado (browser sem núcleo): desenha a malha base **sem deformação**
+   * e anuncia a autoridade indisponível. Não existe caminho de deformação TS.
+   */
+  public applyBaseMesh(vertices: Float32Array, indices: Uint32Array, meshUri: string): void {
+    this.coreGeometry = null;
+    this.coreAuthority = "unavailable";
+    this.canonicalVertices = vertices;
+    this.canonicalIndices = indices;
+    this.morphVertexCount = 0;
+    this.gpuMorphActive = false;
+    this.liveWeights.clear();
+    this.channelWeights.clear();
+    this.buildGeometryBuffers();
+    console.warn(
+      `[ANIGO 3D] modo degradado: renderizando ${meshUri} sem deformação canônica (núcleo indisponível)`
+    );
+  }
+
+  /**
+   * Somatotipo canônico (P0 §7.4): o mapeamento para os macro sliders e os
+   * deltas são do núcleo — o TypeScript só guarda o valor e pede o snapshot.
+   */
   public setSomatotype(endo: number, meso: number, ecto: number) {
     // P0-02: sanitize at the boundary (NaN/Inf can never enter the engine).
-    // NOTE (P1-02 follow-up): the TS viewport still treats components as
-    // independent amplitudes while Rust uses normalized barycentric coords;
-    // unification under one engine is tracked separately.
     const e = clampNumber(sanitizeFinite(endo, this.somatotypeEndo), 0, 1);
     const m = clampNumber(sanitizeFinite(meso, this.somatotypeMeso), 0, 1);
     const c = clampNumber(sanitizeFinite(ecto, this.somatotypeEcto), 0, 1);
-    this.pendingSomatotype = [e, m, c];
-    this.queueMorphFlush();
+    if (e === this.somatotypeEndo && m === this.somatotypeMeso && c === this.somatotypeEcto) return;
+    this.somatotypeEndo = e;
+    this.somatotypeMeso = m;
+    this.somatotypeEcto = c;
+    this.requestCoreGeometry("somatotype");
   }
 
+  /** Dimorfismo contínuo: entra na malha base do núcleo (não é peso de morph). */
   public setGenderDimorphism(gender: number) {
     // P0-02: NaN guard — genderDimorphism can never become NaN again.
     const g = clampNumber(sanitizeFinite(gender, this.genderDimorphism), 0.0, 1.0);
-    this.pendingGender = g;
-    this.queueMorphFlush();
+    if (g === this.genderDimorphism) return;
+    this.genderDimorphism = g;
+    this.requestCoreGeometry("gender dimorphism");
   }
 
-  public _setGenderDimorphism_original(gender: number) {
-    this.genderDimorphism = clampNumber(sanitizeFinite(gender, this.genderDimorphism), 0.0, 1.0);
-    if (this.currentPreset === "mannequin") {
-      this.buildGeometryBuffers();
-    }
-  }
-
+  /**
+   * P0 §7.4 — mudança de um slider de morph.
+   *
+   * O valor é validado/clampado aqui (interação), mas a geometria vem do núcleo:
+   * se existe canal canônico para o slider, o peso é atualizado na GPU (deltas
+   * do núcleo); se não existe, o viewport pede um snapshot novo em vez de
+   * inventar geometria.
+   */
   public setMorphSlider(name: string, weight: number) {
     // P0-09: unknown ids are rejected loudly (no orphan state); known ids
     // are catalog-clamped on this write path like every other.
@@ -939,66 +1001,14 @@ export class WebGpuViewportRenderer {
     }
     const clamped = clampCatalog(name, weight);
     if (clamped === null) return;
-    this.pendingMorphSliders.set(name, clamped);
-    this.queueMorphFlush();
+    this.activeMorphWeights.set(name, clamped);
+    const def = getSliderDef(name);
+    this.setChannelWeight(name, channelWeightOf(clamped, def ? def.defaultValue : 0));
   }
 
-  /** P0-05: coalesces all morph/gender/somatotype writes to ONE rebuild per frame. */
-  private queueMorphFlush(): void {
-    this.morphDirty = true;
-    if (this.morphRaf === null) {
-      this.morphRaf = requestAnimationFrame(() => {
-        this.morphRaf = null;
-        if (!this.morphDirty) return;
-        this.morphDirty = false;
-        const batch = new Map(this.pendingMorphSliders);
-        this.pendingMorphSliders.clear();
-        const g = this.pendingGender;
-        this.pendingGender = null;
-        const s = this.pendingSomatotype;
-        this.pendingSomatotype = null;
-        this.flushPendingMorphBatch(batch, g, s);
-      });
-    }
-  }
-
-  private flushPendingMorphBatch(
-    batch: Map<string, number>,
-    pendingGender: number | null,
-    pendingSoma: [number, number, number] | null
-  ): void {
-    try {
-      for (const [n, w] of batch) {
-        this.activeMorphWeights.set(n, w);
-      }
-      if (pendingGender !== null) {
-        this.genderDimorphism = pendingGender;
-      }
-      if (pendingSoma !== null) {
-        this.somatotypeEndo = pendingSoma[0];
-        this.somatotypeMeso = pendingSoma[1];
-        this.somatotypeEcto = pendingSoma[2];
-      }
-      if (this.currentPreset !== "mannequin") return;
-      if (this.gpuMorphActive && this.gpuMorphSet) {
-        // P0-05: GPU path — weights upload happens in renderWebGPU.
-        this.gpuMorphDirty = true;
-        return;
-      }
-      // CPU fallback path — exactly ONE rebuild for the whole batch.
-      this.buildGeometryBuffers();
-    } catch (e) {
-      console.warn("[ANIGO 3D] flushPendingMorphBatch:", e);
-    }
-  }
-
-  private _applyMorphSliderInternal(name: string, weight: number) {
-    this.activeMorphWeights.set(name, weight);
-    if (this.currentPreset === "mannequin" && !this.gpuMorphActive) {
-      this.buildGeometryBuffers();
-    } else {
-      this.gpuMorphDirty = true;
-    }
+  /** Peso de canal autorais do núcleo (0 quando o slider está no default). */
+  public getChannelWeight(sliderId: string): number {
+    return this.channelWeights.get(sliderId) ?? 0;
   }
 
   public setLight(
@@ -1299,359 +1309,15 @@ export class WebGpuViewportRenderer {
     };
   }
 
-  // P2-13 height-normalized zones (was magic indices 425/544...)
-  private applyAnatomicalDeformations(
-    baseVertices: VertexData[],
-    rawIndices: Uint32Array
-  ): { vertices: Float32Array; indices: Uint32Array } {
-    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
-    const vertices: VertexData[] = baseVertices.map(v => ({
-      pos: [v.pos[0], v.pos[1], v.pos[2]],
-      normal: [v.normal[0], v.normal[1], v.normal[2]],
-      uv: [v.uv[0], v.uv[1]],
-      color: [v.color[0], v.color[1], v.color[2], v.color[3]],
-      joints: [v.joints[0], v.joints[1], v.joints[2], v.joints[3]],
-      weights: [v.weights[0], v.weights[1], v.weights[2], v.weights[3]],
-    }));
-
-    const headScale = this.headScale;
-    const shoulderWidth = this.shoulderWidth;
-    const legLength = this.legLength;
-    const armLength = this.armLength;
-    const neckLength = this.neckLength;
-
-    const endo = this.somatotypeEndo;
-    const meso = this.somatotypeMeso;
-    const ecto = this.somatotypeEcto;
-
-    // P0-04: generic fallback prep — bounds + active non-explicit sliders.
-    // Guarantees EVERY catalog slider exposed in the UI deforms the mesh.
-    let meshBounds: MeshBounds = { minY: 0, maxY: 1.7 };
-    {
-      let mn = Infinity;
-      let mx = -Infinity;
-      for (const bv of baseVertices) {
-        const by = bv.pos[1];
-        if (by < mn) mn = by;
-        if (by > mx) mx = by;
-      }
-      if (mn < mx && Number.isFinite(mn) && Number.isFinite(mx)) {
-        meshBounds = { minY: mn, maxY: mx };
-      }
-    }
-    const genericActive: Array<{ def: MorphSlider; w: number }> = [];
-    for (const [id, raw] of this.activeMorphWeights) {
-      if (isExplicitMorph(id)) continue;
-      const def = getSliderDef(id);
-      if (!def) continue;
-      const w = normalizeWeight(def, raw);
-      if (w !== 0 && Number.isFinite(w)) genericActive.push({ def, w });
-    }
-
-    for (let i = 0; i < vertices.length; i++) {
-      const v = vertices[i];
-      let x = v.pos[0];
-      let y = v.pos[1];
-      let z = v.pos[2];
-      let nx = v.normal[0];
-      let ny = v.normal[1];
-      let nz = v.normal[2];
-
-      // --- Head & Face (i < 425, center around y=1.60) ---
-      if (i < 425) {
-        x *= headScale;
-        y = 1.55 + (y - 1.55) * headScale;
-        z *= headScale;
-
-        const headWidth = (this.activeMorphWeights.get("head_width") ?? 1.0) - 1.0;
-        if (headWidth !== 0) {
-          x += Math.sign(x) * 0.025 * headWidth;
-        }
-        const headDepth = (this.activeMorphWeights.get("head_depth") ?? 1.0) - 1.0;
-        if (headDepth !== 0 && z < 0) {
-          z -= 0.035 * headDepth;
-        }
-        const faceLower = (this.activeMorphWeights.get("face_lower_length") ?? 1.0) - 1.0;
-        if (faceLower !== 0 && y < 1.62 && z > 0) {
-          y -= 0.025 * faceLower;
-        }
-        const foreheadH = (this.activeMorphWeights.get("forehead_height") ?? 1.0) - 1.0;
-        if (foreheadH !== 0 && y > 1.64) {
-          y += 0.030 * foreheadH;
-        }
-        const browRidge = (this.activeMorphWeights.get("brow_ridge_prominence") ?? 0.2) - 0.2;
-        if (browRidge !== 0 && y > 1.58 && y < 1.66 && z > 0.03) {
-          z += 0.022 * browRidge;
-        }
-        const cheekbone = (this.activeMorphWeights.get("cheekbone_prominence") ?? 0.3) - 0.3;
-        if (cheekbone !== 0 && y > 1.53 && y < 1.62 && Math.abs(x) > 0.04 && z > 0.02) {
-          x += Math.sign(x) * 0.015 * cheekbone;
-          z += 0.015 * cheekbone;
-        }
-        const jawV = (this.activeMorphWeights.get("jaw_v_line_taper") ?? 0.6) - 0.6;
-        if (jawV !== 0 && y < 1.56 && z > -0.02) {
-          const taper = Math.max(0, Math.min(1, (1.56 - y) * 12.0));
-          x -= x * 0.25 * taper * jawV;
-        }
-        const chinLen = (this.activeMorphWeights.get("chin_length") ?? 1.0) - 1.0;
-        if (chinLen !== 0 && y < 1.48) {
-          y -= 0.020 * chinLen;
-        }
-        const chinProj = this.activeMorphWeights.get("chin_forward_projection") ?? 0.0;
-        if (chinProj !== 0 && y < 1.52 && z > 0.04) {
-          z += 0.025 * chinProj;
-        }
-        const eyeScale = (this.activeMorphWeights.get("eye_scale_uniform") ?? 1.0) - 1.0;
-        if (eyeScale !== 0 && y > 1.54 && y < 1.65 && Math.abs(x) > 0.025 && Math.abs(x) < 0.075 && z > 0.04) {
-          x += Math.sign(x) * 0.012 * eyeScale;
-          y += (y - 1.60) * 0.25 * eyeScale;
-          z += 0.008 * eyeScale;
-        }
-        const eyeTilt = this.activeMorphWeights.get("eye_canthal_tilt") ?? 0.0;
-        if (eyeTilt !== 0 && y > 1.55 && y < 1.65 && Math.abs(x) > 0.03 && z > 0.04) {
-          const lat = Math.max(0, Math.min(1, (Math.abs(x) - 0.03) * 25.0));
-          y += (eyeTilt / 20.0) * 0.015 * lat;
-        }
-        const aegyosal = (this.activeMorphWeights.get("lower_eyelid_aegyosal") ?? 0.2) - 0.2;
-        if (aegyosal !== 0 && y > 1.54 && y < 1.58 && Math.abs(x) > 0.03 && Math.abs(x) < 0.065 && z > 0.05) {
-          z += 0.012 * aegyosal;
-        }
-        const noseDepth = (this.activeMorphWeights.get("nose_bridge_depth") ?? 1.0) - 1.0;
-        if (noseDepth !== 0 && y > 1.54 && y < 1.63 && Math.abs(x) < 0.025 && z > 0.05) {
-          z += 0.025 * noseDepth;
-        }
-        const noseUpturn = this.activeMorphWeights.get("nose_tip_upturn") ?? 0.0;
-        if (noseUpturn !== 0 && y > 1.52 && y < 1.57 && Math.abs(x) < 0.018 && z > 0.06) {
-          y += (noseUpturn / 25.0) * 0.015;
-          z += (noseUpturn / 25.0) * 0.005;
-        }
-        const muzzleSlant = (this.activeMorphWeights.get("anime_profile_slant") ?? 0.5) - 0.5;
-        if (muzzleSlant !== 0 && z > 0.03 && y < 1.62) {
-          const s = Math.max(0, Math.min(1, (1.62 - y) * 5.0));
-          z -= 0.018 * s * muzzleSlant;
-        }
-        const earElf = this.activeMorphWeights.get("ear_pointy_elf") ?? 0.0;
-        if (earElf !== 0 && Math.abs(x) > 0.075 && y > 1.58 && z < 0.03) {
-          x += Math.sign(x) * 0.040 * earElf;
-          y += 0.055 * earElf;
-          z -= 0.025 * earElf;
-        }
-      }
-
-      // --- Neck & Trapezius (425 <= i < 544) ---
-      else if (i < 544) {
-        y = 1.35 + (y - 1.35) * neckLength;
-        const adams = this.activeMorphWeights.get("adams_apple_prominence") ?? 0.0;
-        if (adams !== 0 && Math.abs(x) < 0.018 && z > 0.025 && y > 1.38 && y < 1.48) {
-          z += 0.022 * adams;
-        }
-        const trap = (this.activeMorphWeights.get("trapezius_bulk") ?? 0.2) - 0.2;
-        if (trap !== 0 && y < 1.42 && Math.abs(x) > 0.035) {
-          x += Math.sign(x) * 0.020 * trap;
-          y += 0.025 * trap;
-        }
-        const neckCirc = (this.activeMorphWeights.get("neck_circumference") ?? 1.0) - 1.0;
-        if (neckCirc !== 0) {
-          x += nx * 0.018 * neckCirc;
-          z += nz * 0.018 * neckCirc;
-        }
-      }
-
-      // --- Torso / Chest / Bust / Waist (544 <= i < 1069) ---
-      else if (i < 1069) {
-        if (y > 1.25) {
-          x *= shoulderWidth;
-        }
-        const bustCup = (this.activeMorphWeights.get("bust_volume_cup") ?? 0.35) - 0.35;
-        if (bustCup !== 0 && z > 0 && y > 1.10 && y < 1.35 && Math.abs(x) > 0.02 && Math.abs(x) < 0.14) {
-          const yb = Math.exp(-Math.pow((y - 1.22) / 0.08, 2));
-          const xb = Math.exp(-Math.pow((Math.abs(x) - 0.065) / 0.045, 2));
-          const intensity = yb * xb;
-          x += Math.sign(x) * 0.010 * intensity * bustCup;
-          y -= 0.008 * intensity * bustCup;
-          z += 0.055 * intensity * bustCup;
-        }
-        const bustSag = this.activeMorphWeights.get("bust_gravity_sag") ?? 0.0;
-        if (bustSag !== 0 && z > 0.02 && y > 1.08 && y < 1.30 && Math.abs(x) < 0.14) {
-          const intensity = Math.exp(-Math.pow((y - 1.18) / 0.07, 2));
-          y -= 0.035 * intensity * bustSag;
-          z -= 0.012 * intensity * bustSag;
-        }
-        const bustCleave = (this.activeMorphWeights.get("bust_separation_cleavage") ?? 1.0) - 1.0;
-        if (bustCleave !== 0 && z > 0.02 && y > 1.15 && y < 1.32 && Math.abs(x) < 0.14) {
-          x += Math.sign(x) * 0.025 * bustCleave;
-        }
-        const pecBulk = (this.activeMorphWeights.get("pectoral_muscle_bulk") ?? 0.2) - 0.2;
-        if (pecBulk !== 0 && z > 0 && y > 1.15 && y < 1.38 && Math.abs(x) < 0.16) {
-          const intensity = Math.exp(-Math.pow((y - 1.27) / 0.08, 2));
-          z += 0.030 * intensity * pecBulk;
-        }
-        const waistPinch = this.activeMorphWeights.get("waist_pinch_width") ?? 0.0;
-        if (waistPinch !== 0 && y > 0.95 && y < 1.12) {
-          const pinch = Math.max(0, 1.0 - Math.abs((y - 1.03) / 0.08));
-          x -= Math.sign(x) * 0.032 * pinch * waistPinch;
-        }
-        const sixpack = (this.activeMorphWeights.get("abs_sixpack_definition") ?? 0.2) - 0.2;
-        if (sixpack !== 0 && z > 0.04 && y > 0.92 && y < 1.20 && Math.abs(x) < 0.09) {
-          const wave = Math.cos(y * 42.0);
-          const att = Math.max(0, 1.0 - Math.pow(x / 0.09, 2));
-          z += wave * 0.012 * att * sixpack;
-        }
-        const belly = this.activeMorphWeights.get("belly_visceral_protuberance") ?? 0.0;
-        if (belly !== 0 && z > 0.01 && y > 0.90 && y < 1.15) {
-          const bump = Math.exp(-Math.pow((y - 1.02) / 0.10, 2)) * Math.max(0, 1.0 - Math.pow(x / 0.14, 2));
-          z += 0.045 * bump * belly;
-        }
-      }
-
-      // --- Pelvis & Gluteus (1069 <= i < 1444) ---
-      else if (i < 1444) {
-        const hipFlare = (this.activeMorphWeights.get("hip_trochanteric_flare") ?? 1.0) - 1.0;
-        if (hipFlare !== 0 && Math.abs(x) > 0.08) {
-          const f = Math.exp(-Math.pow((y - 0.84) / 0.08, 2));
-          x += Math.sign(x) * 0.038 * f * hipFlare;
-        }
-        const gluteVol = (this.activeMorphWeights.get("gluteus_volume_overall") ?? 1.0) - 1.0;
-        if (gluteVol !== 0 && z < 0) {
-          const f = Math.exp(-Math.pow((y - 0.82) / 0.08, 2)) * Math.exp(-Math.pow(x / 0.14, 2));
-          z -= 0.050 * f * gluteVol;
-        }
-        const gluteProf = this.activeMorphWeights.get("gluteus_shape_profile") ?? 0.0;
-        if (gluteProf !== 0 && z < 0) {
-          const shift = (y - 0.82) * 0.35;
-          z += shift * 0.025 * gluteProf;
-        }
-      }
-
-      // --- Shoulders & Arms (1444 <= i < 2536) ---
-      else if (i < 2536) {
-        x += Math.sign(x) * (shoulderWidth - 1.0) * 0.15;
-        if (i >= 1678) {
-          y = 1.30 - (1.30 - y) * armLength;
-        }
-        const biceps = (this.activeMorphWeights.get("biceps_peak_volume") ?? 0.2) - 0.2;
-        if (biceps !== 0 && i >= 1678 && i < 1912 && z > 0) {
-          z += 0.028 * biceps;
-        }
-        const armThick = (this.activeMorphWeights.get("upper_arm_thickness") ?? 1.0) - 1.0;
-        if (armThick !== 0 && i >= 1678 && i < 1912) {
-          x += nx * 0.020 * armThick;
-          z += nz * 0.020 * armThick;
-        }
-      }
-
-      // --- Lower Limbs (2536 <= i < 4070) ---
-      else {
-        y = y * legLength;
-
-        const thighCirc = (this.activeMorphWeights.get("thigh_circumference") ?? 1.0) - 1.0;
-        if (thighCirc !== 0 && i >= 2536 && i < 2926) {
-          x += nx * 0.025 * thighCirc;
-          z += nz * 0.025 * thighCirc;
-        }
-        const thighGap = this.activeMorphWeights.get("inner_thigh_gap") ?? 0.0;
-        if (thighGap !== 0 && i >= 2536 && i < 2926 && ((x > 0 && nx < 0) || (x < 0 && nx > 0))) {
-          x += Math.sign(x) * 0.022 * thighGap;
-        }
-        const patella = (this.activeMorphWeights.get("knee_patella_prominence") ?? 0.5) - 0.5;
-        if (patella !== 0 && i >= 2926 && i < 3160 && z > 0) {
-          z += 0.022 * patella;
-        }
-        const uchimata = this.activeMorphWeights.get("knee_valgus_uchimata") ?? 0.0;
-        if (uchimata !== 0 && i >= 2926 && i < 3160) {
-          x -= Math.sign(x) * 0.020 * (uchimata / 15.0);
-        }
-        const calfCirc = (this.activeMorphWeights.get("calf_circumference") ?? 1.0) - 1.0;
-        if (calfCirc !== 0 && i >= 3160 && i < 3550) {
-          x += nx * 0.022 * calfCirc;
-          z += nz * 0.022 * calfCirc;
-        }
-      }
-
-      // --- Macro Somatotype Heath-Carter Influence ---
-      if (endo > 0.001) {
-        if (i >= 544 && i < 1444) {
-          x += nx * 0.035 * endo;
-          z += nz * 0.035 * endo;
-        } else if (i >= 2536 && i < 3550) {
-          x += nx * 0.025 * endo;
-          z += nz * 0.025 * endo;
-        }
-      }
-      if (meso > 0.001) {
-        if (i >= 544 && i < 1069 && (z > 0 || Math.abs(x) > 0.1)) {
-          x += nx * 0.030 * meso;
-          z += nz * 0.030 * meso;
-        } else if (i >= 1444 && i < 2146) {
-          x += nx * 0.020 * meso;
-          z += nz * 0.020 * meso;
-        } else if (i >= 2536 && i < 3550) {
-          x += nx * 0.020 * meso;
-          z += nz * 0.020 * meso;
-        }
-      }
-      if (ecto > 0.001) {
-        if (i >= 544 && i < 1444) {
-          x -= nx * 0.025 * ecto;
-          z -= nz * 0.025 * ecto;
-        } else if (i >= 1444 && i < 3550) {
-          x -= nx * 0.018 * ecto;
-          z -= nz * 0.018 * ecto;
-        }
-      }
-
-      // --- P0-04: generic procedural fallback (every non-explicit slider) ---
-      if (genericActive.length > 0) {
-        for (let gi = 0; gi < genericActive.length; gi++) {
-          const g = genericActive[gi];
-          const d = genericMorphDelta(g.def, g.w, x, y, z, nx, ny, nz, meshBounds, GENERIC_DELTA_TMP);
-          if (d !== null) {
-            x += d.dx;
-            y += d.dy;
-            z += d.dz;
-          }
-        }
-      }
-
-      v.pos[0] = x;
-      v.pos[1] = y;
-      v.pos[2] = z;
-    }
-
-    // P0-06: normals recomputed after deformation via the shared pure
-    // implementation (identical math, now unit-tested in morph_engine).
-    {
-      const positions = new Float32Array(vertices.length * 3);
-      const normals = new Float32Array(vertices.length * 3);
-      for (let i = 0; i < vertices.length; i++) {
-        positions[i * 3] = vertices[i].pos[0];
-        positions[i * 3 + 1] = vertices[i].pos[1];
-        positions[i * 3 + 2] = vertices[i].pos[2];
-        normals[i * 3] = vertices[i].normal[0];
-        normals[i * 3 + 1] = vertices[i].normal[1];
-        normals[i * 3 + 2] = vertices[i].normal[2];
-      }
-      recomputeNormals(positions, rawIndices, normals);
-      for (let i = 0; i < vertices.length; i++) {
-        vertices[i].normal = [normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]];
-      }
-    }
-
-    const indicesArr = Array.from(rawIndices);
-    // Add studio turntable pedestal at ground
-    this.appendCube(vertices, indicesArr, [0.0, -0.02, 0.0], [1.6, 0.04, 1.6], [0.7, 0.50, 0.0, 0.3]);
-
-    return {
-      vertices: packVertices(vertices),
-      indices: new Uint32Array(indicesArr),
-    };
-  }
-
+  /**
+   * P0 §7.4/§7.5 — geometria do preset canônico.
+   *
+   * Toda a deformação foi removida do TypeScript: aqui só existem (a) a malha
+   * canônica que o núcleo mandou no snapshot e (b) a malha base crua do modo
+   * degradado (browser sem núcleo, sem morphs). Não há caminho de deltas,
+   * normais ou proporções calculado no cliente.
+   */
   private generateMannequinData(headScale: number = 1.0, headRatio: number = 6.5): { vertices: Float32Array; indices: Uint32Array } {
-    // P2-13 if (this.canonicalExtras?.anigo_zones) use normalized anchors else fallback height-scaled magic indices
-    if (this.canonicalBaseVertices && this.canonicalIndices) {
-      return this.applyAnatomicalDeformations(this.canonicalBaseVertices, this.canonicalIndices);
-    }
     if (this.canonicalVertices && this.canonicalIndices) {
       return { vertices: this.canonicalVertices, indices: this.canonicalIndices };
     }
@@ -1660,6 +1326,12 @@ export class WebGpuViewportRenderer {
   }
 
   public async loadCanonicalModel(gender: "male" | "female") {
+    // P0 §7.5: com geometria canônica do núcleo não existe malha base local a
+    // carregar — o snapshot já traz a malha preparada (gênero/proporções nela).
+    if (this.coreGeometry) {
+      this.requestCoreGeometry("malha base ignorada (núcleo ativo)");
+      return;
+    }
     const url = `/models/anigo_base_${gender}.glb`;
     try {
       // P2-12 abort previous load, use cache, report progress
@@ -1668,13 +1340,11 @@ export class WebGpuViewportRenderer {
       if (this.canonicalModelCache.has(gender)) {
         const cached = this.canonicalModelCache.get(gender)!;
         this.canonicalBaseVertices = cached.vertices;
-        this.canonicalIndices = cached.indices;
         this.canonicalGender = gender;
-        this.buildGeometryBuffers();
-        // P0-05: GPU channels follow the active base mesh.
-        this.gpuMorphActive = false;
-        this.gpuMorphSet = null;
-        this.scheduleGpuMorphRebuild();
+        // P0 §7.5: malha base crua (degradado) — a geometria autorizada vem do
+        // snapshot do núcleo, pedido logo abaixo.
+        this.applyBaseMesh(packVertices(cached.vertices), cached.indices, url);
+        this.requestCoreGeometry("modelo base em cache");
         return;
       }
       const resp = await fetch(url, { signal: this.loadAbortController.signal });
@@ -1746,11 +1416,10 @@ export class WebGpuViewportRenderer {
       this.canonicalVertices = packVertices(vertices);
 
       this.currentPreset = "mannequin";
-      this.buildGeometryBuffers();
-      // P0-05: GPU channels follow the active base mesh.
-      this.gpuMorphActive = false;
-      this.gpuMorphSet = null;
-      this.scheduleGpuMorphRebuild();
+      // P0 §7.5: esta malha base é o modo degradado (sem deformação). Em
+      // produção a geometria vem do snapshot do núcleo; o GLB acabou de ser
+      // substituído pelo que o núcleo mandar.
+      this.applyBaseMesh(packVertices(vertices), new Uint32Array(rawIndices), url);
     } catch (e) {
       // P0-10: failures propagate (caller + UI callback) — never silent cube.
       if (e instanceof DOMException && e.name === "AbortError") return;
@@ -2255,42 +1924,27 @@ export class WebGpuViewportRenderer {
     // 5. Render Passes (Compute Sparse Morphs followed by NPR Cel-Shading)
     const commandEncoder = this.device.createCommandEncoder();
 
-    // P0-05: lazy one-time build once model + compute pipeline both exist.
-    if (
-      !this.gpuMorphSet &&
-      !this.gpuBuildPending &&
-      this.morphPipeline &&
-      this.currentPreset === "mannequin" &&
-      this.canonicalBaseVertices &&
-      this.canonicalIndices
-    ) {
-      this.gpuBuildPending = true;
-      setTimeout(() => {
-        try {
-          this.rebuildGpuMorphSet();
-        } catch (e) {
-          console.warn("[ANIGO 3D] lazy GPU morph build failed:", e);
-        } finally {
-          this.gpuBuildPending = false;
-        }
-      }, 50);
+    // P0 §7.5: sem geometria canônica não há compute — o shell é avisado uma vez
+    // e o viewport segue exibindo a última geometria autorizada pelo núcleo.
+    if (!this.coreGeometry && !this.coreGeometryRequested && this.currentPreset === "mannequin") {
+      this.requestCoreGeometry("render sem geometria canônica");
     }
 
     if (
       this.gpuMorphActive &&
-      this.gpuMorphSet &&
+      this.coreGeometry &&
       this.morphPipeline &&
       this.morphBindGroup &&
       this.morphedVertexBuffer &&
       this.morphVertexCount > 0
     ) {
-      // P0-05: per-frame channel weights (slider + somatotype), then dispatch.
+      // Pesos do frame: autorais do núcleo + adiantamento local (janela curta).
       if (this.gpuMorphDirty && this.morphChannelsBuffer) {
         try {
           this.device.queue.writeBuffer(
             this.morphChannelsBuffer,
             0,
-            packChannelWeights(this.gpuMorphSet, this.currentChannelWeights())
+            packChannelRecordsWithWeights(this.coreGeometry.channels, this.effectiveChannelWeights())
           );
         } catch (e) {
           console.warn("[ANIGO 3D] channel weight upload failed:", e);
@@ -2560,9 +2214,9 @@ export class WebGpuViewportRenderer {
       this.animationFrameId = null;
     }
     this.recenterAnim = null;
-    if (this.morphRaf !== null) { try { cancelAnimationFrame(this.morphRaf); } catch (_) {} this.morphRaf = null; }
-    if (this.gpuRebuildTimer !== null) { try { clearTimeout(this.gpuRebuildTimer); } catch (_) {} this.gpuRebuildTimer = null; }
-    this.pendingMorphSliders?.clear?.();
+    this.liveWeights.clear();
+    this.channelWeights.clear();
+    this.coreGeometry = null;
     this.isPaused = true;
     // P1-15: complete resource cleanup (was leaking pipelines/bindGroups/compute)
     try { this.device?.destroy(); } catch (_) {}

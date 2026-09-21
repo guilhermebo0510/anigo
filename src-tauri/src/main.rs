@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
+mod core_session;
 
 use std::io::Write;
 use std::sync::Arc;
@@ -11,8 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::{Mutex, RwLock};
 
-use anigo_core::mesh::{BaseGender, Mesh};
-use anigo_core::scene::{Scene, SceneNode};
+use anigo_core::scene::Scene;
 use anigo_renderer::HeadlessRenderer;
 use bridge::{LiveBridgeServer, LiveWindowState};
 
@@ -29,6 +29,82 @@ pub struct ViewportFrameResponse {
 pub struct AppState {
     pub renderer: Option<HeadlessRenderer>,
     pub scene: Scene,
+    /// Sessão canônica (P0 §7.4/§7.5): dona do `ProjectState`, do histórico de
+    /// comandos e da geometria deformada que o snapshot entrega ao frontend.
+    pub session: core_session::CoreSession,
+    /// Espelho (`scene`) desatualizado em relação ao núcleo: a geometria é
+    /// reconstruída sob demanda, no próximo frame — mexer na câmera ou no
+    /// material não recalcula 157 canais de morph à toa.
+    pub scene_dirty: bool,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            renderer: None,
+            scene: Scene::default(),
+            session: core_session::CoreSession::new(),
+            scene_dirty: false,
+        }
+    }
+
+    /// Espelha câmera/luz/fundo/material (barato, sem tocar em geometria).
+    fn sync_scene_view(&mut self) {
+        self.scene.camera = self.session.project().scene.camera.camera.clone();
+        if let Some(slot) = self.session.project().scene.lights.first() {
+            self.scene.light = slot.light.clone();
+        }
+        self.scene.background_color = self.session.project().render.background_color;
+        let material = self.session.project().character_material().map(|entry| entry.material.clone());
+        for node in &mut self.scene.nodes {
+            node.material = material.clone();
+        }
+    }
+
+    /// Aplica um comando canônico e marca o que precisa ser re-sincronizado.
+    fn apply_command(
+        &mut self,
+        command: anigo_core::command::Command,
+    ) -> Result<anigo_core::command::CommandOutcome, String> {
+        let scope = command.scope();
+        let outcome = self.session.apply(command)?;
+        self.sync_scene_view();
+        if scope.requires_static_rebuild()
+            || matches!(scope, anigo_core::command::ChangeScope::Deformation)
+        {
+            self.scene_dirty = true;
+        }
+        Ok(outcome)
+    }
+
+    /// Espelha o estado canônico na `Scene` do renderer headless (frame PNG,
+    /// exportação): a geometria desenhada pelo núcleo é a deformada por ele.
+    fn sync_scene_from_session(&mut self) {
+        if let Err(error) = self.session.sync_scene(&mut self.scene) {
+            tracing::warn!(error = %error, "core session → scene sync failed");
+            return;
+        }
+        self.scene_dirty = false;
+    }
+
+    /// Garante que o espelho está atualizado antes de renderizar.
+    fn ensure_scene_current(&mut self) {
+        if self.scene_dirty {
+            self.sync_scene_from_session();
+        }
+    }
+}
+
+/// Aplica um comando canônico e reespelha a `Scene` do renderer headless.
+///
+/// P0 §7.4: existe **um** caminho de escrita do estado — `CoreSession` — e um só
+/// dono da geometria. Estes wrappers tipados existem para call sites antigos do
+/// frontend; eles não guardam estado próprio.
+fn apply_session_command(
+    state: &mut AppState,
+    command: anigo_core::command::Command,
+) -> Result<(), String> {
+    state.apply_command(command).map(|_| ())
 }
 
 #[tauri::command]
@@ -38,6 +114,8 @@ async fn render_viewport_frame(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<ViewportFrameResponse, String> {
     let mut state = state.lock().await;
+    // P0 §7.4: o frame desenhado é a geometria deformada pelo núcleo.
+    state.ensure_scene_current();
     if state.renderer.is_none() {
         state.renderer = HeadlessRenderer::new().await.ok();
     }
@@ -76,8 +154,12 @@ async fn camera_orbit(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
-    state.scene.camera.orbit(azimuth, elevation);
-    Ok(())
+    // Mesma `Camera::orbit` do núcleo, agora pela autoridade dos dados (comando
+    // canônico → undo/redo/persistência valem para a câmera também).
+    apply_session_command(
+        &mut state,
+        anigo_core::command::Command::OrbitCamera { azimuth, elevation },
+    )
 }
 
 #[tauri::command]
@@ -86,8 +168,10 @@ async fn camera_zoom(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
-    state.scene.camera.zoom(factor);
-    Ok(())
+    apply_session_command(
+        &mut state,
+        anigo_core::command::Command::ZoomCamera { factor },
+    )
 }
 
 #[tauri::command]
@@ -97,8 +181,10 @@ async fn camera_pan(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
-    state.scene.camera.pan(dx, dy);
-    Ok(())
+    apply_session_command(
+        &mut state,
+        anigo_core::command::Command::PanCamera { dx, dy },
+    )
 }
 
 #[tauri::command]
@@ -107,23 +193,16 @@ async fn load_mesh_preset(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
     let mut state = state.lock().await;
-    // P0-05: use canonical base (was proxy box causing export≠viewport MSE)
-    let mesh = match preset.as_str() {
-        "sphere" => Mesh::create_uv_sphere(0.8, 32, 64),
-        "cube" => Mesh::create_cube(1.0),
-        "female" => Mesh::create_canonical_base(BaseGender::Female),
-        _ => Mesh::create_canonical_base(BaseGender::Male),
-    };
-
-    let current_mat = state.scene.nodes.first()
-        .and_then(|n| n.material.clone())
-        .unwrap_or_default();
-
-    state.scene.nodes.clear();
-    let mut node = SceneNode::new("primary_mesh", preset.clone()).with_mesh(mesh);
-    node.material = Some(current_mat);
-    state.scene.add_node(node);
-
+    // P0 §7.4: o preset é um comando canônico — a malha (base canônica deformada
+    // pelo núcleo ou primitiva) vem do `ProjectState`, nunca de uma cópia local.
+    let parsed: anigo_core::command::MeshPreset = serde_json::from_value(
+        serde_json::Value::String(preset.to_lowercase()),
+    )
+    .map_err(|_| format!("preset desconhecido: {}", preset))?;
+    apply_session_command(
+        &mut state,
+        anigo_core::command::Command::LoadMeshPreset { preset: parsed },
+    )?;
     Ok(format!("Loaded preset {}", preset))
 }
 
@@ -139,20 +218,18 @@ async fn set_light_params(
 ) -> Result<(), String> {
     let mut state = state.lock().await;
     let d = glam::Vec3::from_array(direction).normalize();
-    state.scene.light.direction = [d.x, d.y, d.z];
-    state.scene.light.intensity = intensity;
-    if let Some(c) = color {
-        state.scene.light.color = c;
-    }
-    if let Some(sc) = shadow_color {
-        state.scene.light.shadow_color = sc;
-    }
-    if let Some(ai) = ambient_intensity {
-        state.scene.light.ambient_intensity = ai;
-    }
-    if let Some(ss) = shadow_saturation {
-        state.scene.light.shadow_saturation = ss;
-    }
+    let command = anigo_core::command::Command::SetLight {
+        light_id: None,
+        direction: Some([d.x, d.y, d.z]),
+        color,
+        intensity: Some(intensity),
+        shadow_color,
+        ambient_intensity,
+        shadow_saturation,
+        ambient_sky: None,
+        ambient_ground: None,
+    };
+    apply_session_command(&mut state, command)?;
     Ok(())
 }
 
@@ -181,35 +258,60 @@ async fn set_material_toon_params(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
-    for node in &mut state.scene.nodes {
-        if node.material.is_none() {
-            node.material = Some(anigo_core::StylizedMaterial::default());
-        }
-        if let Some(mat) = node.material.as_mut() {
-            if let Some(v) = shadow_threshold { mat.shadow_threshold = v; }
-            if let Some(v) = shadow_smoothness { mat.shadow_smoothness = v; }
-            if let Some(v) = spec_intensity { mat.spec_intensity = v; }
-            if let Some(v) = spec_power { mat.spec_power = v; }
-            if let Some(v) = rim_intensity { mat.rim_intensity = v; }
-            if let Some(v) = rim_spread { mat.rim_spread = v; }
-            if let Some(v) = hue_shift { mat.hue_shift = v; }
-            if let Some(v) = toon_steps { mat.toon_steps = v; }
-            if let Some(v) = base_color { mat.base_color = v; }
-            if let Some(v) = shade_color { mat.shade_color = v; }
-            if let Some(v) = outline_width { mat.outline_width = v; }
-            if let Some(v) = outline_color { mat.outline_color = v; }
-            if let Some(v) = specular_color { mat.specular_color = v; }
-            if let Some(v) = specular_softness { mat.specular_softness = v; }
-            if let Some(v) = specular_offset { mat.specular_offset = v; }
-            if let Some(v) = rim_color { mat.rim_color = v; }
-            if let Some(v) = outline_opacity { mat.outline_opacity = v; }
-            if let Some(v) = outline_smoothness { mat.outline_smoothness = v; }
-            if let Some(v) = outline_depth_bias { mat.outline_depth_bias = v; }
-            // shadow_saturation is light param, but accept here for compat: update light too
-            if let Some(v) = shadow_saturation { state.scene.light.shadow_saturation = v; }
-        }
+    // P0 §7.4: o material é um patch de comando canônico — o núcleo valida,
+    // guarda o inverso (undo) e é a fonte do material que o render desenha.
+    let patch = anigo_core::command::MaterialPatch {
+        base_color,
+        shade_color,
+        outline_color,
+        outline_width,
+        shadow_threshold,
+        shadow_smoothness,
+        spec_intensity,
+        spec_power,
+        specular_color,
+        specular_softness,
+        specular_offset,
+        rim_color,
+        rim_intensity,
+        rim_spread,
+        hue_shift,
+        toon_steps,
+        outline_opacity,
+        outline_smoothness,
+        outline_depth_bias,
+        ..Default::default()
+    };
+
+    let mut commands = Vec::new();
+    if !patch.is_empty() {
+        commands.push(anigo_core::command::Command::SetMaterialParams {
+            material_id: None,
+            patch,
+        });
     }
-    Ok(())
+    if let Some(value) = shadow_saturation {
+        commands.push(anigo_core::command::Command::SetLight {
+            light_id: None,
+            direction: None,
+            color: None,
+            intensity: None,
+            shadow_color: None,
+            ambient_intensity: None,
+            shadow_saturation: Some(value),
+            ambient_sky: None,
+            ambient_ground: None,
+        });
+    }
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let command = if commands.len() == 1 {
+        commands.remove(0)
+    } else {
+        anigo_core::command::Command::Batch { commands }
+    };
+    apply_session_command(&mut state, command)
 }
 
 static LAST_CMD_TELEMETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -382,6 +484,102 @@ async fn save_project_file(path: String, content: String) -> Result<String, Stri
     Ok(path)
 }
 
+// ---------------------------------------------------------------------------
+// P0 §7.4/§7.5 — superfície canônica do núcleo
+//
+// O frontend não deforma nada: ele envia comandos canônicos e recebe snapshots.
+// Toda validação acontece em `anigo_core` (mesmos tipos da persistência).
+// ---------------------------------------------------------------------------
+
+/// Aplica um comando canônico (o mesmo JSON que o `CommandHistory` valida).
+#[tauri::command]
+async fn core_apply_command(
+    command: serde_json::Value,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<anigo_core::command::CommandOutcome, String> {
+    let mut state = state.lock().await;
+    let parsed = anigo_core::command::Command::from_json(&command.to_string())
+        .map_err(|error| error.to_string())?;
+    state.apply_command(parsed)
+}
+
+/// Desfaz o último comando no núcleo (a UI só renderiza o resultado).
+#[tauri::command]
+async fn core_undo_command(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<anigo_core::command::CommandOutcome, String> {
+    let mut state = state.lock().await;
+    let outcome = state.session.undo()?;
+    state.sync_scene_view();
+    state.scene_dirty = true;
+    Ok(outcome)
+}
+
+/// Refaz o último comando desfeito no núcleo.
+#[tauri::command]
+async fn core_redo_command(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<anigo_core::command::CommandOutcome, String> {
+    let mut state = state.lock().await;
+    let outcome = state.session.redo()?;
+    state.sync_scene_view();
+    state.scene_dirty = true;
+    Ok(outcome)
+}
+
+/// Snapshot canônico para o viewport.
+///
+/// `client_static_revision` é a cache key do cliente: quando bate com a do
+/// núcleo, a parte estática (malha + deltas) nem é serializada.
+#[tauri::command]
+async fn core_snapshot(
+    include_static: bool,
+    client_static_revision: Option<u64>,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<anigo_core::snapshot::CoreSnapshot, String> {
+    let mut state = state.lock().await;
+    state.session.snapshot(include_static, client_static_revision)
+}
+
+/// Revisões + profundidade de undo/redo autorais do núcleo.
+#[tauri::command]
+async fn core_history_state(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<serde_json::Value, String> {
+    let state = state.lock().await;
+    Ok(state.session.history_report())
+}
+
+/// Carrega um documento canônico (envelope/arquivo) na sessão.
+#[tauri::command]
+async fn core_load_document(
+    document: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<serde_json::Value, String> {
+    let mut state = state.lock().await;
+    state.session.load_document(&document)?;
+    // Documento novo ⇒ geometria nova: reconstrói o espelho agora.
+    state.scene_dirty = true;
+    state.sync_scene_from_session();
+    Ok(state.session.history_report())
+}
+
+/// Devolve o documento canônico serializado (fonte da verdade ao salvar).
+#[tauri::command]
+async fn core_document(state: State<'_, Arc<Mutex<AppState>>>) -> Result<String, String> {
+    let state = state.lock().await;
+    state.session.document()
+}
+
+/// Malha deformada pelo núcleo (base + morphs ativos).
+#[tauri::command]
+async fn core_deformed_mesh(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<anigo_core::mesh::Mesh, String> {
+    let mut state = state.lock().await;
+    state.session.deformed_mesh()
+}
+
 #[tauri::command]
 async fn load_project_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Erro ao ler arquivo de projeto: {}", e))
@@ -426,10 +624,7 @@ fn main() {
         );
     }
 
-    let app_state = Arc::new(Mutex::new(AppState {
-        renderer: None,
-        scene: Scene::default(),
-    }));
+    let app_state = Arc::new(Mutex::new(AppState::new()));
 
     let live_state = Arc::new(RwLock::new(LiveWindowState::default()));
     let live_state_bridge = Arc::clone(&live_state);
@@ -466,6 +661,14 @@ fn main() {
             app_is_maximized,
             save_project_file,
             load_project_file,
+            core_apply_command,
+            core_undo_command,
+            core_redo_command,
+            core_snapshot,
+            core_history_state,
+            core_load_document,
+            core_document,
+            core_deformed_mesh,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")

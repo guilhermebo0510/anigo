@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { devicePixelRatioSafe } from "../../services/settings_persist";
   import { WebGpuViewportRenderer, type ViewportMetrics, type MeshPreset } from "./webgpu_renderer";
+  import type { CoreSnapshotDelivery } from "../../services/core_bridge";
   import type { AnatomicalSegment } from "./tactile";
 
   let {
@@ -26,12 +27,21 @@
     onModelLoadError?: (message: string) => void;
     /** P0-09: tactile manipulation is gated by the parent (personagem + body/face only). */
     tactileEnabled?: boolean;
+    /**
+     * P0 §7.5 — busca o snapshot canônico no núcleo. Quem fala com o núcleo é o
+     * shell (`App.svelte`); o viewport só consome a geometria autorizada.
+     */
+    coreSnapshotProvider?: (force?: boolean) => Promise<CoreSnapshotDelivery | null>;
+    /** Whether the renderer should still load the raw GLB (degraded, no core). */
+    allowDegradedBaseMesh?: boolean;
   } = $props();
 
   let canvas: HTMLCanvasElement | null = $state(null);
   let containerEl: HTMLElement | null = $state(null);
   let renderer: WebGpuViewportRenderer | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let coreSnapshotInFlight: Promise<unknown> | null = null;
+  let coreAuthority: string = "unavailable";
 
   // Pointer Interaction State (DCC standard: LMB/Alt+LMB Orbit, MMB/Shift+LMB Pan, Wheel/Alt+RMB Zoom)
   let isDragging = $state(false);
@@ -317,6 +327,48 @@
     if (renderer) renderer.setVsync(enabled);
   }
 
+  /**
+   * Aplica um snapshot canônico já buscado pelo shell (parte estática e/ou
+   * dinâmica). Devolve o relatório de autoridade para telemetria/status bar.
+   */
+  export function applyCoreDelivery(delivery: CoreSnapshotDelivery) {
+    if (!renderer) return null;
+    const report = renderer.applyCoreSnapshot(delivery);
+    coreAuthority = report.authority;
+    return report;
+  }
+
+  /** Pede (uma vez) um snapshot novo ao núcleo e o aplica. */
+  export async function requestCoreSnapshot(force: boolean = false) {
+    if (!coreSnapshotProvider) return null;
+    if (coreSnapshotInFlight) return coreSnapshotInFlight;
+    coreSnapshotInFlight = (async () => {
+      try {
+        const delivery = await coreSnapshotProvider(force);
+        if (delivery) return applyCoreDelivery(delivery);
+        return null;
+      } catch (error) {
+        console.warn("[ANIGO 3D] core snapshot request failed:", error);
+        return null;
+      } finally {
+        coreSnapshotInFlight = null;
+      }
+    })();
+    return coreSnapshotInFlight;
+  }
+
+  /** Autoridade de deformação em vigor no viewport (degradação explícita). */
+  export function getDeformationAuthority() {
+    return renderer?.getDeformationAuthority?.() ?? {
+      authority: coreAuthority,
+      degraded: true,
+      coreStaticRevision: 0,
+      coreDynamicRevision: 0,
+      channels: 0,
+      vertexCount: 0,
+    };
+  }
+
   export function resize(w?: number, h?: number) {
     if (containerEl && renderer) {
       const targetW = w ?? containerEl.clientWidth;
@@ -333,6 +385,11 @@
       renderer = new WebGpuViewportRenderer(canvas);
       // P0-10: surface model/GLB failures to the parent UI.
       renderer.onModelLoadError = (msg: string) => onModelLoadError?.(msg);
+      // P0 §7.5: quando o renderer precisa de geometria canônica, o shell busca
+      // o snapshot no núcleo (nunca há deformação local como plano B).
+      renderer.onCoreGeometryRequired = () => {
+        void requestCoreSnapshot();
+      };
 
       renderer.onMetricsUpdate = (m: ViewportMetrics) => {
         onMetrics?.(m);
