@@ -30,6 +30,7 @@ import {
   type CoreInvoker,
 } from "../../src/services/core_bridge.ts";
 import {
+  applyDeltasCpu,
   assertChannelsSorted,
   geometrySignature,
   packChannelRecords,
@@ -138,6 +139,35 @@ describe("P0 itens 4–5 — geometria do viewport vem do snapshot", () => {
     const words = new Uint32Array(boosted.buffer);
     assert.equal(words[1], geometry.channels[0].startOffset);
     assert.equal(words[2], geometry.channels[0].deltaCount);
+  });
+
+  it("o CPU acumula os deltas do núcleo (caminho WebGL2, sem compute)", () => {
+    const geometry = viewportGeometryFromSnapshot(FIXTURE as never)!;
+    // Peso 0 ⇒ a malha base volta intacta.
+    const base = applyDeltasCpu(geometry, new Map());
+    assert.deepEqual(Array.from(base), Array.from(geometry.vertices));
+    // Peso 1 no canal head_width ⇒ base + Δ do núcleo, normal normalizada.
+    const morphed = applyDeltasCpu(geometry, new Map([["head_width", 1]]));
+    assert.notDeepEqual(Array.from(morphed), Array.from(geometry.vertices));
+    const movedVertex = new Uint32Array(geometry.deltas.buffer)[0];
+    const stride = 18;
+    for (let axis = 0; axis < 3; axis++) {
+      const expected = geometry.vertices[movedVertex * stride + axis] + geometry.deltas[axis + 1];
+      assert.ok(Math.abs(morphed[movedVertex * stride + axis] - expected) < 1e-6);
+    }
+    const normalLength = Math.hypot(
+      morphed[movedVertex * stride + 3],
+      morphed[movedVertex * stride + 4],
+      morphed[movedVertex * stride + 5]
+    );
+    assert.ok(Math.abs(normalLength - 1) < 1e-5, `normal normalizada (${normalLength})`);
+    // Peso 2 dobra o delta (linearidade do compute canônico).
+    const doubled = applyDeltasCpu(geometry, new Map([["head_width", 2]]));
+    for (let axis = 0; axis < 3; axis++) {
+      const single = morphed[movedVertex * stride + axis] - geometry.vertices[movedVertex * stride + axis];
+      const twice = doubled[movedVertex * stride + axis] - geometry.vertices[movedVertex * stride + axis];
+      assert.ok(Math.abs(twice - 2 * single) < 1e-5);
+    }
   });
 
   it("a assinatura muda quando a topologia, o catálogo ou o peso mudam", () => {
@@ -343,6 +373,17 @@ describe("P0 itens 4–5 — não existe deformação de produção em TypeScrip
     );
     // A malha canônica nunca é gerada localmente: o único caminho é o snapshot.
     assert.equal(/generateCanonicalMesh|createCanonicalBase/.test(RENDERER_SOURCE), false);
+  });
+
+  it("a cor de fundo do render vem do snapshot (não é mais literal)", () => {
+    assert.match(RENDERER_SOURCE, /delivery\.state\?\.render\?\.background_color/);
+    assert.match(RENDERER_SOURCE, /clearValue: \{[\s\S]*?this\.clearColor\[0\]/);
+    assert.equal(
+      /clearValue: \{ r: 0\.08, g: 0\.09, b: 0\.13/.test(RENDERER_SOURCE),
+      false,
+      "clear color literal removida (fonte é o snapshot)"
+    );
+    assert.match(RENDERER_SOURCE, /applyDeltasCpu\(this\.coreGeometry, this\.effectiveChannelWeights\(\)\)/);
   });
 
   it("o viewport e o shell conversam pelo snapshot (nada de setter deformante)", () => {

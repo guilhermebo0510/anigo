@@ -216,6 +216,52 @@ export function viewportGeometryFromDecoded(
 }
 
 /**
+ * Aplica os deltas **do núcleo** no CPU.
+ *
+ * Usado apenas onde o compute canônico não roda (WebGL2, que não tem compute
+ * shaders). Não é uma segunda implementação de deformação: os deltas, os canais
+ * e os pesos são exatamente os do snapshot — só o meio de acumulação difere.
+ * A conta espelha o WGSL: `p += w·Δp`, `n = normalize(n + Σ w·Δn)`.
+ */
+export function applyDeltasCpu(
+  geometry: ViewportGeometry,
+  weights: Map<string, number> | ReadonlyMap<string, number>
+): Float32Array {
+  const floatsPerVertex = VERTEX_STRIDE_BYTES / 4;
+  const out = new Float32Array(geometry.vertices);
+  const deltas = geometry.deltas;
+  for (const channel of geometry.channels) {
+    const weight = weights.get(channel.sliderId) ?? 0;
+    // Mesmo epsilon do compute canônico (`abs(ch.weight) > 1e-6`).
+    if (Math.abs(weight) <= 1e-6 || channel.deltaCount === 0) continue;
+    for (let index = 0; index < channel.deltaCount; index++) {
+      const base = (channel.startOffset + index) * 8;
+      const vertexIndex = new Uint32Array(deltas.buffer, deltas.byteOffset + base * 4, 1)[0];
+      if (vertexIndex >= geometry.vertexCount) continue;
+      const target = vertexIndex * floatsPerVertex;
+      out[target] += weight * deltas[base + 1];
+      out[target + 1] += weight * deltas[base + 2];
+      out[target + 2] += weight * deltas[base + 3];
+      out[target + 3] += weight * deltas[base + 4];
+      out[target + 4] += weight * deltas[base + 5];
+      out[target + 5] += weight * deltas[base + 6];
+    }
+  }
+  // Normais normalizadas por vértice (mesma condição do compute: n² > 1e-12).
+  for (let vertex = 0; vertex < geometry.vertexCount; vertex++) {
+    const base = vertex * floatsPerVertex + 3;
+    const squared = out[base] * out[base] + out[base + 1] * out[base + 1] + out[base + 2] * out[base + 2];
+    if (squared > 1e-12) {
+      const inverse = 1 / Math.sqrt(squared);
+      out[base] *= inverse;
+      out[base + 1] *= inverse;
+      out[base + 2] *= inverse;
+    }
+  }
+  return out;
+}
+
+/**
  * Assinatura estável do que está na GPU. O viewport compara a assinatura antes
  * de recriar buffers: subir a mesma geometria duas vezes é desperdício, e
  * ignorar uma mudança de topologia é bug.

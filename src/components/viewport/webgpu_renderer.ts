@@ -22,6 +22,7 @@ import {
   type CoreSnapshotDelivery,
 } from "../../services/core_bridge";
 import {
+  applyDeltasCpu,
   geometrySignature,
   packChannelRecordsWithWeights,
   viewportGeometryFromDecoded,
@@ -211,6 +212,8 @@ export class WebGpuViewportRenderer {
   private liveWeights: Map<string, number> = new Map();
   private liveWeightsExpiry: number = 0;
   private coreGeometryRequested: boolean = false;
+  /** Cor de fundo autorais do núcleo (`render.background_color`). */
+  private clearColor: [number, number, number, number] = [0.08, 0.09, 0.13, 1.0];
   private gpuMorphActive: boolean = false;
   private gpuMorphDirty: boolean = false;
   // P0-05: persistent buffer capacities (no destroy/create churn per event).
@@ -864,6 +867,10 @@ export class WebGpuViewportRenderer {
     this.coreCoverage = delivery.coverage;
     this.coreStaticRevision = Math.round(delivery.staticRevision);
     this.coreDynamicRevision = Math.round(delivery.dynamicRevision);
+    const background = delivery.state?.render?.background_color;
+    if (Array.isArray(background) && background.length === 4 && background.every((c) => Number.isFinite(c))) {
+      this.clearColor = [background[0], background[1], background[2], background[3]];
+    }
     this.liveWeights.clear();
 
     let geometryUploaded = false;
@@ -1962,7 +1969,12 @@ export class WebGpuViewportRenderer {
         {
           view: colorView,
           resolveTarget,
-          clearValue: { r: 0.08, g: 0.09, b: 0.13, a: 1.0 },
+          clearValue: {
+            r: this.clearColor[0],
+            g: this.clearColor[1],
+            b: this.clearColor[2],
+            a: this.clearColor[3],
+          },
           loadOp: "clear",
           storeOp: "store",
         },
@@ -2002,12 +2014,27 @@ export class WebGpuViewportRenderer {
     this.recordMetrics(startTime, "WebGPU Hardware");
   }
 
+  /**
+   * WebGL2 não tem compute shaders: os deltas do núcleo são acumulados no CPU
+   * (mesmos deltas, mesmo pesos — o meio muda, a geometria não).
+   */
+  private applyCoreDeltasToGlBuffer(gl: WebGL2RenderingContext): void {
+    if (!this.glVbo || !this.coreGeometry || !this.gpuMorphDirty) return;
+    if (this.coreGeometry.channels.length === 0) return;
+    const deformed = applyDeltasCpu(this.coreGeometry, this.effectiveChannelWeights());
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.glVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, deformed, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    this.gpuMorphDirty = false;
+  }
+
   private renderWebGL2(startTime: number) {
     const gl = this.gl;
     if (!gl || !this.glCelProgram || !this.glOutlineProgram || !this.glVao) return;
 
+    this.applyCoreDeltasToGlBuffer(gl);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.clearColor(0.08, 0.09, 0.13, 1.0);
+    gl.clearColor(this.clearColor[0], this.clearColor[1], this.clearColor[2], this.clearColor[3]);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     gl.enable(gl.DEPTH_TEST);
