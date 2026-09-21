@@ -94,6 +94,47 @@ export interface PassSpecV1 {
   only_when?: string;
 }
 
+/** Nó do render graph (issue #14): dependências, recursos e ativação. */
+export interface RenderGraphNodeV1 {
+  name: string;
+  kind: "render" | "compute";
+  /** Nome do passe em `passes` (null = pipeline ainda não existe). */
+  contract_pass: string | null;
+  depends_on: string[];
+  reads: string[];
+  writes: string[];
+  enabled: boolean;
+  order_hint: number;
+  only_when?: string | null;
+  early_z_for?: string | null;
+}
+
+export interface RenderGraphResourceV1 {
+  name: string;
+  kind: "transient_color" | "depth_stencil" | "storage_buffer";
+  format: string;
+  size: string;
+  samples: number;
+  /** `null` = recurso persistente (não transiente), fora do plano de aliasing. */
+  first_use: string | null;
+  last_use: string | null;
+}
+
+export interface RenderGraphV1 {
+  module: string;
+  scheduling: string;
+  order_hint: string;
+  settings_from: string;
+  nodes: RenderGraphNodeV1[];
+  resources: RenderGraphResourceV1[];
+  aliasing: {
+    strategy: string;
+    sharing_key: string[];
+    note: string;
+    groups: Array<{ name: string; members: string[] }>;
+  };
+}
+
 export interface ToonRampRowV1 {
   name: string;
   kind: "identity" | "steps";
@@ -146,6 +187,8 @@ export interface RenderContractV1 {
   uniforms: Record<string, UniformLayoutV1>;
   bind_groups: BindGroupV1[];
   passes: PassSpecV1[];
+  /** Issue #14: DAG declarativo (ordem, dependências, recursos transitórios). */
+  render_graph: RenderGraphV1;
   targets: {
     offscreen_color_format: string;
     viewport_color_format_policy: string;
@@ -461,15 +504,111 @@ export function shaderOf(name: string): ShaderSourceV1 {
   return shader;
 }
 
-/** Passes de render na ordem canônica (compute fica fora do render pass). */
-export function renderPasses(): PassSpecV1[] {
-  return RENDER_CONTRACT.passes
-    .filter((pass) => pass.kind === "render")
-    .sort((a, b) => a.order - b.order);
+/** Decisões do documento sobre o grafo (espelho de `RenderGraphSettings` do Rust). */
+export interface RenderGraphScheduleSettings {
+  /** `false` tira o depth pre-pass do plano. */
+  depthPrepass?: boolean;
+  /** Passes desligados pelo projeto. */
+  disabledPasses?: readonly string[];
+  /** Ordem preferida (respeita dependências). */
+  order?: readonly string[];
+}
+
+/** Issue #14: bloco do render graph do contrato. */
+export function renderGraph(): RenderGraphV1 {
+  return RENDER_CONTRACT.render_graph;
+}
+
+export function renderGraphNode(name: string): RenderGraphNodeV1 | undefined {
+  return renderGraph().nodes.find((node) => node.name === name);
+}
+
+/** Todos os passes de render do contrato (inclui os que ainda não têm pipeline). */
+export function allRenderPasses(): PassSpecV1[] {
+  return RENDER_CONTRACT.passes.filter((pass) => pass.kind === "render");
 }
 
 export function computePasses(): PassSpecV1[] {
   return RENDER_CONTRACT.passes.filter((pass) => pass.kind === "compute");
+}
+
+/**
+ * Ordem topológica do DAG (Kahn), com o **mesmo desempate do Rust**
+ * (`order_hint` e, depois, nome): headless e viewport não podem divergir na
+ * ordem de desenho. É a autoridade sobre ordem — não existe lista paralela.
+ *
+ * Exportada separada do contrato para o teste poder montar grafos sintéticos
+ * (ciclo, dependência inexistente, auto-dependência).
+ */
+export function renderGraphOrderOf(nodes: readonly RenderGraphNodeV1[]): string[] {
+  const names = new Set(nodes.map((node) => node.name));
+
+  // Grau de entrada = número de dependências **distintas** de cada nó (não o
+  // número de dependentes: isso inverteria o grafo).
+  const indegree = new Map<string, number>(nodes.map((node) => [node.name, 0]));
+  for (const node of nodes) {
+    for (const dependency of new Set(node.depends_on)) {
+      if (dependency === node.name) {
+        throw new RenderContractError("graph_cycle", `nó '${node.name}' depende de si mesmo`);
+      }
+      if (!names.has(dependency)) {
+        throw new RenderContractError(
+          "graph_dependency",
+          `nó '${node.name}' depende de '${dependency}', que não existe no grafo`
+        );
+      }
+      indegree.set(node.name, (indegree.get(node.name) ?? 0) + 1);
+    }
+  }
+
+  const ready = nodes.filter((node) => indegree.get(node.name) === 0);
+  const ordered: string[] = [];
+  while (ready.length > 0) {
+    ready.sort((left, right) => left.order_hint - right.order_hint || left.name.localeCompare(right.name));
+    const next = ready.shift()!;
+    ordered.push(next.name);
+    for (const node of nodes) {
+      if (!node.depends_on.includes(next.name)) continue;
+      const degree = (indegree.get(node.name) ?? 0) - 1;
+      indegree.set(node.name, degree);
+      if (degree === 0 && !ordered.includes(node.name) && !ready.includes(node)) ready.push(node);
+    }
+  }
+  if (ordered.length !== nodes.length) {
+    const remaining = nodes.map((node) => node.name).filter((name) => !ordered.includes(name));
+    throw new RenderContractError(
+      "graph_cycle",
+      `ciclo no render graph entre: ${remaining.join(" → ")}`
+    );
+  }
+  return ordered;
+}
+
+/** Ordem topológica do grafo do contrato (a que os dois renderers executam). */
+export function renderGraphOrder(): string[] {
+  return renderGraphOrderOf(renderGraph().nodes);
+}
+
+/**
+ * Passes de render que o frame executa: nós habilitados, com pipeline no
+ * contrato e não desligados pela cena, na ordem topológica do grafo.
+ */
+export function renderPasses(settings: RenderGraphScheduleSettings = {}): PassSpecV1[] {
+  return renderPassOrder(settings).map((name) => passOf(name));
+}
+
+/** Especificação de um passe pelo nome (inclui os que não estão no grafo). */
+export function passOf(name: string): PassSpecV1 {
+  const pass = RENDER_CONTRACT.passes.find((candidate) => candidate.name === name);
+  if (!pass) throw new RenderContractError("unknown_pass", `passe '${name}' não está no contrato`);
+  return pass;
+}
+
+/** Nós do grafo que ainda não têm pipeline: declarados, mas nunca executados. */
+export function passesWithoutPipeline(): string[] {
+  return renderGraph()
+    .nodes.filter((node) => node.contract_pass === null)
+    .map((node) => node.name);
 }
 
 export interface BlendStateLike {
@@ -516,9 +655,49 @@ export function depthFormat(): string {
   return RENDER_CONTRACT.targets.depth_format;
 }
 
-/** Ordem de desenho dos passes de render (`order` crescente). */
-export function renderPassOrder(): string[] {
-  return renderPasses().map((pass) => pass.name);
+/**
+ * Ordem de desenho dos passes de render (issue #14: vem do render graph).
+ *
+ * `disabled` são os passes desligados pela cena (snapshot do núcleo) — o plano
+ * do viewport e o do headless saem da mesma função, então não há como um
+ * desenhar um passe que o outro não desenha.
+ */
+export function renderPassOrder(settings: RenderGraphScheduleSettings = {}): string[] {
+  const disabled = new Set(settings.disabledPasses ?? []);
+  const enabled = new Set(
+    renderGraphOrder().filter((name) => {
+      const node = renderGraphNode(name)!;
+      // Só render passa por aqui: o compute de morphs tem o seu próprio
+      // dispatch, antes do render pass (mesma separação do headless).
+      if (node.kind !== "render") return false;
+      if (!node.enabled || node.contract_pass === null || disabled.has(name)) return false;
+      // O depth pre-pass é a decisão do documento (critério 1 do issue #14).
+      if (name === "depth_prepass" && settings.depthPrepass === false) return false;
+      return true;
+    })
+  );
+
+  let schedule = renderGraphOrder().filter((name) => enabled.has(name));
+  if (settings.order && settings.order.length > 0) {
+    // A ordem pedida pela cena respeita as dependências: um nó só entra depois
+    // de tudo em que ele depende (mesma regra do `schedule` do Rust).
+    const prioritized: string[] = [];
+    const placed = new Set<string>();
+    const push = (name: string) => {
+      if (placed.has(name) || !enabled.has(name)) return;
+      for (const dependency of renderGraphNode(name)?.depends_on ?? []) push(dependency);
+      placed.add(name);
+      prioritized.push(name);
+    };
+    for (const name of settings.order) push(name);
+    for (const name of schedule) {
+      if (placed.has(name)) continue;
+      placed.add(name);
+      prioritized.push(name);
+    }
+    schedule = prioritized;
+  }
+  return schedule.map((name) => renderGraphNode(name)!.contract_pass!);
 }
 
 /** FNV-1a de 64 bits sobre os bytes UTF-8 — mesma função do Rust e do gerador. */

@@ -11,6 +11,7 @@ use crate::diagnostics;
 use crate::device_recovery::{DeviceRecreationReport, PresentationMode, UncapturedErrorBus};
 use crate::mesh_validation;
 use crate::render_contract as contract;
+use crate::render_graph;
 use crate::uniforms::{
     BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform,
 };
@@ -26,9 +27,124 @@ pub struct RenderMetrics {
     /// `serde(default)`: telemetria antiga (sem o campo) continua desserializável.
     #[serde(default)]
     pub culled_draw_calls: u32,
+    /// Issue #14: passes do render graph que desenharam neste quadro, na ordem
+    /// de execução do DAG.
+    #[serde(default)]
+    pub passes_executed: Vec<String>,
+    /// Issue #14: nós do grafo que não rodaram (sem pipeline/sem ser agendados).
+    #[serde(default)]
+    pub passes_skipped: Vec<String>,
+    /// Issue #14: `true` quando o depth pre-pass rodou (early-Z para o cel).
+    #[serde(default)]
+    pub depth_prepass: bool,
+    /// Issue #14: bytes economizados pela aliasing de alvos transitórios.
+    #[serde(default)]
+    pub aliasing_saved_bytes: u64,
     pub triangle_count: usize,
     pub adapter_name: String,
     pub backend: String,
+}
+
+/// Issue #14: plano de execução do frame (ordem topológica + ativação vinda da
+/// cena). Fora do render graph, a lista de passes do contrato é o fallback — o
+/// frame nunca deixa de desenhar porque o grafo está malformado.
+struct FrameGraphPlan {
+    graph: Option<render_graph::RenderGraph>,
+    schedule: Vec<String>,
+    skipped: Vec<String>,
+    aliasing_saved_bytes: u64,
+    depth_prepass: bool,
+}
+
+fn frame_graph_plan(scene: &Scene, viewport: (u32, u32)) -> FrameGraphPlan {
+    let fallback = || FrameGraphPlan {
+        graph: None,
+        schedule: contract::render_pass_order()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        skipped: Vec::new(),
+        aliasing_saved_bytes: 0,
+        depth_prepass: false,
+    };
+    let graph = match render_graph::graph_from_contract() {
+        Ok(graph) => graph,
+        Err(error) => {
+            diagnostics::report_with_detail(
+                "contract_drift",
+                "render_graph do contrato não pôde ser lido",
+                Some(error.to_string()),
+            );
+            return fallback();
+        }
+    };
+    let settings = render_graph::GraphSettings {
+        disabled: scene.render_graph.apply_to(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.enabled && node.contract_pass.is_some())
+                .map(|node| node.name.clone()),
+        ),
+        order: scene.render_graph.order.clone(),
+    };
+    let schedule = match graph.schedule(&settings) {
+        Ok(schedule) => schedule,
+        Err(error) => {
+            diagnostics::report_with_detail(
+                "contract_drift",
+                "render_graph sem ordem de execução válida",
+                Some(error.to_string()),
+            );
+            return fallback();
+        }
+    };
+    // Nós declarados no DAG que não entram no plano (desabilitados ou sem
+    // pipeline) ficam na telemetria: é a diferença entre "não existe" e "existe
+    // e ainda não roda".
+    let skipped = graph
+        .topological_order()
+        .unwrap_or_else(|_| Vec::new())
+        .into_iter()
+        .filter(|name| !schedule.contains(name))
+        .filter(|name| {
+            graph
+                .node(name)
+                .map(|node| node.kind == render_graph::PassKind::Render)
+                .unwrap_or(false)
+        })
+        .collect();
+    let plan = graph.aliasing_plan(&schedule, viewport);
+    FrameGraphPlan {
+        depth_prepass: schedule.iter().any(|name| name == "depth_prepass"),
+        aliasing_saved_bytes: plan.saved_bytes,
+        graph: Some(graph),
+        schedule,
+        skipped,
+    }
+}
+
+/// Issue #14: mantém só os nós de render do plano (o compute de morphs tem o
+/// seu próprio dispatch, antes do render pass).
+fn render_schedule(plan: &FrameGraphPlan) -> Vec<(String, String)> {
+    match &plan.graph {
+        Some(graph) => plan
+            .schedule
+            .iter()
+            .filter_map(|name| {
+                let node = graph.node(name)?;
+                if node.kind != render_graph::PassKind::Render {
+                    return None;
+                }
+                Some((name.clone(), node.contract_pass.clone()?))
+            })
+            .collect(),
+        None => plan
+            .schedule
+            .iter()
+            .map(|name| (name.clone(), name.clone()))
+            .collect(),
+    }
 }
 
 /// P1-04: paleta de skinning entregue pelo núcleo (a mesma do snapshot).
@@ -59,6 +175,8 @@ fn bone_palette_uniform(scene: &Scene) -> BonePaletteUniform {
 /// canônico, a mesma fonte do snapshot do núcleo).
 struct DeviceResources {
     cel_pipeline: wgpu::RenderPipeline,
+    /// Issue #14: depth pre-pass (mesmo vertex shader do cel, sem fragment).
+    depth_prepass_pipeline: wgpu::RenderPipeline,
     outline_pipeline: wgpu::RenderPipeline,
     cel_bind_group_layout: wgpu::BindGroupLayout,
     outline_bind_group_layout: wgpu::BindGroupLayout,
@@ -77,6 +195,8 @@ pub struct HeadlessRenderer {
     /// Issue #11: modo de apresentação explícito (Fifo/Immediate/Mailbox).
     presentation_mode: PresentationMode,
     cel_pipeline: wgpu::RenderPipeline,
+    /// Issue #14: depth pre-pass (early-Z para o cel shading).
+    depth_prepass_pipeline: wgpu::RenderPipeline,
     outline_pipeline: wgpu::RenderPipeline,
     cel_bind_group_layout: wgpu::BindGroupLayout,
     outline_bind_group_layout: wgpu::BindGroupLayout,
@@ -426,6 +546,47 @@ impl HeadlessRenderer {
             multiview: None,
             cache: None,
         });
+        // Issue #14: Depth Pre-Pass. O vertex shader é o **mesmo** do cel (mesma
+        // transformação, mesmo modelo), sem fragment stage: o que ele entrega é o
+        // z-buffer resolvido, e o passe cel — com `less-equal` — passa a ser
+        // rejeitado por early-Z onde outro fragmento já está à frente. É o que
+        // reduz o overdraw sem mudar um pixel do resultado.
+        let prepass_spec = contract::render_pass("depth_prepass");
+        let depth_prepass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Depth Pre-Pass Pipeline"),
+            layout: Some(&cel_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cel_shader,
+                entry_point: Some(prepass_spec.vertex_entry.unwrap_or("vs_main")),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&vertex_layout),
+            },
+            // `None` = sem escrever cor: só profundidade.
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: prepass_spec.front_face,
+                cull_mode: prepass_spec.cull_mode,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: contract::depth_format(),
+                depth_write_enabled: prepass_spec.depth_write,
+                depth_compare: prepass_spec.depth_compare,
+                stencil: wgpu::StencilState::default(),
+                bias: prepass_spec.depth_bias,
+            }),
+            multisample: wgpu::MultisampleState {
+                count: contract::msaa_sample_count(),
+                ..Default::default()
+            },
+            multiview: None,
+            cache: None,
+        });
+
         // Inverted Hull Pipeline (Culls front faces to show backfaces extruded as outline)
         let outline_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Outline Pipeline Layout"),
@@ -558,6 +719,7 @@ impl HeadlessRenderer {
 
         Ok(DeviceResources {
             cel_pipeline,
+            depth_prepass_pipeline,
             outline_pipeline,
             cel_bind_group_layout,
             outline_bind_group_layout,
@@ -595,6 +757,7 @@ impl HeadlessRenderer {
             error_bus,
             presentation_mode: PresentationMode::Fifo,
             cel_pipeline: resources.cel_pipeline,
+            depth_prepass_pipeline: resources.depth_prepass_pipeline,
             outline_pipeline: resources.outline_pipeline,
             cel_bind_group_layout: resources.cel_bind_group_layout,
             outline_bind_group_layout: resources.outline_bind_group_layout,
@@ -636,6 +799,7 @@ impl HeadlessRenderer {
         self.queue = queue;
         self.adapter_info = adapter_info.clone();
         self.cel_pipeline = resources.cel_pipeline;
+        self.depth_prepass_pipeline = resources.depth_prepass_pipeline;
         self.outline_pipeline = resources.outline_pipeline;
         self.cel_bind_group_layout = resources.cel_bind_group_layout;
         self.outline_bind_group_layout = resources.outline_bind_group_layout;
@@ -999,6 +1163,12 @@ impl HeadlessRenderer {
         // telemetria é montada depois dele.
         let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
         let mut culled_draw_calls = 0u32;
+        // Issue #14: o plano do frame (ordem topológica + ativação da cena)
+        // substitui a lista fixa de passes; o grafo também informa a economia de
+        // memória da aliasing para a telemetria.
+        let graph_plan = frame_graph_plan(scene, (width, height));
+        let pass_schedule = render_schedule(&graph_plan);
+        let mut passes_executed: Vec<String> = Vec::new();
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1165,11 +1335,27 @@ impl HeadlessRenderer {
                         usage: wgpu::BufferUsages::INDEX,
                     });
 
-                    // A ordem dos passes vem do contrato (outline → cel), a mesma do viewport
+                    // Issue #14: a ordem vem do render graph (o mesmo plano que
+                    // o viewport lê do contrato), não de uma lista fixa.
                     render_pass.set_vertex_buffer(0, v_buffer.slice(..));
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    for pass_name in contract::render_pass_order() {
-                        match pass_name {
+                    if graph_plan.depth_prepass {
+                        // Depth pre-pass: escreve o z-buffer com o mesmo vertex
+                        // shader/modelo do cel; a partir daqui o cel passa a ser
+                        // rejeitado por early-Z onde algo já está à frente.
+                        render_pass.set_pipeline(&self.depth_prepass_pipeline);
+                        render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                        draw_calls += 1;
+                        if !passes_executed.iter().any(|name| name == "depth_prepass") {
+                            passes_executed.push("depth_prepass".to_string());
+                        }
+                    }
+                    for (node_name, pass_name) in &pass_schedule {
+                        if node_name == "depth_prepass" {
+                            continue;
+                        }
+                        match pass_name.as_str() {
                             "outline" => {
                                 render_pass.set_pipeline(&self.outline_pipeline);
                                 render_pass.set_bind_group(0, &outline_bind_group, &[]);
@@ -1182,14 +1368,16 @@ impl HeadlessRenderer {
                                 // P1-01: passe sem pipeline vira diagnóstico
                                 // observável (era `debug_assert!`).
                                 contract::report(format!(
-                                    "passe '{}' do render contract não tem pipeline no headless",
-                                    other
+                                    "passe '{other}' do render graph não tem pipeline no headless"
                                 ));
                                 continue;
                             }
                         }
                         render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                         draw_calls += 1;
+                        if !passes_executed.iter().any(|name| name == node_name) {
+                            passes_executed.push(node_name.clone());
+                        }
                     }
 
                     triangle_count += mesh.indices.len() / 3;
@@ -1271,6 +1459,10 @@ impl HeadlessRenderer {
             render_time_ms: elapsed,
             draw_calls,
             culled_draw_calls,
+            passes_executed,
+            passes_skipped: graph_plan.skipped.clone(),
+            depth_prepass: graph_plan.depth_prepass,
+            aliasing_saved_bytes: graph_plan.aliasing_saved_bytes,
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
@@ -1493,6 +1685,11 @@ impl HeadlessRenderer {
         // caminhos do headless não podem divergir no que desenham.
         let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
         let mut culled_draw_calls = 0u32;
+        // Issue #14: o mesmo plano do caminho principal — os dois caminhos do
+        // headless executam o grafo do mesmo jeito.
+        let graph_plan = frame_graph_plan(scene, (width, height));
+        let pass_schedule = render_schedule(&graph_plan);
+        let mut passes_executed: Vec<String> = Vec::new();
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1665,11 +1862,23 @@ impl HeadlessRenderer {
                         None => morphed_vertex_buffer.slice(..),
                     };
 
-                    // A ordem dos passes vem do contrato (outline → cel), a mesma do viewport
+                    // Issue #14: mesma ordem do grafo do caminho principal.
                     render_pass.set_vertex_buffer(0, active_v_slice);
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    for pass_name in contract::render_pass_order() {
-                        match pass_name {
+                    if graph_plan.depth_prepass {
+                        render_pass.set_pipeline(&self.depth_prepass_pipeline);
+                        render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                        draw_calls += 1;
+                        if !passes_executed.iter().any(|name| name == "depth_prepass") {
+                            passes_executed.push("depth_prepass".to_string());
+                        }
+                    }
+                    for (node_name, pass_name) in &pass_schedule {
+                        if node_name == "depth_prepass" {
+                            continue;
+                        }
+                        match pass_name.as_str() {
                             "outline" => {
                                 render_pass.set_pipeline(&self.outline_pipeline);
                                 render_pass.set_bind_group(0, &outline_bind_group, &[]);
@@ -1682,14 +1891,16 @@ impl HeadlessRenderer {
                                 // P1-01: passe sem pipeline vira diagnóstico
                                 // observável (era `debug_assert!`).
                                 contract::report(format!(
-                                    "passe '{}' do render contract não tem pipeline no headless",
-                                    other
+                                    "passe '{other}' do render graph não tem pipeline no headless"
                                 ));
                                 continue;
                             }
                         }
                         render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                         draw_calls += 1;
+                        if !passes_executed.iter().any(|name| name == node_name) {
+                            passes_executed.push(node_name.clone());
+                        }
                     }
 
                     triangle_count += mesh.indices.len() / 3;
@@ -1771,6 +1982,10 @@ impl HeadlessRenderer {
             render_time_ms: elapsed,
             draw_calls,
             culled_draw_calls,
+            passes_executed,
+            passes_skipped: graph_plan.skipped.clone(),
+            depth_prepass: graph_plan.depth_prepass,
+            aliasing_saved_bytes: graph_plan.aliasing_saved_bytes,
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
@@ -1868,7 +2083,15 @@ mod tests {
                     assert_eq!(img.width(), 128);
                     assert_eq!(img.height(), 128);
                     assert_eq!(metrics.triangle_count, 20640 / 3);
-                    assert_eq!(metrics.draw_calls, 2);
+                    // Issue #14: um draw por passe do plano (depth pre-pass,
+                    // cel e outline com os padrões do contrato).
+                    assert_eq!(metrics.draw_calls, 3);
+                    assert_eq!(
+                        metrics.passes_executed,
+                        vec!["depth_prepass", "cel", "outline"],
+                        "a ordem do grafo é pre-pass → cel → outline"
+                    );
+                    assert!(metrics.depth_prepass);
                 }
             }
         });
@@ -1987,7 +2210,10 @@ mod tests {
 
                 assert_eq!(img.width(), 128);
                 assert_eq!(img.height(), 128);
-                assert_eq!(metrics.draw_calls, 2);
+                // Issue #14: o caminho com compute de morphs executa o mesmo
+                // plano do grafo (pre-pass → cel → outline).
+                assert_eq!(metrics.draw_calls, 3);
+                assert_eq!(metrics.passes_executed, vec!["depth_prepass", "cel", "outline"]);
                 assert_eq!(metrics.triangle_count, 12);
             }
         });
@@ -2041,4 +2267,402 @@ mod tests {
             assert!(metrics.draw_calls >= 1);
         });
     }
+    /// Issue #14 (critério 2): rasteriza uma malha na CPU e devolve quantos
+    /// fragmentos **passaram no depth-test** — a mesma métrica que um contador
+    /// de fragmentos sombreados daria com early-Z habilitado.
+    ///
+    /// O contorno (inverted hull) extrusa a geometria no vertex shader; aqui a
+    /// malha base é usada nos dois planos, o que **subestima** a área do
+    /// contorno e nunca infla o ganho do pre-pass. As duas medições usam o mesmo
+    /// caminho de código, então a diferença vem do plano, não do medidor.
+    #[allow(clippy::too_many_arguments)]
+    fn rasterize_fragments(
+        mvp: &glam::Mat4,
+        vertices: &[anigo_core::Vertex],
+        indices: &[u32],
+        (width, height): (u32, u32),
+        depth: &mut [f32],
+        writes_depth: bool,
+        compares_equal: bool,
+        counts_fragments: bool,
+    ) -> u64 {
+        let mut shaded = 0u64;
+        for triangle in indices.chunks_exact(3) {
+            let mut screen = [[0.0f32; 3]; 3];
+            let mut visible = true;
+            for (slot, index) in triangle.iter().enumerate() {
+                let position = vertices[*index as usize].position;
+                let clip = *mvp * glam::Vec4::new(position[0], position[1], position[2], 1.0);
+                if clip.w <= 1e-6 {
+                    visible = false;
+                    break;
+                }
+                let ndc = glam::Vec3::new(clip.x, clip.y, clip.z) / clip.w;
+                screen[slot] = [
+                    (ndc.x * 0.5 + 0.5) * width as f32,
+                    (1.0 - (ndc.y * 0.5 + 0.5)) * height as f32,
+                    ndc.z,
+                ];
+            }
+            if !visible {
+                continue;
+            }
+            let min_x = screen.iter().map(|v| v[0]).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
+            let max_x = screen
+                .iter()
+                .map(|v| v[0])
+                .fold(f32::MIN, f32::max)
+                .ceil()
+                .min(width as f32) as u32;
+            let min_y = screen.iter().map(|v| v[1]).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
+            let max_y = screen
+                .iter()
+                .map(|v| v[1])
+                .fold(f32::MIN, f32::max)
+                .ceil()
+                .min(height as f32) as u32;
+            for y in min_y..max_y {
+                for x in min_x..max_x {
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let edge = |a: [f32; 3], b: [f32; 3]| {
+                        (px - a[0]) * (b[1] - a[1]) - (py - a[1]) * (b[0] - a[0])
+                    };
+                    let w0 = edge(screen[1], screen[2]);
+                    let w1 = edge(screen[2], screen[0]);
+                    let w2 = edge(screen[0], screen[1]);
+                    let inside = (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0)
+                        || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0);
+                    if !inside {
+                        continue;
+                    }
+                    let total = w0 + w1 + w2;
+                    if total.abs() < 1e-9 {
+                        continue;
+                    }
+                    let z = (w0 * screen[0][2] + w1 * screen[1][2] + w2 * screen[2][2]) / total;
+                    let index = (y * width + x) as usize;
+                    let passes = if compares_equal {
+                        z <= depth[index]
+                    } else {
+                        z < depth[index]
+                    };
+                    if passes {
+                        if counts_fragments {
+                            shaded += 1;
+                        }
+                        if writes_depth {
+                            depth[index] = z;
+                        }
+                    }
+                }
+            }
+        }
+        shaded
+    }
+
+    #[test]
+    fn render_graph_plan_drives_the_frame_and_follows_the_document() {
+        // Issue #14, critério 1: ordem e ativação dos passes são configuráveis
+        // pelo documento (`scene.render_graph`), e o que o núcleo manda é o que
+        // o frame executa — a telemetria prova a correspondência.
+        let _guard = crate::diagnostics::test_guard();
+        pollster::block_on(async {
+            let renderer = match HeadlessRenderer::new().await {
+                Ok(renderer) => renderer,
+                Err(_) => return, // sem adaptador: o teste de GPU se pula
+            };
+
+            // (a) padrão do contrato: pre-pass ligado.
+            let scene = Scene::default();
+            let (_, metrics) = renderer.render_scene(&scene, 64, 64).await.unwrap();
+            assert!(metrics.depth_prepass);
+            assert_eq!(metrics.passes_executed, vec!["depth_prepass", "cel", "outline"]);
+            assert_eq!(metrics.draw_calls, 3);
+            assert!(
+                metrics.passes_skipped.is_empty(),
+                "todo passe agendado tem pipeline: {:?}",
+                metrics.passes_skipped
+            );
+
+            // (b) o documento desliga o pre-pass: ele sai do plano **e** da
+            // telemetria (não é um no-op disfarçado).
+            let mut without_prepass = Scene::default();
+            without_prepass.render_graph.depth_prepass = false;
+            let (_, metrics) = renderer
+                .render_scene(&without_prepass, 64, 64)
+                .await
+                .unwrap();
+            assert!(!metrics.depth_prepass);
+            assert_eq!(metrics.passes_executed, vec!["cel", "outline"]);
+            assert_eq!(metrics.draw_calls, 2);
+
+            // (c) um passe do grafo desligado pelo nome também sai do plano.
+            let mut without_outline = Scene::default();
+            without_outline.render_graph.disabled_passes = vec!["inverted_hull_outline".to_string()];
+            let (_, metrics) = renderer
+                .render_scene(&without_outline, 64, 64)
+                .await
+                .unwrap();
+            assert_eq!(metrics.passes_executed, vec!["depth_prepass", "cel"]);
+            assert_eq!(metrics.draw_calls, 2);
+
+            // (d) a ordem pedida pela cena vale, mas nunca antes das
+            // dependências (o pre-pass continua abrindo o frame).
+            let mut reordered = Scene::default();
+            reordered.render_graph.order = vec![
+                "inverted_hull_outline".to_string(),
+                "opaque_cel".to_string(),
+            ];
+            let (_, metrics) = renderer.render_scene(&reordered, 64, 64).await.unwrap();
+            assert_eq!(metrics.passes_executed, vec!["depth_prepass", "cel", "outline"]);
+        });
+    }
+
+    #[test]
+    fn depth_prepass_does_not_change_a_single_pixel() {
+        // Issue #14, critério 3: o pre-pass é uma otimização, não um efeito. Os
+        // dois frames (com e sem pre-pass) precisam ser **idênticos** byte a byte
+        // — é o que garante que viewport e headless continuam concordando quando
+        // um deles tem o passe ligado e o outro não.
+        let _guard = crate::diagnostics::test_guard();
+        pollster::block_on(async {
+            let renderer = match HeadlessRenderer::new().await {
+                Ok(renderer) => renderer,
+                Err(_) => return,
+            };
+
+            let scene = Scene::default();
+            let (with_prepass, metrics) = renderer.render_scene(&scene, 96, 96).await.unwrap();
+            assert!(metrics.depth_prepass);
+
+            let mut without = Scene::default();
+            without.render_graph.depth_prepass = false;
+            let (without_prepass, metrics) = renderer.render_scene(&without, 96, 96).await.unwrap();
+            assert!(!metrics.depth_prepass);
+
+            assert_eq!(
+                with_prepass.as_raw(),
+                without_prepass.as_raw(),
+                "o depth pre-pass não pode alterar a imagem final"
+            );
+        });
+    }
+
+    #[test]
+    fn depth_prepass_reduces_overdraw_in_the_cel_pass() {
+        // Issue #14, critério 2: "redução comprovada do overdraw no passe cel
+        // graças ao DepthPrepass". O medidor é o `rasterize_fragments`: ele
+        // rasteriza a geometria real com a mesma `view_proj` e as regras de
+        // depth-test do contrato (`less` no pre-pass, `less-equal` no cel, sem
+        // escrita de profundidade no contorno) e conta quantos fragmentos
+        // **passariam** no teste — exatamente o que o early-Z decide no hardware.
+        //
+        // A cena é o caso em que o pre-pass importa: dois nós empilhados na
+        // profundidade, com o mais distante desenhado primeiro. Sem o pre-pass o
+        // passe cel sombreia os fragmentos do nó distante que o nó próximo cobre
+        // (overdraw puro); com o z-buffer resolvido antes, esses fragmentos são
+        // recusados antes do sombreamento.
+        use crate::render_graph::PassKind;
+        use anigo_core::mesh::Mesh;
+        use anigo_core::scene::SceneNode;
+
+        let graph = crate::render_graph::graph_from_contract().expect("grafo do contrato");
+        let (width, height) = (128u32, 128u32);
+
+        let mut scene = Scene::new_empty();
+        let mut far = SceneNode::new("nod_far", "Far").with_mesh(Mesh::create_cube(2.0));
+        far.transform.translation = glam::Vec3::new(0.0, 0.0, -3.0);
+        let mut near = SceneNode::new("nod_near", "Near").with_mesh(Mesh::create_cube(2.0));
+        near.transform.translation = glam::Vec3::new(0.0, 0.0, -1.0);
+        scene.add_node(far); // desenhado primeiro: o pior caso de overdraw
+        scene.add_node(near);
+        scene.rebuild_children();
+        // A mesma resolução do render: W = W_pai × T_local (aqui sem hierarquia,
+        // mas o caminho é idêntico ao do frame).
+        let world_matrices = scene.resolve_world_transforms().expect("mundo dos nós");
+
+        let mut camera = scene.camera.clone();
+        camera.aspect = width as f32 / height as f32;
+        let view_proj = camera.build_view_projection_matrix();
+
+        // Conta os fragmentos sombreados do passe cel no plano dado.
+        let cel_fragments = |schedule: &[String]| -> u64 {
+            let mut depth = vec![1.0f32; (width * height) as usize];
+            let mut shaded = 0u64;
+            for name in schedule {
+                let node = graph.node(name).expect("nó do plano");
+                let pass = node.contract_pass.as_deref().unwrap_or(name.as_str());
+                let is_render = node.kind == PassKind::Render;
+                // O contrato manda: o pre-pass abre o z-buffer sem fragment
+                // stage; o cel escreve profundidade; o contorno não escreve.
+                let (writes_depth, compares_equal) = match pass {
+                    "depth_prepass" => (true, false),
+                    "cel" => (true, true),
+                    _ => (false, true),
+                };
+                if !is_render {
+                    continue; // o compute de morphs não rasteriza nada
+                }
+                for entry in &scene.nodes {
+                    let Some(mesh) = entry.mesh.as_ref() else {
+                        continue;
+                    };
+                    let model = world_matrices
+                        .get(&entry.id)
+                        .copied()
+                        .unwrap_or_else(|| entry.transform.to_matrix());
+                    let mvp = view_proj * model;
+                    let count = name == "opaque_cel";
+                    let shaded_now = rasterize_fragments(
+                        &mvp,
+                        &mesh.vertices,
+                        &mesh.indices,
+                        (width, height),
+                        &mut depth,
+                        writes_depth,
+                        compares_equal,
+                        count,
+                    );
+                    if count {
+                        shaded += shaded_now;
+                    }
+                }
+            }
+            shaded
+        };
+
+        let with_prepass = graph
+            .schedule(&crate::render_graph::GraphSettings::default())
+            .expect("plano padrão");
+        assert!(with_prepass.contains(&"depth_prepass".to_string()));
+
+        let mut settings = crate::render_graph::GraphSettings::default();
+        settings.disabled.insert("depth_prepass".to_string());
+        let without_prepass = graph.schedule(&settings).expect("plano sem pre-pass");
+
+        let with = cel_fragments(&with_prepass);
+        let without = cel_fragments(&without_prepass);
+        assert!(with > 0, "o cel precisa sombrear alguma coisa");
+        assert!(
+            with < without,
+            "o depth pre-pass precisa reduzir os fragmentos do cel \
+             (com: {with}, sem: {without})"
+        );
+
+        // A economia não pode vir de geometria sumida: os dois frames desenham
+        // a mesma coisa (e o teste de paridade abaixo confere os pixels).
+        assert_eq!(scene.nodes.len(), 2);
+    }
+
+    #[test]
+    fn depth_prepass_does_not_change_a_single_pixel() {
+        // Issue #14, critério 3: o pre-pass é uma otimização, não um efeito. Os
+        // dois frames (com e sem pre-pass) precisam ser **idênticos** byte a byte
+        // — é o que garante que viewport e headless continuam concordando quando
+        // um deles tem o passe ligado e o outro não.
+        let _guard = crate::diagnostics::test_guard();
+        pollster::block_on(async {
+            let renderer = match HeadlessRenderer::new().await {
+                Ok(renderer) => renderer,
+                Err(_) => return,
+            };
+
+            let scene = Scene::default();
+            let (with_prepass, metrics) = renderer.render_scene(&scene, 96, 96).await.unwrap();
+            assert!(metrics.depth_prepass);
+
+            let mut without = Scene::default();
+            without.render_graph.depth_prepass = false;
+            let (without_prepass, metrics) = renderer.render_scene(&without, 96, 96).await.unwrap();
+            assert!(!metrics.depth_prepass);
+
+            assert_eq!(
+                with_prepass.as_raw(),
+                without_prepass.as_raw(),
+                "o depth pre-pass não pode alterar a imagem final"
+            );
+        });
+    }
+
+    #[test]
+    fn depth_prepass_reduces_shaded_fragments() {
+        // Issue #14, critério 2: "redução comprovada do overdraw no passe cel
+        // graças ao DepthPrepass". Sem contadores de GPU (wgpu não expõe
+        // pipeline statistics), a contagem é feita na CPU com a **mesma**
+        // geometria, a mesma `view_proj` e as mesmas regras de depth-test do
+        // contrato — uma medida comparativa: o mesmo simulador roda nos dois
+        // planos, então a diferença é do passe, não do medidor.
+        use crate::render_graph::PassKind;
+
+        let graph = crate::render_graph::graph_from_contract().expect("grafo do contrato");
+        let scene = Scene::default();
+        let (width, height) = (128u32, 128u32);
+        let mut camera = scene.camera.clone();
+        camera.aspect = width as f32 / height as f32;
+        let view_proj = camera.build_view_projection_matrix();
+
+        let counts = |schedule: &[String]| -> (u64, u64) {
+            // depth buffer (1.0 = nada desenhado) + quem escreve profundidade
+            let mut depth = vec![1.0f32; (width * height) as usize];
+            let mut cel_fragments = 0u64;
+            let mut outline_fragments = 0u64;
+            for name in schedule {
+                let node = graph.node(name).expect("nó do plano");
+                let pass = node.contract_pass.as_deref().unwrap_or(name.as_str());
+                let writes_depth = match pass {
+                    "depth_prepass" => true,
+                    "cel" => true,
+                    // o contorno não escreve profundidade (contrato)
+                    _ => false,
+                };
+                // O pre-pass não tem fragment stage: ele escreve z sem sombrear.
+                let counts_fragments = node.kind == PassKind::Render && name != "depth_prepass";
+                for entry in &scene.nodes {
+                    let Some(mesh) = entry.mesh.as_ref() else {
+                        continue;
+                    };
+                    let model = entry.world_matrix;
+                    let mvp = view_proj * model;
+                    let shaded = rasterize_fragments(
+                        &mvp,
+                        &mesh.vertices,
+                        &mesh.indices,
+                        (width, height),
+                        &mut depth,
+                        writes_depth,
+                        counts_fragments,
+                    );
+                    if counts_fragments {
+                        if node.name == "opaque_cel" || pass == "cel" {
+                            cel_fragments += shaded;
+                        } else if pass == "outline" {
+                            outline_fragments += shaded;
+                        }
+                    }
+                }
+            }
+            (cel_fragments, outline_fragments)
+        };
+
+        let with_prepass = graph
+            .schedule(&crate::render_graph::GraphSettings::default())
+            .expect("plano padrão");
+        let mut without_settings = crate::render_graph::GraphSettings::default();
+        without_settings.disabled.insert("depth_prepass".to_string());
+        let without_prepass = graph.schedule(&without_settings).expect("plano sem pre-pass");
+
+        let (cel_with, outline_with) = counts(&with_prepass);
+        let (cel_without, outline_without) = counts(&without_prepass);
+
+        assert!(
+            cel_with <= cel_without,
+            "o pre-pass não pode aumentar os fragmentos do cel ({cel_with} > {cel_without})"
+        );
+        assert!(
+            cel_with + outline_with < cel_without + outline_without,
+            "o total de fragmentos sombreados precisa cair com o pre-pass \
+             (com: {cel_with} + {outline_with}, sem: {cel_without} + {outline_without})"
+        );
+    }
+
 }

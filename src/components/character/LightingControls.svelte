@@ -13,6 +13,9 @@
     /** Issue #13: modo de projeção da câmera (`perspective`/`orthographic`). */
     projectionMode?: "perspective" | "orthographic";
     onProjectionChange?: (mode: "perspective" | "orthographic") => void;
+    /** Issue #14: depth pre-pass do render graph (early-Z no passe cel). */
+    depthPrepass?: boolean;
+    onDepthPrepassChange?: (enabled: boolean) => void;
     onUpdate?: (params: {
       azimuth: number;
       elevation: number;
@@ -38,6 +41,8 @@
     ambientIntensity = $bindable(0.35),
     projectionMode = "perspective",
     onProjectionChange = undefined,
+    depthPrepass = true,
+    onDepthPrepassChange = undefined,
     onUpdate = undefined,
   }: Props = $props();
 
@@ -268,6 +273,26 @@
     </div>
   </div>
 
+  <div class="control-group">
+    <div class="group-title">PASSES (RENDER GRAPH)</div>
+    <label class="check-row">
+      <input
+        type="checkbox"
+        checked={depthPrepass}
+        aria-label="Depth pre-pass"
+        onchange={(event) => onDepthPrepassChange?.((event.currentTarget as HTMLInputElement).checked)}
+      />
+      <span>
+        Depth pre-pass (early-Z)
+        <span class="val-tag">{depthPrepass ? "ON" : "OFF"}</span>
+      </span>
+    </label>
+    <div class="hint-row">
+      Desenha o z-buffer com o mesmo vertex shader do cel antes do sombreamento: o
+      passe cel fica rejeitado por early-Z e o overdraw cai sem mudar um pixel.
+    </div>
+  </div>
+
   {#if activeTool === "ambient" || (!["sun", "shadows", "ambient"].includes(activeTool))}
   <div class="control-group">
     <div class="group-title">INTENSIDADE & COR</div>
@@ -421,6 +446,21 @@
     background: #24405e;
     border-color: #38bdf8;
     color: #f1f5f9;
+  }
+
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.74rem;
+    color: #cbd5e1;
+    cursor: pointer;
+  }
+
+  .check-row span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .hint-row {

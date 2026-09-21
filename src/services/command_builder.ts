@@ -34,6 +34,7 @@ import {
 } from "../contracts/project_state.v1";
 import { assetIdForUri } from "./project_persistence";
 import { CANONICAL_SLIDERS, type MorphSlider } from "./morph_catalog";
+import { renderGraphOrder } from "../contracts/render_contract.v1";
 
 /** Why an intent could not become a command (mirrors `CommandError`). */
 export type CommandBuildErrorCode =
@@ -197,7 +198,14 @@ export type CommandIntent =
     }
   | { kind: "preset"; preset: MeshPresetWire }
   | { kind: "background_color"; color: [number, number, number, number]; current_color?: [number, number, number, number] }
-  | { kind: "render_settings"; msaa_samples?: number; tonemap?: TonemapOperatorWire }
+  | {
+      kind: "render_settings";
+      msaa_samples?: number;
+      tonemap?: TonemapOperatorWire;
+      depth_prepass?: boolean;
+      disabled_passes?: string[];
+      pass_order?: string[];
+    }
   | { kind: "rename_project"; name: string; current_name?: string }
   | { kind: "batch"; intents: CommandIntent[] };
 
@@ -206,6 +214,11 @@ export type CommandIntent =
 // ---------------------------------------------------------------------------
 
 const MSAA_SAMPLES = [1, 2, 4, 8, 16] as const;
+/**
+ * Issue #14: nomes de passe aceitos pelo comando `set_render_settings` — a
+ * lista sai do próprio grafo, então um passe novo aparece aqui sozinho.
+ */
+const RENDER_GRAPH_PASS_NAMES: readonly string[] = renderGraphOrder();
 const BACKGROUND_KEYS: Array<keyof LightIntent> = [
   "direction",
   "color",
@@ -662,7 +675,13 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
     }
 
     case "render_settings": {
-      if (intent.msaa_samples === undefined && intent.tonemap === undefined) {
+      if (
+        intent.msaa_samples === undefined &&
+        intent.tonemap === undefined &&
+        intent.depth_prepass === undefined &&
+        intent.disabled_passes === undefined &&
+        intent.pass_order === undefined
+      ) {
         return fail("no_op", "configurações de render vazias");
       }
       const command: CommandWire = { kind: "set_render_settings" };
@@ -681,6 +700,34 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
           return fail("invalid_value", `tonemap '${intent.tonemap}' desconhecido`, "tonemap");
         }
         (command as Record<string, unknown>)["tonemap"] = intent.tonemap;
+      }
+      // Issue #14: os nomes precisam existir no grafo — um passe desconhecido
+      // desligado em silêncio esconderia um typo.
+      for (const [field, passes] of [
+        ["disabled_passes", intent.disabled_passes],
+        ["pass_order", intent.pass_order],
+      ] as const) {
+        for (const pass of passes ?? []) {
+          if (!RENDER_GRAPH_PASS_NAMES.includes(pass)) {
+            return fail(
+              "invalid_value",
+              `'${pass}' não é um passe do render graph`,
+              field
+            );
+          }
+        }
+        if (passes && new Set(passes).size !== passes.length) {
+          return fail("invalid_value", `${field} não pode repetir um passe`, field);
+        }
+      }
+      if (intent.depth_prepass !== undefined) {
+        (command as Record<string, unknown>)["depth_prepass"] = intent.depth_prepass;
+      }
+      if (intent.disabled_passes !== undefined) {
+        (command as Record<string, unknown>)["disabled_passes"] = [...intent.disabled_passes];
+      }
+      if (intent.pass_order !== undefined) {
+        (command as Record<string, unknown>)["pass_order"] = [...intent.pass_order];
       }
       return { ok: true, command };
     }

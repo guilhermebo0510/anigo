@@ -81,7 +81,8 @@ import {
   depthFormat,
   filterMode,
   msaaSampleCount,
-  renderPasses,
+  passOf,
+  renderPassOrder,
   RENDER_CONTRACT,
   bonePaletteBytes,
   skinning,
@@ -200,6 +201,19 @@ export class WebGpuViewportRenderer {
   private msaaColorView: GPUTextureView | null = null;
   private sampleCount: number = msaaSampleCount();
   private celPipeline: GPURenderPipeline | null = null;
+  /** Issue #14: depth pre-pass (mesmo vertex shader do cel, sem fragment). */
+  private depthPrepassPipeline: GPURenderPipeline | null = null;
+  /**
+   * Issue #14: decisões do documento sobre o render graph (snapshot do núcleo).
+   * O plano do frame sai daqui + do contrato, nunca de uma lista local.
+   */
+  private renderGraphSettings: {
+    depthPrepass: boolean;
+    disabledPasses: string[];
+    order: string[];
+  } = { depthPrepass: true, disabledPasses: [], order: [] };
+  /** Último plano executado (telemetria do HUD). */
+  private lastPassSchedule: string[] = [];
   private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
@@ -483,11 +497,10 @@ export class WebGpuViewportRenderer {
     const celModule = this.device.createShaderModule({ code: celShaderCode });
     const outlineModule = this.device.createShaderModule({ code: outlineShaderCode });
 
-    const passSpec = (name: string) => {
-      const pass = renderPasses().find((candidate) => candidate.name === name);
-      if (!pass) throw new Error(`passe '${name}' não está no render contract`);
-      return pass;
-    };
+    // Issue #14: a especificação de cada passe vem do contrato pelo nome —
+    // inclusive do depth pre-pass, que não está entre os que o grafo agenda
+    // quando a cena o desliga.
+    const passSpec = (name: string) => passOf(name);
     const celPass = passSpec("cel");
     const outlinePass = passSpec("outline");
 
@@ -524,6 +537,31 @@ export class WebGpuViewportRenderer {
         format: depthFormat() as any,
         depthWriteEnabled: celPass.depth_write ?? true,
         depthCompare: (celPass.depth_compare ?? "less-equal") as any,
+      },
+      multisample: { count: msaaSampleCount() },
+    });
+
+    // Issue #14: depth pre-pass. Mesmo vertex shader/transformação do cel e
+    // **sem fragment stage**: o que ele entrega é o z-buffer resolvido, e o passe
+    // cel (less-equal) passa a ser rejeitado por early-Z onde outro fragmento já
+    // está à frente. Nenhum pixel muda; o overdraw é que cai.
+    const prepassPass = passSpec("depth_prepass");
+    this.depthPrepassPipeline = this.device.createRenderPipeline({
+      layout: "auto",
+      vertex: {
+        module: celModule,
+        entryPoint: prepassPass.vertex_entry ?? "vs_main",
+        buffers: [contractVertexLayout],
+      },
+      fragment: undefined,
+      primitive: {
+        topology: "triangle-list",
+        cullMode: (prepassPass.cull_mode ?? "back") as any,
+      },
+      depthStencil: {
+        format: depthFormat() as any,
+        depthWriteEnabled: prepassPass.depth_write ?? true,
+        depthCompare: (prepassPass.depth_compare ?? "less") as any,
       },
       multisample: { count: msaaSampleCount() },
     });
@@ -1202,6 +1240,62 @@ export class WebGpuViewportRenderer {
    * 2. deixa o compute canônico (`morph_sparse_compute.wgsl`) aplicar os pesos;
    * 3. descarta qualquer adiantamento local de peso (a autoridade voltou a falar).
    */
+  /**
+   * Issue #14: plano de passes do frame — `render_graph` do contrato filtrado
+   * pelo que o documento decidiu (depth pre-pass ligado/desligado e passes
+   * desligados). É a mesma função que o headless usa, então viewport e headless
+   * desenham a mesma sequência no mesmo frame.
+   */
+  private passPlan(): string[] {
+    try {
+      return renderPassOrder({
+        depthPrepass: this.renderGraphSettings.depthPrepass,
+        disabledPasses: this.renderGraphSettings.disabledPasses,
+        order: this.renderGraphSettings.order,
+      });
+    } catch (error) {
+      this.report("contract_drift", `render graph inválido: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Issue #14: aplica o bloco `render.render_graph` do snapshot do núcleo
+   * (critério 1 do issue: ordem e ativação configuráveis via snapshots).
+   */
+  public setRenderGraphSettings(settings: {
+    depth_prepass?: boolean;
+    disabled_passes?: string[];
+    order?: string[];
+  }): void {
+    this.renderGraphSettings = {
+      depthPrepass: settings.depth_prepass ?? true,
+      disabledPasses: [...(settings.disabled_passes ?? [])],
+      order: [...(settings.order ?? [])],
+    };
+    this.lastPassSchedule = this.passPlan();
+  }
+
+  /**
+   * Issue #14: liga/desliga o depth pre-pass (controle da UI). O valor efetivo é
+   * o do plano — se o grafo não tem o nó ou o contrato não tem o passe, não há
+   * pre-pass para ligar e o retorno é `false` (o que está na tela, não o pedido).
+   */
+  public setDepthPrepass(enabled: boolean): boolean {
+    this.renderGraphSettings = { ...this.renderGraphSettings, depthPrepass: enabled };
+    this.lastPassSchedule = this.passPlan();
+    return this.lastPassSchedule.includes("depth_prepass");
+  }
+
+  public depthPrepassEnabled(): boolean {
+    return this.passPlan().includes("depth_prepass");
+  }
+
+  /** Passes que o frame executa, na ordem do render graph (telemetria/HUD). */
+  public passesExecuted(): string[] {
+    return this.lastPassSchedule.length > 0 ? [...this.lastPassSchedule] : this.passPlan();
+  }
+
   public applyCoreSnapshot(delivery: CoreSnapshotDelivery): {
     applied: boolean;
     geometryUploaded: boolean;
@@ -1220,6 +1314,10 @@ export class WebGpuViewportRenderer {
     if (Array.isArray(background) && background.length === 4 && background.every((c) => Number.isFinite(c))) {
       this.clearColor = [background[0], background[1], background[2], background[3]];
     }
+    // Issue #14: o render graph vem no mesmo snapshot — ordem e ativação dos
+    // passes deixam de ser constante de código no viewport.
+    const graphSettings = delivery.state?.render?.render_graph;
+    if (graphSettings) this.setRenderGraphSettings(graphSettings);
     this.liveWeights.clear();
 
     let geometryUploaded = false;
@@ -2496,13 +2594,18 @@ export class WebGpuViewportRenderer {
     passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // Ordem dos passes vem do contrato (outline → cel em ordem de `order`),
-    // exatamente como o headless monta o render pass.
-    for (const pass of renderPasses()) {
-      if (pass.name === "outline") {
+    // Issue #14: a ordem vem do render graph (o mesmo DAG que o headless
+    // consome), com a ativação vinda do snapshot do núcleo — não existe lista
+    // paralela de passes entre os dois renderers.
+    this.lastPassSchedule = this.passPlan();
+    for (const pass of this.lastPassSchedule) {
+      if (pass === "depth_prepass") {
+        passEncoder.setPipeline(this.depthPrepassPipeline!);
+        passEncoder.setBindGroup(0, this.celBindGroup!);
+      } else if (pass === "outline") {
         passEncoder.setPipeline(this.outlinePipeline!);
         passEncoder.setBindGroup(0, this.outlineBindGroup!);
-      } else if (pass.name === "cel") {
+      } else if (pass === "cel") {
         passEncoder.setPipeline(this.celPipeline!);
         passEncoder.setBindGroup(0, this.celBindGroup!);
       } else {
@@ -2531,7 +2634,38 @@ export class WebGpuViewportRenderer {
     this.gpuMorphDirty = false;
   }
 
-  private renderWebGL2(startTime: number) {
+  /**
+   * Issue #14: upload dos uniforms do cel, extraído para o depth pre-pass usar
+   * **exatamente** os mesmos valores (mesma transformação ⇒ z-buffer coerente).
+   */
+  private uploadGlCelUniforms(gl: WebGL2RenderingContext, viewProj: Float32Array | number[]): void {
+    const program = this.glCelProgram!;
+    gl.uniformMatrix4fv(gl.getUniformLocation(program, "u_view_proj"), false, viewProj);
+    gl.uniformMatrix4fv(gl.getUniformLocation(program, "u_bones"), false, this.skinPalette);
+    gl.uniform3f(gl.getUniformLocation(program, "u_light_dir"), this.lightDir[0], this.lightDir[1], this.lightDir[2]);
+    gl.uniform1f(gl.getUniformLocation(program, "u_light_intensity"), this.lightIntensity);
+    gl.uniform3f(gl.getUniformLocation(program, "u_light_color"), this.lightColor[0], this.lightColor[1], this.lightColor[2]);
+    gl.uniform3f(gl.getUniformLocation(program, "u_shadow_color"), this.shadowColor[0], this.shadowColor[1], this.shadowColor[2]);
+    gl.uniform1f(gl.getUniformLocation(program, "u_ambient_intensity"), this.ambientIntensity);
+    gl.uniform1f(gl.getUniformLocation(program, "u_shadow_saturation"), this.shadowSaturation);
+    gl.uniform4f(gl.getUniformLocation(program, "u_base_color"), this.baseColor[0], this.baseColor[1], this.baseColor[2], this.baseColor[3]);
+    gl.uniform4f(gl.getUniformLocation(program, "u_shade_color"), this.shadeColor[0], this.shadeColor[1], this.shadeColor[2], this.shadeColor[3]);
+    gl.uniform1f(gl.getUniformLocation(program, "u_shadow_threshold"), this.shadowThreshold);
+    gl.uniform1f(gl.getUniformLocation(program, "u_shadow_smoothness"), this.toonSmoothness);
+    gl.uniform1f(gl.getUniformLocation(program, "u_hue_shift"), this.hueShift);
+    gl.uniform1f(gl.getUniformLocation(program, "u_toon_steps"), this.toonSteps);
+    gl.uniform3f(gl.getUniformLocation(program, "u_camera_pos"), this.eye[0], this.eye[1], this.eye[2]);
+    gl.uniform1f(gl.getUniformLocation(program, "u_spec_intensity // P2-07 TODO separate spec_size uniform"), this.specIntensity);
+    gl.uniform1f(gl.getUniformLocation(program, "u_spec_power"), this.specExponent);
+    gl.uniform1f(gl.getUniformLocation(program, "u_spec_softness"), this.specSoftness);
+    gl.uniform1f(gl.getUniformLocation(program, "u_spec_offset"), this.specOffset);
+    gl.uniform4f(gl.getUniformLocation(program, "u_spec_color"), this.specColor[0], this.specColor[1], this.specColor[2], this.specColor[3]);
+    gl.uniform1f(gl.getUniformLocation(program, "u_rim_intensity"), this.rimIntensity);
+    gl.uniform1f(gl.getUniformLocation(program, "u_rim_spread"), this.rimSpread);
+    gl.uniform3f(gl.getUniformLocation(program, "u_rim_color"), this.rimColor[0], this.rimColor[1], this.rimColor[2]);
+  }
+
+    private renderWebGL2(startTime: number) {
     const gl = this.gl;
     if (!gl || !this.glCelProgram || !this.glOutlineProgram || !this.glVao) return;
 
@@ -2548,58 +2682,53 @@ export class WebGpuViewportRenderer {
 
     gl.bindVertexArray(this.glVao);
 
+    // Issue #14: a sequência sai do render graph — o mesmo plano do caminho
+    // WebGPU (o fallback só troca o meio de desenho, não a ordem).
+    const plan = this.passPlan();
+    this.lastPassSchedule = plan;
+
+    // PASS 0: Depth Pre-Pass. Mesmo programa do cel com o color mask desligado:
+    // escreve só o z-buffer, e o cel (LEQUAL) passa a ser rejeitado por early-Z
+    // onde outro fragmento já está à frente.
+    if (plan.includes("depth_prepass")) {
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      gl.colorMask(false, false, false, false);
+      gl.useProgram(this.glCelProgram);
+      this.uploadGlCelUniforms(gl, viewProj);
+      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+      gl.colorMask(true, true, true, true);
+    }
+
     // PASS 1: Cel-Shading Frontfaces
-    gl.enable(gl.CULL_FACE);
-    gl.cullFace(gl.BACK);
-
-    gl.useProgram(this.glCelProgram);
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.glCelProgram, "u_view_proj"), false, viewProj);
-    // P1-04: paleta de ossos (24 matrizes). Sem este upload as matrizes ficam
-    // zeradas e cada vértice colapsa na origem.
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.glCelProgram, "u_bones"), false, this.skinPalette);
-    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_light_dir"), this.lightDir[0], this.lightDir[1], this.lightDir[2]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_light_intensity"), this.lightIntensity);
-    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_light_color"), this.lightColor[0], this.lightColor[1], this.lightColor[2]);
-    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_shadow_color"), this.shadowColor[0], this.shadowColor[1], this.shadowColor[2]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_ambient_intensity"), this.ambientIntensity);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_shadow_saturation"), this.shadowSaturation);
-    gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_base_color"), this.baseColor[0], this.baseColor[1], this.baseColor[2], this.baseColor[3]);
-    gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_shade_color"), this.shadeColor[0], this.shadeColor[1], this.shadeColor[2], this.shadeColor[3]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_shadow_threshold"), this.shadowThreshold);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_shadow_smoothness"), this.toonSmoothness);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_hue_shift"), this.hueShift);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_toon_steps"), this.toonSteps);
-    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_camera_pos"), this.eye[0], this.eye[1], this.eye[2]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity // P2-07 TODO separate spec_size uniform"), this.specIntensity);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_power"), this.specExponent);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_softness"), this.specSoftness);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_offset"), this.specOffset);
-    gl.uniform4f(gl.getUniformLocation(this.glCelProgram, "u_spec_color"), this.specColor[0], this.specColor[1], this.specColor[2], this.specColor[3]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_rim_intensity"), this.rimIntensity);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_rim_spread"), this.rimSpread);
-    gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_rim_color"), this.rimColor[0], this.rimColor[1], this.rimColor[2]);
-
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+    if (plan.includes("cel")) {
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      gl.useProgram(this.glCelProgram);
+      this.uploadGlCelUniforms(gl, viewProj);
+      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+    }
 
     // PASS 2: Inverted Hull Backfaces
-    gl.cullFace(gl.FRONT);
+    if (plan.includes("outline")) {
+      gl.cullFace(gl.FRONT);
+      gl.useProgram(this.glOutlineProgram);
+      gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_view_proj"), false, viewProj);
+      gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_bones"), false, this.skinPalette);
+      gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_width"), this.outlineWidth);
+      gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_aspect"), aspect);
+      gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_depth_bias"), this.outlineDepthBias);
+      gl.uniform4f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_color"), this.outlineColor[0], this.outlineColor[1], this.outlineColor[2], this.outlineColor[3]);
+      gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_opacity"), this.outlineOpacity);
+      gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_smoothness"), this.outlineSmoothness);
 
-    gl.useProgram(this.glOutlineProgram);
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_view_proj"), false, viewProj);
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.glOutlineProgram, "u_bones"), false, this.skinPalette);
-    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_width"), this.outlineWidth);
-    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_aspect"), aspect);
-    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_depth_bias"), this.outlineDepthBias);
-    gl.uniform4f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_color"), this.outlineColor[0], this.outlineColor[1], this.outlineColor[2], this.outlineColor[3]);
-    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_opacity"), this.outlineOpacity);
-    gl.uniform1f(gl.getUniformLocation(this.glOutlineProgram, "u_outline_smoothness"), this.outlineSmoothness);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
 
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
-
-    gl.disable(gl.BLEND);
+      gl.disable(gl.BLEND);
+    }
 
     gl.bindVertexArray(null);
 
@@ -2624,7 +2753,8 @@ export class WebGpuViewportRenderer {
             fps: currentFps,
             frameTimeMs: elapsed, // TODO GPUQuerySet timestamp when available
             triangles: realTris,
-            drawCalls: 2, // cel + outline
+            // Issue #14: um draw por passe do plano (inclui o depth pre-pass).
+            drawCalls: this.lastPassSchedule.length || 2,
             adapterName,
             backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
             projection: this.projectionMode().mode,

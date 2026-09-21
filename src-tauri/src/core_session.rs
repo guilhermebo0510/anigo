@@ -763,7 +763,10 @@ mod tests {
             color_format: "Rgba8Unorm".to_string(),
             depth_format: "Depth24Plus".to_string(),
             msaa_samples: 4,
-            render_passes: vec!["outline".to_string(), "cel".to_string()],
+            render_passes: anigo_renderer::render_contract::render_pass_order()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
             clear_source: "scene.background_color".to_string(),
             clear_color: [0.08, 0.09, 0.13, 1.0],
             adapter_name: "test-adapter".to_string(),

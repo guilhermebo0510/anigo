@@ -181,7 +181,16 @@ export type CommandWire =
     }
   | { kind: "load_mesh_preset"; preset: MeshPresetWire }
   | { kind: "set_background_color"; color: [number, number, number, number] }
-  | { kind: "set_render_settings"; msaa_samples?: number; tonemap?: TonemapOperatorWire }
+  // Issue #14: `depth_prepass`/`disabled_passes`/`pass_order` configuram o
+  // render graph pelo comando (nome/ordem/ativação vêm do contrato de render).
+  | {
+      kind: "set_render_settings";
+      msaa_samples?: number;
+      tonemap?: TonemapOperatorWire;
+      depth_prepass?: boolean;
+      disabled_passes?: string[];
+      pass_order?: string[];
+    }
   | { kind: "rename_project"; name: string }
   | { kind: "batch"; commands: CommandWire[] };
 

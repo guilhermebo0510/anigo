@@ -401,12 +401,65 @@ fn pass_spec(pass: &'static Value) -> PassSpec {
 }
 
 /// Passes de render na ordem declarada (headless e viewport desenham nessa ordem).
+/// Ordem de execução dos passes de render (issue #14).
+///
+/// A **fonte é o `render_graph`**: os nós habilitados que têm passe no contrato,
+/// na ordem topológica do DAG. Não existe uma segunda lista de ordem — headless
+/// e viewport derivam daqui, então não há como divergirem. Sem o bloco no
+/// contrato (contrato antigo), cai na ordem declarada da biblioteca de passes.
 pub fn render_pass_order() -> Vec<&'static str> {
-    passes()
-        .into_iter()
-        .filter(|pass| pass.kind == PassKind::Render)
-        .map(|pass| pass.name)
+    let spec = render_graph_spec();
+    let Some(nodes) = spec["nodes"].as_array() else {
+        return passes()
+            .into_iter()
+            .filter(|pass| pass.kind == PassKind::Render)
+            .map(|pass| pass.name)
+            .collect();
+    };
+    let graph = match crate::render_graph::graph_from_contract() {
+        Ok(graph) => graph,
+        Err(error) => {
+            diag(format!("render_graph inválido: {error}"));
+            return Vec::new();
+        }
+    };
+    let order = match graph.topological_order() {
+        Ok(order) => order,
+        Err(error) => {
+            diag(format!("render_graph sem ordem topológica: {error}"));
+            return Vec::new();
+        }
+    };
+    order
+        .iter()
+        .filter_map(|name| {
+            let node = nodes
+                .iter()
+                .find(|candidate| candidate["name"].as_str() == Some(name.as_str()))?;
+            if node["kind"].as_str() != Some("render") || !node["enabled"].as_bool().unwrap_or(false)
+            {
+                return None;
+            }
+            node["contract_pass"].as_str()
+        })
         .collect()
+}
+
+/// Issue #14: nó do render graph pelo nome (bloco `render_graph.nodes`).
+///
+/// A referência vem do JSON estático do contrato, sem cópia: um consultor por
+/// frame não pode alocar (nem vazar) memória.
+pub fn render_graph_node(name: &str) -> Option<&'static Value> {
+    render_graph_spec()["nodes"]
+        .as_array()?
+        .iter()
+        .find(|node| node["name"].as_str() == Some(name))
+}
+
+/// Issue #14: bloco `render_graph` do contrato (a autoridade sobre ordem,
+/// ativação, recursos transitórios e aliasing).
+pub fn render_graph_spec() -> &'static Value {
+    &contract()["render_graph"]
 }
 
 /// Especificação de um passe de render (sem `panic!`: um passe trocado no
@@ -993,7 +1046,16 @@ mod tests {
 
     #[test]
     fn pass_graph_is_shared_with_the_viewport() {
-        assert_eq!(render_pass_order(), vec!["outline", "cel"]);
+        // Issue #14: a ordem vem do render graph (cel antes do outline: o
+        // outline lê a profundidade já resolvida e o z-buffer garante o mesmo
+        // resultado do desenho anterior).
+        assert_eq!(
+            render_pass_order(),
+            vec!["depth_prepass", "cel", "outline"]
+        );
+        let graph = render_graph_spec();
+        assert_eq!(graph["scheduling"].as_str(), Some("kahn_topological"));
+        assert_eq!(graph["nodes"].as_array().map(Vec::len), Some(7));
 
         let outline = render_pass("outline");
         assert_eq!(outline.shader, "inverted_hull");

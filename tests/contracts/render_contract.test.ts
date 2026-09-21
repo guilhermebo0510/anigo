@@ -21,6 +21,7 @@ import {
   RenderContractError,
   assertShaderSource,
   addressMode,
+  allRenderPasses,
   blendStateOf,
   computePasses,
   depthFormat,
@@ -258,7 +259,7 @@ test("bind groups conferem com as declarações do WGSL", () => {
       assert.ok(entry.stages.length > 0, `${group.name}:${entry.binding} sem estágios`);
     }
   }
-  for (const pass of [...renderPasses(), ...computePasses()]) {
+  for (const pass of [...allRenderPasses(), ...computePasses()]) {
     const shader = findShader(pass.shader);
     assert.ok(
       RENDER_CONTRACT.bind_groups.some((group) => group.name === pass.bind_group),
@@ -279,7 +280,9 @@ test("bind groups conferem com as declarações do WGSL", () => {
 // ---------------------------------------------------------------------------
 
 test("o grafo de passes é o mesmo nos dois renderers", () => {
-  assert.deepEqual(renderPassOrder(), ["outline", "cel"]);
+  // Issue #14: a ordem sai do DAG (depth pre-pass → cel → outline); o outline
+  // desenha por último porque lê a profundidade já resolvida pelo cel.
+  assert.deepEqual(renderPassOrder(), ["depth_prepass", "cel", "outline"]);
   const outline = RENDER_CONTRACT.passes.find((pass) => pass.name === "outline")!;
   assert.equal(outline.cull_mode, "front");
   assert.equal(outline.depth_write, false);
@@ -301,7 +304,18 @@ test("o grafo de passes é o mesmo nos dois renderers", () => {
     computePasses().map((pass) => [pass.name, pass.shader, pass.workgroup_size, pass.only_when]),
     [["sparse_morph", "morph_sparse_compute", 64, "gpu_morph_active"]]
   );
-  assert.ok(outline.order < cel.order, "outline precisa ser desenhado antes do cel");
+  // Issue #14: a ordem de desenho vem do grafo, não do `order` da biblioteca de
+  // passes. O cel desenha antes do outline porque o contorno lê a profundidade
+  // já resolvida: onde o modelo está à frente, o z-test descarta o hull — o
+  // mesmo pixel que a ordem antiga produzia.
+  const order = renderPassOrder();
+  assert.equal(order[0], "depth_prepass", "o pre-pass abre o frame (early-Z)");
+  assert.ok(order.indexOf("cel") < order.indexOf("outline"), "cel antes do outline");
+  const prepass = allRenderPasses().find((pass) => pass.name === "depth_prepass")!;
+  assert.equal(prepass.vertex_entry, "vs_main", "o pre-pass usa o vertex shader do cel");
+  assert.ok(prepass.fragment_entry == null, "sem fragment stage: só z-buffer");
+  assert.equal(prepass.depth_write, true);
+  assert.equal(prepass.depth_compare, "less");
   assert.ok(computePasses()[0].order < outline.order, "o compute de morphs vem antes do render");
 });
 
@@ -318,7 +332,12 @@ test("alvos, MSAA e formatos vêm do contrato nos dois lados", () => {
   assert.match(renderer, /multisample: \{ count: msaaSampleCount\(\) \}/);
   assert.match(renderer, /size: uniformSize\("camera"\)/);
   assert.match(renderer, /const contractVertexLayout = vertexBufferLayout\(\)/);
-  assert.match(renderer, /for \(const pass of renderPasses\(\)\)/);
+  // Issue #14: o viewport itera o **plano do frame** (render graph + decisões do
+  // snapshot), não uma lista de passes própria.
+  assert.match(renderer, /this\.lastPassSchedule = this\.passPlan\(\);/);
+  assert.match(renderer, /for \(const pass of this\.lastPassSchedule\)/);
+  assert.match(renderer, /private passPlan\(\): string\[\] \{/);
+  assert.match(renderer, /return renderPassOrder\(\{/);
   // literais de layout que saíram do renderer (se voltarem, a unificação se perde)
   for (const forbidden of ['size: 208', 'size: 112', 'size: 48,', 'sampleCount: 4', 'format: "depth24plus"', 'arrayStride: 72']) {
     assert.equal(renderer.includes(forbidden), false, `renderer ainda tem o literal ${forbidden}`);
@@ -329,7 +348,10 @@ test("alvos, MSAA e formatos vêm do contrato nos dois lados", () => {
   assert.match(headless, /contract::depth_format\(\)/);
   assert.match(headless, /contract::msaa_sample_count\(\)/);
   assert.match(headless, /resolve_target,/);
-  assert.match(headless, /for pass_name in contract::render_pass_order\(\)/);
+  // Issue #14: a ordem sai do render graph nos dois renderers (a lista do
+  // contrato é só o fallback documentado).
+  assert.match(headless, /for \(node_name, pass_name\) in &pass_schedule/);
+  assert.match(headless, /let graph_plan = frame_graph_plan\(scene, \(width, height\)\)/);
   assert.equal(/sample_count: 1,\n\s+dimension: wgpu::TextureDimension::D2,\n\s+format: wgpu::TextureFormat::Rgba8Unorm,/.test(headless), false);
   const toonRamp = readRepoFile("crates/anigo-renderer/src/render_contract.rs");
   assert.match(toonRamp, /pub fn toon_ramp_bytes\(\)/);

@@ -286,6 +286,13 @@ const fixture = (() => {
           display_space: "srgb",
         },
         tonemap: "none",
+        // Issue #14: ordem/ativação dos passes vêm do núcleo (snapshot), o que
+        // satisfaz o critério "configuráveis dinamicamente via snapshots".
+        render_graph: {
+          depth_prepass: true,
+          disabled_passes: [],
+          order: [],
+        },
       },
       deformation_authority: "reference_ts",
       deformation_coverage: {

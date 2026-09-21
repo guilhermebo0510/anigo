@@ -65,7 +65,7 @@
     resolveCoreInvoker,
     type CoreSnapshotDelivery,
   } from "./services/core_bridge";
-  import { computePasses, renderPasses } from "./contracts/render_contract.v1";
+  import { allRenderPasses, computePasses } from "./contracts/render_contract.v1";
   import {
     ExportServiceError,
     describeParity,
@@ -569,6 +569,8 @@
   let cameraFov = $state(45);
   /** Issue #13: modo de projeção da câmera do viewport (atalho `O` ou botões). */
   let cameraProjection = $state<"perspective" | "orthographic">("perspective");
+  /** Issue #14: depth pre-pass do render graph (estado do documento). */
+  let depthPrepass = $state(true);
 
   // Settings
   let targetFpsCap = $state(120);
@@ -797,6 +799,8 @@
       cameraUp: up,
       fov: fovDeg,
       cameraProjection,
+      // Issue #14: o render graph também volta com a sessão.
+      depthPrepass,
       outlineOpacity,
       outlineSmoothness,
       outlineDepthBias,
@@ -928,6 +932,10 @@
         // Issue #13: o modo de projeção volta com a sessão (o viewport reaplica).
         if ((snap as any).cameraProjection) {
           cameraProjection = viewportRef?.setProjectionMode((snap as any).cameraProjection) ?? cameraProjection;
+        }
+        // Issue #14: idem para o depth pre-pass do render graph.
+        if (typeof (snap as any).depthPrepass === "boolean") {
+          depthPrepass = viewportRef?.setDepthPrepass((snap as any).depthPrepass) ?? depthPrepass;
         }
       }
     }
@@ -1339,6 +1347,7 @@
       cameraUp: up,
       fov: fovDeg,
       cameraProjection,
+      depthPrepass,
       timestamp: Date.now(),
       version: "0.2.0",
       schemaVersion: CHARACTER_SNAPSHOT_SCHEMA_VERSION,
@@ -1935,6 +1944,10 @@
       const requested = String(val).toLowerCase();
       const mode = requested.startsWith("o") ? "orthographic" : "perspective";
       cameraProjection = viewportRef?.setProjectionMode(mode) ?? mode;
+    }
+    else if (prop === "depth_prepass") {
+      // Issue #14: o bridge pode ligar/desligar o pre-pass (mesmo caminho da UI).
+      depthPrepass = viewportRef?.setDepthPrepass(Boolean(val)) ?? Boolean(val);
     }
     else if (prop === "current_frame") { currentFrame = Math.round(val); }
   }
@@ -2577,6 +2590,7 @@
           onDiagnostic={handleViewportDiagnostic}
           coreSnapshotProvider={coreSnapshotProvider}
           onProjectionChange={(mode) => { cameraProjection = mode; }}
+          onRenderGraphChange={(state) => { depthPrepass = state.depthPrepass; }}
         />
       </div>
 
@@ -3393,6 +3407,10 @@
             onProjectionChange={(mode) => {
               cameraProjection = viewportRef?.setProjectionMode(mode) ?? mode;
             }}
+            depthPrepass={depthPrepass}
+            onDepthPrepassChange={(enabled) => {
+              depthPrepass = viewportRef?.setDepthPrepass(enabled) ?? enabled;
+            }}
             onUpdate={(params) => {
               lightAzimuth = params.azimuth;
               lightElevation = params.elevation;
@@ -3834,7 +3852,7 @@
 
           <div class="control-group">
             <div class="group-title">PASSES DE RENDERIZAÇÃO NPR</div>
-            {#each renderPasses() as pass (pass.name)}
+            {#each allRenderPasses() as pass (pass.name)}
               <label class="check-row">
                 <input type="checkbox" checked disabled />
                 <span>

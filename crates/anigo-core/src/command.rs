@@ -429,6 +429,15 @@ pub enum Command {
         msaa_samples: Option<u32>,
         #[serde(default)]
         tonemap: Option<crate::project::TonemapOperator>,
+        /// Issue #14: liga/desliga o depth pre-pass do render graph.
+        #[serde(default)]
+        depth_prepass: Option<bool>,
+        /// Issue #14: passes desligados (substitui a lista inteira quando presente).
+        #[serde(default)]
+        disabled_passes: Option<Vec<String>>,
+        /// Issue #14: ordem preferida pela cena (substitui a lista quando presente).
+        #[serde(default)]
+        pass_order: Option<Vec<String>>,
     },
     /// Renames the project.
     RenameProject { name: String },
@@ -985,6 +994,9 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                depth_prepass,
+                disabled_passes,
+                pass_order,
             } => {
                 if let Some(samples) = msaa_samples {
                     if !matches!(samples, 1 | 2 | 4 | 8 | 16) {
@@ -994,8 +1006,61 @@ impl Command {
                         });
                     }
                 }
-                if msaa_samples.is_none() && tonemap.is_none() {
+                // Issue #14: só nomes que existem no grafo — um passe
+                // desconhecido em silêncio esconderia um typo.
+                for (field, passes) in [
+                    ("disabled_passes", disabled_passes.as_ref()),
+                    ("pass_order", pass_order.as_ref()),
+                ] {
+                    for pass in passes.into_iter().flatten() {
+                        if crate::project::RENDER_GRAPH_PASSES.contains(&pass.as_str()) {
+                            continue;
+                        }
+                        return Err(CommandError::InvalidValue {
+                            field: field.to_string(),
+                            detail: format!("'{pass}' não é um passe do render graph"),
+                        });
+                    }
+                }
+                if let Some(order) = pass_order {
+                    // Ordem com repetição seria ambígua: o mesmo nó entraria
+                    // duas vezes no plano.
+                    let unique: std::collections::BTreeSet<&String> = order.iter().collect();
+                    if unique.len() != order.len() {
+                        return Err(CommandError::InvalidValue {
+                            field: "pass_order".to_string(),
+                            detail: "a ordem não pode repetir um passe".to_string(),
+                        });
+                    }
+                }
+                if msaa_samples.is_none()
+                    && tonemap.is_none()
+                    && depth_prepass.is_none()
+                    && disabled_passes.is_none()
+                    && pass_order.is_none()
+                {
                     return Err(CommandError::NoOp("empty render settings patch".to_string()));
+                }
+                let unchanged_prepass = depth_prepass
+                    .map(|value| value == state.render.render_graph.depth_prepass)
+                    .unwrap_or(true);
+                let unchanged_passes = disabled_passes
+                    .as_ref()
+                    .map(|passes| *passes == state.render.render_graph.disabled_passes)
+                    .unwrap_or(true);
+                let unchanged_order = pass_order
+                    .as_ref()
+                    .map(|order| *order == state.render.render_graph.order)
+                    .unwrap_or(true);
+                if msaa_samples.is_none()
+                    && tonemap.is_none()
+                    && unchanged_prepass
+                    && unchanged_passes
+                    && unchanged_order
+                {
+                    return Err(CommandError::NoOp(
+                        "render settings already have those values".to_string(),
+                    ));
                 }
                 Ok(())
             }
@@ -1274,9 +1339,19 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                depth_prepass,
+                disabled_passes,
+                pass_order,
             } => Ok(Command::SetRenderSettings {
                 msaa_samples: msaa_samples.map(|_| state.render.msaa_samples),
                 tonemap: tonemap.map(|_| state.render.tonemap),
+                depth_prepass: depth_prepass.map(|_| state.render.render_graph.depth_prepass),
+                disabled_passes: disabled_passes
+                    .as_ref()
+                    .map(|_| state.render.render_graph.disabled_passes.clone()),
+                pass_order: pass_order
+                    .as_ref()
+                    .map(|_| state.render.render_graph.order.clone()),
             }),
             Command::RenameProject { .. } => Ok(Command::RenameProject {
                 name: state.name.clone(),
@@ -1574,12 +1649,24 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                depth_prepass,
+                disabled_passes,
+                pass_order,
             } => {
                 if let Some(samples) = msaa_samples {
                     state.render.msaa_samples = *samples;
                 }
                 if let Some(operator) = tonemap {
                     state.render.tonemap = *operator;
+                }
+                if let Some(enabled) = depth_prepass {
+                    state.render.render_graph.depth_prepass = *enabled;
+                }
+                if let Some(passes) = disabled_passes {
+                    state.render.render_graph.disabled_passes = passes.clone();
+                }
+                if let Some(order) = pass_order {
+                    state.render.render_graph.order = order.clone();
                 }
                 Ok(())
             }
@@ -2337,6 +2424,11 @@ mod tests {
             Command::SetRenderSettings {
                 msaa_samples: Some(8),
                 tonemap: Some(crate::project::TonemapOperator::Neutral),
+                // Issue #14: o depth pre-pass e a lista de passes desligados
+                // são estado do documento — entram no round-trip.
+                depth_prepass: Some(false),
+                disabled_passes: Some(vec!["inverted_hull_outline".to_string()]),
+                pass_order: Some(vec!["opaque_cel".to_string()]),
             },
             // Issue #12: a árvore também passa pelo mesmo contrato de involution
             // (aplicar, desfazer e refazer sem deixar resíduo). O reparent e a
@@ -3208,6 +3300,9 @@ mod tests {
             Command::SetRenderSettings {
                 msaa_samples: None,
                 tonemap: None,
+                depth_prepass: None,
+                disabled_passes: None,
+                pass_order: None,
             },
             Command::SetNodeVisibility {
                 node_id: NodeId::canonical_character(),
@@ -3298,6 +3393,107 @@ mod tests {
         assert_eq!(log.entries[0].revision, 1);
         assert!(!log.entries[0].description.is_empty());
         assert_eq!(log.entries[0].scope, ChangeScope::Deformation);
+    }
+
+    #[test]
+    fn render_graph_settings_are_validated_and_reversible() {
+        // Issue #14: o comando carrega a ativação/ordem dos passes do render
+        // graph, então ele tem de ser validado (nada de passe inexistente) e
+        // reversível como qualquer outro estado do documento.
+        let mut state = project();
+        let mut history = CommandHistory::new(16);
+
+        // Nome de passe desconhecido: recusado com o campo certo no erro.
+        let error = Command::SetRenderSettings {
+            msaa_samples: None,
+            tonemap: None,
+            depth_prepass: None,
+            disabled_passes: Some(vec!["passe_que_nao_existe".to_string()]),
+            pass_order: None,
+        }
+        .validate(&state)
+        .expect_err("passe desconhecido precisa ser recusado");
+        assert!(matches!(
+            error,
+            CommandError::InvalidValue { ref field, .. } if field == "disabled_passes"
+        ));
+
+        // Ordem com repetição é ambígua.
+        let error = Command::SetRenderSettings {
+            msaa_samples: None,
+            tonemap: None,
+            depth_prepass: None,
+            disabled_passes: None,
+            pass_order: Some(vec!["opaque_cel".to_string(), "opaque_cel".to_string()]),
+        }
+        .validate(&state)
+        .expect_err("ordem repetida precisa ser recusada");
+        assert!(matches!(
+            error,
+            CommandError::InvalidValue { ref field, .. } if field == "pass_order"
+        ));
+
+        // Patch vazio (todos os campos `None`) continua sendo no-op…
+        assert!(matches!(
+            Command::SetRenderSettings {
+                msaa_samples: None,
+                tonemap: None,
+                depth_prepass: None,
+                disabled_passes: None,
+                pass_order: None,
+            }
+            .validate(&state),
+            Err(CommandError::NoOp(_))
+        ));
+
+        // …e pedir os valores que já estão no estado também.
+        assert!(matches!(
+            Command::SetRenderSettings {
+                msaa_samples: None,
+                tonemap: None,
+                depth_prepass: Some(state.render.render_graph.depth_prepass),
+                disabled_passes: Some(state.render.render_graph.disabled_passes.clone()),
+                pass_order: None,
+            }
+            .validate(&state),
+            Err(CommandError::NoOp(_))
+        ));
+
+        // Desligar o pre-pass: aplica, desfaz e refaz sem resíduo.
+        let before = state.content_fingerprint();
+        let apply = Command::SetRenderSettings {
+            msaa_samples: None,
+            tonemap: None,
+            depth_prepass: Some(false),
+            disabled_passes: Some(vec!["inverted_hull_outline".to_string()]),
+            pass_order: Some(vec!["opaque_cel".to_string()]),
+        }
+        .apply(&mut state)
+        .expect("comando válido");
+        assert!(!state.render.render_graph.depth_prepass);
+        assert_eq!(
+            state.render.render_graph.disabled_passes,
+            vec!["inverted_hull_outline".to_string()]
+        );
+        assert_eq!(state.render.render_graph.order, vec!["opaque_cel".to_string()]);
+        assert!(!state.render.render_graph.is_default());
+
+        apply.inverse.apply(&mut state).expect("undo do comando");
+        assert_eq!(state.content_fingerprint(), before, "undo volta ao estado exato");
+        assert!(state.render.render_graph.is_default());
+
+        apply.command.apply(&mut state).expect("redo do comando");
+        assert!(!state.render.render_graph.depth_prepass);
+
+        // O histórico registra o comando (é estado do documento, não um ajuste
+        // de apresentação efêmero) — e `State::Presentation` é o escopo dele.
+        let mut history_state = project();
+        history
+            .execute(&mut history_state, apply.command.clone())
+            .unwrap();
+        assert!(history.can_undo());
+        assert!(!history_state.render.render_graph.depth_prepass);
+        assert_eq!(apply.scope, ChangeScope::Presentation);
     }
 
     #[test]

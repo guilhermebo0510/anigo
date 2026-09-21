@@ -95,8 +95,8 @@ test("contrato: cel e outline declaram a paleta como uniform de vértice", () =>
     assert.deepEqual(entry.stages, ["vertex"]);
     assert.match(entry.declaration, /bones: BonePalette/);
   }
-  // o contorno desenha antes do cel (e os dois compartilham a paleta)
-  assert.deepEqual(renderPassOrder(), ["outline", "cel"]);
+  // Issue #14: a ordem vem do render graph; cel e outline compartilham a paleta.
+  assert.deepEqual(renderPassOrder(), ["depth_prepass", "cel", "outline"]);
 });
 
 test("shaders WGSL: bloco de skinning idêntico e LBS sem repetição de conta", () => {
@@ -150,8 +150,13 @@ test("fallback WebGL2: a paleta é declarada e aplicada (não zerada)", () => {
   }
   // o renderer sobe a paleta no caminho GLSL (sem upload, matrizes zeradas)
   const renderer = readRepoFile("src/components/viewport/webgpu_renderer.ts");
-  assert.match(renderer, /gl\.uniformMatrix4fv\(gl\.getUniformLocation\(this\.glCelProgram, "u_bones"\)/);
+  // Issue #14: o upload do cel virou helper (o depth pre-pass usa os mesmos
+  // valores); o helper aponta para o programa do cel.
+  assert.match(renderer, /private uploadGlCelUniforms\(gl: WebGL2RenderingContext, viewProj: Float32Array \| number\[\]\): void \{\n    const program = this\.glCelProgram!;/);
+  assert.match(renderer, /gl\.uniformMatrix4fv\(gl\.getUniformLocation\(program, "u_bones"\)/);
   assert.match(renderer, /gl\.uniformMatrix4fv\(gl\.getUniformLocation\(this\.glOutlineProgram, "u_bones"\)/);
+  // o pre-pass reusa o helper: mesma transformação ⇒ z-buffer coerente
+  assert.match(renderer, /this\.uploadGlCelUniforms\(gl, viewProj\);/);
 });
 
 test("viewport: bind groups usam o binding do contrato e sobem a paleta do núcleo", () => {

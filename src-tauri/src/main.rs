@@ -827,10 +827,17 @@ async fn core_export_frame(
         ),
         depth_format: format!("{:?}", anigo_renderer::render_contract::depth_format()),
         msaa_samples: anigo_renderer::render_contract::msaa_sample_count(),
-        render_passes: anigo_renderer::render_contract::render_pass_order()
-            .into_iter()
-            .map(|name| name.to_string())
-            .collect(),
+        // Issue #14: o manifesto grava os passes que **este frame** executou
+        // (render graph + decisões do documento). Sem plano (contrato sem
+        // grafo), a ordem declarada do contrato assume — nunca um valor vazio.
+        render_passes: if metrics.passes_executed.is_empty() {
+            anigo_renderer::render_contract::render_pass_order()
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect()
+        } else {
+            metrics.passes_executed.clone()
+        },
         clear_source: anigo_renderer::render_contract::clear_color_source().to_string(),
         clear_color: state.scene.background_color,
         adapter_name: metrics.adapter_name.clone(),

@@ -15,6 +15,7 @@
     onResize = undefined,
     onMetrics = undefined,
     onProjectionChange = undefined,
+    onRenderGraphChange = undefined,
     onTactileDrag = undefined,
     onTactileDragStart = undefined,
     onTactileDragEnd = undefined,
@@ -25,6 +26,8 @@
     onMetrics?: (m: ViewportMetrics) => void;
     /** Issue #13: notifica a troca de projeção (perspectiva/ortográfica). */
     onProjectionChange?: (mode: "perspective" | "orthographic") => void;
+    /** Issue #14: notifica a mudança do render graph (depth pre-pass). */
+    onRenderGraphChange?: (state: { depthPrepass: boolean }) => void;
     onTactileDrag?: (
       primarySlider: string,
       primaryDelta: number,
@@ -387,6 +390,42 @@
   /** `true` quando a câmera está em projeção ortográfica. */
   export function isProjectionOrthographic(): boolean {
     return renderer?.isOrthographic() ?? false;
+  }
+
+  /**
+   * Issue #14: o depth pre-pass é decisão do documento, não um botão local — a
+   * UI aplica no renderer e manda o comando canônico para o núcleo, que devolve
+   * o mesmo estado no próximo snapshot (viewport e headless concordam).
+   */
+  export function setDepthPrepass(enabled: boolean): boolean {
+    const applied = renderer?.setDepthPrepass(enabled) ?? false;
+    syncRenderGraphToCore({ depth_prepass: enabled });
+    onRenderGraphChange?.({ depthPrepass: applied });
+    return applied;
+  }
+
+  /** `true` quando o plano do frame inclui o depth pre-pass. */
+  export function isDepthPrepassEnabled(): boolean {
+    return renderer?.depthPrepassEnabled() ?? false;
+  }
+
+  /** Passes executados neste frame, na ordem do render graph. */
+  export function passesExecuted(): string[] {
+    return renderer?.passesExecuted() ?? [];
+  }
+
+  /**
+   * Issue #14: caminho canônico (`set_render_settings`) para o núcleo. O mesmo
+   * comando aparece no log/undo, então a mudança é revertível como qualquer
+   * outra.
+   */
+  function syncRenderGraphToCore(patch: { depth_prepass?: boolean; disabled_passes?: string[]; pass_order?: string[] }) {
+    if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("core_apply_command", { command: { kind: "set_render_settings", ...patch } }))
+      .catch(() => {
+        // Fora do host Tauri (preview no navegador) o núcleo não está presente.
+      });
   }
 
   export function setFpsCap(fps: number) {

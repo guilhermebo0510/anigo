@@ -600,7 +600,7 @@
   ],
   "passes": [
     {
-      "order": 0,
+      "order": 40,
       "name": "outline",
       "kind": "render",
       "shader": "inverted_hull",
@@ -619,7 +619,7 @@
       "write_mask": "all"
     },
     {
-      "order": 1,
+      "order": 20,
       "name": "cel",
       "kind": "render",
       "shader": "cel_shading",
@@ -638,7 +638,7 @@
       "write_mask": "all"
     },
     {
-      "order": -1,
+      "order": -10,
       "name": "sparse_morph",
       "kind": "compute",
       "shader": "morph_sparse_compute",
@@ -646,8 +646,260 @@
       "bind_group": "sparse_morph",
       "workgroup_size": 64,
       "only_when": "gpu_morph_active"
+    },
+    {
+      "order": 0,
+      "name": "depth_prepass",
+      "kind": "render",
+      "shader": "cel_shading",
+      "vertex_entry": "vs_main",
+      "fragment_entry": null,
+      "bind_group": "cel",
+      "cull_mode": "back",
+      "depth_write": true,
+      "depth_compare": "less",
+      "depth_bias": {
+        "constant": 0,
+        "slope_scale": 0,
+        "clamp": 0
+      },
+      "blend": "none",
+      "write_mask": "all"
     }
   ],
+  "render_graph": {
+    "module": "anigo-renderer::render_graph",
+    "scheduling": "kahn_topological",
+    "order_hint": "desempate determinístico (depois, pelo nome)",
+    "settings_from": "scene.render_graph (ativar/desativar e ordem por snapshot)",
+    "nodes": [
+      {
+        "name": "sparse_morph",
+        "kind": "compute",
+        "contract_pass": "sparse_morph",
+        "depends_on": [],
+        "reads": [
+          "base_vertices",
+          "morph_deltas"
+        ],
+        "writes": [
+          "morphed_vertices"
+        ],
+        "enabled": true,
+        "order_hint": -10,
+        "only_when": "gpu_morph_active",
+        "early_z_for": null
+      },
+      {
+        "name": "depth_prepass",
+        "kind": "render",
+        "contract_pass": "depth_prepass",
+        "depends_on": [
+          "sparse_morph"
+        ],
+        "reads": [],
+        "writes": [
+          "depth"
+        ],
+        "enabled": true,
+        "order_hint": 0,
+        "early_z_for": "opaque_cel"
+      },
+      {
+        "name": "face_shadow_sdf",
+        "kind": "render",
+        "contract_pass": null,
+        "depends_on": [
+          "depth_prepass"
+        ],
+        "reads": [
+          "depth"
+        ],
+        "writes": [
+          "face_sdf_mask"
+        ],
+        "enabled": false,
+        "order_hint": 10,
+        "early_z_for": null
+      },
+      {
+        "name": "opaque_cel",
+        "kind": "render",
+        "contract_pass": "cel",
+        "depends_on": [
+          "depth_prepass",
+          "face_shadow_sdf"
+        ],
+        "reads": [
+          "depth",
+          "face_sdf_mask"
+        ],
+        "writes": [
+          "color"
+        ],
+        "enabled": true,
+        "order_hint": 20,
+        "early_z_for": null
+      },
+      {
+        "name": "hair_and_cloth",
+        "kind": "render",
+        "contract_pass": null,
+        "depends_on": [
+          "opaque_cel"
+        ],
+        "reads": [
+          "depth"
+        ],
+        "writes": [
+          "color",
+          "oit_accum"
+        ],
+        "enabled": false,
+        "order_hint": 30,
+        "early_z_for": null
+      },
+      {
+        "name": "inverted_hull_outline",
+        "kind": "render",
+        "contract_pass": "outline",
+        "depends_on": [
+          "opaque_cel",
+          "hair_and_cloth"
+        ],
+        "reads": [
+          "depth",
+          "color"
+        ],
+        "writes": [
+          "color"
+        ],
+        "enabled": true,
+        "order_hint": 40,
+        "early_z_for": null
+      },
+      {
+        "name": "post_process",
+        "kind": "render",
+        "contract_pass": null,
+        "depends_on": [
+          "inverted_hull_outline"
+        ],
+        "reads": [
+          "color",
+          "depth"
+        ],
+        "writes": [
+          "bloom_a"
+        ],
+        "enabled": false,
+        "order_hint": 50,
+        "early_z_for": null
+      }
+    ],
+    "resources": [
+      {
+        "name": "color",
+        "kind": "transient_color",
+        "format": "rgba8unorm",
+        "size": "viewport",
+        "samples": 4,
+        "first_use": "opaque_cel",
+        "last_use": "post_process"
+      },
+      {
+        "name": "depth",
+        "kind": "depth_stencil",
+        "format": "depth24plus",
+        "size": "viewport",
+        "samples": 4,
+        "first_use": "depth_prepass",
+        "last_use": "post_process"
+      },
+      {
+        "name": "face_sdf_mask",
+        "kind": "transient_color",
+        "format": "r8unorm",
+        "size": "viewport",
+        "samples": 1,
+        "first_use": "face_shadow_sdf",
+        "last_use": "opaque_cel"
+      },
+      {
+        "name": "oit_accum",
+        "kind": "transient_color",
+        "format": "rgba16float",
+        "size": "viewport",
+        "samples": 1,
+        "first_use": "hair_and_cloth",
+        "last_use": "hair_and_cloth"
+      },
+      {
+        "name": "bloom_a",
+        "kind": "transient_color",
+        "format": "rgba16float",
+        "size": "viewport",
+        "samples": 1,
+        "first_use": "post_process",
+        "last_use": "post_process"
+      },
+      {
+        "name": "bloom_b",
+        "kind": "transient_color",
+        "format": "rgba16float",
+        "size": "viewport",
+        "samples": 1,
+        "first_use": "post_process",
+        "last_use": "post_process"
+      },
+      {
+        "name": "base_vertices",
+        "kind": "storage_buffer",
+        "format": "vertex_raw",
+        "size": "fixed:1x1",
+        "samples": 1,
+        "first_use": null,
+        "last_use": null
+      },
+      {
+        "name": "morph_deltas",
+        "kind": "storage_buffer",
+        "format": "sparse_morph_delta",
+        "size": "fixed:1x1",
+        "samples": 1,
+        "first_use": null,
+        "last_use": null
+      },
+      {
+        "name": "morphed_vertices",
+        "kind": "storage_buffer",
+        "format": "vertex_raw",
+        "size": "fixed:1x1",
+        "samples": 1,
+        "first_use": null,
+        "last_use": null
+      }
+    ],
+    "aliasing": {
+      "strategy": "liveness_intervals",
+      "sharing_key": [
+        "kind",
+        "format",
+        "size",
+        "samples"
+      ],
+      "note": "Dois recursos com a mesma chave e janelas de vida disjuntas dividem a alocação; com os passes de cabelo/pós-processamento desabilitados o plano não tem nada para compartilhar (e reporta 0 bytes).",
+      "groups": [
+        {
+          "name": "oit_and_bloom",
+          "members": [
+            "oit_accum",
+            "bloom_a"
+          ]
+        }
+      ]
+    }
+  },
   "diagnostics": {
     "note": "Códigos estáveis compartilhados pelos dois lados. Severidade define se o renderer está degradado (error) ou apenas avisado (warning).",
     "codes": [

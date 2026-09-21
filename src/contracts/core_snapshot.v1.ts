@@ -170,12 +170,20 @@ export interface NodeSnapshotWire {
   world_matrix: number[];
 }
 
+/** Issue #14: ordem/ativação dos passes do render graph (espelho do Rust). */
+export interface RenderGraphSettingsWire {
+  depth_prepass: boolean;
+  disabled_passes: string[];
+  order: string[];
+}
+
 export interface RenderSnapshotWire {
   settings_version: number;
   msaa_samples: number;
   background_color: [number, number, number, number];
   color: ColorManagementWire;
   tonemap: TonemapOperatorWire;
+  render_graph: RenderGraphSettingsWire;
 }
 
 export interface DynamicStatePayloadWire {

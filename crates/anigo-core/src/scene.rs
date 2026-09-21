@@ -205,6 +205,11 @@ pub struct Scene {
     /// proporções são assadas na malha base).
     #[serde(default = "SkinPayload::canonical_base")]
     pub skin: SkinPayload,
+    /// Issue #14: decisões do projeto sobre o render graph (pre-pass ligado,
+    /// passes desligados). O renderer headless lê daqui, então o que o núcleo
+    /// manda é o que o frame desenha.
+    #[serde(default)]
+    pub render_graph: crate::project::RenderGraphSettings,
 }
 
 impl Default for Scene {
@@ -219,6 +224,7 @@ impl Default for Scene {
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0], // P0-04: unified with viewport clearColor (was 0.12,0.13,0.16)
             skin: SkinPayload::canonical_base(),
+            render_graph: crate::project::RenderGraphSettings::default(),
         }
     }
 }
@@ -231,6 +237,7 @@ impl Scene {
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0],
             skin: SkinPayload::canonical_base(),
+            render_graph: crate::project::RenderGraphSettings::default(),
         }
     }
 

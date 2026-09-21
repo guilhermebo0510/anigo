@@ -39,7 +39,9 @@ use crate::bone_sync::BondSyncManager;
 use crate::mesh::{BaseGender, Mesh, Vertex};
 use crate::morph::SparseMorphSet;
 use crate::morph_catalog::ALL_MORPH_SLIDERS;
-use crate::project::{ColorManagement, ProjectState, RenderState, TonemapOperator};
+use crate::project::{
+    ColorManagement, ProjectState, RenderGraphSettings, RenderState, TonemapOperator,
+};
 use crate::scene::StylizedLight;
 use crate::somatotype::SomatotypeCoords;
 
@@ -334,13 +336,20 @@ impl MaterialSnapshot {
 }
 
 /// Render + color management block of the snapshot (§6.2).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// Deixou de ser `Copy` na issue #14: o render graph carrega as listas de
+/// passes (ativados/desligados/ordem) e uma lista não é `Copy`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderSnapshot {
     pub settings_version: u32,
     pub msaa_samples: u32,
     pub background_color: [f32; 4],
     pub color: ColorManagement,
     pub tonemap: TonemapOperator,
+    /// Issue #14: ordem e ativação dos passes do render graph. É o que
+    /// satisfaz o critério 1 do issue — o núcleo manda, os renderers obedecem.
+    #[serde(default)]
+    pub render_graph: RenderGraphSettings,
 }
 
 impl From<&RenderState> for RenderSnapshot {
@@ -351,6 +360,7 @@ impl From<&RenderState> for RenderSnapshot {
             background_color: render.background_color,
             color: render.color,
             tonemap: render.tonemap,
+            render_graph: render.render_graph.clone(),
         }
     }
 }
@@ -1084,6 +1094,11 @@ mod tests {
         assert!(dynamic.nodes[0].children.is_empty());
         assert!(dynamic.nodes[0].world_matrix().abs_diff_eq(glam::Mat4::IDENTITY, 1e-6));
         assert_eq!(dynamic.render.msaa_samples, 4);
+        // Issue #14: o render graph viaja no snapshot — o renderer não tem
+        // opinião própria sobre quais passes rodam.
+        assert_eq!(dynamic.render.render_graph, RenderGraphSettings::default());
+        assert!(dynamic.render.render_graph.depth_prepass);
+        assert!(dynamic.render.render_graph.disabled_passes.is_empty());
         assert_eq!(dynamic.deformation_authority, DeformationAuthority::ReferenceTs);
         assert_eq!(dynamic.deformation_coverage.total_sliders, 157);
         assert!(!dynamic.deformation_coverage.is_complete());

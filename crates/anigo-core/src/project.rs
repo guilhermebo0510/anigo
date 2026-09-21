@@ -484,6 +484,81 @@ pub struct TransformKeyframe {
 // Render + color management (§6.2)
 // ---------------------------------------------------------------------------
 
+/// Nomes dos passes do render graph (issue #14).
+///
+/// Espelho do `render_graph.nodes` do render contract: o núcleo não depende do
+/// renderer (a dependência é a inversa), então a lista canônica vive aqui e o
+/// renderer tem um teste de drift que compara as duas — igual ao que
+/// `NodeKind::ALL`/`COMMAND_KINDS` já fazem.
+pub const RENDER_GRAPH_PASSES: [&str; 7] = [
+    "sparse_morph",
+    "depth_prepass",
+    "face_shadow_sdf",
+    "opaque_cel",
+    "hair_and_cloth",
+    "inverted_hull_outline",
+    "post_process",
+];
+
+/// Configuração do render graph vinda do documento (issue #14).
+///
+/// O DAG em si vive no render contract; aqui ficam **as decisões do projeto**:
+/// se o depth pre-pass roda e quais passes ficam desligados. Como isto é estado
+/// do documento, entra no undo/redo e no snapshot — o mesmo frame sai igual no
+/// viewport e no headless.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderGraphSettings {
+    /// Issue #14: depth pre-pass ligado (early-Z antes do cel shading).
+    pub depth_prepass: bool,
+    /// Passes desligados pelo projeto (nomes do grafo, ex.: `inverted_hull_outline`).
+    #[serde(default)]
+    pub disabled_passes: Vec<String>,
+    /// Ordem preferida pela cena (issue #14, critério 1: "ordem e ativação
+    /// configuráveis via snapshots"). É uma preferência: o grafo nunca coloca um
+    /// nó antes das dependências dele.
+    #[serde(default)]
+    pub order: Vec<String>,
+}
+
+impl Default for RenderGraphSettings {
+    fn default() -> Self {
+        Self {
+            depth_prepass: true,
+            disabled_passes: Vec::new(),
+            order: Vec::new(),
+        }
+    }
+}
+
+impl RenderGraphSettings {
+    /// `true` quando o grafo roda exatamente como o contrato declara.
+    pub fn is_default(&self) -> bool {
+        self.depth_prepass && self.disabled_passes.is_empty() && self.order.is_empty()
+    }
+
+    /// `true` quando o passe está desligado pelo projeto.
+    pub fn is_disabled(&self, pass: &str) -> bool {
+        self.disabled_passes.iter().any(|entry| entry == pass)
+    }
+
+    /// Aplica as decisões do projeto sobre o plano do contrato: o pre-pass
+    /// desligado sai do plano e cada nome desabilitado também.
+    pub fn apply_to(
+        &self,
+        enabled: impl IntoIterator<Item = String>,
+    ) -> std::collections::BTreeSet<String> {
+        enabled
+            .into_iter()
+            .filter(|name| {
+                if name == "depth_prepass" && !self.depth_prepass {
+                    return false;
+                }
+                !self.is_disabled(name)
+            })
+            .collect()
+    }
+}
+
 /// Render settings for viewport and headless export (same struct, §2.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderState {
@@ -493,6 +568,9 @@ pub struct RenderState {
     pub background_color: [f32; 4],
     pub color: ColorManagement,
     pub tonemap: TonemapOperator,
+    /// Issue #14: ativação/ordem dos passes do render graph.
+    #[serde(default)]
+    pub render_graph: RenderGraphSettings,
 }
 
 impl Default for RenderState {
@@ -503,6 +581,7 @@ impl Default for RenderState {
             background_color: [0.08, 0.09, 0.13, 1.0],
             color: ColorManagement::default(),
             tonemap: TonemapOperator::None,
+            render_graph: RenderGraphSettings::default(),
         }
     }
 }
@@ -2189,4 +2268,60 @@ mod tests {
         assert_eq!(parse_hex_rgba("nope", fallback), fallback);
         assert_eq!(parse_hex_rgba("#fff", fallback), fallback);
     }
+    #[test]
+    fn render_graph_settings_default_to_the_contract_and_filter_passes() {
+        // Issue #14: as decisões do documento sobre o render graph. O padrão é o
+        // do contrato (pre-pass ligado, nada desligado), e `apply_to` é o único
+        // filtro — o renderer nunca reinterpreta a lista.
+        let settings = RenderGraphSettings::default();
+        assert!(settings.is_default());
+        assert!(settings.depth_prepass);
+
+        let contract_passes = RENDER_GRAPH_PASSES.map(str::to_string);
+        let enabled = settings.apply_to(contract_passes.iter().cloned());
+        assert_eq!(
+            enabled.into_iter().collect::<Vec<_>>(),
+            vec![
+                "depth_prepass",
+                "face_shadow_sdf",
+                "hair_and_cloth",
+                "inverted_hull_outline",
+                "opaque_cel",
+                "post_process",
+                "sparse_morph",
+            ],
+            "sem configuração, todo passe do grafo entra no conjunto habilitado"
+        );
+
+        // O pre-pass desligado sai **só** ele.
+        let without_prepass = RenderGraphSettings {
+            depth_prepass: false,
+            ..RenderGraphSettings::default()
+        };
+        assert!(!without_prepass.is_default());
+        let enabled = without_prepass.apply_to(contract_passes.iter().cloned());
+        assert!(!enabled.contains("depth_prepass"));
+        assert!(enabled.contains("opaque_cel"));
+
+        // Um passe desligado pelo nome sai da lista, e a ordem é preservada.
+        let with_outline_off = RenderGraphSettings {
+            disabled_passes: vec!["inverted_hull_outline".to_string()],
+            ..RenderGraphSettings::default()
+        };
+        assert!(with_outline_off.is_disabled("inverted_hull_outline"));
+        assert!(!with_outline_off.is_disabled("opaque_cel"));
+        let enabled: Vec<String> = with_outline_off
+            .apply_to(contract_passes.iter().cloned())
+            .into_iter()
+            .collect();
+        assert!(!enabled.contains(&"inverted_hull_outline".to_string()));
+        assert!(enabled.contains(&"opaque_cel".to_string()));
+        assert!(enabled.contains(&"depth_prepass".to_string()));
+
+        // E o bloco viaja com o snapshot do render (o renderer lê daqui).
+        let snapshot = crate::snapshot::RenderSnapshot::from(&RenderState::default());
+        assert_eq!(snapshot.render_graph, RenderGraphSettings::default());
+    }
+
+
 }

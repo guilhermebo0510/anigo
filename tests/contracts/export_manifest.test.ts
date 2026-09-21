@@ -374,7 +374,7 @@ test("serviço: o frame de exportação traz o bloco de render do contrato", asy
     color_format: "Rgba8Unorm",
     depth_format: "Depth24Plus",
     msaa_samples: 4,
-    render_passes: ["outline", "cel"],
+    render_passes: ["depth_prepass", "cel", "outline"],
     clear_source: "scene.background_color",
     clear_color: [0.08, 0.09, 0.13, 1],
     adapter_name: "test-adapter",
@@ -399,7 +399,8 @@ test("serviço: o frame de exportação traz o bloco de render do contrato", asy
 
   // A ordem dos passes que o núcleo grava no manifesto é a mesma que o viewport
   // desenha (fonte única: o render contract).
-  assert.deepEqual(renderPassOrder(), ["outline", "cel"]);
+  // Issue #14: a ordem vem do render graph (depth pre-pass → cel → outline).
+  assert.deepEqual(renderPassOrder(), ["depth_prepass", "cel", "outline"]);
   assert.deepEqual(render.render_passes, renderPassOrder());
 
   const result = await exportCanonicalFrame({
@@ -411,7 +412,7 @@ test("serviço: o frame de exportação traz o bloco de render do contrato", asy
     staticRevision: manifestFixture.project.static_revision,
   });
   assert.equal(result.imagePath, "/tmp/frame.png");
-  assert.deepEqual(result.render.render_passes, ["outline", "cel"]);
+  assert.deepEqual(result.render.render_passes, ["depth_prepass", "cel", "outline"]);
   assert.equal(result.render.msaa_samples, 4);
   assert.ok(result.parity.ok, describeParity(result.parity));
 
@@ -470,7 +471,10 @@ test("Rust: a exportação é do núcleo e usa o snapshot como fonte", () => {
     assert.ok(mainRs.includes(`async fn ${handler}(`), `${handler} precisa existir`);
     assert.ok(mainRs.includes(`            ${handler},`), `${handler} precisa estar no registry`);
   }
-  assert.match(mainRs, /render_passes: anigo_renderer::render_contract::render_pass_order\(\)/);
+  // Issue #14: os passes vêm do plano executado (`metrics.passes_executed`) e
+  // caem na ordem declarada do contrato só quando não há plano.
+  assert.match(mainRs, /render_passes: if metrics\.passes_executed\.is_empty\(\) \{/);
+  assert.match(mainRs, /anigo_renderer::render_contract::render_pass_order\(\)/);
   assert.match(mainRs, /msaa_samples: anigo_renderer::render_contract::msaa_sample_count\(\)/);
   assert.match(mainRs, /clear_source: anigo_renderer::render_contract::clear_color_source\(\)/);
 

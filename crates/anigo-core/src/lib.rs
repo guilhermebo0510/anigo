@@ -54,7 +54,8 @@ pub use project::{
     migrate_legacy_snapshot, AccessoryAttachment, AnimationClip, AnimationState, AnimationTrack,
     AssetEntry, AssetKind, CameraSlot, CharacterProportions, CharacterState, ClothParameters,
     ColorManagement, ColorSpace, HairParameters, LengthUnit, LightSlot, MaterialEntry, MeshRef,
-    NodeSlot, ProjectError, ProjectSettings, ProjectState, RenderState, SceneState,
+    NodeSlot, ProjectError, ProjectSettings, ProjectState, RenderGraphSettings, RenderState,
+    SceneState, RENDER_GRAPH_PASSES,
     TonemapOperator, TransformKeyframe, DEFAULT_AUTOSAVE_INTERVAL_MINUTES, DEFAULT_HISTORY_LIMIT,
     PROJECT_SCHEMA_VERSION, URI_BASE_FEMALE, URI_BASE_MALE, URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
