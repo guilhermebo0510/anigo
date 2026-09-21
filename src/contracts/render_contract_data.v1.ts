@@ -732,6 +732,14 @@ export const RENDER_CONTRACT_DATA = {
         "severity": "error"
       },
       {
+        "code": "device_lost",
+        "severity": "warning"
+      },
+      {
+        "code": "device_recreated",
+        "severity": "info"
+      },
+      {
         "code": "shader_compile_failed",
         "severity": "error"
       },

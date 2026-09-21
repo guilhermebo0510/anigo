@@ -51,6 +51,24 @@ pub struct ViewportFrameResponse {
     pub backend: String,
 }
 
+/// Issue #11: status do device headless para a UI (rodapé de notificação) —
+/// disponibilidade, modo de apresentação, resumo de diagnósticos e os últimos
+/// erros interceptados pelo canal MPSC de `on_uncaptured_error`.
+#[derive(Serialize, Deserialize)]
+pub struct HeadlessDeviceStatus {
+    pub available: bool,
+    pub adapter_name: Option<String>,
+    pub backend: Option<String>,
+    /// Modo de apresentação em vigor: `"fifo"`, `"immediate"` ou `"mailbox"`.
+    pub presentation_mode: String,
+    pub diagnostics_errors: usize,
+    pub diagnostics_warnings: usize,
+    /// Últimos erros de device interceptados (sem crash), mais recentes no fim.
+    pub recent_device_errors: Vec<anigo_renderer::UncapturedErrorRecord>,
+    /// Tempo (ms) da última `recreate_device_and_swapchain` bem-sucedida.
+    pub last_recovery_ms: Option<f64>,
+}
+
 pub struct AppState {
     pub renderer: Option<HeadlessRenderer>,
     pub scene: Scene,
@@ -61,6 +79,8 @@ pub struct AppState {
     /// reconstruída sob demanda, no próximo frame — mexer na câmera ou no
     /// material não recalcula 157 canais de morph à toa.
     pub scene_dirty: bool,
+    /// Issue #11: tempo (ms) da última recuperação de device (notificação da UI).
+    pub last_recovery_ms: Option<f64>,
 }
 
 impl AppState {
@@ -70,6 +90,7 @@ impl AppState {
             scene: Scene::default(),
             session: core_session::CoreSession::new(),
             scene_dirty: false,
+            last_recovery_ms: None,
         }
     }
 
@@ -132,6 +153,71 @@ fn apply_session_command(
     state.apply_command(command).map(|_| ())
 }
 
+/// Um quadro renderizado, com o tempo de recuperação de device quando houve
+/// alguma (issue #11).
+struct RenderedFrame {
+    image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    metrics: anigo_renderer::RenderMetrics,
+    recovery_ms: Option<f64>,
+}
+
+/// Issue #11 — renderiza com recuperação automática de device.
+///
+/// Uma falha de quadro dispara `recreate_device_and_swapchain` (re-solicita
+/// adapter/device, reinstancia PSOs e realoca os buffers canônicos a partir do
+/// contrato) e o quadro é refeito antes de desistir; se a própria recuperação
+/// falhar, o erro sai como string do comando — nunca como crash do processo.
+///
+/// Os empréstimos entram separados (`&mut` do renderer, `&` da cena) para que o
+/// chamador possa segurar o `MutexGuard` sem conflito de `DerefMut`.
+async fn render_with_device_recovery(
+    renderer: &mut HeadlessRenderer,
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> Result<RenderedFrame, String> {
+    match renderer.render_scene(scene, width, height).await {
+        Ok((image, metrics)) => Ok(RenderedFrame {
+            image,
+            metrics,
+            recovery_ms: None,
+        }),
+        Err(first_error) => {
+            let report = renderer
+                .recreate_device_and_swapchain()
+                .await
+                .map_err(|recovery_error| {
+                    format!(
+                        "Render error (device recovery also failed: {:#}): {:#}",
+                        recovery_error, first_error
+                    )
+                })?;
+            tracing::info!(
+                target: "anigo::device",
+                adapter = %report.adapter_name,
+                duration_ms = report.duration_ms,
+                label,
+                "headless device recuperado após falha"
+            );
+            let (image, metrics) = renderer
+                .render_scene(scene, width, height)
+                .await
+                .map_err(|second_error| {
+                    format!(
+                        "Render error (device recovery took {:.1} ms, then failed): {:#}",
+                        report.duration_ms, second_error
+                    )
+                })?;
+            Ok(RenderedFrame {
+                image,
+                metrics,
+                recovery_ms: Some(report.duration_ms),
+            })
+        }
+    }
+}
+
 #[tauri::command]
 async fn render_viewport_frame(
     width: u32,
@@ -144,15 +230,28 @@ async fn render_viewport_frame(
     if state.renderer.is_none() {
         state.renderer = HeadlessRenderer::new().await.ok();
     }
-    let renderer = state
-        .renderer
-        .as_ref()
-        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
 
-    let (image_buf, metrics) = renderer
-        .render_scene(&state.scene, width.max(64), height.max(64))
-        .await
-        .map_err(|e| format!("Render error: {:#}", e))?;
+    let width = width.max(64);
+    let height = height.max(64);
+    // Issue #11: empréstimos disjuntos explícitos (renderer mutável para a
+    // recuperação, cena lida, tempo de recuperação escrito). Através do
+    // `DerefMut` do `MutexGuard` o compilador não consegue provar a disjunção,
+    // então o destructuring por campo a torna explícita.
+    let AppState {
+        renderer,
+        scene,
+        last_recovery_ms,
+        ..
+    } = &mut *state;
+    let renderer = renderer
+        .as_mut()
+        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+    let frame = render_with_device_recovery(renderer, scene, width, height, "frame do viewport")
+        .await?;
+    if let Some(recovery_ms) = frame.recovery_ms {
+        *last_recovery_ms = Some(recovery_ms);
+    }
+    let (image_buf, metrics) = (frame.image, frame.metrics);
 
     let mut png_bytes = Vec::new();
     let encoder = PngEncoder::new(&mut png_bytes);
@@ -664,17 +763,26 @@ async fn core_export_frame(
     if state.renderer.is_none() {
         state.renderer = HeadlessRenderer::new().await.ok();
     }
-    let renderer = state
-        .renderer
-        .as_ref()
-        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
 
     let width = width.max(64);
     let height = height.max(64);
-    let (image_buf, metrics) = renderer
-        .render_scene(&state.scene, width, height)
-        .await
-        .map_err(|e| format!("Render error: {:#}", e))?;
+    // Issue #11: mesmo tratamento de recuperação do device do frame do
+    // viewport — a exportação não pode falhar por crash de driver.
+    let AppState {
+        renderer,
+        scene,
+        last_recovery_ms,
+        ..
+    } = &mut *state;
+    let renderer = renderer
+        .as_mut()
+        .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+    let frame =
+        render_with_device_recovery(renderer, scene, width, height, "frame de exportação").await?;
+    if let Some(recovery_ms) = frame.recovery_ms {
+        *last_recovery_ms = Some(recovery_ms);
+    }
+    let (image_buf, metrics) = (frame.image, frame.metrics);
 
     let render_info = anigo_core::export::ExportRenderInfo {
         width,
@@ -743,6 +851,36 @@ async fn core_export_frame(
         render_time_ms: metrics.render_time_ms,
         manifest: serde_json::from_str(&manifest_json)
             .map_err(|error| format!("manifesto inválido: {error}"))?,
+    })
+}
+
+/// Issue #11: telemetria de tolerância a falhas do device headless — o rodapé
+/// da UI reporta o evento de perda/recuperação e o tempo de recuperação.
+#[tauri::command]
+async fn headless_device_status(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<HeadlessDeviceStatus, String> {
+    let state = state.lock().await;
+    let summary = anigo_renderer::diagnostics_summary();
+    Ok(HeadlessDeviceStatus {
+        available: state.renderer.is_some(),
+        adapter_name: state
+            .renderer
+            .as_ref()
+            .map(|renderer| renderer.adapter_info.name.clone()),
+        backend: state
+            .renderer
+            .as_ref()
+            .map(|renderer| format!("{:?}", renderer.adapter_info.backend)),
+        presentation_mode: state
+            .renderer
+            .as_ref()
+            .map(|renderer| renderer.presentation_mode().as_str().to_string())
+            .unwrap_or_else(|| "fifo".to_string()),
+        diagnostics_errors: summary.errors,
+        diagnostics_warnings: summary.warnings,
+        recent_device_errors: anigo_renderer::recent_errors(),
+        last_recovery_ms: state.last_recovery_ms,
     })
 }
 
@@ -852,6 +990,7 @@ fn main() {
             core_deformed_mesh,
             core_export_glb,
             core_export_frame,
+            headless_device_status,
         ])
         .build(tauri::generate_context!());
 
