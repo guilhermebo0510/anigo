@@ -60,6 +60,13 @@ def annotate(path: str, label: str) -> int:
         else:
             index += 1
 
+    # Falhas de teste não produzem `error[...]`: o cargo imprime os blocos
+    # `---- teste stdout ----` e a lista em `failures:`. Isto vira uma anotação
+    # própria para que o nome do teste e a asserção fiquem legíveis na aba Checks.
+    summary = test_failure_summary(lines)
+    if summary:
+        print(escape(f"{label}: falhas de teste\n\n{summary}", prefix="::error::"))
+
     if not blocks:
         tail = "\n".join(lines[-400:]) or "(log vazio)"
         message = f"{label} falhou; nenhum bloco 'error[...]' reconhecido. Fim do log:\n{tail}"
@@ -87,6 +94,24 @@ def annotate(path: str, label: str) -> int:
             "limite de anotações — veja o log do job"
         )
     return 1
+
+
+def test_failure_summary(lines: list[str]) -> str:
+    """Trecho do log com o primeiro teste que falhou (+ lista final)."""
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("---- ") and "stdout" in line:
+            start = index
+            break
+    if start is None:
+        for index, line in enumerate(lines):
+            if line.strip() == "failures:":
+                start = index
+                break
+    if start is None:
+        return ""
+    tail = "\n".join(lines[start : start + 60])
+    return tail[:ANNOTATION_CHARS]
 
 
 def escape(message: str, prefix: str) -> str:
