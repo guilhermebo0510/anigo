@@ -546,6 +546,10 @@ mod tests {
 
     #[test]
     fn error_bus_ring_is_bounded() {
+        // Sem o guard, este dreno (12 registros) corre contra
+        // `error_bus_forwards_injected_errors_to_diagnostics`, que espera o
+        // anel com exatamente os seus 2 — race µm-scale, flake no CI.
+        let _guard = test_guard();
         clear_recent_errors();
         let bus = UncapturedErrorBus::new();
         for index in 0..(RECENT_CAPACITY + 4) {
