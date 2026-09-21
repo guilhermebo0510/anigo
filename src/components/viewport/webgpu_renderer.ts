@@ -29,11 +29,54 @@ import {
   type SparseMorphSet,
 } from "../../services/morph_engine";
 import { GlbParseError, loadGlbMesh } from "../../services/gltf_loader";
-// P0-04: single source of truth — WGSL now imported from canonical shaders/ (was 4 duplicated copies)
+import {
+  DEFAULT_CAMERA_FAR,
+  DEFAULT_CAMERA_NEAR,
+  viewProjectionMatrix,
+} from "../../services/camera_math";
+// P0 renderer: canonical shader source is `crates/anigo-renderer/shaders/` — the same
+// files the Rust (wgpu) renderer loads with `include_str!`. There is exactly one
+// copy of every production shader in the repo (`contracts/render_contract_v1.json`).
 // @ts-ignore - Vite ?raw import
-import celShaderSource from "../../../shaders/cel_shading.wgsl?raw";
+import celShaderSource from "../../../crates/anigo-renderer/shaders/cel_shading.wgsl?raw";
 // @ts-ignore - Vite ?raw import
-import outlineShaderSource from "../../../shaders/inverted_hull.wgsl?raw";
+import outlineShaderSource from "../../../crates/anigo-renderer/shaders/inverted_hull.wgsl?raw";
+// @ts-ignore - Vite ?raw import
+import morphComputeSource from "../../../crates/anigo-renderer/shaders/morph_sparse_compute.wgsl?raw";
+// P0 renderer: the WebGL2 fallback is *not* production — its sources live in
+// `webgl2_fallback/` and are listed as `role: "fallback_webgl2"` in the contract.
+// @ts-ignore - Vite ?raw import
+import vsCel from "../../../crates/anigo-renderer/shaders/webgl2_fallback/cel_vertex.glsl?raw";
+// @ts-ignore - Vite ?raw import
+import fsCel from "../../../crates/anigo-renderer/shaders/webgl2_fallback/cel_fragment.glsl?raw";
+// @ts-ignore - Vite ?raw import
+import vsOutline from "../../../crates/anigo-renderer/shaders/webgl2_fallback/outline_vertex.glsl?raw";
+// @ts-ignore - Vite ?raw import
+import fsOutline from "../../../crates/anigo-renderer/shaders/webgl2_fallback/outline_fragment.glsl?raw";
+// P0 renderer: todo o estado de pipeline (passes, MSAA, formatos, blend, depth,
+// uniforms e toon ramp) vem do contrato congelado — não existem literais de
+// renderização espalhados neste arquivo.
+import {
+  addressMode,
+  assertShaderSource,
+  depthFormat,
+  filterMode,
+  msaaSampleCount,
+  renderPasses,
+  RENDER_CONTRACT,
+  toonRampBytes,
+  toonRampFingerprint,
+  expectedToonRampFingerprint,
+  uniformSize,
+  vertexBufferLayout,
+} from "../../contracts/render_contract.v1";
+import {
+  cameraUniformFloats,
+  lightUniformFloats,
+  materialUniformFloats,
+  outlineUniformFloats,
+  IDENTITY_MAT4,
+} from "../../services/render_uniforms";
 
 export interface ViewportMetrics {
   fps: number;
@@ -120,10 +163,10 @@ export class WebGpuViewportRenderer {
   private format: GPUTextureFormat = "bgra8unorm";
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
-  // P0-07: 4x MSAA (was sampleCount=1)
+  // P0-07: MSAA conforme o contrato (4x; era sampleCount=1)
   private msaaColorTexture: GPUTexture | null = null;
   private msaaColorView: GPUTextureView | null = null;
-  private sampleCount: number = 4;
+  private sampleCount: number = msaaSampleCount();
   private celPipeline: GPURenderPipeline | null = null;
   private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
   private vertexBuffer: GPUBuffer | null = null;
@@ -356,6 +399,17 @@ export class WebGpuViewportRenderer {
   private buildShadersAndPipelines() {
     if (!this.device) return;
 
+    // Os bytes empacotados no bundle precisam ser exatamente os do contrato
+    // (os mesmos que o Rust carrega com `include_str!`), senão não há paridade
+    // headless↔viewport. Falha na inicialização em vez de renderizar diferente.
+    assertShaderSource("cel_shading", celShaderSource);
+    assertShaderSource("inverted_hull", outlineShaderSource);
+    assertShaderSource("morph_sparse_compute", morphComputeSource);
+    assertShaderSource("webgl2_fallback/cel_vertex", vsCel);
+    assertShaderSource("webgl2_fallback/cel_fragment", fsCel);
+    assertShaderSource("webgl2_fallback/outline_vertex", vsOutline);
+    assertShaderSource("webgl2_fallback/outline_fragment", fsOutline);
+
     const celShaderCode = celShaderSource;
 
     const outlineShaderCode = outlineShaderSource;
@@ -363,194 +417,86 @@ export class WebGpuViewportRenderer {
     const celModule = this.device.createShaderModule({ code: celShaderCode });
     const outlineModule = this.device.createShaderModule({ code: outlineShaderCode });
 
-    const vertexBufferLayout: GPUVertexBufferLayout = {
-      arrayStride: 72,
-      attributes: [
-        { shaderLocation: 0, offset: 0, format: "float32x3" },
-        { shaderLocation: 1, offset: 12, format: "float32x3" },
-        { shaderLocation: 2, offset: 24, format: "float32x2" },
-        { shaderLocation: 3, offset: 32, format: "float32x4" },
-        { shaderLocation: 4, offset: 48, format: "uint16x4" },
-        { shaderLocation: 5, offset: 56, format: "float32x4" },
-      ],
+    const passSpec = (name: string) => {
+      const pass = renderPasses().find((candidate) => candidate.name === name);
+      if (!pass) throw new Error(`passe '${name}' não está no render contract`);
+      return pass;
     };
+    const celPass = passSpec("cel");
+    const outlinePass = passSpec("outline");
+
+    const contractVertexLayout = vertexBufferLayout() as unknown as GPUVertexBufferLayout;
+    const blendStateOf = (pass: { blend?: string }) =>
+      pass.blend === "src_alpha_one_minus_src_alpha"
+        ? {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          }
+        : undefined;
 
     this.celPipeline = this.device.createRenderPipeline({
       layout: "auto",
       vertex: {
         module: celModule,
-        entryPoint: "vs_main",
-        buffers: [vertexBufferLayout],
+        entryPoint: celPass.vertex_entry ?? "vs_main",
+        buffers: [contractVertexLayout],
       },
       fragment: {
         module: celModule,
-        entryPoint: "fs_main",
-        targets: [{ 
-            format: this.format
-            // P2-03 no blend for opaque cel (was premultiplied without premultiply) — saves bandwidth
+        entryPoint: celPass.fragment_entry ?? "fs_main",
+        targets: [{
+            format: this.format,
+            // contrato: cel é opaco (blend "none") — sem blend, economiza banda
+            blend: blendStateOf(celPass),
         }],
       },
       primitive: {
         topology: "triangle-list",
-        cullMode: "back",
+        cullMode: (celPass.cull_mode ?? "back") as any,
       },
       depthStencil: {
-        format: "depth24plus",
-        depthWriteEnabled: true,
-        depthCompare: "less-equal",
+        format: depthFormat() as any,
+        depthWriteEnabled: celPass.depth_write ?? true,
+        depthCompare: (celPass.depth_compare ?? "less-equal") as any,
       },
-      multisample: { count: 4 },
+      multisample: { count: msaaSampleCount() },
     });
 
     this.outlinePipeline = this.device.createRenderPipeline({
       layout: "auto",
       vertex: {
         module: outlineModule,
-        entryPoint: "vs_main",
-        buffers: [vertexBufferLayout],
+        entryPoint: outlinePass.vertex_entry ?? "vs_main",
+        buffers: [contractVertexLayout],
       },
       fragment: {
         module: outlineModule,
-        entryPoint: "fs_main",
-        targets: [{ 
+        entryPoint: outlinePass.fragment_entry ?? "fs_main",
+        targets: [{
             format: this.format,
-            blend: {
-                color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-            }
+            blend: blendStateOf(outlinePass),
         }],
       },
       primitive: {
         topology: "triangle-list",
-        cullMode: "front", // Backfaces extruded for inverted hull
+        cullMode: (outlinePass.cull_mode ?? "front") as any, // hull invertido: backfaces extrudadas
       },
       depthStencil: {
-        format: "depth24plus",
-        depthWriteEnabled: false, // P2-01 outline no write (avoids z-fighting)
-        depthBias: 1,
-        depthBiasSlopeScale: 1.0,
-        depthBiasClamp: 0.0,
-        depthCompare: "less-equal",
+        format: depthFormat() as any,
+        // contrato: outline não escreve profundidade e usa bias 1/1
+        depthWriteEnabled: outlinePass.depth_write ?? false,
+        depthBias: outlinePass.depth_bias?.constant ?? 0,
+        depthBiasSlopeScale: outlinePass.depth_bias?.slope_scale ?? 0,
+        depthBiasClamp: outlinePass.depth_bias?.clamp ?? 0,
+        depthCompare: (outlinePass.depth_compare ?? "less-equal") as any,
       },
-      multisample: { count: 4 },
+      multisample: { count: msaaSampleCount() },
     });
-
-    // Sub-Sprint 3.3: WebGPU Sparse Morph Target Compute Pipeline
-    const morphComputeCode = `
-      struct SparseMorphHeader {
-        active_channel_count: u32,
-        total_vertex_count: u32,
-        total_delta_count: u32,
-        _pad: u32,
-      };
-
-      struct MorphChannel {
-        weight: f32,
-        start_offset: u32,
-        delta_count: u32,
-        _pad: u32,
-      };
-
-      struct SparseMorphDelta {
-        vertex_index: u32,
-        delta_px: f32,
-        delta_py: f32,
-        delta_pz: f32,
-        delta_nx: f32,
-        delta_ny: f32,
-        delta_nz: f32,
-        _pad: f32,
-      };
-
-      struct VertexRaw {
-        pos_x: f32,
-        pos_y: f32,
-        pos_z: f32,
-        norm_x: f32,
-        norm_y: f32,
-        norm_z: f32,
-        uv_u: f32,
-        uv_v: f32,
-        col_r: f32,
-        col_g: f32,
-        col_b: f32,
-        col_a: f32,
-        joints_0_1: u32,
-        joints_2_3: u32,
-        weight_0: f32,
-        weight_1: f32,
-        weight_2: f32,
-        weight_3: f32,
-      };
-
-      @group(0) @binding(0) var<uniform> header: SparseMorphHeader;
-      @group(0) @binding(1) var<storage, read> base_vertices: array<VertexRaw>;
-      @group(0) @binding(2) var<storage, read> morph_deltas: array<SparseMorphDelta>;
-      @group(0) @binding(3) var<storage, read> active_channels: array<MorphChannel>;
-      @group(0) @binding(4) var<storage, read_write> out_vertices: array<VertexRaw>;
-
-      @compute @workgroup_size(64)
-      fn cs_accumulate_morphs(@builtin(global_invocation_id) global_id: vec3<u32>) {
-        let vert_idx = global_id.x;
-        if (vert_idx >= header.total_vertex_count) {
-          return;
-        }
-
-        var base_v = base_vertices[vert_idx];
-        var p = vec3<f32>(base_v.pos_x, base_v.pos_y, base_v.pos_z);
-        var n = vec3<f32>(base_v.norm_x, base_v.norm_y, base_v.norm_z);
-
-        for (var c: u32 = 0u; c < header.active_channel_count; c = c + 1u) {
-          let ch = active_channels[c];
-          if (abs(ch.weight) > 1e-6 && ch.delta_count > 0u) {
-            let start = ch.start_offset;
-            let count = ch.delta_count;
-
-            var low: u32 = 0u;
-            var high: u32 = count;
-            var found_idx: u32 = 0xFFFFFFFFu;
-
-            while (low < high) {
-              let mid = low + (high - low) / 2u;
-              let delta_vert = morph_deltas[start + mid].vertex_index;
-              if (delta_vert == vert_idx) {
-                found_idx = start + mid;
-                break;
-              } else if (delta_vert < vert_idx) {
-                low = mid + 1u;
-              } else {
-                high = mid;
-              }
-            }
-
-            if (found_idx != 0xFFFFFFFFu) {
-              let delta = morph_deltas[found_idx];
-              p = p + ch.weight * vec3<f32>(delta.delta_px, delta.delta_py, delta.delta_pz);
-              n = n + ch.weight * vec3<f32>(delta.delta_nx, delta.delta_ny, delta.delta_nz);
-            }
-          }
-        }
-
-        let n_sq = dot(n, n);
-        if (n_sq > 1e-12) {
-          n = normalize(n);
-        }
-
-        base_v.pos_x = p.x;
-        base_v.pos_y = p.y;
-        base_v.pos_z = p.z;
-        base_v.norm_x = n.x;
-        base_v.norm_y = n.y;
-        base_v.norm_z = n.z;
-
-        out_vertices[vert_idx] = base_v;
-      }
-    `;
 
     try {
       const morphModule = this.device.createShaderModule({
         label: "Sparse Morph Compute Module",
-        code: morphComputeCode,
+        code: morphComputeSource,
       });
 
       this.morphBindGroupLayout = this.device.createBindGroupLayout({
@@ -635,248 +581,6 @@ export class WebGpuViewportRenderer {
       return false;
     }
     this.gl = gl as any;
-
-    const vsCel = `#version 300 es
-      layout(location = 0) in vec3 a_pos;
-      layout(location = 1) in vec3 a_normal;
-      layout(location = 2) in vec2 a_uv;
-      layout(location = 3) in vec4 a_color;
-      layout(location = 4) in uvec4 a_joints;
-      layout(location = 5) in vec4 a_weights;
-
-      uniform mat4 u_view_proj;
-      out vec3 v_normal;
-      out vec3 v_pos;
-      out vec4 v_color;
-      out vec2 v_uv;
-
-      void main() {
-        v_pos = a_pos;
-        v_normal = a_normal;
-        v_color = a_color;
-        v_uv = a_uv;
-        gl_Position = u_view_proj * vec4(a_pos, 1.0);
-      }
-    `;
-
-    const fsCel = `#version 300 es
-      precision highp float;
-      in vec3 v_normal;
-      in vec3 v_pos;
-      in vec4 v_color;
-      in vec2 v_uv;
-
-      uniform vec3 u_light_dir;
-      uniform float u_light_intensity;
-      uniform vec3 u_light_color;
-      uniform vec3 u_shadow_color;
-      uniform float u_ambient_intensity;
-      uniform float u_shadow_saturation;
-      uniform vec4 u_base_color;
-      uniform vec4 u_shade_color;
-      uniform float u_shadow_threshold;
-      uniform float u_shadow_smoothness;
-      uniform float u_hue_shift;
-      uniform float u_toon_steps;
-      uniform vec3 u_camera_pos;
-      uniform float u_spec_intensity // P2-07 TODO separate spec_size uniform;
-      uniform float u_spec_power;
-      uniform float u_spec_softness;
-      uniform float u_spec_offset;
-      uniform vec4 u_spec_color;
-      uniform float u_rim_intensity;
-      uniform float u_rim_spread;
-      uniform vec3 u_rim_color;
-
-      out vec4 fragColor;
-
-      vec3 rgb2hsv(vec3 c) {
-        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
-        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
-        float d = q.x - min(q.w, q.y);
-        float e = 1.0e-10;
-        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-      }
-
-      vec3 hsv2rgb(vec3 c) {
-        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-      }
-      // P1-01 sRGB ↔ linear
-      vec3 srgbToLinear(vec3 c) {
-        bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
-        vec3 lo = c / 12.92;
-        vec3 hi = pow((c + vec3(0.055)) / 1.055, vec3(2.4));
-        return mix(hi, lo, vec3(cutoff));
-      }
-      vec3 linearToSrgb(vec3 c) {
-        bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
-        vec3 lo = c * 12.92;
-        vec3 hi = 1.055 * pow(c, vec3(1.0/2.4)) - 0.055;
-        return mix(hi, lo, vec3(cutoff));
-      }
-      // P1-02 OKLab hue rotation (fallback to linear * saturation for low chroma)
-      vec3 linearToOklab(vec3 c) {
-        float l = 0.4122214708*c.r + 0.5363325363*c.g + 0.0514459929*c.b;
-        float m = 0.2119034982*c.r + 0.6806995451*c.g + 0.1073969566*c.b;
-        float s = 0.0883024619*c.r + 0.2817188376*c.g + 0.6299787005*c.b;
-        float l_ = pow(max(l,0.0), 1.0/3.0);
-        float m_ = pow(max(m,0.0), 1.0/3.0);
-        float s_ = pow(max(s,0.0), 1.0/3.0);
-        return vec3(
-          0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
-          1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
-          0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
-        );
-      }
-      vec3 oklabToLinear(vec3 c) {
-        float l_ = c.x + 0.3963377774*c.y + 0.2158037573*c.z;
-        float m_ = c.x - 0.1055613458*c.y - 0.0638541728*c.z;
-        float s_ = c.x - 0.0894841775*c.y - 1.2914855480*c.z;
-        float l = l_*l_*l_;
-        float m = m_*m_*m_;
-        float s = s_*s_*s_;
-        return vec3(
-          4.0767416621*l - 3.3077115913*m + 0.2309699292*s,
-          -1.2684380046*l + 2.6097574011*m - 0.3413193965*s,
-          -0.0041960863*l - 0.7034186147*m + 1.7076147010*s
-        );
-      }
-
-      void main() {
-        vec3 N = normalize(v_normal);
-        vec3 L = normalize(u_light_dir);
-        vec3 V = normalize(u_camera_pos - v_pos);
-        float n_dot_l = dot(N, L);
-        float half_lambert = n_dot_l * 0.5 + 0.5;
-        float shift = (v_color.g - 0.5) * 0.3;
-        float threshold = u_shadow_threshold + shift;
-        float smoothness = max(u_shadow_smoothness, 0.001);
-
-        float u_coord = clamp((half_lambert - threshold) + 0.5, 0.0, 1.0);
-        float toon = u_coord;
-        if (u_toon_steps < 0.5) {
-          toon = smoothstep(threshold - 0.35 - smoothness, threshold + 0.35 + smoothness, half_lambert);
-        } else if (u_toon_steps >= 0.5 && u_toon_steps < 1.5) {
-          toon = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
-        } else if (u_toon_steps >= 1.5 && u_toon_steps < 2.5) {
-          float s1 = smoothstep(threshold - 0.14 - smoothness, threshold - 0.14 + smoothness, half_lambert);
-          float s2 = smoothstep(threshold + 0.14 - smoothness, threshold + 0.14 + smoothness, half_lambert);
-          toon = s1 * 0.45 + s2 * 0.55;
-        } else {
-          float s1 = smoothstep(threshold - 0.20 - smoothness, threshold - 0.20 + smoothness, half_lambert);
-          float s2 = smoothstep(threshold - smoothness, threshold + smoothness, half_lambert);
-          float s3 = smoothstep(threshold + 0.20 - smoothness, threshold + 0.20 + smoothness, half_lambert);
-          toon = (s1 + s2 + s3) / 3.0;
-        }
-
-        // P0-03 + P1-01 linear: base/light in linear
-        vec3 baseLin = srgbToLinear(u_base_color.rgb);
-        vec3 lightLin = srgbToLinear(u_light_color);
-        vec3 lit = baseLin * lightLin * clamp(u_light_intensity, 0.0, 3.0);
-
-        // P1-01 linear + P1-02 OKLab hue (clamp ±180)
-        float hueShiftRad = radians(clamp(u_hue_shift, -180.0, 180.0));
-        vec3 shadeLin = srgbToLinear(u_shade_color.rgb);
-        vec3 shadowTintLin = srgbToLinear(u_shadow_color);
-        vec3 raw_shadow_lin = shadeLin * shadowTintLin;
-        // OKLab hue rotation
-        vec3 lab = linearToOklab(raw_shadow_lin);
-        float C = length(lab.yz);
-        vec3 hueShiftedLin;
-        if (C < 0.0001) {
-          hueShiftedLin = raw_shadow_lin * mix(1.0, clamp(u_shadow_saturation,0.0,2.0), 0.5);
-        } else {
-          float hue = atan(lab.z, lab.y);
-          float newHue = hue + hueShiftRad;
-          float C2 = clamp(C * clamp(u_shadow_saturation,0.0,2.0), 0.0, 0.4);
-          lab.y = C2 * cos(newHue);
-          lab.z = C2 * sin(newHue);
-          hueShiftedLin = oklabToLinear(lab);
-        }
-        float ambient = clamp(0.2 + u_ambient_intensity * 0.8, 0.05, 1.5);
-        vec3 shadow = hueShiftedLin * ambient;
-
-        vec3 base_cel = mix(shadow, lit, toon);
-
-        vec3 H = normalize(L + V);
-        float n_dot_h = max(dot(N, H), 0.0);
-        vec3 up_vec = vec3(0.0, 1.0, 0.0);
-        vec3 tangent = normalize(cross(N, mix(up_vec, vec3(1.0, 0.0, 0.0), step(0.99, abs(N.y)))));
-        float t_dot_h = dot(tangent, H);
-        float aniso = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
-        // P0-04: jitter unified to world_pos.y*35 + uv.x*20 (was v_pos.x diverging)
-        float jitter_pos = v_pos.y * 35.0 + v_uv.x * 20.0 + u_spec_offset * 10.0;
-        float jitter = sin(jitter_pos) * 0.08;
-        float spec_base = max(mix(n_dot_h, aniso * n_dot_h, 0.35), 0.0);
-        float spec_term = pow(spec_base, max(u_spec_power, 1.0));
-        float spec_cutoff = clamp(0.65 - (u_spec_intensity // P2-07 TODO separate spec_size uniform * 0.12), 0.30, 0.65);
-        float spec_soft_clamped = max(u_spec_softness, 0.001);
-        float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity // P2-07 TODO separate spec_size uniform * v_color.a * toon;
-
-        float rim_dot = 1.0 - max(dot(V, N), 0.0);
-        float rim_fresnel = smoothstep(1.0 - u_rim_spread, 1.0, rim_dot);
-        float rim_backlight = max(dot(L, -V) * 0.6 + 0.4, 0.0);
-        float rim_term = rim_fresnel * rim_backlight * u_rim_intensity * v_color.a;
-
-        vec3 specLin = srgbToLinear(u_spec_color.rgb);
-        vec3 rimLin = srgbToLinear(u_rim_color);
-        vec3 lit_highlighted = mix(base_cel, specLin, clamp(spec_step, 0.0, 1.0));
-        vec3 with_rim = lit_highlighted + (rimLin * rim_term);
-        // P1-01 linear -> srgb for display (pipeline Rgba8Unorm non-sRGB)
-        vec3 colLin = clamp(with_rim, 0.0, 1.0) * clamp(v_color.r, 0.0, 1.0);
-        vec3 col = linearToSrgb(colLin);
-        fragColor = vec4(col, u_base_color.a);
-      }
-    `;
-
-    const vsOutline = `#version 300 es
-      layout(location = 0) in vec3 a_pos;
-      layout(location = 1) in vec3 a_normal;
-      layout(location = 3) in vec4 a_color;
-      layout(location = 4) in uvec4 a_joints;
-      layout(location = 5) in vec4 a_weights;
-
-      uniform mat4 u_view_proj;
-      uniform float u_outline_width;
-      uniform float u_aspect;
-      uniform float u_outline_depth_bias;
-
-      void main() {
-        if (a_color.b <= 0.001) {
-          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-          return;
-        }
-        vec4 clip = u_view_proj * vec4(a_pos, 1.0);
-        vec4 norm = u_view_proj * vec4(a_normal, 0.0);
-        float len = length(norm.xy);
-        vec2 norm_clip = mix(vec2(0.0), norm.xy / len, step(1e-5, len));
-        float aspectSafe = max(u_aspect, 0.001);
-        clip.x += (norm_clip.x / aspectSafe) * u_outline_width * a_color.b * clip.w;
-        clip.y += norm_clip.y * u_outline_width * a_color.b * clip.w;
-        clip.z += u_outline_depth_bias * clip.w;
-        gl_Position = clip;
-      }
-    `;
-
-    const fsOutline = `#version 300 es
-      precision highp float;
-      uniform vec4 u_outline_color;
-      uniform float u_outline_opacity;
-      uniform float u_outline_smoothness;
-      out vec4 fragColor;
-
-      void main() {
-        float smooth = clamp(u_outline_smoothness, 0.0, 1.0);
-        vec4 col = vec4(u_outline_color.rgb, u_outline_color.a * u_outline_opacity);
-        if (smooth > 0.001) {
-          col.a = col.a * mix(1.0, 0.85, clamp(smooth * 8.0, 0.0, 1.0));
-        }
-        fragColor = col;
-      }
-    `;
 
     const compileShader = (type: number, src: string) => {
       const s = gl.createShader(type)!;
@@ -2059,24 +1763,24 @@ export class WebGpuViewportRenderer {
   private buildUniformBuffers() {
     if (!this.device || !this.celPipeline || !this.outlinePipeline) return;
 
+    // Tamanhos dos blocos vêm do contrato (mesmos `#[repr(C)]` do Rust)
     this.cameraBuffer = this.device.createBuffer({
-      size: 208, // P2-14 80→208 (model+normal)
+      size: uniformSize("camera"),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     this.lightBuffer = this.device.createBuffer({
-      size: 80, // P2-04 48→80 (sky+ground)
+      size: uniformSize("light"),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // P0-04/09: sizes aligned with canonical WGSL structs (Material 112 B = 7×vec4 with rim_color, Outline 48 B = 3×vec4 with smoothness)
     this.materialBuffer = this.device.createBuffer({
-      size: 112,
+      size: uniformSize("material"),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     this.outlineBuffer = this.device.createBuffer({
-      size: 48,
+      size: uniformSize("outline"),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -2085,46 +1789,34 @@ export class WebGpuViewportRenderer {
     if (this.toonRampTexture) {
       try { this.toonRampTexture.destroy(); } catch (_) {}
     }
+    const rampSpec = RENDER_CONTRACT.toon_ramp;
     this.toonRampTexture = this.device.createTexture({
-      size: [256, 4],
-      format: "rgba8unorm",
+      size: [rampSpec.width, rampSpec.height],
+      format: rampSpec.format as any,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
 
-    const rampData = new Uint8Array(256 * 4 * 4);
-    for (let y = 0; y < 4; y++) {
-      for (let x = 0; x < 256; x++) {
-        const u = x / 255.0;
-        let factor = u;
-        if (y === 0) {
-          factor = u;
-        } else if (y === 1) {
-          factor = u >= 0.5 ? 1.0 : 0.0;
-        } else if (y === 2) {
-          factor = u < 0.35 ? 0.0 : (u < 0.65 ? 0.5 : 1.0);
-        } else if (y === 3) {
-          factor = u < 0.25 ? 0.0 : (u < 0.50 ? 0.35 : (u < 0.75 ? 0.70 : 1.0));
-        }
-        const val = Math.min(255, Math.max(0, Math.round(factor * 255.0)));
-        const idx = (y * 256 + x) * 4;
-        rampData[idx] = val;
-        rampData[idx + 1] = val;
-        rampData[idx + 2] = val;
-        rampData[idx + 3] = 255;
-      }
+    // Bytes do ramp gerados a partir das linhas do contrato; a impressão digital
+    // congela a textura que o headless (Rust) também precisa produzir.
+    const rampData = toonRampBytes();
+    const rampFingerprint = toonRampFingerprint(rampData);
+    if (rampFingerprint !== expectedToonRampFingerprint()) {
+      throw new Error(
+        `toon ramp divergiu do contrato (esperado ${expectedToonRampFingerprint()}, encontrado ${rampFingerprint})`
+      );
     }
     this.device.queue.writeTexture(
       { texture: this.toonRampTexture },
       rampData,
-      { bytesPerRow: 256 * 4, rowsPerImage: 4 },
-      [256, 4]
+      { bytesPerRow: rampSpec.width * 4, rowsPerImage: rampSpec.height },
+      [rampSpec.width, rampSpec.height]
     );
 
     this.toonRampSampler = this.device.createSampler({
-      magFilter: "linear",
-      minFilter: "linear",
-      addressModeU: "clamp-to-edge",
-      addressModeV: "clamp-to-edge",
+      magFilter: filterMode(rampSpec.mag_filter),
+      minFilter: filterMode(rampSpec.min_filter),
+      addressModeU: addressMode(rampSpec.address_mode),
+      addressModeV: addressMode(rampSpec.address_mode),
     });
 
     this.celBindGroup = this.device.createBindGroup({
@@ -2170,7 +1862,7 @@ export class WebGpuViewportRenderer {
 
         this.depthTexture = this.device.createTexture({
           size: [realWidth, realHeight],
-          format: "depth24plus",
+          format: depthFormat() as any,
           sampleCount: this.sampleCount,
           usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
@@ -2513,42 +2205,51 @@ export class WebGpuViewportRenderer {
     const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
     const viewProj = this.calculateViewProjectionMatrix(aspect, true);
 
-    // 1. Camera Buffer — P2-14 52 floats (viewProj 16 + eye 4 + model 16 + normal 16)
-    const camData = new Float32Array(52);
-    camData.set(viewProj, 0);
-    camData.set([this.eye[0], this.eye[1], this.eye[2], 1.0], 16);
-    // model matrix (identity for now, per-object would be per draw)
-    const model = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
-    const normalMat = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
-    camData.set(model, 20);
-    camData.set(normalMat, 36);
+    // 1..4. Uniforms — layout e empacotamento vêm do contrato, os mesmos bytes
+    // que `uniforms.rs` produz no headless (P0 renderer: buffers unificados).
+    const camData = cameraUniformFloats({ viewProj, eye: this.eye, model: IDENTITY_MAT4 });
     this.device.queue.writeBuffer(this.cameraBuffer!, 0, camData);
 
-    // 2. Light Buffer — P2-04 20 floats (dir+color+shadow+sky+ground)
-    const lightData = new Float32Array(20);
-    lightData.set([this.lightDir[0], this.lightDir[1], this.lightDir[2], this.lightIntensity], 0);
-    lightData.set([this.lightColor[0], this.lightColor[1], this.lightColor[2], this.ambientIntensity], 4);
-    lightData.set([this.shadowColor[0], this.shadowColor[1], this.shadowColor[2], this.shadowSaturation], 8);
-    lightData.set([this.ambientSky[0], this.ambientSky[1], this.ambientSky[2], 1.0], 12);
-    lightData.set([this.ambientGround[0], this.ambientGround[1], this.ambientGround[2], 1.0], 16);
+    const lightData = lightUniformFloats({
+      direction: this.lightDir as [number, number, number],
+      intensity: this.lightIntensity,
+      color: this.lightColor as [number, number, number],
+      ambientIntensity: this.ambientIntensity,
+      shadowColor: this.shadowColor as [number, number, number],
+      shadowSaturation: this.shadowSaturation,
+      ambientSky: this.ambientSky as [number, number, number],
+      ambientGround: this.ambientGround as [number, number, number],
+    });
     this.device.queue.writeBuffer(this.lightBuffer!, 0, lightData);
 
-    // 3. Material Buffer — 112 B = 28 floats = base/shade/spec/rim + params/params2/params3
-    const matData = new Float32Array(28);
-    matData.set(this.baseColor, 0);
-    matData.set(this.shadeColor, 4);
-    matData.set(this.specColor, 8);
-    matData.set([this.rimColor[0], this.rimColor[1], this.rimColor[2], 1.0], 12);
-    matData.set([this.shadowThreshold, this.toonSmoothness, this.specIntensity, this.specExponent], 16);
-    matData.set([this.rimIntensity, this.rimSpread, (this.hueShift * Math.PI) / 180.0, this.toonSteps], 20);
-    matData.set([this.specSoftness, this.specOffset, this.specularSize, this.aoIntensity], 24); // P2-07/05
+    const matData = materialUniformFloats({
+      baseColor: this.baseColor as [number, number, number, number],
+      shadeColor: this.shadeColor as [number, number, number, number],
+      specularColor: this.specColor as [number, number, number, number],
+      rimColor: [this.rimColor[0], this.rimColor[1], this.rimColor[2], 1.0],
+      shadowThreshold: this.shadowThreshold,
+      shadowSmoothness: this.toonSmoothness,
+      specIntensity: this.specIntensity,
+      specPower: this.specExponent,
+      rimIntensity: this.rimIntensity,
+      rimSpread: this.rimSpread,
+      hueShiftDegrees: this.hueShift,
+      toonSteps: this.toonSteps,
+      specularSoftness: this.specSoftness,
+      specularOffset: this.specOffset,
+      specularSize: this.specularSize,
+      aoIntensity: this.aoIntensity,
+    });
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 
-    // 4. Outline Buffer — 48 B = 12 floats = color + params(4) + params2(4 smoothness)
-    const outlineData = new Float32Array(12);
-    outlineData.set(this.outlineColor, 0);
-    outlineData.set([this.outlineWidth, aspect, this.outlineDepthBias, this.outlineOpacity], 4);
-    outlineData.set([this.outlineSmoothness, 0.0, 0.0, 0.0], 8);
+    const outlineData = outlineUniformFloats({
+      color: this.outlineColor as [number, number, number, number],
+      width: this.outlineWidth,
+      aspect,
+      depthBias: this.outlineDepthBias,
+      opacity: this.outlineOpacity,
+      smoothness: this.outlineSmoothness,
+    });
     this.device.queue.writeBuffer(this.outlineBuffer!, 0, outlineData);
 
     // 5. Render Passes (Compute Sparse Morphs followed by NPR Cel-Shading)
@@ -2626,16 +2327,20 @@ export class WebGpuViewportRenderer {
     passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // P2-02 canonical order outline→cel (was cel→outline, now unified with headless)
-    // PASS 1: Inverted Hull Backfaces (depthWrite false, bias)
-    passEncoder.setPipeline(this.outlinePipeline!);
-    passEncoder.setBindGroup(0, this.outlineBindGroup!);
-    passEncoder.drawIndexed(this.indexCount);
-
-    // PASS 2: Cel-Shading Frontfaces (opaque, no blend)
-    passEncoder.setPipeline(this.celPipeline!);
-    passEncoder.setBindGroup(0, this.celBindGroup!);
-    passEncoder.drawIndexed(this.indexCount);
+    // Ordem dos passes vem do contrato (outline → cel em ordem de `order`),
+    // exatamente como o headless monta o render pass.
+    for (const pass of renderPasses()) {
+      if (pass.name === "outline") {
+        passEncoder.setPipeline(this.outlinePipeline!);
+        passEncoder.setBindGroup(0, this.outlineBindGroup!);
+      } else if (pass.name === "cel") {
+        passEncoder.setPipeline(this.celPipeline!);
+        passEncoder.setBindGroup(0, this.celBindGroup!);
+      } else {
+        continue;
+      }
+      passEncoder.drawIndexed(this.indexCount);
+    }
 
     passEncoder.end();
     this.device.queue.submit([commandEncoder.finish()]);
@@ -2744,54 +2449,18 @@ export class WebGpuViewportRenderer {
   // Matrix Math (Column-Major Standard)
   // ==========================================
   private calculateViewProjectionMatrix(aspect: number, isWebGPU: boolean): Float32Array {
-    const z = this.normalize([
-      this.eye[0] - this.target[0],
-      this.eye[1] - this.target[1],
-      this.eye[2] - this.target[2],
-    ]);
-    let x = this.cross(this.up, z);
-    let xLen = Math.hypot(x[0], x[1], x[2]);
-    if (xLen < 1e-4) {
-      const fallback: [number, number, number] = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-      x = this.cross(fallback, z);
-      xLen = Math.hypot(x[0], x[1], x[2]);
-    }
-    const right = [x[0] / xLen, x[1] / xLen, x[2] / xLen];
-    const y = this.cross(z, right);
-
-    // Column-major View Matrix
-    const view = [
-      right[0], y[0], z[0], 0,
-      right[1], y[1], z[1], 0,
-      right[2], y[2], z[2], 0,
-      -this.dot(right, this.eye), -this.dot(y, this.eye), -this.dot(z, this.eye), 1,
-    ];
-
-    const f = 1.0 / Math.tan(this.fov / 2);
-    const near = 0.05;
-    const far = 100.0;
-    const nf = 1.0 / (near - far);
-
-    let proj: number[];
-    if (isWebGPU) {
-      // WebGPU NDC Depth: [0, 1]
-      proj = [
-        f / aspect, 0, 0, 0,
-        0, f, 0, 0,
-        0, 0, far * nf, -1,
-        0, 0, near * far * nf, 0,
-      ];
-    } else {
-      // WebGL2 / OpenGL NDC Depth: [-1, 1]
-      proj = [
-        f / aspect, 0, 0, 0,
-        0, f, 0, 0,
-        0, 0, (far + near) * nf, -1,
-        0, 0, 2 * near * far * nf, 0,
-      ];
-    }
-
-    return new Float32Array(this.multiplyMat4(proj, view));
+    // P0 renderer: uma única implementação de câmera — `src/services/camera_math.ts`,
+    // a mesma conta que o core faz em Rust (`math.rs`) e que o contrato congela no
+    // `reference_frame`. Antes havia uma segunda cópia (lookAt + perspectiva) aqui.
+    return viewProjectionMatrix(
+      { eye: this.eye, target: this.target, up: this.up, fov: this.fov },
+      aspect,
+      {
+        clipDepth: isWebGPU ? "zero_to_one" : "minus_one_to_one",
+        near: DEFAULT_CAMERA_NEAR,
+        far: DEFAULT_CAMERA_FAR,
+      }
+    );
   }
 
   // Exact column-major matrix multiplication: out = a * b

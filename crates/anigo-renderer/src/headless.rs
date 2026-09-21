@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Vertex};
 use glam::Mat4;
+use crate::render_contract as contract;
 use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,36 +68,29 @@ impl HeadlessRenderer {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        // 1D/2D Toon Ramp Texture (256x4) with subpixel anti-aliased ramps
+        // Toon Ramp 2D (256x4): bytes e sampler vêm do render contract, então a
+        // textura do headless é a mesma do viewport por construção.
+        let ramp_spec = contract::toon_ramp_spec();
+        let ramp_width = ramp_spec["width"].as_u64().unwrap_or(256) as u32;
+        let ramp_height = ramp_spec["height"].as_u64().unwrap_or(4) as u32;
         let ramp_desc = wgpu::TextureDescriptor {
             label: Some("Toon Ramp 2D Texture"),
             size: wgpu::Extent3d {
-                width: 256,
-                height: 4,
+                width: ramp_width,
+                height: ramp_height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: contract::texture_format(
+                ramp_spec["format"].as_str().unwrap_or("rgba8unorm"),
+            ),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         };
         let toon_ramp_texture = device.create_texture(&ramp_desc);
-        // P0-04: unified 256x4 ramp with TS viewport (was 85/135 vs 89/166, 64/120/180 vs 64/128/192)
-        let mut ramp_data = Vec::with_capacity(256 * 4 * 4);
-        for row in 0..4 {
-            for col in 0..256 {
-                let u = col as f32 / 255.0;
-                let val = match row {
-                    0 => col as u8,
-                    1 => if u >= 0.5 { 255 } else { 0 },
-                    2 => if u < 0.35 { 0 } else if u < 0.65 { 128 } else { 255 },
-                    _ => if u < 0.25 { 0 } else if u < 0.50 { 89 } else if u < 0.75 { 179 } else { 255 },
-                };
-                ramp_data.extend_from_slice(&[val, val, val, 255]);
-            }
-        }
+        let ramp_data = contract::toon_ramp_bytes();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &toon_ramp_texture,
@@ -107,28 +101,34 @@ impl HeadlessRenderer {
             &ramp_data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(256 * 4),
-                rows_per_image: Some(4),
+                bytes_per_row: Some(ramp_width * 4),
+                rows_per_image: Some(ramp_height),
             },
             wgpu::Extent3d {
-                width: 256,
-                height: 4,
+                width: ramp_width,
+                height: ramp_height,
                 depth_or_array_layers: 1,
             },
         );
         let toon_ramp_view = toon_ramp_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let toon_ramp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Toon Ramp Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: contract::address_mode(
+                ramp_spec["address_mode"].as_str().unwrap_or("clamp_to_edge"),
+            ),
+            address_mode_v: contract::address_mode(
+                ramp_spec["address_mode"].as_str().unwrap_or("clamp_to_edge"),
+            ),
+            mag_filter: contract::filter_mode(ramp_spec["mag_filter"].as_str().unwrap_or("linear")),
+            min_filter: contract::filter_mode(ramp_spec["min_filter"].as_str().unwrap_or("linear")),
             ..Default::default()
         });
 
-        // Load Shaders
-        let cel_shader_src = include_str!("../shaders/cel_shading.wgsl");
-        let outline_shader_src = include_str!("../shaders/inverted_hull.wgsl");
+        // Load Shaders — uma cópia só (crates/anigo-renderer/shaders via contrato)
+        let cel_pass_spec = contract::render_pass("cel");
+        let outline_pass_spec = contract::render_pass("outline");
+        let cel_shader_src = contract::CEL_SHADING_WGSL;
+        let outline_shader_src = contract::INVERTED_HULL_WGSL;
 
         let cel_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Cel Shading Shader"),
@@ -220,42 +220,24 @@ impl HeadlessRenderer {
             ],
         });
 
-        // Vertex buffer layout
+        // Vertex buffer layout (72 B) exatamente como o contrato declara
+        let vertex_attributes: Vec<wgpu::VertexAttribute> = contract::vertex_attributes()
+            .into_iter()
+            .map(|(shader_location, offset, format)| wgpu::VertexAttribute {
+                offset,
+                shader_location,
+                format,
+            })
+            .collect();
+        assert_eq!(
+            contract::vertex_stride() as usize,
+            std::mem::size_of::<Vertex>(),
+            "o vértice do core divergiu do vertex layout do contrato"
+        );
         let vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            array_stride: contract::vertex_stride(),
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3, // position
-                },
-                wgpu::VertexAttribute {
-                    offset: 12,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3, // normal
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2, // uv
-                },
-                wgpu::VertexAttribute {
-                    offset: 32,
-                    shader_location: 3,
-                    format: wgpu::VertexFormat::Float32x4, // anime vertex attr (AO, shadow, outline, spec)
-                },
-                wgpu::VertexAttribute {
-                    offset: 48,
-                    shader_location: 4,
-                    format: wgpu::VertexFormat::Uint16x4, // joints: [u16; 4]
-                },
-                wgpu::VertexAttribute {
-                    offset: 56,
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x4, // weights: [f32; 4]
-                },
-            ],
+            attributes: &vertex_attributes,
         };
 
         // Cel Shading Pipeline
@@ -270,41 +252,43 @@ impl HeadlessRenderer {
             layout: Some(&cel_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &cel_shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some(cel_pass_spec.vertex_entry.unwrap_or("vs_main")),
                 compilation_options: Default::default(),
                 buffers: std::slice::from_ref(&vertex_layout),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &cel_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(cel_pass_spec.fragment_entry.unwrap_or("fs_main")),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    format: contract::offscreen_color_format(),
+                    blend: cel_pass_spec.blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                front_face: cel_pass_spec.front_face,
+                cull_mode: cel_pass_spec.cull_mode,
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                format: contract::depth_format(),
+                depth_write_enabled: cel_pass_spec.depth_write,
+                depth_compare: cel_pass_spec.depth_compare,
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+                bias: cel_pass_spec.depth_bias,
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: contract::msaa_sample_count(),
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
-
         // Inverted Hull Pipeline (Culls front faces to show backfaces extruded as outline)
         let outline_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Outline Pipeline Layout"),
@@ -317,43 +301,46 @@ impl HeadlessRenderer {
             layout: Some(&outline_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &outline_shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some(outline_pass_spec.vertex_entry.unwrap_or("vs_main")),
                 compilation_options: Default::default(),
                 buffers: std::slice::from_ref(&vertex_layout),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &outline_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(outline_pass_spec.fragment_entry.unwrap_or("fs_main")),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    format: contract::offscreen_color_format(),
+                    blend: outline_pass_spec.blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Front), // Key anime technique: cull front, render back extruded
+                front_face: outline_pass_spec.front_face,
+                cull_mode: outline_pass_spec.cull_mode, // hull invertido: cull front, extruda backfaces
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                format: contract::depth_format(),
+                depth_write_enabled: outline_pass_spec.depth_write,
+                depth_compare: outline_pass_spec.depth_compare,
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+                bias: outline_pass_spec.depth_bias,
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: contract::msaa_sample_count(),
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
-
         // Sparse Morph Target Compute Pipeline
-        let morph_shader_src = include_str!("../shaders/morph_sparse_compute.wgsl");
+        let morph_pass_spec = contract::compute_pass("sparse_morph");
+        let morph_shader_src = contract::MORPH_SPARSE_COMPUTE_WGSL;
         let morph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sparse Morph Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(morph_shader_src.into()),
@@ -425,7 +412,9 @@ impl HeadlessRenderer {
             label: Some("Sparse Morph Compute Pipeline"),
             layout: Some(&morph_pipeline_layout),
             module: &morph_shader,
-            entry_point: Some("cs_accumulate_morphs"),
+            entry_point: Some(
+                morph_pass_spec.compute_entry.unwrap_or("cs_accumulate_morphs"),
+            ),
             compilation_options: Default::default(),
             cache: None,
         });
@@ -597,9 +586,13 @@ impl HeadlessRenderer {
     ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
         let start_time = Instant::now();
 
-        // 1. Setup Render Target and Depth Texture
+        // 1. Setup Render Target and Depth Texture (formato/MSAA do contrato)
+        let color_format = contract::offscreen_color_format();
+        let depth_format = contract::depth_format();
+        let sample_count = contract::msaa_sample_count().max(1);
+
         let texture_desc = wgpu::TextureDescriptor {
-            label: Some("Offscreen Color Texture"),
+            label: Some("Offscreen Color Texture (resolve target)"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -608,12 +601,40 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
+            format: color_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
         let color_texture = self.device.create_texture(&texture_desc);
         let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // P0 renderer: mesmo alvo MSAA do viewport, resolvido na textura lida
+        let msaa_texture = if sample_count > 1 && contract::resolve_to_swapchain() {
+            Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Offscreen Color Texture (MSAA)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            }))
+        } else {
+            None
+        };
+        let msaa_view = msaa_texture
+            .as_ref()
+            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
+            match &msaa_view {
+                Some(view) => (view, Some(&color_view)),
+                None => (&color_view, None),
+            };
 
         let depth_desc = wgpu::TextureDescriptor {
             label: Some("Offscreen Depth Texture"),
@@ -623,9 +644,9 @@ impl HeadlessRenderer {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth24Plus,
+            format: depth_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
@@ -706,8 +727,8 @@ impl HeadlessRenderer {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Anime Cel Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
-                    resolve_target: None,
+                    view: attachment_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: scene.background_color[0] as f64,
@@ -816,22 +837,27 @@ impl HeadlessRenderer {
                         usage: wgpu::BufferUsages::INDEX,
                     });
 
-                    // P0-04: order unified to viewport cel→outline (was outline→cel diverging)
-                    // Pass 1: Cel-Shading Surfaces (front faces)
-                    render_pass.set_pipeline(&self.cel_pipeline);
-                    render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                    // A ordem dos passes vem do contrato (outline → cel), a mesma do viewport
                     render_pass.set_vertex_buffer(0, v_buffer.slice(..));
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-                    draw_calls += 1;
-
-                    // Pass 2: Inverted Hull Outline (backfaces extruded)
-                    render_pass.set_pipeline(&self.outline_pipeline);
-                    render_pass.set_bind_group(0, &outline_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, v_buffer.slice(..));
-                    render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-                    draw_calls += 1;
+                    for pass_name in contract::render_pass_order() {
+                        match pass_name {
+                            "outline" => {
+                                render_pass.set_pipeline(&self.outline_pipeline);
+                                render_pass.set_bind_group(0, &outline_bind_group, &[]);
+                            }
+                            "cel" => {
+                                render_pass.set_pipeline(&self.cel_pipeline);
+                                render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                            }
+                            other => {
+                                debug_assert!(false, "passe '{}' sem pipeline no headless", other);
+                                continue;
+                            }
+                        }
+                        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                        draw_calls += 1;
+                    }
 
                     triangle_count += mesh.indices.len() / 3;
                 }
@@ -916,9 +942,13 @@ impl HeadlessRenderer {
     ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
         let start_time = Instant::now();
 
-        // 1. Setup Render Target and Depth Texture
+        // 1. Setup Render Target and Depth Texture (formato/MSAA do contrato)
+        let color_format = contract::offscreen_color_format();
+        let depth_format = contract::depth_format();
+        let sample_count = contract::msaa_sample_count().max(1);
+
         let texture_desc = wgpu::TextureDescriptor {
-            label: Some("Offscreen Color Texture (Morphed)"),
+            label: Some("Offscreen Color Texture (Morphed, resolve target)"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -927,12 +957,40 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm, // P0-05: parity non-sRGB (was Rgba8UnormSrgb)
+            format: color_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
         let color_texture = self.device.create_texture(&texture_desc);
         let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // P0 renderer: mesmo alvo MSAA do viewport, resolvido na textura lida
+        let msaa_texture = if sample_count > 1 && contract::resolve_to_swapchain() {
+            Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Offscreen Color Texture (Morphed, resolve target) (MSAA)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            }))
+        } else {
+            None
+        };
+        let msaa_view = msaa_texture
+            .as_ref()
+            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
+            match &msaa_view {
+                Some(view) => (view, Some(&color_view)),
+                None => (&color_view, None),
+            };
 
         let depth_desc = wgpu::TextureDescriptor {
             label: Some("Offscreen Depth Texture (Morphed)"),
@@ -942,9 +1000,9 @@ impl HeadlessRenderer {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth24Plus,
+            format: depth_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         };
@@ -1080,8 +1138,8 @@ impl HeadlessRenderer {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Anime Cel Render Pass with Morphed Vertices"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
-                    resolve_target: None,
+                    view: attachment_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: scene.background_color[0] as f64,
@@ -1197,22 +1255,27 @@ impl HeadlessRenderer {
                         None => morphed_vertex_buffer.slice(..),
                     };
 
-                    // P0-04: order unified to viewport cel→outline
-                    // Pass 1: Cel-Shading Surfaces
-                    render_pass.set_pipeline(&self.cel_pipeline);
-                    render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                    // A ordem dos passes vem do contrato (outline → cel), a mesma do viewport
                     render_pass.set_vertex_buffer(0, active_v_slice);
                     render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-                    draw_calls += 1;
-
-                    // Pass 2: Inverted Hull Outline
-                    render_pass.set_pipeline(&self.outline_pipeline);
-                    render_pass.set_bind_group(0, &outline_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, active_v_slice);
-                    render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-                    draw_calls += 1;
+                    for pass_name in contract::render_pass_order() {
+                        match pass_name {
+                            "outline" => {
+                                render_pass.set_pipeline(&self.outline_pipeline);
+                                render_pass.set_bind_group(0, &outline_bind_group, &[]);
+                            }
+                            "cel" => {
+                                render_pass.set_pipeline(&self.cel_pipeline);
+                                render_pass.set_bind_group(0, &cel_bind_group, &[]);
+                            }
+                            other => {
+                                debug_assert!(false, "passe '{}' sem pipeline no headless", other);
+                                continue;
+                            }
+                        }
+                        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                        draw_calls += 1;
+                    }
 
                     triangle_count += mesh.indices.len() / 3;
                 }

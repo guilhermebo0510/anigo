@@ -14,6 +14,7 @@
  *   node scripts/gen_contract_fixtures.mjs            # write fixtures
  *   node scripts/gen_contract_fixtures.mjs --check    # verify they are current
  */
+import { renderContractFixture } from "./render_contract_fixture.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -379,17 +380,68 @@ const commandLogFixture = (() => {
   };
 })();
 
+const renderContractSerialized = `${compactNumberArrays(JSON.stringify(renderContractFixture(), null, 2))}\n`;
+const renderContractTarget = path.join(outDir, "render_contract_v1.json");
+// The viewport cannot import JSON under Node's ESM rules (the test runner runs
+// the same modules), so the same document is also emitted as a typed TS module.
+// Both files come from `scripts/render_contract_fixture.mjs` (single source) and
+// `tests/contracts/render_contract.test.ts` asserts they are identical.
+const renderContractCompact = compactNumberArrays(JSON.stringify(renderContractFixture(), null, 2));
+const renderContractTsSerialized =
+  "/**\n" +
+  " * ANIGO — dados do contrato do renderer v1 (GERADO).\n" +
+  " *\n" +
+  " * Fonte: `scripts/render_contract_fixture.mjs` → `contracts/fixtures/render_contract_v1.json`\n" +
+  " * (lido pelo Rust) e este módulo (lido pelo viewport). Não edite à mão:\n" +
+  " * `npm run fixtures:gen` regenera os dois.\n" +
+  " */\n\n" +
+  "export const RENDER_CONTRACT_DATA = " +
+  renderContractCompact +
+  " as const;\n";
+const renderContractTsTarget = path.join(
+  path.resolve(outDir, "..", ".."),
+  "src/contracts/render_contract_data.v1.ts"
+);
+
+/**
+ * Keeps the generated JSON readable: arrays that contain only numbers are packed
+ * onto wrapped lines instead of one value per line (the uniform reference frame
+ * has hundreds of floats).
+ */
+function compactNumberArrays(json) {
+  return json.replace(/\[\n\s*((?:-?[\d.]+(?:e-?\d+)?,?\s*)+)\n\s*\]/g, (match, body) => {
+    const values = body.split(",").map((value) => value.trim()).filter((value) => value.length > 0);
+    if (values.length === 0 || !values.every((value) => /^-?[\d.]+(?:e-?\d+)?$/.test(value))) return match;
+    const lines = [];
+    let current = "   ";
+    for (const value of values) {
+      const candidate = current === "   " ? current + value : `${current}, ${value}`;
+      if (candidate.length > 100) {
+        lines.push(`${current},`);
+        current = `   ${value}`;
+      } else {
+        current = candidate;
+      }
+    }
+    lines.push(current);
+    return `[\n${lines.join("\n")}\n  ]`;
+  });
+}
+
 const serialized = `${JSON.stringify(fixture, null, 2)}\n`;
 const target = path.join(outDir, "core_snapshot_v1.json");
 const assetIdsSerialized = `${JSON.stringify(assetIdsFixture, null, 2)}\n`;
 const assetIdsTarget = path.join(outDir, "asset_ids_v1.json");
 const commandLogSerialized = `${JSON.stringify(commandLogFixture, null, 2)}\n`;
 const commandLogTarget = path.join(outDir, "command_log_v1.json");
+const renderContractFile = path.join(outDir, "render_contract_v1.json");
 
 const outputs = [
   { target, serialized },
   { target: assetIdsTarget, serialized: assetIdsSerialized },
   { target: commandLogTarget, serialized: commandLogSerialized },
+  { target: renderContractFile, serialized: renderContractSerialized },
+  { target: renderContractTsTarget, serialized: renderContractTsSerialized },
 ];
 
 if (process.argv.includes("--check")) {
