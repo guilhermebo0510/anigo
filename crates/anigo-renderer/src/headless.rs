@@ -91,16 +91,25 @@ impl HeadlessRenderer {
             anyhow::bail!("Failed to find suitable GPU adapter for ANIGO engine");
         }
 
-        let adapter = match instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
+        // Além do caminho `None`, o wgpu 24 pode **entrar em pânico** ao negociar
+        // o adaptador num runner sem backend utilizável: no CI o
+        // `enumerate_adapters` acima lista um backend que o `request_adapter`
+        // depois recusa (e o wgpu chama `panic!()` sem mensagem no meio do
+        // caminho de erro). Um pânico aqui seria um crash de ambiente, e é
+        // exatamente o que P1-01/P1-02 mandam transformar em diagnóstico
+        // observável: `catch_unwind` converte o pânico no mesmo
+        // `device_unavailable`, e os testes de GPU se pulam pelo caminho de erro
+        // que já existe (`if let Ok(renderer) = …`).
+        let requested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
-            })
-            .await
-        {
-            Some(adapter) => adapter,
-            None => {
+            }))
+        }));
+        let adapter = match requested {
+            Ok(Some(adapter)) => adapter,
+            Ok(None) | Err(_) => {
                 diagnostics::report(
                     "device_unavailable",
                     "nenhum adaptador wgpu compatível encontrado (headless não pode renderizar)",
