@@ -1739,13 +1739,17 @@ async fn handle_tool_call(
         "anigo_find_window" => {
             // P0-01: spawn_blocking for Win32
             let bridge = Arc::clone(&state.bridge);
-            let (hwnd_hint, _title_hint) = {
+            // O HWND vem do bridge como número; guardar o hint como `isize`
+            // evita capturar um `*mut c_void` (que não é `Send`) no closure.
+            let hwnd_hint: Option<isize> = {
                 // I/O outside blocking
                 if let Ok(state_resp) = bridge.send_command("GET_WINDOW_STATE", json!({})).await {
-                    let hwnd = state_resp.get("hwnd").and_then(|v| v.as_u64()).map(|h| h as *mut std::ffi::c_void);
-                    (hwnd, None)
+                    state_resp
+                        .get("hwnd")
+                        .and_then(|v| v.as_u64())
+                        .map(|h| h as isize)
                 } else {
-                    (None, None)
+                    None
                 }
             };
 
@@ -1753,7 +1757,8 @@ async fn handle_tool_call(
             // ponteiro como `isize` (o harness Win32 continua sendo chamado fora
             // do runtime, que é o motivo do `spawn_blocking`).
             let result = tokio::task::spawn_blocking(move || -> Result<(isize, String, RECT, bool)> {
-                let (hwnd, title, rect, minimized) = Win32Harness::find_anigo_window_with_hint(hwnd_hint)?;
+                let hint = hwnd_hint.map(|value| value as *mut std::ffi::c_void);
+                let (hwnd, title, rect, minimized) = Win32Harness::find_anigo_window_with_hint(hint)?;
                 Ok((hwnd as isize, title, rect, minimized))
             }).await.context("Join error in find_anigo_window")??;
 
@@ -1771,9 +1776,14 @@ async fn handle_tool_call(
         }
         "anigo_screenshot_window" => {
             let bridge = Arc::clone(&state.bridge);
-            let hwnd_hint = {
+            // Mesmo motivo do `anigo_window_status`: o hint cruza a task como
+            // `isize` e só volta a ser HWND dentro do closure.
+            let hwnd_hint: Option<isize> = {
                 if let Ok(state_resp) = bridge.send_command("GET_WINDOW_STATE", json!({})).await {
-                    state_resp.get("hwnd").and_then(|v| v.as_u64()).map(|h| h as *mut std::ffi::c_void)
+                    state_resp
+                        .get("hwnd")
+                        .and_then(|v| v.as_u64())
+                        .map(|h| h as isize)
                 } else {
                     None
                 }
@@ -1785,7 +1795,8 @@ async fn handle_tool_call(
             } else { None };
 
             let capture_result = tokio::task::spawn_blocking(move || -> Result<(String, u32, u32, bool, RgbaImage)> {
-                let (hwnd, title, _rect, was_minimized) = Win32Harness::find_anigo_window_with_hint(hwnd_hint)?;
+                let hint = hwnd_hint.map(|value| value as *mut std::ffi::c_void);
+                let (hwnd, title, _rect, was_minimized) = Win32Harness::find_anigo_window_with_hint(hint)?;
                 let restored_rect = Win32Harness::ensure_window_active(hwnd)?;
                 let img = Win32Harness::capture_window(hwnd, &restored_rect)?;
                 let w = img.width();
