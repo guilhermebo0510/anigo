@@ -933,31 +933,24 @@ impl Command {
                 if translation.is_none() && rotation.is_none() && scale.is_none() {
                     return Err(CommandError::NoOp("empty transform patch".to_string()));
                 }
+                // O patch é montado sobre a transformação atual para que o
+                // NoOp seja decidido no **resultado** e a validação final cubra
+                // a combinação (não só cada campo isolado).
                 let mut transform = node.transform;
-                let mut changed = false;
                 if let Some(translation) = translation {
                     validate_vector("translation", *translation)?;
-                    if transform.translation.to_array() != *translation {
-                        transform.translation = glam::Vec3::from_array(*translation);
-                        changed = true;
-                    }
+                    transform.translation = glam::Vec3::from_array(*translation);
                 }
                 if let Some(rotation) = rotation {
                     validate_quaternion(*rotation)?;
-                    let quat = glam::Quat::from_array(*rotation);
-                    if transform.rotation != quat {
-                        transform.rotation = quat;
-                        changed = true;
-                    }
+                    transform.rotation = glam::Quat::from_array(*rotation);
                 }
                 if let Some(scale) = scale {
                     validate_vector("scale", *scale)?;
-                    if transform.scale.to_array() != *scale {
-                        transform.scale = glam::Vec3::from_array(*scale);
-                        changed = true;
-                    }
+                    transform.scale = glam::Vec3::from_array(*scale);
                 }
-                if !changed {
+                validate_transform("transform", transform)?;
+                if transform == node.transform {
                     return Err(CommandError::NoOp(format!(
                         "transform of '{node_id}' already has those values"
                     )));

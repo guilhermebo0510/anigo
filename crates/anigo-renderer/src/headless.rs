@@ -22,6 +22,9 @@ pub struct RenderMetrics {
     /// Issue #13: draw calls que o frustum culling suprimiu neste quadro.
     /// `draw_calls` conta só o que de fato entrou no `RenderPass`, então a soma
     /// dos dois é o total de nós desenháveis considerados.
+    ///
+    /// `serde(default)`: telemetria antiga (sem o campo) continua desserializável.
+    #[serde(default)]
     pub culled_draw_calls: u32,
     pub triangle_count: usize,
     pub adapter_name: String,
@@ -1057,7 +1060,7 @@ impl HeadlessRenderer {
                     // Issue #13: filtro antes de qualquer trabalho de GPU — um nó
                     // fora do cone não cria buffer nem entra no `RenderPass`.
                     if let Some(local_bounds) = mesh.local_bounds() {
-                        let volume = culling::SceneVolume::from_local(&local_bounds, &model_mat);
+                        let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
                         if !volume.is_visible(&frustum) {
                             culled_draw_calls += 1;
                             continue;
@@ -1550,7 +1553,7 @@ impl HeadlessRenderer {
 
                     // Issue #13: fora do frustum não há buffer nem draw call.
                     if let Some(local_bounds) = mesh.local_bounds() {
-                        let volume = culling::SceneVolume::from_local(&local_bounds, &model_mat);
+                        let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
                         if !volume.is_visible(&frustum) {
                             culled_draw_calls += 1;
                             continue;
