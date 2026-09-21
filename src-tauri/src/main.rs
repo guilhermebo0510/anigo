@@ -244,12 +244,20 @@ async fn render_viewport_frame(
     let AppState {
         renderer,
         scene,
+        session,
         last_recovery_ms,
         ..
     } = &mut *state;
     let renderer = renderer
         .as_mut()
         .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+    // Issue #14: o plano do quadro vem do snapshot do núcleo (ordem/ativação
+    // dos passes + pré-passe) — o renderer só executa.
+    renderer.set_graph_overrides(anigo_renderer::GraphOverrides {
+        order: session.project().render.graph_order.clone(),
+        disabled: session.project().render.graph_disabled.clone(),
+        depth_prepass: session.project().render.depth_prepass,
+    });
     let frame = render_with_device_recovery(renderer, scene, width, height, "frame do viewport")
         .await?;
     if let Some(recovery_ms) = frame.recovery_ms {
@@ -805,12 +813,20 @@ async fn core_export_frame(
     let AppState {
         renderer,
         scene,
+        session,
         last_recovery_ms,
         ..
     } = &mut *state;
     let renderer = renderer
         .as_mut()
         .ok_or_else(|| "Headless renderer not available on this platform".to_string())?;
+    // Issue #14: o frame exportado usa o mesmo plano do viewport (a mesma
+    // ordem/ativação/pré-passe do snapshot do núcleo).
+    renderer.set_graph_overrides(anigo_renderer::GraphOverrides {
+        order: session.project().render.graph_order.clone(),
+        disabled: session.project().render.graph_disabled.clone(),
+        depth_prepass: session.project().render.depth_prepass,
+    });
     let frame =
         render_with_device_recovery(renderer, scene, width, height, "frame de exportação").await?;
     if let Some(recovery_ms) = frame.recovery_ms {
@@ -827,10 +843,9 @@ async fn core_export_frame(
         ),
         depth_format: format!("{:?}", anigo_renderer::render_contract::depth_format()),
         msaa_samples: anigo_renderer::render_contract::msaa_sample_count(),
-        render_passes: anigo_renderer::render_contract::render_pass_order()
-            .into_iter()
-            .map(|name| name.to_string())
-            .collect(),
+        // Issue #14: o manifesto registra o plano EXECUTADO (com o pré-passe
+        // quando ligado), não a ordem estática do contrato.
+        render_passes: metrics.executed_passes.clone(),
         clear_source: anigo_renderer::render_contract::clear_color_source().to_string(),
         clear_color: state.scene.background_color,
         adapter_name: metrics.adapter_name.clone(),

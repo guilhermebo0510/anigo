@@ -470,7 +470,9 @@ test("Rust: a exportação é do núcleo e usa o snapshot como fonte", () => {
     assert.ok(mainRs.includes(`async fn ${handler}(`), `${handler} precisa existir`);
     assert.ok(mainRs.includes(`            ${handler},`), `${handler} precisa estar no registry`);
   }
-  assert.match(mainRs, /render_passes: anigo_renderer::render_contract::render_pass_order\(\)/);
+  // Issue #14: o manifesto registra o plano EXECUTADO (com o pré-passe quando
+  // ligado), não a ordem estática do contrato.
+  assert.match(mainRs, /render_passes: metrics\.executed_passes\.clone\(\)/);
   assert.match(mainRs, /msaa_samples: anigo_renderer::render_contract::msaa_sample_count\(\)/);
   assert.match(mainRs, /clear_source: anigo_renderer::render_contract::clear_color_source\(\)/);
 

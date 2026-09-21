@@ -334,13 +334,23 @@ impl MaterialSnapshot {
 }
 
 /// Render + color management block of the snapshot (§6.2).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+// Issue #14: sem `Copy` — as listas do grafo (`Vec`) não são copiáveis por
+// valor (o snapshot trafega por referência até a serialização Tauri).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderSnapshot {
     pub settings_version: u32,
     pub msaa_samples: u32,
     pub background_color: [f32; 4],
     pub color: ColorManagement,
     pub tonemap: TonemapOperator,
+    /// Issue #14: reconfiguração do render graph — ordem e ativação dos passes
+    /// mais o pré-passe de profundidade (espelho de `RenderState`).
+    #[serde(default)]
+    pub graph_order: Vec<String>,
+    #[serde(default)]
+    pub graph_disabled: Vec<String>,
+    #[serde(default)]
+    pub depth_prepass: bool,
 }
 
 impl From<&RenderState> for RenderSnapshot {
@@ -351,6 +361,9 @@ impl From<&RenderState> for RenderSnapshot {
             background_color: render.background_color,
             color: render.color,
             tonemap: render.tonemap,
+            graph_order: render.graph_order.clone(),
+            graph_disabled: render.graph_disabled.clone(),
+            depth_prepass: render.depth_prepass,
         }
     }
 }

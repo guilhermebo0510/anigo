@@ -429,6 +429,15 @@ pub enum Command {
         msaa_samples: Option<u32>,
         #[serde(default)]
         tonemap: Option<crate::project::TonemapOperator>,
+        /// Issue #14: ordem de execução dos passes (nomes do contrato).
+        #[serde(default)]
+        graph_order: Option<Vec<String>>,
+        /// Issue #14: passes desligados (nomes do contrato).
+        #[serde(default)]
+        graph_disabled: Option<Vec<String>>,
+        /// Issue #14: pré-passe de profundidade.
+        #[serde(default)]
+        depth_prepass: Option<bool>,
     },
     /// Renames the project.
     RenameProject { name: String },
@@ -985,6 +994,9 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                graph_order,
+                graph_disabled,
+                depth_prepass,
             } => {
                 if let Some(samples) = msaa_samples {
                     if !matches!(samples, 1 | 2 | 4 | 8 | 16) {
@@ -994,7 +1006,21 @@ impl Command {
                         });
                     }
                 }
-                if msaa_samples.is_none() && tonemap.is_none() {
+                // Issue #14: listas do grafo sem nomes vazios nem repetidos (o
+                // renderer resolve nomes desconhecidos contra o contrato e
+                // reporta diagnóstico — o núcleo não conhece os passes).
+                if let Some(order) = graph_order {
+                    validate_pass_name_list("graph_order", order)?;
+                }
+                if let Some(disabled) = graph_disabled {
+                    validate_pass_name_list("graph_disabled", disabled)?;
+                }
+                if msaa_samples.is_none()
+                    && tonemap.is_none()
+                    && graph_order.is_none()
+                    && graph_disabled.is_none()
+                    && depth_prepass.is_none()
+                {
                     return Err(CommandError::NoOp("empty render settings patch".to_string()));
                 }
                 Ok(())
@@ -1274,9 +1300,19 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                graph_order,
+                graph_disabled,
+                depth_prepass,
             } => Ok(Command::SetRenderSettings {
                 msaa_samples: msaa_samples.map(|_| state.render.msaa_samples),
                 tonemap: tonemap.map(|_| state.render.tonemap),
+                graph_order: graph_order
+                    .as_ref()
+                    .map(|_| state.render.graph_order.clone()),
+                graph_disabled: graph_disabled
+                    .as_ref()
+                    .map(|_| state.render.graph_disabled.clone()),
+                depth_prepass: depth_prepass.map(|_| state.render.depth_prepass),
             }),
             Command::RenameProject { .. } => Ok(Command::RenameProject {
                 name: state.name.clone(),
@@ -1574,12 +1610,24 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                graph_order,
+                graph_disabled,
+                depth_prepass,
             } => {
                 if let Some(samples) = msaa_samples {
                     state.render.msaa_samples = *samples;
                 }
                 if let Some(operator) = tonemap {
                     state.render.tonemap = *operator;
+                }
+                if let Some(order) = graph_order {
+                    state.render.graph_order.clone_from(order);
+                }
+                if let Some(disabled) = graph_disabled {
+                    state.render.graph_disabled.clone_from(disabled);
+                }
+                if let Some(prepass) = depth_prepass {
+                    state.render.depth_prepass = *prepass;
                 }
                 Ok(())
             }
@@ -1771,6 +1819,27 @@ fn validate_quaternion(value: [f32; 4]) -> Result<(), CommandError> {
             field: "rotation".to_string(),
             detail: "quaternion must not be zero".to_string(),
         });
+    }
+    Ok(())
+}
+
+/// Issue #14: lista de nomes de passes do render graph — sem vazio, sem
+/// repetido (a pertinência ao contrato é resolvida no renderer).
+fn validate_pass_name_list(field: &str, names: &[String]) -> Result<(), CommandError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in names {
+        if name.trim().is_empty() {
+            return Err(CommandError::InvalidValue {
+                field: field.to_string(),
+                detail: "pass names must not be empty".to_string(),
+            });
+        }
+        if !seen.insert(name.clone()) {
+            return Err(CommandError::InvalidValue {
+                field: field.to_string(),
+                detail: format!("duplicated pass name '{name}'"),
+            });
+        }
     }
     Ok(())
 }
@@ -2686,6 +2755,60 @@ mod tests {
     }
 
     #[test]
+    fn render_graph_settings_round_trip_and_reject_bad_lists() {
+        // Issue #14: ordem/ativação dos passes e o pré-passe via comando, com
+        // undo exato; listas com nome vazio ou repetido são recusadas.
+        let mut state = project();
+        let mut history = CommandHistory::new(8);
+        let before = state.clone();
+
+        history
+            .execute(
+                &mut state,
+                Command::SetRenderSettings {
+                    msaa_samples: None,
+                    tonemap: None,
+                    graph_order: Some(vec!["cel".to_string(), "outline".to_string()]),
+                    graph_disabled: Some(vec!["postprocess".to_string()]),
+                    depth_prepass: Some(true),
+                },
+            )
+            .expect("graph settings apply");
+        assert_eq!(
+            state.render.graph_order,
+            vec!["cel".to_string(), "outline".to_string()]
+        );
+        assert_eq!(state.render.graph_disabled, vec!["postprocess".to_string()]);
+        assert!(state.render.depth_prepass);
+
+        history.undo(&mut state).expect("undo restores the graph");
+        assert_eq!(state, before);
+
+        for bad in [
+            vec!["cel".to_string(), "cel".to_string()],
+            vec!["  ".to_string()],
+        ] {
+            assert!(
+                matches!(
+                    history.execute(
+                        &mut state,
+                        Command::SetRenderSettings {
+                            msaa_samples: None,
+                            tonemap: None,
+                            graph_order: Some(bad),
+                            graph_disabled: None,
+                            depth_prepass: None,
+                        },
+                    ),
+                    Err(CommandError::InvalidValue { .. })
+                ),
+                "lista inválida do grafo precisa ser recusada"
+            );
+        }
+        assert_eq!(state, before, "comando recusado não toca no estado");
+    }
+
+    #[test]
     fn add_node_rejects_duplicates_and_unknown_parents() {
         let mut state = project();
         let mut history = CommandHistory::new(8);
@@ -3208,6 +3331,9 @@ mod tests {
             Command::SetRenderSettings {
                 msaa_samples: None,
                 tonemap: None,
+                graph_order: None,
+                graph_disabled: None,
+                depth_prepass: None,
             },
             Command::SetNodeVisibility {
                 node_id: NodeId::canonical_character(),

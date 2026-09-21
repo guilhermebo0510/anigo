@@ -181,7 +181,17 @@ export type CommandWire =
     }
   | { kind: "load_mesh_preset"; preset: MeshPresetWire }
   | { kind: "set_background_color"; color: [number, number, number, number] }
-  | { kind: "set_render_settings"; msaa_samples?: number; tonemap?: TonemapOperatorWire }
+  // Issue #14: `graph_order`/`graph_disabled` (nomes do contrato) e o
+  // `depth_prepass` viajam no `set_render_settings` (o teste de drift não
+  // tolera comentários entre os campos do membro).
+  | {
+      kind: "set_render_settings";
+      msaa_samples?: number;
+      tonemap?: TonemapOperatorWire;
+      graph_order?: string[];
+      graph_disabled?: string[];
+      depth_prepass?: boolean;
+    }
   | { kind: "rename_project"; name: string }
   | { kind: "batch"; commands: CommandWire[] };
 

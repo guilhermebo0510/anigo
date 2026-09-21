@@ -493,6 +493,19 @@ pub struct RenderState {
     pub background_color: [f32; 4],
     pub color: ColorManagement,
     pub tonemap: TonemapOperator,
+    /// Issue #14: ordem de execução dos passes do render graph (nomes do
+    /// contrato). Vazia = ordem canônica; nomes listados aqui executam nessa
+    /// sequência, e os não listados mantêm a ordem relativa do contrato.
+    #[serde(default)]
+    pub graph_order: Vec<String>,
+    /// Issue #14: passes desligados (nomes do contrato). Um passe desligado
+    /// sai do plano sem quebrar as dependências dos demais.
+    #[serde(default)]
+    pub graph_disabled: Vec<String>,
+    /// Issue #14: pré-passe de profundidade (z-buffer antes do cel, para
+    /// rejeição antecipada no fragment shader).
+    #[serde(default)]
+    pub depth_prepass: bool,
 }
 
 impl Default for RenderState {
@@ -503,6 +516,9 @@ impl Default for RenderState {
             background_color: [0.08, 0.09, 0.13, 1.0],
             color: ColorManagement::default(),
             tonemap: TonemapOperator::None,
+            graph_order: Vec::new(),
+            graph_disabled: Vec::new(),
+            depth_prepass: false,
         }
     }
 }

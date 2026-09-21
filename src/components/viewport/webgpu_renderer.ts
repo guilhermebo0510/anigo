@@ -81,7 +81,9 @@ import {
   depthFormat,
   filterMode,
   msaaSampleCount,
+  renderGraph,
   renderPasses,
+  renderPassOrder,
   RENDER_CONTRACT,
   bonePaletteBytes,
   skinning,
@@ -92,6 +94,10 @@ import {
   uniformSize,
   vertexBufferLayout,
 } from "../../contracts/render_contract.v1";
+import {
+  DEPTH_PREPASS_PASS,
+  planRenderGraphPasses,
+} from "../../services/render_graph_plan";
 import {
   cameraUniformFloats,
   lightUniformFloats,
@@ -201,6 +207,12 @@ export class WebGpuViewportRenderer {
   private sampleCount: number = msaaSampleCount();
   private celPipeline: GPURenderPipeline | null = null;
   private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
+  /** Issue #14: pipeline só-profundidade do pré-passe (sem fragmento). */
+  private depthPrepassPipeline: GPURenderPipeline | null = null;
+  /** Issue #14: overrides do render graph vindos do snapshot do núcleo. */
+  private graphOrder: string[] = [];
+  private graphDisabled: string[] = [];
+  private graphDepthPrepass = false;
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null; // P2-14 model+normal matrix per object (was identity)
@@ -555,6 +567,30 @@ export class WebGpuViewportRenderer {
         depthBiasSlopeScale: outlinePass.depth_bias?.slope_scale ?? 0,
         depthBiasClamp: outlinePass.depth_bias?.clamp ?? 0,
         depthCompare: (outlinePass.depth_compare ?? "less-equal") as any,
+      },
+      multisample: { count: msaaSampleCount() },
+    });
+
+    // Issue #14: pré-passe de profundidade — mesmo vértice do cel (`vs_main`),
+    // mesmo bind group (layout explícito do cel, não `auto`), sem fragmento:
+    // só escreve o z-buffer para o Early-Z do passe principal.
+    this.depthPrepassPipeline = this.device.createRenderPipeline({
+      layout: this.device.createPipelineLayout({
+        bindGroupLayouts: [this.celPipeline.getBindGroupLayout(0)],
+      }),
+      vertex: {
+        module: celModule,
+        entryPoint: celPass.vertex_entry ?? "vs_main",
+        buffers: [contractVertexLayout],
+      },
+      primitive: {
+        topology: "triangle-list",
+        cullMode: (celPass.cull_mode ?? "back") as any,
+      },
+      depthStencil: {
+        format: depthFormat() as any,
+        depthWriteEnabled: true,
+        depthCompare: (renderGraph().passes[DEPTH_PREPASS_PASS]?.depth_compare ?? "less") as any,
       },
       multisample: { count: msaaSampleCount() },
     });
@@ -1220,6 +1256,16 @@ export class WebGpuViewportRenderer {
     if (Array.isArray(background) && background.length === 4 && background.every((c) => Number.isFinite(c))) {
       this.clearColor = [background[0], background[1], background[2], background[3]];
     }
+    // Issue #14: o plano do quadro vem do snapshot (ordem/ativação/pré-passe).
+    const graphOrder = delivery.state?.render?.graph_order;
+    this.graphOrder = Array.isArray(graphOrder)
+      ? graphOrder.filter((name): name is string => typeof name === "string")
+      : [];
+    const graphDisabled = delivery.state?.render?.graph_disabled;
+    this.graphDisabled = Array.isArray(graphDisabled)
+      ? graphDisabled.filter((name): name is string => typeof name === "string")
+      : [];
+    this.graphDepthPrepass = delivery.state?.render?.depth_prepass === true;
     this.liveWeights.clear();
 
     let geometryUploaded = false;
@@ -2464,6 +2510,47 @@ export class WebGpuViewportRenderer {
       this.dispatchSparseMorphs(commandEncoder, this.morphVertexCount);
     }
 
+    // Issue #14: o plano do quadro — ordem/ativação do snapshot sobre a ordem
+    // do contrato, com o `depth_prepass` ancorado no início quando ligado.
+    // Nome estranho cai no contrato com diagnóstico (a mesma regra do headless).
+    const plan = planRenderGraphPasses(renderPassOrder(), {
+      order: this.graphOrder,
+      disabled: this.graphDisabled,
+      depthPrepass: this.graphDepthPrepass,
+    });
+    if (plan.fellBack) {
+      this.report("render_plan_fallback", "overrides do render graph inválidos — usando a ordem do contrato", {
+        detail: plan.unknownPass
+          ? `passe desconhecido '${plan.unknownPass}'`
+          : "plano vazio (todos os passes desligados)",
+      });
+    }
+    const prepass = plan.passes.includes(DEPTH_PREPASS_PASS) && this.depthPrepassPipeline !== null;
+
+    const activeVbo = (this.gpuMorphActive && this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
+      ? this.morphedVertexBuffer
+      : this.vertexBuffer!;
+
+    // Pré-passe de profundidade: RenderPass só com o anexo de profundidade,
+    // que o passe principal carrega em vez de limpar (Early-Z).
+    if (prepass) {
+      const prepassEncoder = commandEncoder.beginRenderPass({
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: this.depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      });
+      prepassEncoder.setPipeline(this.depthPrepassPipeline!);
+      prepassEncoder.setBindGroup(0, this.celBindGroup!);
+      prepassEncoder.setVertexBuffer(0, activeVbo);
+      prepassEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
+      prepassEncoder.drawIndexed(this.indexCount);
+      prepassEncoder.end();
+    }
+
     // P0-07: MSAA resolve (msaa view → swapchain)
     const colorView = this.msaaColorView ?? textureView;
     const resolveTarget = this.msaaColorView ? textureView : undefined;
@@ -2485,36 +2572,38 @@ export class WebGpuViewportRenderer {
       depthStencilAttachment: {
         view: this.depthView,
         depthClearValue: 1.0,
-        depthLoadOp: "clear",
+        depthLoadOp: prepass ? "load" : "clear",
         depthStoreOp: "store",
       },
     });
 
-    const activeVbo = (this.gpuMorphActive && this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
-      ? this.morphedVertexBuffer
-      : this.vertexBuffer!;
     passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // Ordem dos passes vem do contrato (outline → cel em ordem de `order`),
+    // A ordem dos passes vem do plano (contrato + overrides do snapshot),
     // exatamente como o headless monta o render pass.
-    for (const pass of renderPasses()) {
-      if (pass.name === "outline") {
+    let mainPassDraws = 0;
+    for (const passName of plan.passes) {
+      if (passName === "outline") {
         passEncoder.setPipeline(this.outlinePipeline!);
         passEncoder.setBindGroup(0, this.outlineBindGroup!);
-      } else if (pass.name === "cel") {
+      } else if (passName === "cel") {
         passEncoder.setPipeline(this.celPipeline!);
         passEncoder.setBindGroup(0, this.celBindGroup!);
+      } else if (passName === DEPTH_PREPASS_PASS) {
+        continue; // já executou no passe dedicado acima
       } else {
+        this.report("contract_drift", `passe '${passName}' do plano não tem pipeline no viewport`);
         continue;
       }
       passEncoder.drawIndexed(this.indexCount);
+      mainPassDraws += 1;
     }
 
     passEncoder.end();
     this.device.queue.submit([commandEncoder.finish()]);
 
-    this.recordMetrics(startTime, "WebGPU Hardware");
+    this.recordMetrics(startTime, "WebGPU Hardware", mainPassDraws + (prepass ? 1 : 0));
   }
 
   /**
@@ -2606,7 +2695,7 @@ export class WebGpuViewportRenderer {
     this.recordMetrics(startTime, "WebGL2 Fallback");
   }
 
-  private recordMetrics(startTime: number, adapter: string) {
+  private recordMetrics(startTime: number, adapter: string, drawCalls = 2) {
     // P2-08 real GPU timing (was CPU submit only) + real drawCalls/triangles - pedestal excluded
     const elapsed = performance.now() - startTime;
     this.frameCounter++;
@@ -2624,7 +2713,7 @@ export class WebGpuViewportRenderer {
             fps: currentFps,
             frameTimeMs: elapsed, // TODO GPUQuerySet timestamp when available
             triangles: realTris,
-            drawCalls: 2, // cel + outline
+            drawCalls, // Issue #14: draws do plano (cel + outline + pré-passe quando ligado)
             adapterName,
             backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
             projection: this.projectionMode().mode,
@@ -2801,7 +2890,7 @@ export class WebGpuViewportRenderer {
       this.gl = null; this.glVao = null; this.glVbo = null; this.glIbo = null;
       this.glCelProgram = null; this.glOutlineProgram = null;
     }
-    this.celPipeline = null; this.outlinePipeline = null;
+    this.celPipeline = null; this.outlinePipeline = null; this.depthPrepassPipeline = null;
     this.celBindGroup = null; this.outlineBindGroup = null;
     this.toonRampSampler = null;
   }

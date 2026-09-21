@@ -11,6 +11,7 @@ use crate::diagnostics;
 use crate::device_recovery::{DeviceRecreationReport, PresentationMode, UncapturedErrorBus};
 use crate::mesh_validation;
 use crate::render_contract as contract;
+use crate::render_graph::{ExecutionPlan, GraphOverrides, RenderGraph};
 use crate::uniforms::{
     BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform,
 };
@@ -26,6 +27,10 @@ pub struct RenderMetrics {
     /// `serde(default)`: telemetria antiga (sem o campo) continua desserializável.
     #[serde(default)]
     pub culled_draw_calls: u32,
+    /// Issue #14: passes executados neste quadro, na ordem do plano
+    /// (`depth_prepass` abre quando ligado) — a prova observável do grafo.
+    #[serde(default)]
+    pub executed_passes: Vec<String>,
     pub triangle_count: usize,
     pub adapter_name: String,
     pub backend: String,
@@ -60,6 +65,8 @@ fn bone_palette_uniform(scene: &Scene) -> BonePaletteUniform {
 struct DeviceResources {
     cel_pipeline: wgpu::RenderPipeline,
     outline_pipeline: wgpu::RenderPipeline,
+    /// Issue #14: pipeline só-profundidade do pré-passe (Early-Z).
+    depth_prepass_pipeline: wgpu::RenderPipeline,
     cel_bind_group_layout: wgpu::BindGroupLayout,
     outline_bind_group_layout: wgpu::BindGroupLayout,
     morph_compute_pipeline: wgpu::ComputePipeline,
@@ -78,6 +85,10 @@ pub struct HeadlessRenderer {
     presentation_mode: PresentationMode,
     cel_pipeline: wgpu::RenderPipeline,
     outline_pipeline: wgpu::RenderPipeline,
+    /// Issue #14: pipeline só-profundidade do pré-passe (Early-Z).
+    depth_prepass_pipeline: wgpu::RenderPipeline,
+    /// Issue #14: reconfiguração do plano vinda do snapshot do núcleo.
+    graph_overrides: GraphOverrides,
     cel_bind_group_layout: wgpu::BindGroupLayout,
     outline_bind_group_layout: wgpu::BindGroupLayout,
     /// P1-04: binding da paleta de ossos em cada passe (vem do contrato).
@@ -87,6 +98,17 @@ pub struct HeadlessRenderer {
     pub morph_bind_group_layout: wgpu::BindGroupLayout,
     pub toon_ramp_view: wgpu::TextureView,
     pub toon_ramp_sampler: wgpu::Sampler,
+}
+
+/// Issue #14: recursos de desenho de um nó preparados uma vez por quadro — o
+/// pré-passe de profundidade e o passe principal desenham os mesmos buffers
+/// (mesmo VBO/IBO, mesmos bind groups).
+struct PreparedPassInputs {
+    cel_bind_group: wgpu::BindGroup,
+    outline_bind_group: wgpu::BindGroup,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
 }
 
 impl HeadlessRenderer {
@@ -475,6 +497,52 @@ impl HeadlessRenderer {
             multiview: None,
             cache: None,
         });
+
+        // Issue #14: pré-passe de profundidade — mesmo vértice do cel
+        // (`vs_main`, mesmo bind group layout), sem fragmento: só escreve o
+        // z-buffer para o Early-Z do passe principal. `Less` estrito contra o
+        // clear 1.0; o cel (`less_equal`) redesenha a mesma geometria e passa
+        // com a mesma profundidade (sem z-fighting, sem pixel diferente).
+        let depth_prepass_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Depth Prepass Pipeline Layout"),
+                bind_group_layouts: &[&cel_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let depth_prepass_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Depth Prepass Pipeline"),
+                layout: Some(&depth_prepass_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &cel_shader,
+                    entry_point: Some(cel_pass_spec.vertex_entry.unwrap_or("vs_main")),
+                    compilation_options: Default::default(),
+                    buffers: std::slice::from_ref(&vertex_layout),
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: cel_pass_spec.front_face,
+                    cull_mode: cel_pass_spec.cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: contract::depth_format(),
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: cel_pass_spec.depth_bias,
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: contract::msaa_sample_count(),
+                    ..Default::default()
+                },
+                multiview: None,
+                cache: None,
+            });
         // Sparse Morph Target Compute Pipeline
         let morph_pass_spec = contract::compute_pass("sparse_morph");
         let morph_shader_src = contract::MORPH_SPARSE_COMPUTE_WGSL;
@@ -559,6 +627,7 @@ impl HeadlessRenderer {
         Ok(DeviceResources {
             cel_pipeline,
             outline_pipeline,
+            depth_prepass_pipeline,
             cel_bind_group_layout,
             outline_bind_group_layout,
             morph_compute_pipeline,
@@ -596,6 +665,8 @@ impl HeadlessRenderer {
             presentation_mode: PresentationMode::Fifo,
             cel_pipeline: resources.cel_pipeline,
             outline_pipeline: resources.outline_pipeline,
+            depth_prepass_pipeline: resources.depth_prepass_pipeline,
+            graph_overrides: GraphOverrides::default(),
             cel_bind_group_layout: resources.cel_bind_group_layout,
             outline_bind_group_layout: resources.outline_bind_group_layout,
             cel_skin_binding,
@@ -637,6 +708,7 @@ impl HeadlessRenderer {
         self.adapter_info = adapter_info.clone();
         self.cel_pipeline = resources.cel_pipeline;
         self.outline_pipeline = resources.outline_pipeline;
+        self.depth_prepass_pipeline = resources.depth_prepass_pipeline;
         self.cel_bind_group_layout = resources.cel_bind_group_layout;
         self.outline_bind_group_layout = resources.outline_bind_group_layout;
         self.morph_compute_pipeline = resources.morph_compute_pipeline;
@@ -671,6 +743,48 @@ impl HeadlessRenderer {
     /// Modo de apresentação configurado (status/telemetria).
     pub fn presentation_mode(&self) -> PresentationMode {
         self.presentation_mode
+    }
+
+    /// Issue #14: overrides do render graph vindos do snapshot do núcleo
+    /// (ordem/ativação dos passes + pré-passe de profundidade).
+    ///
+    /// O Tauri chama a cada quadro antes de renderizar; o plano é remontado no
+    /// `render_scene` a partir destes overrides sobre a topologia do contrato.
+    pub fn set_graph_overrides(&mut self, overrides: GraphOverrides) {
+        self.graph_overrides = overrides;
+    }
+
+    /// Overrides configurados (status/telemetria).
+    pub fn graph_overrides(&self) -> &GraphOverrides {
+        &self.graph_overrides
+    }
+
+    /// Issue #14: plano de execução do quadro — overrides do snapshot sobre a
+    /// topologia do contrato. Um plano inválido (nome estranho, tudo desligado)
+    /// nunca derruba o quadro: cai na ordem do contrato com diagnóstico.
+    fn graph_execution_plan(&self) -> ExecutionPlan {
+        Self::plan_for_overrides(&self.graph_overrides)
+    }
+
+    /// Núcleo puro do planejamento (testável sem GPU).
+    fn plan_for_overrides(overrides: &GraphOverrides) -> ExecutionPlan {
+        RenderGraph::from_contract()
+            .build(overrides)
+            .unwrap_or_else(|error| {
+                diagnostics::report_with_detail(
+                    "render_plan_fallback",
+                    "overrides do render graph inválidos; usando a ordem do contrato",
+                    Some(error.to_string()),
+                );
+                ExecutionPlan {
+                    order: contract::render_pass_order()
+                        .into_iter()
+                        .map(|name| name.to_string())
+                        .collect(),
+                    slots: std::collections::BTreeMap::new(),
+                    slot_count: 0,
+                }
+            })
     }
 
     /// Drena o canal MPSC de erros de device para o módulo de diagnósticos
@@ -837,6 +951,126 @@ impl HeadlessRenderer {
         Ok(result_vertices)
     }
 
+    /// Issue #14: prepara os recursos de desenho de um nó (uniforms por nó +
+    /// bind groups + IBO) uma vez por quadro, para o pré-passe e o passe
+    /// principal desenharem os mesmos buffers.
+    ///
+    /// O VBO entra pronto (`vertex_buffer`) porque a fonte varia: o caminho
+    /// principal sobe os vértices da malha, o caminho de morphs usa o buffer
+    /// que o compute deformou na GPU.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_node_draw(
+        &self,
+        node: &anigo_core::scene::SceneNode,
+        mesh: &anigo_core::mesh::Mesh,
+        model_mat: glam::Mat4,
+        camera_view_proj: [f32; 16],
+        camera_pos: [f32; 4],
+        aspect: f32,
+        light_buffer: &wgpu::Buffer,
+        bones_buffer: &wgpu::Buffer,
+        vertex_buffer: wgpu::Buffer,
+    ) -> PreparedPassInputs {
+        let normal_mat = model_mat.inverse().transpose();
+        let camera_uniform = CameraUniform {
+            view_proj: camera_view_proj,
+            camera_pos,
+            model: model_mat.to_cols_array(),
+            normal_mat: normal_mat.to_cols_array(),
+        };
+        let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Uniform Buffer (node)"),
+            contents: cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let mat = node.material.clone().unwrap_or_default();
+
+        // Material Uniform with Anime Cel-Shading NPR parameters
+        let mat_uniform = MaterialUniform::from(&mat);
+        let mat_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Material Uniform Buffer"),
+            contents: cast_slice(&[mat_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        // P0-04/09: outline uniform parity with viewport (depthBias/opacity/smoothness, was 0.0/0.0)
+        let outline_uniform = OutlineUniform {
+            color: mat.outline_color,
+            params: [mat.outline_width, aspect, mat.outline_depth_bias, mat.outline_opacity],
+            params2: [mat.outline_smoothness, 0.0, 0.0, 0.0],
+        };
+        let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Outline Uniform Buffer"),
+            contents: cast_slice(&[outline_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let cel_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cel Bind Group"),
+            layout: &self.cel_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: mat_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.toon_ramp_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.toon_ramp_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: self.cel_skin_binding,
+                    resource: bones_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let outline_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Outline Bind Group"),
+            layout: &self.outline_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: outline_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: self.outline_skin_binding,
+                    resource: bones_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        PreparedPassInputs {
+            cel_bind_group,
+            outline_bind_group,
+            vertex_buffer,
+            index_buffer,
+            index_count: mesh.indices.len() as u32,
+        }
+    }
+
     /// Renders a scene into an offscreen RGBA image buffer and returns the image + performance metrics.
     pub async fn render_scene(
         &self,
@@ -991,6 +1225,11 @@ impl HeadlessRenderer {
             label: Some("Render Command Encoder"),
         });
 
+        // Issue #14: plano de execução do quadro — overrides do snapshot sobre
+        // a topologia do contrato (nunca falha: cai no contrato com diagnóstico).
+        let plan = self.graph_execution_plan();
+        let depth_prepass = plan.contains(GraphOverrides::DEPTH_PREPASS);
+
         let mut draw_calls = 0;
         let mut triangle_count = 0;
         // Issue #13: o frustum sai da mesma `view_proj` que o shader recebe, e
@@ -999,6 +1238,99 @@ impl HeadlessRenderer {
         // telemetria é montada depois dele.
         let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
         let mut culled_draw_calls = 0u32;
+
+        // Issue #14: aspecto do quadro (era recalculado por nó) + recursos de
+        // desenho preparados uma vez — o pré-passe e o passe principal
+        // desenham os mesmos buffers, sem upload duplicado.
+        let aspect = width as f32 / height.max(1) as f32;
+        let mut prepared: Vec<PreparedPassInputs> = Vec::new();
+        for node in &scene.nodes {
+            if !node.visible {
+                continue;
+            }
+            if let Some(mesh) = &node.mesh {
+                if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+                    continue;
+                }
+
+                // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
+                // malha reprovada vira diagnóstico com código do contrato e
+                // o nó é pulado (sem buffer torto, sem erro do wgpu).
+                if let Err(problem) = mesh_validation::validate_mesh(mesh) {
+                    diagnostics::report_with_detail(
+                        "mesh_invalid",
+                        "malha reprovada antes de criar buffers de GPU",
+                        Some(problem.message()),
+                    );
+                    continue;
+                }
+
+                // P1-05: model/normal do nó atual (era o transform de nodes[0]).
+                // Issue #12: a matriz é a **mundial** (pai × local); nós
+                // ausentes do mapa caem na transformação local.
+                let model_mat = world_matrices
+                    .get(&node.id)
+                    .copied()
+                    .unwrap_or_else(|| node.transform.to_matrix());
+
+                // Issue #13: filtro antes de qualquer trabalho de GPU — um nó
+                // fora do cone não cria buffer nem entra no `RenderPass`.
+                if let Some(local_bounds) = mesh.local_bounds() {
+                    let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
+                    if !volume.is_visible(&frustum) {
+                        culled_draw_calls += 1;
+                        continue;
+                    }
+                }
+
+                triangle_count += mesh.indices.len() / 3;
+                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Vertex Buffer"),
+                    contents: cast_slice(&mesh.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                prepared.push(self.prepare_node_draw(
+                    node,
+                    mesh,
+                    model_mat,
+                    camera_view_proj,
+                    camera_pos,
+                    aspect,
+                    &light_buffer,
+                    &bones_buffer,
+                    vertex_buffer,
+                ));
+            }
+        }
+
+        // Issue #14: pré-passe de profundidade — `RenderPass` só com o anexo
+        // de profundidade (sem alvos de cor), que o passe principal carrega em
+        // vez de limpar. Mesmos buffers, mesma geometria: cada fragmento do
+        // cel testa contra o z-buffer já resolvido (Early-Z).
+        if depth_prepass {
+            let mut prepass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Depth Prepass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            for inputs in &prepared {
+                prepass.set_pipeline(&self.depth_prepass_pipeline);
+                prepass.set_bind_group(0, &inputs.cel_bind_group, &[]);
+                prepass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                prepass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                prepass.draw_indexed(0..inputs.index_count, 0, 0..1);
+                draw_calls += 1;
+            }
+        }
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1019,7 +1351,13 @@ impl HeadlessRenderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        // Issue #14: com o pré-passe, o z-buffer resolvido é
+                        // carregado em vez de limpo.
+                        load: if depth_prepass {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -1028,171 +1366,37 @@ impl HeadlessRenderer {
                 occlusion_query_set: None,
             });
 
-            for node in &scene.nodes {
-                if !node.visible {
-                    continue;
-                }
-                if let Some(mesh) = &node.mesh {
-                    if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            for inputs in &prepared {
+                render_pass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                // Issue #14: a ordem dos passes vem do plano (contrato +
+                // overrides do snapshot), a mesma do viewport.
+                for pass_name in &plan.order {
+                    // O pré-passe executa no `RenderPass` dedicado acima.
+                    if pass_name == GraphOverrides::DEPTH_PREPASS {
                         continue;
                     }
-
-                    // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
-                    // malha reprovada vira diagnóstico com código do contrato e
-                    // o nó é pulado (sem buffer torto, sem erro do wgpu).
-                    if let Err(problem) = mesh_validation::validate_mesh(mesh) {
-                        diagnostics::report_with_detail(
-                            "mesh_invalid",
-                            "malha reprovada antes de criar buffers de GPU",
-                            Some(problem.message()),
-                        );
-                        continue;
-                    }
-
-                    // P1-05: model/normal do nó atual (era o transform de nodes[0]).
-                    // Issue #12: a matriz é a **mundial** (pai × local); nós
-                    // ausentes do mapa caem na transformação local.
-                    let model_mat = world_matrices
-                        .get(&node.id)
-                        .copied()
-                        .unwrap_or_else(|| node.transform.to_matrix());
-
-                    // Issue #13: filtro antes de qualquer trabalho de GPU — um nó
-                    // fora do cone não cria buffer nem entra no `RenderPass`.
-                    if let Some(local_bounds) = mesh.local_bounds() {
-                        let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
-                        if !volume.is_visible(&frustum) {
-                            culled_draw_calls += 1;
+                    match pass_name.as_str() {
+                        "outline" => {
+                            render_pass.set_pipeline(&self.outline_pipeline);
+                            render_pass.set_bind_group(0, &inputs.outline_bind_group, &[]);
+                        }
+                        "cel" => {
+                            render_pass.set_pipeline(&self.cel_pipeline);
+                            render_pass.set_bind_group(0, &inputs.cel_bind_group, &[]);
+                        }
+                        other => {
+                            // P1-01: passe sem pipeline vira diagnóstico
+                            // observável (era `debug_assert!`).
+                            contract::report(format!(
+                                "passe '{}' do plano não tem pipeline no headless",
+                                other
+                            ));
                             continue;
                         }
                     }
-
-                    let normal_mat = model_mat.inverse().transpose();
-                    let camera_uniform = CameraUniform {
-                        view_proj: camera_view_proj,
-                        camera_pos,
-                        model: model_mat.to_cols_array(),
-                        normal_mat: normal_mat.to_cols_array(),
-                    };
-                    let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Camera Uniform Buffer (node)"),
-                        contents: cast_slice(&[camera_uniform]),
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    });
-
-                    let mat = node.material.clone().unwrap_or_default();
-
-                    // Material Uniform with Anime Cel-Shading NPR parameters
-                    let mat_uniform = MaterialUniform::from(&mat);
-                    let mat_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Material Uniform Buffer"),
-                        contents: cast_slice(&[mat_uniform]),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-
-                    // P0-04/09: outline uniform parity with viewport (depthBias/opacity/smoothness, was 0.0/0.0)
-                    let aspect = width as f32 / height.max(1) as f32;
-                    let outline_uniform = OutlineUniform {
-                        color: mat.outline_color,
-                        params: [mat.outline_width, aspect, mat.outline_depth_bias, mat.outline_opacity],
-                        params2: [mat.outline_smoothness, 0.0, 0.0, 0.0],
-                    };
-                    let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Outline Uniform Buffer"),
-                        contents: cast_slice(&[outline_uniform]),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-
-                    let cel_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Cel Bind Group"),
-                        layout: &self.cel_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: camera_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: light_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: mat_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 3,
-                                resource: wgpu::BindingResource::TextureView(&self.toon_ramp_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 4,
-                                resource: wgpu::BindingResource::Sampler(&self.toon_ramp_sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: self.cel_skin_binding,
-                                resource: bones_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
-
-                    let outline_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Outline Bind Group"),
-                        layout: &self.outline_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: camera_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: outline_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: self.outline_skin_binding,
-                                resource: bones_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
-
-                    let v_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Vertex Buffer"),
-                        contents: cast_slice(&mesh.vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-
-                    let i_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Index Buffer"),
-                        contents: cast_slice(&mesh.indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-
-                    // A ordem dos passes vem do contrato (outline → cel), a mesma do viewport
-                    render_pass.set_vertex_buffer(0, v_buffer.slice(..));
-                    render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    for pass_name in contract::render_pass_order() {
-                        match pass_name {
-                            "outline" => {
-                                render_pass.set_pipeline(&self.outline_pipeline);
-                                render_pass.set_bind_group(0, &outline_bind_group, &[]);
-                            }
-                            "cel" => {
-                                render_pass.set_pipeline(&self.cel_pipeline);
-                                render_pass.set_bind_group(0, &cel_bind_group, &[]);
-                            }
-                            other => {
-                                // P1-01: passe sem pipeline vira diagnóstico
-                                // observável (era `debug_assert!`).
-                                contract::report(format!(
-                                    "passe '{}' do render contract não tem pipeline no headless",
-                                    other
-                                ));
-                                continue;
-                            }
-                        }
-                        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-                        draw_calls += 1;
-                    }
-
-                    triangle_count += mesh.indices.len() / 3;
+                    render_pass.draw_indexed(0..inputs.index_count, 0, 0..1);
+                    draw_calls += 1;
                 }
             }
         }
@@ -1271,6 +1475,7 @@ impl HeadlessRenderer {
             render_time_ms: elapsed,
             draw_calls,
             culled_draw_calls,
+            executed_passes: plan.order.clone(),
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
@@ -1487,12 +1692,112 @@ impl HeadlessRenderer {
             base_vertices.len() as u32,
         );
 
+        // Issue #14: o mesmo plano do caminho principal — os dois caminhos do
+        // headless não podem divergir no que desenham.
+        let plan = self.graph_execution_plan();
+        let depth_prepass = plan.contains(GraphOverrides::DEPTH_PREPASS);
+
         let mut draw_calls = 0;
         let mut triangle_count = 0;
         // Issue #13: o mesmo filtro de frustum do caminho principal — os dois
         // caminhos do headless não podem divergir no que desenham.
         let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
         let mut culled_draw_calls = 0u32;
+
+        // Issue #14: aspecto do quadro + recursos de desenho preparados uma vez,
+        // como no caminho principal.
+        let aspect = width as f32 / height.max(1) as f32;
+        let mut prepared: Vec<PreparedPassInputs> = Vec::new();
+        for node in &scene.nodes {
+            if !node.visible {
+                continue;
+            }
+            if let Some(mesh) = &node.mesh {
+                if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+                    continue;
+                }
+
+                // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
+                // malha reprovada vira diagnóstico com código do contrato e
+                // o nó é pulado (sem buffer torto, sem erro do wgpu).
+                if let Err(problem) = mesh_validation::validate_mesh(mesh) {
+                    diagnostics::report_with_detail(
+                        "mesh_invalid",
+                        "malha reprovada antes de criar buffers de GPU",
+                        Some(problem.message()),
+                    );
+                    continue;
+                }
+
+                // P1-05: model/normal do nó atual (era o transform de nodes[0]).
+                // Issue #12: a matriz é a **mundial** (pai × local); nós
+                // ausentes do mapa caem na transformação local.
+                let model_mat = world_matrices
+                    .get(&node.id)
+                    .copied()
+                    .unwrap_or_else(|| node.transform.to_matrix());
+
+                // Issue #13: fora do frustum não há buffer nem draw call.
+                if let Some(local_bounds) = mesh.local_bounds() {
+                    let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
+                    if !volume.is_visible(&frustum) {
+                        culled_draw_calls += 1;
+                        continue;
+                    }
+                }
+
+                triangle_count += mesh.indices.len() / 3;
+                // Vértices morfados na GPU quando os tamanhos batem (o compute
+                // escreveu no `morphed_vertex_buffer`), senão VBO estático — o
+                // handle é clonado, não os bytes.
+                let vertex_buffer = if mesh.vertices.len() == base_vertices.len() {
+                    morphed_vertex_buffer.clone()
+                } else {
+                    self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Static Vertex Buffer"),
+                        contents: cast_slice(&mesh.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+                };
+                prepared.push(self.prepare_node_draw(
+                    node,
+                    mesh,
+                    model_mat,
+                    camera_view_proj,
+                    camera_pos,
+                    aspect,
+                    &light_buffer,
+                    &bones_buffer,
+                    vertex_buffer,
+                ));
+            }
+        }
+
+        // Issue #14: pré-passe de profundidade sobre a geometria morfada.
+        if depth_prepass {
+            let mut prepass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Depth Prepass (Morphed)"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            for inputs in &prepared {
+                prepass.set_pipeline(&self.depth_prepass_pipeline);
+                prepass.set_bind_group(0, &inputs.cel_bind_group, &[]);
+                prepass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                prepass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                prepass.draw_indexed(0..inputs.index_count, 0, 0..1);
+                draw_calls += 1;
+            }
+        }
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1513,7 +1818,13 @@ impl HeadlessRenderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        // Issue #14: com o pré-passe, o z-buffer resolvido é
+                        // carregado em vez de limpo.
+                        load: if depth_prepass {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -1522,177 +1833,37 @@ impl HeadlessRenderer {
                 occlusion_query_set: None,
             });
 
-            for node in &scene.nodes {
-                if !node.visible {
-                    continue;
-                }
-                if let Some(mesh) = &node.mesh {
-                    if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            for inputs in &prepared {
+                render_pass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                // Issue #14: a ordem dos passes vem do plano (contrato +
+                // overrides do snapshot), a mesma do viewport.
+                for pass_name in &plan.order {
+                    // O pré-passe executa no `RenderPass` dedicado acima.
+                    if pass_name == GraphOverrides::DEPTH_PREPASS {
                         continue;
                     }
-
-                    // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
-                    // malha reprovada vira diagnóstico com código do contrato e
-                    // o nó é pulado (sem buffer torto, sem erro do wgpu).
-                    if let Err(problem) = mesh_validation::validate_mesh(mesh) {
-                        diagnostics::report_with_detail(
-                            "mesh_invalid",
-                            "malha reprovada antes de criar buffers de GPU",
-                            Some(problem.message()),
-                        );
-                        continue;
-                    }
-
-                    // P1-05: model/normal do nó atual (era o transform de nodes[0]).
-                    // Issue #12: a matriz é a **mundial** (pai × local); nós
-                    // ausentes do mapa caem na transformação local.
-                    let model_mat = world_matrices
-                        .get(&node.id)
-                        .copied()
-                        .unwrap_or_else(|| node.transform.to_matrix());
-
-                    // Issue #13: fora do frustum não há buffer nem draw call.
-                    if let Some(local_bounds) = mesh.local_bounds() {
-                        let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
-                        if !volume.is_visible(&frustum) {
-                            culled_draw_calls += 1;
+                    match pass_name.as_str() {
+                        "outline" => {
+                            render_pass.set_pipeline(&self.outline_pipeline);
+                            render_pass.set_bind_group(0, &inputs.outline_bind_group, &[]);
+                        }
+                        "cel" => {
+                            render_pass.set_pipeline(&self.cel_pipeline);
+                            render_pass.set_bind_group(0, &inputs.cel_bind_group, &[]);
+                        }
+                        other => {
+                            // P1-01: passe sem pipeline vira diagnóstico
+                            // observável (era `debug_assert!`).
+                            contract::report(format!(
+                                "passe '{}' do plano não tem pipeline no headless",
+                                other
+                            ));
                             continue;
                         }
                     }
-
-                    let normal_mat = model_mat.inverse().transpose();
-                    let camera_uniform = CameraUniform {
-                        view_proj: camera_view_proj,
-                        camera_pos,
-                        model: model_mat.to_cols_array(),
-                        normal_mat: normal_mat.to_cols_array(),
-                    };
-                    let camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Camera Uniform Buffer (node)"),
-                        contents: cast_slice(&[camera_uniform]),
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    });
-
-                    let mat = node.material.clone().unwrap_or_default();
-                    let mat_uniform = MaterialUniform::from(&mat);
-                    let mat_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Material Uniform Buffer"),
-                        contents: cast_slice(&[mat_uniform]),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-
-                    // P0-04/09: outline uniform parity with viewport (depthBias/opacity/smoothness, was 0.0/0.0)
-                    let aspect = width as f32 / height.max(1) as f32;
-                    let outline_uniform = OutlineUniform {
-                        color: mat.outline_color,
-                        params: [mat.outline_width, aspect, mat.outline_depth_bias, mat.outline_opacity],
-                        params2: [mat.outline_smoothness, 0.0, 0.0, 0.0],
-                    };
-                    let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Outline Uniform Buffer"),
-                        contents: cast_slice(&[outline_uniform]),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-
-                    let cel_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Cel Bind Group"),
-                        layout: &self.cel_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: camera_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: light_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: mat_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 3,
-                                resource: wgpu::BindingResource::TextureView(&self.toon_ramp_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 4,
-                                resource: wgpu::BindingResource::Sampler(&self.toon_ramp_sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: self.cel_skin_binding,
-                                resource: bones_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
-
-                    let outline_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Outline Bind Group"),
-                        layout: &self.outline_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: camera_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: outline_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: self.outline_skin_binding,
-                                resource: bones_buffer.as_entire_binding(),
-                            },
-                        ],
-                    });
-
-                    let i_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Index Buffer"),
-                        contents: cast_slice(&mesh.indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-
-                    let v_buffer = if mesh.vertices.len() == base_vertices.len() {
-                        None
-                    } else {
-                        Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("Static Vertex Buffer"),
-                            contents: cast_slice(&mesh.vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }))
-                    };
-
-                    let active_v_slice = match &v_buffer {
-                        Some(buf) => buf.slice(..),
-                        None => morphed_vertex_buffer.slice(..),
-                    };
-
-                    // A ordem dos passes vem do contrato (outline → cel), a mesma do viewport
-                    render_pass.set_vertex_buffer(0, active_v_slice);
-                    render_pass.set_index_buffer(i_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    for pass_name in contract::render_pass_order() {
-                        match pass_name {
-                            "outline" => {
-                                render_pass.set_pipeline(&self.outline_pipeline);
-                                render_pass.set_bind_group(0, &outline_bind_group, &[]);
-                            }
-                            "cel" => {
-                                render_pass.set_pipeline(&self.cel_pipeline);
-                                render_pass.set_bind_group(0, &cel_bind_group, &[]);
-                            }
-                            other => {
-                                // P1-01: passe sem pipeline vira diagnóstico
-                                // observável (era `debug_assert!`).
-                                contract::report(format!(
-                                    "passe '{}' do render contract não tem pipeline no headless",
-                                    other
-                                ));
-                                continue;
-                            }
-                        }
-                        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-                        draw_calls += 1;
-                    }
-
-                    triangle_count += mesh.indices.len() / 3;
+                    render_pass.draw_indexed(0..inputs.index_count, 0, 0..1);
+                    draw_calls += 1;
                 }
             }
         }
@@ -1771,6 +1942,7 @@ impl HeadlessRenderer {
             render_time_ms: elapsed,
             draw_calls,
             culled_draw_calls,
+            executed_passes: plan.order.clone(),
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
@@ -2039,6 +2211,96 @@ mod tests {
                 .expect("render após recriação deve recuperar o estado");
             assert_eq!(img.width(), 64);
             assert!(metrics.draw_calls >= 1);
+        });
+    }
+
+    #[test]
+    fn render_graph_plan_layers_snapshot_overrides_over_the_contract() {
+        // Issue #14: sem overrides o plano é a ordem do contrato; o pré-passe
+        // ancora no início quando ligado (núcleo puro, sem GPU).
+        let plan = HeadlessRenderer::plan_for_overrides(&GraphOverrides::default());
+        assert_eq!(plan.order, vec!["outline".to_string(), "cel".to_string()]);
+
+        let plan = HeadlessRenderer::plan_for_overrides(&GraphOverrides {
+            depth_prepass: true,
+            ..GraphOverrides::default()
+        });
+        assert_eq!(
+            plan.order,
+            vec![
+                "depth_prepass".to_string(),
+                "outline".to_string(),
+                "cel".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn render_graph_plan_falls_back_with_a_diagnostic_on_unknown_names() {
+        // Issue #14: plano inválido nunca derruba o quadro — cai na ordem do
+        // contrato com `render_plan_fallback` observável.
+        let _guard = crate::diagnostics::test_guard();
+        crate::diagnostics::clear();
+        let plan = HeadlessRenderer::plan_for_overrides(&GraphOverrides {
+            order: vec!["bloom".to_string()],
+            ..GraphOverrides::default()
+        });
+        assert_eq!(plan.order, vec!["outline".to_string(), "cel".to_string()]);
+        let summary = crate::diagnostics::summary();
+        assert!(summary.codes.contains(&"render_plan_fallback".to_string()));
+    }
+
+    #[test]
+    fn depth_prepass_preserves_pixels_and_reports_executed_passes() {
+        // Issue #14, aceitação #2: o pré-passe é otimização pura — os pixels
+        // são idênticos com e sem ele, e `executed_passes` prova o plano.
+        let _guard = crate::diagnostics::test_guard();
+        pollster::block_on(async {
+            let mut renderer = match HeadlessRenderer::new().await {
+                Ok(renderer) => renderer,
+                Err(_) => return, // sem adaptador: o teste de GPU se pula
+            };
+
+            let cube = anigo_core::mesh::Mesh::create_cube(1.0);
+            let mut scene = Scene::new_empty();
+            scene.add_node(SceneNode::new("cube", "Cube").with_mesh(cube));
+
+            let (plain, plain_metrics) = renderer.render_scene(&scene, 64, 64).await.unwrap();
+            assert_eq!(
+                plain_metrics.executed_passes,
+                vec!["outline".to_string(), "cel".to_string()]
+            );
+            assert_eq!(plain_metrics.draw_calls, 2);
+
+            renderer.set_graph_overrides(GraphOverrides {
+                depth_prepass: true,
+                ..GraphOverrides::default()
+            });
+            let (prepassed, prepassed_metrics) =
+                renderer.render_scene(&scene, 64, 64).await.unwrap();
+            assert_eq!(
+                prepassed_metrics.executed_passes,
+                vec![
+                    "depth_prepass".to_string(),
+                    "outline".to_string(),
+                    "cel".to_string()
+                ]
+            );
+            assert_eq!(prepassed_metrics.draw_calls, 3);
+            assert_eq!(
+                plain.as_raw(),
+                prepassed.as_raw(),
+                "o pré-passe não pode mudar um pixel (Early-Z puro)"
+            );
+
+            // Desligar o outline some com o passe do plano e da telemetria.
+            renderer.set_graph_overrides(GraphOverrides {
+                disabled: vec!["outline".to_string()],
+                ..GraphOverrides::default()
+            });
+            let (_, cel_only) = renderer.render_scene(&scene, 64, 64).await.unwrap();
+            assert_eq!(cel_only.executed_passes, vec!["cel".to_string()]);
+            assert_eq!(cel_only.draw_calls, 1);
         });
     }
 }

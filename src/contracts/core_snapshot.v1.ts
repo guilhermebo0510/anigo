@@ -176,6 +176,12 @@ export interface RenderSnapshotWire {
   background_color: [number, number, number, number];
   color: ColorManagementWire;
   tonemap: TonemapOperatorWire;
+  /** Issue #14: ordem de execução dos passes (nomes do contrato; vazio = contrato). */
+  graph_order: string[];
+  /** Issue #14: passes desligados (nomes do contrato). */
+  graph_disabled: string[];
+  /** Issue #14: pré-passe de profundidade antes do passe principal. */
+  depth_prepass: boolean;
 }
 
 export interface DynamicStatePayloadWire {

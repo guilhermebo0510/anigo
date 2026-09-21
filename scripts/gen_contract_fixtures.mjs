@@ -286,6 +286,12 @@ const fixture = (() => {
           display_space: "srgb",
         },
         tonemap: "none",
+        // Issue #14: reconfiguração do render graph via snapshot — ordem dos
+        // passes, passes desligados e o pré-passe de profundidade (o plano é
+        // derivado do contrato + estes três campos, nos dois renderers).
+        graph_order: [],
+        graph_disabled: [],
+        depth_prepass: false,
       },
       deformation_authority: "reference_ts",
       deformation_coverage: {

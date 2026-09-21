@@ -308,6 +308,81 @@ export function renderContractFixture() {
       },
     ],
     // ---------------------------------------------------------------------
+    // Issue #14: render graph canônico (DAG de passes + recursos). O contrato
+    // congela a topologia (nós, dependências, recursos); o snapshot do núcleo
+    // (`render.graph_order`/`graph_disabled`/`depth_prepass`) só reconfigura
+    // ordem e ativação sobre ela. Headless e viewport planejam do mesmo JSON,
+    // então executam o mesmo plano.
+    // ---------------------------------------------------------------------
+    render_graph: {
+      // Ordem canônica dos passes de anime (a mesma da especificação):
+      // pré-passe de profundidade, sombra facial, cel opaco, cabelo/roupa,
+      // contorno e pós-processamento.
+      canonical_order: [
+        "depth_prepass",
+        "face_shadow_sdf",
+        "opaque_cel",
+        "hair_cloth",
+        "outline",
+        "postprocess",
+      ],
+      passes: {
+        depth_prepass: {
+          kind: "depth_prepass",
+          after: [],
+          reads: [],
+          writes: ["depth_main"],
+          // O pré-passe reutiliza o vertex shader do passe cel (mesmo
+          // skinning, mesma malha) sem fragment shader: só escreve
+          // profundidade, com `less` (os passes seguintes usam `less-equal`).
+          shader: "cel_shading",
+          vertex_entry: "vs_main",
+          bind_group: "cel",
+          depth_compare: "less",
+          enabled_by_default: false,
+        },
+        face_shadow_sdf: {
+          kind: "custom",
+          after: ["depth_prepass"],
+          reads: ["depth_main"],
+          writes: ["face_shadow_mask"],
+        },
+        opaque_cel: {
+          kind: "opaque",
+          after: ["face_shadow_sdf"],
+          reads: ["depth_main"],
+          writes: ["color_main", "depth_main"],
+          executes_as: "cel",
+        },
+        hair_cloth: {
+          kind: "opaque",
+          after: ["opaque_cel"],
+          reads: ["color_main", "depth_main"],
+          writes: ["color_main"],
+        },
+        outline: {
+          kind: "outline",
+          after: ["hair_cloth"],
+          reads: ["color_main", "depth_main"],
+          writes: ["color_main"],
+          executes_as: "outline",
+        },
+        postprocess: {
+          kind: "postprocess",
+          after: ["outline"],
+          reads: ["color_main"],
+          writes: ["color_main"],
+        },
+      },
+      resources: {
+        color_main: { kind: "transient_color" },
+        depth_main: { kind: "depth" },
+        face_shadow_mask: { kind: "transient_color" },
+        post_a: { kind: "ping_pong" },
+        post_b: { kind: "ping_pong" },
+      },
+    },
+    // ---------------------------------------------------------------------
     // P1-02: códigos estáveis de diagnóstico. Rust e TypeScript *precisam*
     // concordar: a UI, a telemetria e os testes falam a mesma língua, e um
     // código novo só existe depois de declarado aqui.
@@ -342,6 +417,9 @@ export function renderContractFixture() {
         { code: "shader_compile_failed", severity: "error" },
         { code: "buffer_creation_failed", severity: "error" },
         { code: "readback_failed", severity: "error" },
+        // Issue #14: overrides do render graph inválidos — o quadro cai na
+        // ordem do contrato (nunca um quadro vazio), nos dois lados.
+        { code: "render_plan_fallback", severity: "warning" },
       ],
     },
     // ---------------------------------------------------------------------

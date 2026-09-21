@@ -197,7 +197,17 @@ export type CommandIntent =
     }
   | { kind: "preset"; preset: MeshPresetWire }
   | { kind: "background_color"; color: [number, number, number, number]; current_color?: [number, number, number, number] }
-  | { kind: "render_settings"; msaa_samples?: number; tonemap?: TonemapOperatorWire }
+  | {
+      kind: "render_settings";
+      msaa_samples?: number;
+      tonemap?: TonemapOperatorWire;
+      /** Issue #14: ordem de execução dos passes (nomes do contrato). */
+      graph_order?: string[];
+      /** Issue #14: passes desligados (nomes do contrato). */
+      graph_disabled?: string[];
+      /** Issue #14: pré-passe de profundidade antes do passe principal. */
+      depth_prepass?: boolean;
+    }
   | { kind: "rename_project"; name: string; current_name?: string }
   | { kind: "batch"; intents: CommandIntent[] };
 
@@ -662,7 +672,13 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
     }
 
     case "render_settings": {
-      if (intent.msaa_samples === undefined && intent.tonemap === undefined) {
+      if (
+        intent.msaa_samples === undefined &&
+        intent.tonemap === undefined &&
+        intent.graph_order === undefined &&
+        intent.graph_disabled === undefined &&
+        intent.depth_prepass === undefined
+      ) {
         return fail("no_op", "configurações de render vazias");
       }
       const command: CommandWire = { kind: "set_render_settings" };
@@ -681,6 +697,33 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
           return fail("invalid_value", `tonemap '${intent.tonemap}' desconhecido`, "tonemap");
         }
         (command as Record<string, unknown>)["tonemap"] = intent.tonemap;
+      }
+      // Issue #14: mesmas regras do `validate_pass_name_list` no núcleo — sem
+      // nome vazio, sem repetido (a pertinência ao contrato é resolvida no
+      // renderer, que cai no plano do contrato com diagnóstico).
+      for (const field of ["graph_order", "graph_disabled"] as const) {
+        const names = intent[field];
+        if (names === undefined) continue;
+        if (!Array.isArray(names)) {
+          return fail("invalid_value", `${field} precisa ser uma lista de nomes`, field);
+        }
+        const seen = new Set<string>();
+        for (const name of names) {
+          if (typeof name !== "string" || name.trim().length === 0) {
+            return fail("invalid_value", `${field} não aceita nome vazio`, field);
+          }
+          if (seen.has(name)) {
+            return fail("invalid_value", `${field} repete o passe '${name}'`, field);
+          }
+          seen.add(name);
+        }
+        (command as Record<string, unknown>)[field] = [...names];
+      }
+      if (intent.depth_prepass !== undefined) {
+        if (typeof intent.depth_prepass !== "boolean") {
+          return fail("invalid_value", "depth_prepass precisa ser booleano", "depth_prepass");
+        }
+        (command as Record<string, unknown>)["depth_prepass"] = intent.depth_prepass;
       }
       return { ok: true, command };
     }

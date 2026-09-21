@@ -75,6 +75,8 @@ export const DIAGNOSTIC_CODES = [
   "buffer_creation_failed",
   /** Leitura de buffer da GPU (readback) falhou. */
   "readback_failed",
+  /** Issue #14: overrides do grafo inválidos — quadro caiu na ordem do contrato. */
+  "render_plan_fallback",
 ] as const;
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[number];

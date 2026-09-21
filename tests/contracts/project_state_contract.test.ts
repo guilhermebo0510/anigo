@@ -110,7 +110,20 @@ describe("ProjectState v1 — schema parity with the Rust core", () => {
       assert.ok(character.includes(field), `CharacterState is missing ${field}`);
     }
     const render = fieldsOf(RUST_PROJECT, "RenderState");
-    assert.deepEqual(sorted(render), sorted(["settings_version", "msaa_samples", "background_color", "color", "tonemap"]));
+    // Issue #14: o render graph viaja no RenderState (ordem/ativação + pré-passe).
+    assert.deepEqual(
+      sorted(render),
+      sorted([
+        "settings_version",
+        "msaa_samples",
+        "background_color",
+        "color",
+        "tonemap",
+        "graph_order",
+        "graph_disabled",
+        "depth_prepass",
+      ])
+    );
     const scene = fieldsOf(RUST_PROJECT, "SceneState");
     for (const field of ["scene_id", "camera", "lights", "nodes"]) {
       assert.ok(scene.includes(field), `SceneState is missing ${field}`);

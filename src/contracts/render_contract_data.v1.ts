@@ -656,6 +656,113 @@ export const RENDER_CONTRACT_DATA = {
       "only_when": "gpu_morph_active"
     }
   ],
+  "render_graph": {
+    "canonical_order": [
+      "depth_prepass",
+      "face_shadow_sdf",
+      "opaque_cel",
+      "hair_cloth",
+      "outline",
+      "postprocess"
+    ],
+    "passes": {
+      "depth_prepass": {
+        "kind": "depth_prepass",
+        "after": [],
+        "reads": [],
+        "writes": [
+          "depth_main"
+        ],
+        "shader": "cel_shading",
+        "vertex_entry": "vs_main",
+        "bind_group": "cel",
+        "depth_compare": "less",
+        "enabled_by_default": false
+      },
+      "face_shadow_sdf": {
+        "kind": "custom",
+        "after": [
+          "depth_prepass"
+        ],
+        "reads": [
+          "depth_main"
+        ],
+        "writes": [
+          "face_shadow_mask"
+        ]
+      },
+      "opaque_cel": {
+        "kind": "opaque",
+        "after": [
+          "face_shadow_sdf"
+        ],
+        "reads": [
+          "depth_main"
+        ],
+        "writes": [
+          "color_main",
+          "depth_main"
+        ],
+        "executes_as": "cel"
+      },
+      "hair_cloth": {
+        "kind": "opaque",
+        "after": [
+          "opaque_cel"
+        ],
+        "reads": [
+          "color_main",
+          "depth_main"
+        ],
+        "writes": [
+          "color_main"
+        ]
+      },
+      "outline": {
+        "kind": "outline",
+        "after": [
+          "hair_cloth"
+        ],
+        "reads": [
+          "color_main",
+          "depth_main"
+        ],
+        "writes": [
+          "color_main"
+        ],
+        "executes_as": "outline"
+      },
+      "postprocess": {
+        "kind": "postprocess",
+        "after": [
+          "outline"
+        ],
+        "reads": [
+          "color_main"
+        ],
+        "writes": [
+          "color_main"
+        ]
+      }
+    },
+    "resources": {
+      "color_main": {
+        "kind": "transient_color"
+      },
+      "depth_main": {
+        "kind": "depth"
+      },
+      "face_shadow_mask": {
+        "kind": "transient_color"
+      },
+      "post_a": {
+        "kind": "ping_pong"
+      },
+      "post_b": {
+        "kind": "ping_pong"
+      }
+    }
+  },
   "diagnostics": {
     "note": "Códigos estáveis compartilhados pelos dois lados. Severidade define se o renderer está degradado (error) ou apenas avisado (warning).",
     "codes": [
@@ -750,6 +857,10 @@ export const RENDER_CONTRACT_DATA = {
       {
         "code": "readback_failed",
         "severity": "error"
+      },
+      {
+        "code": "render_plan_fallback",
+        "severity": "warning"
       }
     ]
   },
