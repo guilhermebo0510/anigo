@@ -47,6 +47,9 @@
   let canvas: HTMLCanvasElement | null = $state(null);
   let containerEl: HTMLElement | null = $state(null);
   let renderer: WebGpuViewportRenderer | null = null;
+  // Issue #11: notificação informativa de recuperação do device (rodapé).
+  let deviceRecoveryNotice: string | null = $state(null);
+  let deviceRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let coreSnapshotInFlight: Promise<unknown> | null = null;
   let coreAuthority: string = "unavailable";
@@ -444,6 +447,15 @@
       renderer.onModelLoadError = (msg: string) => onModelLoadError?.(msg);
       // P1-02: todo diagnóstico do renderer sobe para o shell.
       renderer.onDiagnostic = (diagnostic: RenderDiagnostic) => onDiagnostic?.(diagnostic);
+      // Issue #11: recuperação de device → notificação no rodapé (evento + tempo).
+      renderer.onDeviceRecovery = (info) => {
+        deviceRecoveryNotice =
+          `GPU recuperada: ${info.attempts} tentativa(s) em ${Math.round(info.elapsedMs)} ms`;
+        if (deviceRecoveryTimer) clearTimeout(deviceRecoveryTimer);
+        deviceRecoveryTimer = setTimeout(() => {
+          deviceRecoveryNotice = null;
+        }, 6000);
+      };
       // P0 §7.5: quando o renderer precisa de geometria canônica, o shell busca
       // o snapshot no núcleo (nunca há deformação local como plano B).
       renderer.onCoreGeometryRequired = () => {
@@ -637,6 +649,10 @@
     class="viewport-canvas"
     oncontextmenu={(e) => e.preventDefault()}
   ></canvas>
+  <!-- Issue #11: notificação de recuperação de device (device lost → recreated) -->
+  {#if deviceRecoveryNotice}
+    <div class="device-recovery-toast" role="status">{deviceRecoveryNotice}</div>
+  {/if}
 </div>
 
 <style>
@@ -665,5 +681,20 @@
     height: 100%;
     display: block;
     object-fit: contain;
+  }
+  .device-recovery-toast {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 26, 43, 0.92);
+    color: #9ecbff;
+    border: 1px solid rgba(158, 203, 255, 0.35);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-family: sans-serif;
+    pointer-events: none;
+    z-index: 10000;
   }
 </style>
