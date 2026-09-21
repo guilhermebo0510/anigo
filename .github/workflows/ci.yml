@@ -17,9 +17,53 @@ jobs:
         continue-on-error: true # P1-14 strict ativo; 84 erros legados (Icons size) pré-existentes — gate build é obrigatório, svelte-check será hard gate em P2
       - name: lint
         run: npm run lint --if-present
+      - name: testes (contratos Rust⇄TS, persistência, personagem, e2e)
+        run: npm test
+      - name: contratos congelados (fixtures em dia)
+        run: npm run fixtures:check
+      - name: sintaxe Rust (tree-sitter, sem toolchain)
+        run: node scripts/check_rust_syntax.mjs
       - name: build
         run: npm run build
       - name: no leaks — destroy/pause hooks present
         run: |
           grep -q "setPausedByVisibility" src/components/viewport/webgpu_renderer.ts
           grep -q "destroy()" src/components/viewport/webgpu_renderer.ts
+
+  # P1-07: os gates que exigem toolchain Rust (o job `check` roda sem cargo).
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: dependências de sistema (Tauri/webview)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - name: formato
+        run: cargo fmt --all -- --check
+        continue-on-error: true # o repositório ainda não está 100% rustfmt-clean; vira hard gate depois do P1
+      - name: cargo check (todos os alvos)
+        run: cargo check --workspace --all-targets
+      - name: cargo test (núcleo)
+        run: cargo test -p anigo-core
+      - name: cargo test (renderer — testes de GPU se pulam sem adaptador)
+        run: cargo test -p anigo-renderer
+      - name: cargo test (MCP)
+        run: cargo test -p anigo-mcp
+      - name: WGSL dos shaders de produção (naga)
+        # Sem GPU e sem naga no ambiente de desenvolvimento, um shader inválido
+        # só apareceria ao abrir o app. Este passo valida a sintaxe/regras da
+        # linguagem no CI; vira hard gate quando o skinning (P1-04) mexer nos
+        # shaders de produção.
+        run: |
+          if ! command -v naga >/dev/null 2>&1; then
+            cargo install naga-cli --locked
+          fi
+          naga crates/anigo-renderer/shaders/cel_shading.wgsl \
+               crates/anigo-renderer/shaders/inverted_hull.wgsl \
+               crates/anigo-renderer/shaders/morph_sparse_compute.wgsl \
+               crates/anigo-renderer/shaders/face_sdf.wgsl
+        continue-on-error: true

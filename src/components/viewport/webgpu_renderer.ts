@@ -22,6 +22,11 @@ import {
   type CoreSnapshotDelivery,
 } from "../../services/core_bridge";
 import {
+  MeshValidationError,
+  validateAttributeMesh,
+  validateRenderableMesh,
+} from "../../services/mesh_validation";
+import {
   RendererDiagnostics,
   type DiagnosticCode,
   type DiagnosticsSummary,
@@ -960,6 +965,25 @@ export class WebGpuViewportRenderer {
     this.channelWeights = weights;
 
     if (incoming) {
+      // P1-03: nenhum buffer é criado a partir de geometria reprovada.
+      const validation = validateRenderableMesh(incoming.vertices, incoming.indices);
+      if (!validation.ok) {
+        this.report("geometry_rejected", `geometria canônica reprovada: ${validation.message}`, {
+          context: { code: validation.code ?? "unknown", mesh_uri: incoming.meshUri },
+        });
+        return {
+          applied: false,
+          geometryUploaded: false,
+          channelCount: this.coreGeometry?.channels.length ?? 0,
+          vertexCount: this.coreGeometry?.vertexCount ?? 0,
+          authority: this.coreAuthority,
+          staticRevision: this.coreStaticRevision,
+          dynamicRevision: this.coreDynamicRevision,
+        };
+      }
+    }
+
+    if (incoming) {
       const previous = this.coreGeometry ? geometrySignature(this.coreGeometry) : null;
       const next = geometrySignature(incoming);
       this.coreGeometry = incoming;
@@ -1486,6 +1510,19 @@ export class WebGpuViewportRenderer {
 
       const rawIndices: number[] = Array.from(mesh.indices);
 
+      // P1-03: o GLB é validado **antes** de virar buffer (stride, índices,
+      // NaN). Reprovar aqui é barato; descobrir isso na GPU não é.
+      const validation = validateAttributeMesh(mesh.positions, rawIndices, {
+        normals: mesh.normals,
+        uvs: mesh.uvs,
+      });
+      if (!validation.ok) {
+        this.report("mesh_invalid", `GLB reprovado antes de criar buffers: ${validation.message}`, {
+          context: { code: validation.code ?? "unknown", gender },
+        });
+        throw new MeshValidationError(validation.code ?? "EMPTY_MESH", validation.message);
+      }
+
       this.canonicalBaseVertices = vertices;
       this.canonicalIndices = new Uint32Array(rawIndices);
       this.canonicalModelCache.set(gender, { vertices, indices: new Uint32Array(rawIndices) });
@@ -1500,10 +1537,12 @@ export class WebGpuViewportRenderer {
     } catch (e) {
       // P0-10: failures propagate (caller + UI callback) — never silent cube.
       if (e instanceof DOMException && e.name === "AbortError") return;
-      this.report("model_load_failed", "falha ao carregar a malha base (GLB)", {
-        detail: e instanceof Error ? e.message : String(e),
-        context: { gender },
-      });
+      if (!(e instanceof MeshValidationError)) {
+        this.report("model_load_failed", "falha ao carregar a malha base (GLB)", {
+          detail: e instanceof Error ? e.message : String(e),
+          context: { gender },
+        });
+      }
       this.onModelLoadError?.(e instanceof Error ? e.message : String(e));
       throw e;
     }

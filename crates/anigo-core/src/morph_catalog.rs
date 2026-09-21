@@ -845,6 +845,12 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
         morph_set.add_target(slider.id, deltas);
     }
 
+    // P1-05: nenhuma meta pode deformar posição sem normal. O catálogo canônico
+    // já traz deltas de normal; quando uma meta customizada não trouxer, o
+    // núcleo recalcula a partir da topologia e passa a entregá-la em delta —
+    // WGSL/WebGL2/headless continuam sem precisar da topologia.
+    morph_set.complete_normal_deltas(&base_mesh.vertices, &base_mesh.indices);
+
     morph_set
 }
 

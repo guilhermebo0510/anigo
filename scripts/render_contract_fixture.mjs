@@ -317,6 +317,21 @@ export function renderContractFixture() {
         { code: "readback_failed", severity: "error" },
       ],
     },
+    // ---------------------------------------------------------------------
+    // P1-03: checagens obrigatórias de malha **antes** de criar buffers de GPU.
+    // GLB e geometria canônica passam pelas mesmas regras nos dois lados.
+    // ---------------------------------------------------------------------
+    mesh_validation: {
+      note: "Códigos compartilhados: uma malha reprovada aqui não vira buffer de GPU.",
+      stride_bytes: 72,
+      codes: [
+        { code: "EMPTY_MESH", meaning: "sem vértices ou sem índices" },
+        { code: "INDEX_COUNT_MISMATCH", meaning: "índices não formam triângulos (múltiplo de 3)" },
+        { code: "INDEX_OUT_OF_RANGE", meaning: "índice aponta para fora da lista de vértices" },
+        { code: "NON_FINITE_VALUE", meaning: "posição/normal/uv/peso com NaN ou infinito" },
+        { code: "BAD_VERTEX_STRIDE", meaning: "tamanho do buffer não é múltiplo do stride do vértice" },
+      ],
+    },
     targets: {
       offscreen_color_format: "rgba8unorm",
       viewport_color_format_policy: "surface_preferred",

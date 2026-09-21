@@ -108,6 +108,12 @@ export interface RenderContractV1 {
   version: number;
   /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
   diagnostics?: { note: string; codes: DiagnosticCodeSpecV1[] };
+  /** P1-03: códigos de validação de malha antes de criar buffers. */
+  mesh_validation?: {
+    note: string;
+    stride_bytes: number;
+    codes: Array<{ code: string; meaning: string }>;
+  };
   shaders: ShaderSourceV1[];
   vertex_layout: { stride: number; step_mode: string; attributes: VertexAttributeV1[] };
   uniforms: Record<string, UniformLayoutV1>;

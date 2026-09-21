@@ -1,5 +1,6 @@
 pub mod diagnostics;
 pub mod headless;
+pub mod mesh_validation;
 pub mod render_contract;
 pub mod uniforms;
 

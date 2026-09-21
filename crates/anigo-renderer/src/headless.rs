@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Vertex};
 use crate::diagnostics;
+use crate::mesh_validation;
 use crate::render_contract as contract;
 use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
 
@@ -792,6 +793,18 @@ impl HeadlessRenderer {
                         continue;
                     }
 
+                    // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
+                    // malha reprovada vira diagnóstico com código do contrato e
+                    // o nó é pulado (sem buffer torto, sem erro do wgpu).
+                    if let Err(problem) = mesh_validation::validate_mesh(mesh) {
+                        diagnostics::report_with_detail(
+                            "mesh_invalid",
+                            "malha reprovada antes de criar buffers de GPU",
+                            Some(problem.message()),
+                        );
+                        continue;
+                    }
+
                     // P1-05: model/normal do nó atual (era o transform de nodes[0]).
                     let model_mat = node.transform.to_matrix();
                     let normal_mat = model_mat.inverse().transpose();
@@ -1227,6 +1240,18 @@ impl HeadlessRenderer {
                 }
                 if let Some(mesh) = &node.mesh {
                     if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+                        continue;
+                    }
+
+                    // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
+                    // malha reprovada vira diagnóstico com código do contrato e
+                    // o nó é pulado (sem buffer torto, sem erro do wgpu).
+                    if let Err(problem) = mesh_validation::validate_mesh(mesh) {
+                        diagnostics::report_with_detail(
+                            "mesh_invalid",
+                            "malha reprovada antes de criar buffers de GPU",
+                            Some(problem.message()),
+                        );
                         continue;
                     }
 

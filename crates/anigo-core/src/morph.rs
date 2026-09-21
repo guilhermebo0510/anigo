@@ -97,6 +97,20 @@ impl MorphTarget {
             deltas,
         }
     }
+
+    /// `true` quando alguma delta carrega componente de normal.
+    ///
+    /// Um alvo que só move posição deixa as normais presas ao estado de repouso:
+    /// a superfície deforma e o sombreamento (toon/rim/inverted hull) não
+    /// acompanha. É isso que [`SparseMorphSet::complete_normal_deltas`] resolve.
+    pub fn has_normal_deltas(&self) -> bool {
+        self.deltas.iter().any(|delta| {
+            delta
+                .delta_normal
+                .iter()
+                .any(|component| component.abs() > 1e-6)
+        })
+    }
 }
 
 /// Repository of sparse morph targets.
@@ -186,6 +200,72 @@ impl SparseMorphSet {
         (header, channels, packed_deltas)
     }
 
+    /// Índices das metas que deformam posição **sem** trazer delta de normal.
+    pub fn targets_without_normal_deltas(&self) -> Vec<usize> {
+        self.targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| !target.deltas.is_empty() && !target.has_normal_deltas())
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// P1-05 — recalcula as normais das metas que não as trazem.
+    ///
+    /// A autoridade da deformação é o núcleo, e só ele tem a topologia: para cada
+    /// meta que move posições sem delta de normal, o núcleo monta a malha
+    /// deformada daquela meta (peso 1), recalcula as normais por vértice
+    /// (área-ponderadas, a partir dos triângulos) e converte a diferença numa
+    /// delta de normal.
+    ///
+    /// Assim o WGSL do compute, o caminho WebGL2 no CPU e o headless chegam ao
+    /// mesmo resultado **sem precisar da topologia** — a regra continua em um
+    /// lugar só. A interpolação por peso é a mesma dos outros morphs (mistura
+    /// linear da delta), não uma renormalização por peso.
+    ///
+    /// Devolve quantas metas foram completadas.
+    pub fn complete_normal_deltas(&mut self, base_vertices: &[Vertex], indices: &[u32]) -> u32 {
+        if base_vertices.is_empty() || indices.len() < 3 {
+            return 0;
+        }
+        let mut completed = 0;
+        for target in self.targets.iter_mut() {
+            if target.deltas.is_empty() || target.has_normal_deltas() {
+                continue;
+            }
+            let mut positions: Vec<[f32; 3]> =
+                base_vertices.iter().map(|vertex| vertex.position).collect();
+            for delta in &target.deltas {
+                if let Some(position) = positions.get_mut(delta.vertex_index as usize) {
+                    position[0] += delta.delta_position[0];
+                    position[1] += delta.delta_position[1];
+                    position[2] += delta.delta_position[2];
+                }
+            }
+            let normals = vertex_normals(&positions, indices);
+            let mut changed = false;
+            for delta in target.deltas.iter_mut() {
+                let index = delta.vertex_index as usize;
+                if index >= base_vertices.len() || index >= normals.len() {
+                    continue;
+                }
+                let base = base_vertices[index].normal;
+                let recomputed = normals[index];
+                let normal_delta = [
+                    recomputed[0] - base[0],
+                    recomputed[1] - base[1],
+                    recomputed[2] - base[2],
+                ];
+                delta.delta_normal = normal_delta;
+                changed = true;
+            }
+            if changed {
+                completed += 1;
+            }
+        }
+        completed
+    }
+
     /// CPU reference evaluation for verification, unit testing, and headless fallback.
     /// Accumulates:
     /// $$p_{\text{out}} = p_{\text{base}} + \sum_k w_k \Delta p_k$$
@@ -196,11 +276,11 @@ impl SparseMorphSet {
         base_vertices: &[Vertex],
         out_vertices: &mut [Vertex],
     ) {
-        assert_eq!(
-            base_vertices.len(),
-            out_vertices.len(),
-            "Vertex buffer sizes must match"
-        );
+        // P1-01: tamanho incompatível não derruba o processo — a avaliação é
+        // recusada em silêncio observável (quem chama já validou a malha).
+        if base_vertices.len() != out_vertices.len() {
+            return;
+        }
 
         // Initialize output with base vertices
         out_vertices.copy_from_slice(base_vertices);
@@ -240,6 +320,44 @@ impl SparseMorphSet {
             }
         }
     }
+}
+
+/// Normais por vértice (área-ponderadas) a partir da topologia.
+///
+/// Ponderar pela área (não normalizar a normal da face antes de somar) é o que
+/// mantém triângulos grandes influenciando mais — o mesmo critério que o
+/// visualizador usa para sombreamento suave.
+fn vertex_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+    let mut normals = vec![[0.0f32; 3]; positions.len()];
+    for triangle in indices.chunks_exact(3) {
+        let (a, b, c) = (triangle[0] as usize, triangle[1] as usize, triangle[2] as usize);
+        if a >= positions.len() || b >= positions.len() || c >= positions.len() {
+            continue;
+        }
+        let (pa, pb, pc) = (positions[a], positions[b], positions[c]);
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let face = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        for index in [a, b, c] {
+            normals[index][0] += face[0];
+            normals[index][1] += face[1];
+            normals[index][2] += face[2];
+        }
+    }
+    for normal in normals.iter_mut() {
+        let length_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
+        if length_sq > 1e-12 {
+            let inverse = 1.0 / length_sq.sqrt();
+            normal[0] *= inverse;
+            normal[1] *= inverse;
+            normal[2] *= inverse;
+        }
+    }
+    normals
 }
 
 #[cfg(test)]
@@ -309,6 +427,100 @@ mod tests {
         assert_eq!(active_channels[1].weight, 0.5);
         assert_eq!(active_channels[1].start_offset, 1);
         assert_eq!(active_channels[1].delta_count, 2);
+    }
+
+    /// Malha de teste: dois triângulos formando um quadrado no plano XY.
+    fn quad() -> (Vec<Vertex>, Vec<u32>) {
+        let vertices = vec![
+            Vertex::new([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0]),
+            Vertex::new([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0]),
+            Vertex::new([1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0]),
+            Vertex::new([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0]),
+        ];
+        (vertices, vec![0, 1, 2, 0, 2, 3])
+    }
+
+    #[test]
+    fn position_only_target_is_detected() {
+        let mut set = SparseMorphSet::new();
+        set.add_target(
+            "sem_normal",
+            vec![SparseMorphDelta::new(2, [0.0, 0.0, 0.1], [0.0, 0.0, 0.0])],
+        );
+        set.add_target(
+            "com_normal",
+            vec![SparseMorphDelta::new(2, [0.0, 0.0, 0.1], [0.0, 0.0, 0.2])],
+        );
+        assert_eq!(set.targets_without_normal_deltas(), vec![0]);
+        assert!(!set.targets[0].has_normal_deltas());
+        assert!(set.targets[1].has_normal_deltas());
+    }
+
+    #[test]
+    fn missing_normal_deltas_are_recomputed_from_the_topology() {
+        let (vertices, indices) = quad();
+        let mut set = SparseMorphSet::new();
+        // Levanta o canto 2 no eixo Z sem trazer normal nenhuma.
+        set.add_target(
+            "canto",
+            vec![SparseMorphDelta::new(2, [0.0, 0.0, 0.5], [0.0, 0.0, 0.0])],
+        );
+
+        assert_eq!(set.complete_normal_deltas(&vertices, &indices), 1);
+        assert!(set.targets[0].has_normal_deltas());
+        assert!(set.targets_without_normal_deltas().is_empty());
+
+        // Com peso 1 as normais do vértice deformado são as recalculadas pela
+        // topologia (o canto levantado inclina as duas faces que o tocam).
+        let mut out = vec![Vertex::new([0.0; 3], [0.0; 3], [0.0; 2]); vertices.len()];
+        set.apply_cpu(&[1.0], &vertices, &mut out);
+        let recomputed = vertex_normals(
+            &out.iter().map(|vertex| vertex.position).collect::<Vec<_>>(),
+            &indices,
+        );
+        for (vertex, normal) in out.iter().zip(recomputed.iter()) {
+            assert!(
+                (vertex.normal[0] - normal[0]).abs() < 1e-5
+                    && (vertex.normal[1] - normal[1]).abs() < 1e-5
+                    && (vertex.normal[2] - normal[2]).abs() < 1e-5,
+                "normal do vértice divergiu do recálculo por topologia"
+            );
+        }
+        // O canto deformado não aponta mais para +Z puro.
+        assert!(out[2].normal[0].abs() > 1e-3 || out[2].normal[1].abs() > 1e-3);
+        assert!(out[2].normal[2] > 0.0);
+    }
+
+    #[test]
+    fn targets_with_normal_deltas_are_left_alone() {
+        let (vertices, indices) = quad();
+        let mut set = SparseMorphSet::new();
+        set.add_target(
+            "com_normal",
+            vec![SparseMorphDelta::new(1, [0.0, 0.0, 0.2], [0.0, 0.0, 0.5])],
+        );
+        assert_eq!(set.complete_normal_deltas(&vertices, &indices), 0);
+        assert_eq!(set.targets[0].deltas[0].delta_normal, [0.0, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn recompute_needs_a_topology() {
+        let (vertices, _) = quad();
+        let mut set = SparseMorphSet::new();
+        set.add_target(
+            "canto",
+            vec![SparseMorphDelta::new(2, [0.0, 0.0, 0.5], [0.0, 0.0, 0.0])],
+        );
+        assert_eq!(set.complete_normal_deltas(&vertices, &[]), 0);
+    }
+
+    #[test]
+    fn apply_cpu_with_mismatched_sizes_does_not_panic() {
+        let set = SparseMorphSet::new();
+        let base = vec![Vertex::new([0.0; 3], [0.0; 3], [0.0; 2]); 2];
+        let mut out = vec![Vertex::new([0.0; 3], [0.0; 3], [0.0; 2]); 1];
+        set.apply_cpu(&[], &base, &mut out);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
