@@ -1,6 +1,5 @@
 
 // P3-07 per-object materials + library (was 1 global material)
-import type { StylizedMaterial } from "../config/render_config";
 export type MaterialEntry = { id:string, name:string, material:any, preview?:string };
 export const MATERIAL_LIBRARY: MaterialEntry[] = [
   { id:"skin", name:"Pele", material:{ base_color:"#faeae0", shade:"#e6c8c8" } },

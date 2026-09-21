@@ -7,4 +7,6 @@ description = "ANIGO VRM, glTF, and BlendShape Management Engine"
 [dependencies]
 glam = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 anigo-core = { workspace = true }

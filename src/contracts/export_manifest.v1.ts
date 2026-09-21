@@ -99,6 +99,9 @@ export interface ExportRenderInfoWire {
   clear_color: number[];
   adapter_name: string;
   backend: string;
+  /** Métrica opcional emitida por versões do renderer/headless. */
+  draw_calls?: number;
+  triangle_count?: number;
   render_time_ms: number;
 }
 

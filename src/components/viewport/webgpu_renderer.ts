@@ -381,7 +381,6 @@ export class WebGpuViewportRenderer {
               device: this.device,
               format: this.format,
               alphaMode: "premultiplied",
-              presentMode: this.vsyncEnabled ? "fifo" : "immediate",
             });
 
             // P0-06: observe GPU validation errors (was silent black screen)
@@ -472,7 +471,7 @@ export class WebGpuViewportRenderer {
     const outlinePass = passSpec("outline");
 
     const contractVertexLayout = vertexBufferLayout() as unknown as GPUVertexBufferLayout;
-    const blendStateOf = (pass: { blend?: string }) =>
+    const blendStateOf = (pass: { blend?: string }): GPUBlendState | undefined =>
       pass.blend === "src_alpha_one_minus_src_alpha"
         ? {
             color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
@@ -754,27 +753,27 @@ export class WebGpuViewportRenderer {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(this.morphHeaderBuffer, 0, headerData);
+    this.device.queue.writeBuffer(this.morphHeaderBuffer, 0, headerData as unknown as GPUAllowSharedBufferSource);
 
     this.morphBaseBuffer = this.device.createBuffer({
       size: baseVertices.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(this.morphBaseBuffer, 0, baseVertices);
+    this.device.queue.writeBuffer(this.morphBaseBuffer, 0, baseVertices as unknown as GPUAllowSharedBufferSource);
 
     const deltasData = deltas.byteLength > 0 ? deltas : new Float32Array(8);
     this.morphDeltasBuffer = this.device.createBuffer({
       size: deltasData.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(this.morphDeltasBuffer, 0, deltasData);
+    this.device.queue.writeBuffer(this.morphDeltasBuffer, 0, deltasData as unknown as GPUAllowSharedBufferSource);
 
     const channelsData = channels.byteLength > 0 ? channels : new Float32Array(4);
     this.morphChannelsBuffer = this.device.createBuffer({
       size: channelsData.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(this.morphChannelsBuffer, 0, channelsData);
+    this.device.queue.writeBuffer(this.morphChannelsBuffer, 0, channelsData as unknown as GPUAllowSharedBufferSource);
 
     this.morphedVertexBuffer = this.device.createBuffer({
       size: baseVertices.byteLength,
@@ -1051,6 +1050,7 @@ export class WebGpuViewportRenderer {
     }
     this.skinPalette = safe;
     if (this.bonesBuffer && this.device) {
+      // @ts-expect-error lib.dom and @webgpu/types disagree on SharedArrayBuffer-backed views.
       this.device.queue.writeBuffer(this.bonesBuffer, 0, safe);
     }
   }
@@ -1298,7 +1298,7 @@ export class WebGpuViewportRenderer {
           usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
         });
       }
-      this.device.queue.writeBuffer(this.vertexBuffer, 0, data.vertices);
+      this.device.queue.writeBuffer(this.vertexBuffer, 0, data.vertices as unknown as GPUAllowSharedBufferSource);
 
       if (!this.indexBuffer || data.indices.byteLength > this.indexCapacityBytes) {
         this.indexBuffer?.destroy();
@@ -1308,7 +1308,7 @@ export class WebGpuViewportRenderer {
           usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
         });
       }
-      this.device.queue.writeBuffer(this.indexBuffer, 0, data.indices);
+      this.device.queue.writeBuffer(this.indexBuffer, 0, data.indices as unknown as GPUAllowSharedBufferSource);
     }
 
     // WebGL2 Buffers
@@ -1474,6 +1474,50 @@ export class WebGpuViewportRenderer {
     }
     // Fallback to cube if not loaded yet
     return this.generateCubeData(1.0);
+  }
+
+  /**
+   * Loads a validated external GLB/VRM into the browser preview. The method is
+   * deliberately a base-mesh path: persistent deformation still belongs to
+   * the Rust core when the desktop bridge is available.
+   */
+  public async loadExternalModel(buffer: ArrayBuffer, label = "external.glb"): Promise<void> {
+    try {
+      const decoded = loadGlbMesh(buffer);
+      for (const warning of decoded.warnings) console.warn(`[ANIGO VRM] ${warning}`);
+      const mesh = decoded.mesh;
+      const neutral: [number, number, number, number] = [1, 0.5, 1, 1];
+      const count = mesh.positions.length / 3;
+      const vertices: VertexData[] = new Array(count);
+      for (let i = 0; i < count; i++) {
+        const c = mesh.colors;
+        const color: [number, number, number, number] = c
+          ? mesh.colorComps === 4
+            ? [c[i * 4] ?? 1, c[i * 4 + 1] ?? 0.5, c[i * 4 + 2] ?? 1, c[i * 4 + 3] ?? 1]
+            : [c[i * 3] ?? 1, c[i * 3 + 1] ?? 0.5, c[i * 3 + 2] ?? 1, 1]
+          : neutral;
+        vertices[i] = {
+          pos: [mesh.positions[i * 3] ?? 0, mesh.positions[i * 3 + 1] ?? 0, mesh.positions[i * 3 + 2] ?? 0],
+          normal: [mesh.normals[i * 3] ?? 0, mesh.normals[i * 3 + 1] ?? 1, mesh.normals[i * 3 + 2] ?? 0],
+          uv: [mesh.uvs[i * 2] ?? 0, mesh.uvs[i * 2 + 1] ?? 0],
+          color,
+          joints: mesh.joints ? [mesh.joints[i * 4] ?? 0, mesh.joints[i * 4 + 1] ?? 0, mesh.joints[i * 4 + 2] ?? 0, mesh.joints[i * 4 + 3] ?? 0] : [0, 0, 0, 0],
+          weights: mesh.weights ? [mesh.weights[i * 4] ?? 1, mesh.weights[i * 4 + 1] ?? 0, mesh.weights[i * 4 + 2] ?? 0, mesh.weights[i * 4 + 3] ?? 0] : [1, 0, 0, 0],
+        };
+      }
+      const validation = validateAttributeMesh(mesh.positions, Array.from(mesh.indices), { normals: mesh.normals, uvs: mesh.uvs });
+      if (!validation.ok) throw new MeshValidationError(validation.code ?? "EMPTY_MESH", validation.message);
+      this.currentPreset = "mannequin";
+      this.canonicalBaseVertices = vertices;
+      this.canonicalIndices = mesh.indices;
+      this.canonicalGender = "male"; // external assets are not tied to a gendered base
+      this.applyBaseMesh(packVertices(vertices), mesh.indices, label);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.report("model_load_failed", "falha ao importar o asset VRM/GLB", { detail: message, context: { asset: label } });
+      this.onModelLoadError?.(message);
+      throw error;
+    }
   }
 
   public async loadCanonicalModel(gender: "male" | "female") {
@@ -1656,7 +1700,7 @@ export class WebGpuViewportRenderer {
     }
     this.device.queue.writeTexture(
       { texture: this.toonRampTexture },
-      rampData,
+      rampData as unknown as GPUAllowSharedBufferSource,
       { bytesPerRow: rampSpec.width * 4, rowsPerImage: rampSpec.height },
       [rampSpec.width, rampSpec.height]
     );
@@ -1764,7 +1808,6 @@ export class WebGpuViewportRenderer {
             device: this.device,
             format: this.format,
             alphaMode: "premultiplied",
-            presentMode: enabled ? "fifo" : "immediate", // P2-11 check caps, fallback if unsupported
           });
         } catch (e) {
           this.report("context_configure_failed", "não foi possível reconfigurar o canvas (vsync/present)", {
@@ -2073,7 +2116,7 @@ export class WebGpuViewportRenderer {
     // 1..4. Uniforms — layout e empacotamento vêm do contrato, os mesmos bytes
     // que `uniforms.rs` produz no headless (P0 renderer: buffers unificados).
     const camData = cameraUniformFloats({ viewProj, eye: this.eye, model: IDENTITY_MAT4 });
-    this.device.queue.writeBuffer(this.cameraBuffer!, 0, camData);
+    this.device.queue.writeBuffer(this.cameraBuffer!, 0, camData as unknown as GPUAllowSharedBufferSource);
 
     const lightData = lightUniformFloats({
       direction: this.lightDir as [number, number, number],
@@ -2085,7 +2128,7 @@ export class WebGpuViewportRenderer {
       ambientSky: this.ambientSky as [number, number, number],
       ambientGround: this.ambientGround as [number, number, number],
     });
-    this.device.queue.writeBuffer(this.lightBuffer!, 0, lightData);
+    this.device.queue.writeBuffer(this.lightBuffer!, 0, lightData as unknown as GPUAllowSharedBufferSource);
 
     const matData = materialUniformFloats({
       baseColor: this.baseColor as [number, number, number, number],
@@ -2105,7 +2148,7 @@ export class WebGpuViewportRenderer {
       specularSize: this.specularSize,
       aoIntensity: this.aoIntensity,
     });
-    this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
+    this.device.queue.writeBuffer(this.materialBuffer!, 0, matData as unknown as GPUAllowSharedBufferSource);
 
     const outlineData = outlineUniformFloats({
       color: this.outlineColor as [number, number, number, number],
@@ -2115,7 +2158,7 @@ export class WebGpuViewportRenderer {
       opacity: this.outlineOpacity,
       smoothness: this.outlineSmoothness,
     });
-    this.device.queue.writeBuffer(this.outlineBuffer!, 0, outlineData);
+    this.device.queue.writeBuffer(this.outlineBuffer!, 0, outlineData as unknown as GPUAllowSharedBufferSource);
 
     // 5. Render Passes (Compute Sparse Morphs followed by NPR Cel-Shading)
     const commandEncoder = this.device.createCommandEncoder();
@@ -2140,7 +2183,7 @@ export class WebGpuViewportRenderer {
           this.device.queue.writeBuffer(
             this.morphChannelsBuffer,
             0,
-            packChannelRecordsWithWeights(this.coreGeometry.channels, this.effectiveChannelWeights())
+            packChannelRecordsWithWeights(this.coreGeometry.channels, this.effectiveChannelWeights()) as unknown as GPUAllowSharedBufferSource
           );
         } catch (e) {
           this.report("channel_upload_failed", "falha ao subir pesos de canal para a GPU", {
@@ -2258,7 +2301,9 @@ export class WebGpuViewportRenderer {
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_hue_shift"), this.hueShift);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_toon_steps"), this.toonSteps);
     gl.uniform3f(gl.getUniformLocation(this.glCelProgram, "u_camera_pos"), this.eye[0], this.eye[1], this.eye[2]);
-    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity // P2-07 TODO separate spec_size uniform"), this.specIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_intensity"), this.specIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_size"), this.specularSize);
+    gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_ao_intensity"), this.aoIntensity);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_power"), this.specExponent);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_softness"), this.specSoftness);
     gl.uniform1f(gl.getUniformLocation(this.glCelProgram, "u_spec_offset"), this.specOffset);

@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 334,
-      "fnv1a64": "66244d2a7dfead0e"
+      "lines": 335,
+      "fnv1a64": "a38e9c618427c145"
     },
     {
       "name": "inverted_hull",
@@ -76,8 +76,8 @@ export const RENDER_CONTRACT_DATA = {
       "entry_points": {
         "fragment": "main"
       },
-      "lines": 171,
-      "fnv1a64": "2ad671261efabdfa"
+      "lines": 177,
+      "fnv1a64": "9d8f06ef542af05b"
     },
     {
       "name": "webgl2_fallback/outline_vertex",

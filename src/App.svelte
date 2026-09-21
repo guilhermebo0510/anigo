@@ -87,9 +87,10 @@
   import SomatotypePad2D from "./components/character/SomatotypePad2D.svelte";
   import AnatomyInspector from "./components/character/AnatomyInspector.svelte";
   import { CANONICAL_CHARACTER_PRESETS, type CharacterPreset } from "./services/character_presets";
+  import { gltfJsonToGlb, validateGltfGlb, validateVrmGlb } from "./services/vrm_interop";
 
   // Workspaces & Tools Definitions
-  export type WorkspaceId =
+  type WorkspaceId =
     | "personagem"
     | "posing"
     | "shading"
@@ -586,6 +587,49 @@
   let isProjectPopoverOpen = $state(false);
   let isPresetPopoverOpen = $state(false);
   let isQuickStartOpen = $state(false);
+  let externalFileInput = $state<HTMLInputElement | null>(null);
+  let externalImportMessage = $state<string | null>(null);
+
+  async function handleImportExternalMesh(): Promise<void> {
+    externalImportMessage = null;
+    externalFileInput?.click();
+  }
+
+  async function handleExternalMeshSelected(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    const file = files.find((candidate) => /\.(vrm|glb|gltf)$/i.test(candidate.name)) ?? files[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      const isVrm = /\.vrm$/i.test(file.name);
+      const isGltfJson = /\.gltf$/i.test(file.name);
+      let bytes: ArrayBuffer;
+      if (isGltfJson) {
+        const resources = new Map<string, ArrayBuffer>();
+        for (const dependency of files.filter((candidate) => candidate !== file)) resources.set(dependency.name, await dependency.arrayBuffer());
+        bytes = gltfJsonToGlb(await file.text(), resources);
+      } else {
+        bytes = await file.arrayBuffer();
+      }
+      const report = isVrm ? validateVrmGlb(bytes) : validateGltfGlb(bytes);
+      if (!report.valid) {
+        const details = report.issues.filter((entry) => entry.severity === "error").map((entry) => entry.message).join("; ");
+        throw new Error(details || "arquivo 3D inválido");
+      }
+      // The browser preview accepts both a VRM 1.0 envelope and a plain GLB;
+      // persistence/export still goes through the canonical core bridge.
+      await viewportRef?.loadExternalModel?.(bytes, file.name);
+      externalImportMessage = isVrm
+        ? `VRM 1.0 carregado: ${report.nodeCount} nodes, ${report.meshCount} malha(s), ${report.issues.filter((entry) => entry.severity === "warning").length} aviso(s).`
+        : `${isGltfJson ? "glTF JSON" : "GLB"} glTF 2.0 carregado: ${report.meshCount} malha(s).`;
+      currentProjectName = file.name;
+      isProjectDirty = true;
+    } catch (error) {
+      externalImportMessage = error instanceof Error ? error.message : String(error);
+      viewportRef?.reportDiagnostic?.("model_load_failed", "falha ao importar arquivo externo", { detail: externalImportMessage });
+    }
+  }
 
   // Undo/Redo tracking
   let canUndoAction = $state(false);
@@ -1039,7 +1083,7 @@
         exportReport = result.parity;
         exportMessage = result.parity.ok
           ? `Frame ${resolution.label} renderizado pelo núcleo (${result.render.backend}, ${
-              result.render.draw_calls
+              result.render.draw_calls ?? 0
             } draw calls, ${result.render.render_time_ms.toFixed(1)} ms) em ${result.imagePath}`
           : `Frame renderizado em ${result.imagePath}, mas a paridade falhou: ${describeParity(result.parity)}`;
       }
@@ -1560,8 +1604,8 @@
           const _norm = normalizeBridgePayload("anigo://load_preset", event.payload);
           if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://load_preset", event.payload); return; }
           // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
-          if (event.payload?.preset) {
-            handlePreset(event.payload.preset);
+          if (_norm?.preset) {
+            handlePreset(_norm.preset);
           }
         });
 
@@ -1576,8 +1620,8 @@
           const _norm = normalizeBridgePayload("anigo://set_outline", event.payload);
           if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_outline", event.payload); return; }
           // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
-          if (event.payload?.width !== undefined) {
-            outlineWidth = event.payload.width;
+          if (_norm?.width !== undefined) {
+            outlineWidth = _norm.width;
             handleOutlineChange();
           }
         });
@@ -1586,7 +1630,7 @@
           const _norm = normalizeBridgePayload("anigo://set_material_toon", event.payload);
           if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_material_toon", event.payload); return; }
           // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = _norm || {};
           if (p.shadow_threshold !== undefined) shadowThreshold = p.shadow_threshold;
           if (p.shadow_smoothness !== undefined) toonSmoothness = p.shadow_smoothness;
           if (p.spec_intensity !== undefined) specIntensity = p.spec_intensity;
@@ -1615,7 +1659,7 @@
           const _norm = normalizeBridgePayload("anigo://set_material", event.payload);
           if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_material", event.payload); return; }
           // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = _norm || {};
           if (p.shadow_threshold !== undefined) {
             shadowThreshold = p.shadow_threshold;
             handleShadowThresholdChange();
@@ -1626,7 +1670,8 @@
           const _norm = normalizeBridgePayload("anigo://set_light", event.payload);
           if (_norm === null) { console.warn("[P1-07] invalid payload", "anigo://set_light", event.payload); return; }
           // P1-07 single consumer validated — original handler follows (payload now in _norm when applicable)
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = _norm || {};
+          if (p.dir && !p.direction) p.direction = p.dir;
           if (p.direction && Array.isArray(p.direction) && p.direction.length === 3) {
             const [x, y, z] = p.direction;
             const el = Math.asin(Math.max(-1, Math.min(1, y))) * (180 / Math.PI);
@@ -1651,7 +1696,7 @@
         });
 
         await listen("anigo://set_character_model", (event: any) => {
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = event.payload || {};
           // P0-03/P0-09: validated model + canonical polarity + inspector sync.
           if (p.model_type === "male" || p.model_type === "female") {
             const c = getAppCharacterState();
@@ -1679,7 +1724,7 @@
         });
 
         await listen("anigo://set_somatotype", (event: any) => {
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = event.payload || {};
           // P0-02/P0-09: normalized + clamped + inspector sync.
           const n = normalizeSomatotype(
             p.endo !== undefined ? p.endo : somatotypeEndo,
@@ -1709,7 +1754,7 @@
         });
 
         await listen("anigo://apply_morph_slider", (event: any) => {
-          const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          const p: any = event.payload || {};
           // P0-09: validated + catalog-clamped + inspector sync.
           if (p.slider_id && p.value !== undefined) {
             if (!isKnownSliderId(p.slider_id)) {
@@ -3887,6 +3932,9 @@
       <span class="breadcrumb-tag">
         [{t("workspace." + activeWorkspace, workspaceLabels[activeWorkspace])} > {t("tool." + activeTool, toolLabels[activeTool] || activeTool)}]
       </span>
+      {#if externalImportMessage}
+        <span class="external-import-status" role="status" title={externalImportMessage}>{externalImportMessage}</span>
+      {/if}
     </div>
 
     <!-- Center: Project & Active Model Popovers -->
@@ -3965,6 +4013,16 @@
   </footer>
 </div>
 
+<input
+  bind:this={externalFileInput}
+  class="external-file-input"
+  type="file"
+  accept=".vrm,.glb,.gltf,model/gltf-binary,model/gltf+json"
+  multiple
+  onchange={handleExternalMeshSelected}
+  aria-label="Importar arquivo VRM ou GLB"
+/>
+
 <SettingsModal
   isOpen={isSettingsModalOpen}
   onClose={() => (isSettingsModalOpen = false)}
@@ -3992,9 +4050,7 @@
   onSelectPreset={(p) => {
     handlePreset(p);
   }}
-  onImportCustomMesh={() => {
-    alert("O módulo de importação de malha externa (.OBJ / .VRM / .GLTF) será liberado na Sprint correspondente!");
-  }}
+  onImportCustomMesh={handleImportExternalMesh}
   onClose={() => (isPresetPopoverOpen = false)}
 />
 
@@ -4004,9 +4060,7 @@
     handlePreset(p);
   }}
   onOpenProject={handleOpenProject}
-  onImportMesh={() => {
-    alert("O módulo de importação de malha externa (.OBJ / .VRM / .GLTF) será liberado na Sprint correspondente!");
-  }}
+  onImportMesh={handleImportExternalMesh}
   onClose={() => (isQuickStartOpen = false)}
 />
 
@@ -4458,12 +4512,6 @@
     margin-bottom: 4px;
   }
 
-  .badge-warn {
-    font-size: 0.65rem;
-    color: #fbbf24;
-    font-weight: 600;
-  }
-
   .slider-row {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -4899,6 +4947,15 @@
   .breadcrumb-tag {
     color: #c084fc;
     font-weight: 600;
+  }
+
+  .external-import-status {
+    max-width: 34vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #cbd5e1;
+    font-size: 0.68rem;
   }
 
   .status-btn {

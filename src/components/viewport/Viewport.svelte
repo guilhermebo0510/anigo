@@ -18,6 +18,9 @@
     onTactileDragStart = undefined,
     onTactileDragEnd = undefined,
     onModelLoadError = undefined,
+    onDiagnostic = undefined,
+    coreSnapshotProvider = undefined,
+    allowDegradedBaseMesh = true,
     tactileEnabled = false,
   }: {
     onResize?: (w: number, h: number) => void;
@@ -46,7 +49,7 @@
 
   let canvas: HTMLCanvasElement | null = $state(null);
   let containerEl: HTMLElement | null = $state(null);
-  let renderer: WebGpuViewportRenderer | null = null;
+  let renderer: WebGpuViewportRenderer | null = $state(null);
   let resizeObserver: ResizeObserver | null = null;
   let coreSnapshotInFlight: Promise<unknown> | null = null;
   let coreAuthority: string = "unavailable";
@@ -182,6 +185,18 @@
       const msg = e instanceof Error ? e.message : String(e);
       onModelLoadError?.(msg);
       throw e;
+    }
+  }
+
+  /** Imports the validated browser-side GLB/VRM preview. */
+  export async function loadExternalModel(buffer: ArrayBuffer, label = "external.glb") {
+    if (!renderer) return;
+    try {
+      return await renderer.loadExternalModel(buffer, label);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      onModelLoadError?.(msg);
+      throw error;
     }
   }
 

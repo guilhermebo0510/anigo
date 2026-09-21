@@ -31,7 +31,7 @@ struct MaterialUniform {
     rim_color: vec4<f32>,       // P0-09: separate rim tint (was light.shadow_color)
     params: vec4<f32>,          // x: shadow_threshold, y: shadow_smoothness, z: spec_intensity, w: spec_power
     params2: vec4<f32>,         // x: rim_intensity, y: rim_spread, z: hue_shift_rad, w: toon_steps
-    params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: unused, w: unused
+    params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: spec_size, w: ao_intensity
 };
 
 @group(0) @binding(0)
@@ -261,7 +261,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 4. Stylized Ambient Occlusion (R channel) — P2-05 applied to diffuse/ambient only
     let ao_raw = clamp(in.anime_attr.r, 0.0, 1.0);
-    let ao = mix(1.0, ao_raw, 0.85); // P2-05 aoIntensity 0..1 lerp (keeps 15% base to avoid black)
+    let ao_intensity = clamp(material.params3.w, 0.0, 1.0);
+    let ao = mix(1.0, ao_raw, ao_intensity); // AO only modulates diffuse/ambient, never specular/rim
 
     // 5. Mathematical Hue-Shifting in Shadows & Saturation — P1-01/02 linear OKLab
     let hue_shift_rad = clamp(material.params2.z, -3.14159265, 3.14159265);

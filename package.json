@@ -20,7 +20,9 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tauri-apps/cli": "^2.1.0",
+    "@webgpu/types": "^0.1.74",
     "svelte": "^5.2.7",
+    "svelte-check": "^4.7.6",
     "tree-sitter-wasms": "^0.1.11",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",

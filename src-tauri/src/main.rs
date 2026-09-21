@@ -766,6 +766,65 @@ async fn load_project_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Erro ao ler arquivo de projeto: {}", e))
 }
 
+/// Validates a glTF 2.0 GLB before it enters the viewport or project library.
+#[tauri::command]
+async fn validate_gltf_file(path: String) -> Result<anigo_vrm::VrmValidationReport, String> {
+    let bytes = std::fs::read(&path).map_err(|error| format!("não foi possível ler glTF '{}': {error}", path))?;
+    anigo_vrm::validate_gltf(&bytes).map_err(|error| error.to_string())
+}
+
+/// Validates a VRM 1.0 file before it enters the viewport or project library.
+#[tauri::command]
+async fn validate_vrm_file(path: String) -> Result<anigo_vrm::VrmValidationReport, String> {
+    let bytes = std::fs::read(&path).map_err(|error| format!("não foi possível ler VRM '{}': {error}", path))?;
+    anigo_vrm::validate_vrm_file(&bytes).map_err(|error| error.to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+struct VrmImportResponse {
+    pub bytes: u64,
+    pub report: anigo_vrm::VrmValidationReport,
+    pub summary: anigo_vrm::VrmImportSummary,
+}
+
+/// Imports and summarizes VRM metadata. Geometry is still loaded by the
+/// canonical GLB loader after the report has passed; this command never creates
+/// a second mesh representation in the Tauri shell.
+#[tauri::command]
+async fn import_vrm_file(path: String) -> Result<VrmImportResponse, String> {
+    let bytes = std::fs::read(&path).map_err(|error| format!("não foi possível ler VRM '{}': {error}", path))?;
+    let report = anigo_vrm::validate_vrm_file(&bytes).map_err(|error| error.to_string())?;
+    if !report.valid {
+        return Err(format!("VRM inválido: {} erro(s), {} aviso(s)", report.errors(), report.warnings()));
+    }
+    let (_, summary) = anigo_vrm::import_vrm(&bytes).map_err(|error| error.to_string())?;
+    Ok(VrmImportResponse { bytes: bytes.len() as u64, report, summary })
+}
+
+/// Decorates a glTF/GLB produced by ANIGO or another DCC with a deterministic
+/// VRM 1.0 extension envelope. The original binary chunk is preserved.
+#[tauri::command]
+async fn export_vrm_file(
+    source_path: String,
+    destination_path: String,
+    options: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let source = std::fs::read(&source_path).map_err(|error| format!("não foi possível ler GLB '{}': {error}", source_path))?;
+    let parsed_options = match options {
+        Some(value) => serde_json::from_value::<anigo_vrm::VrmExportOptions>(value)
+            .map_err(|error| format!("opções VRM inválidas: {error}"))?,
+        None => anigo_vrm::VrmExportOptions::default(),
+    };
+    let output = anigo_vrm::export_vrm_glb(&source, &parsed_options).map_err(|error| error.to_string())?;
+    let destination = std::path::Path::new(&destination_path);
+    if let Some(parent) = destination.parent() {
+        if !parent.as_os_str().is_empty() { std::fs::create_dir_all(parent).map_err(|error| format!("não foi possível criar destino VRM: {error}"))?; }
+    }
+    std::fs::write(destination, &output).map_err(|error| format!("não foi possível gravar VRM '{}': {error}", destination_path))?;
+    let report = anigo_vrm::validate_vrm_file(&output).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({ "path": destination_path, "bytes": output.len(), "report": report }))
+}
+
 fn main() {
     // P2: Initialize structured tracing for the Tauri app shell.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -852,6 +911,10 @@ fn main() {
             core_deformed_mesh,
             core_export_glb,
             core_export_frame,
+            validate_gltf_file,
+            validate_vrm_file,
+            import_vrm_file,
+            export_vrm_file,
         ])
         .build(tauri::generate_context!());
 

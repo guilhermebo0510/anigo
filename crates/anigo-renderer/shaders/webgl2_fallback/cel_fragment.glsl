@@ -18,7 +18,9 @@ uniform float u_shadow_smoothness;
 uniform float u_hue_shift;
 uniform float u_toon_steps;
 uniform vec3 u_camera_pos;
-uniform float u_spec_intensity; // P2-07 TODO separate spec_size uniform
+uniform float u_spec_intensity;
+uniform float u_spec_size;
+uniform float u_ao_intensity;
 uniform float u_spec_power;
 uniform float u_spec_softness;
 uniform float u_spec_offset;
@@ -135,8 +137,12 @@ void main() {
     lab.z = C2 * sin(newHue);
     hueShiftedLin = oklabToLinear(lab);
   }
-  float ambient = clamp(0.2 + u_ambient_intensity * 0.8, 0.05, 1.5);
-  vec3 shadow = hueShiftedLin * ambient;
+  float hemi = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+  vec3 sky = vec3(0.52, 0.60, 0.78);
+  vec3 ground = vec3(0.25, 0.20, 0.18);
+  vec3 ambient = srgbToLinear(mix(ground, sky, hemi)) * clamp(u_ambient_intensity, 0.0, 2.0);
+  float ao = mix(1.0, clamp(v_color.r, 0.0, 1.0), clamp(u_ao_intensity, 0.0, 1.0));
+  vec3 shadow = hueShiftedLin * ambient * ao;
 
   vec3 base_cel = mix(shadow, lit, toon);
 
@@ -151,9 +157,9 @@ void main() {
   float jitter = sin(jitter_pos) * 0.08;
   float spec_base = max(mix(n_dot_h, aniso * n_dot_h, 0.35), 0.0);
   float spec_term = pow(spec_base, max(u_spec_power, 1.0));
-  float spec_cutoff = clamp(0.65 - (u_spec_intensity // P2-07 TODO separate spec_size uniform * 0.12), 0.30, 0.65);
+  float spec_cutoff = clamp(u_spec_size, 0.20, 0.80);
   float spec_soft_clamped = max(u_spec_softness, 0.001);
-  float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity // P2-07 TODO separate spec_size uniform * v_color.a * toon;
+  float spec_step = smoothstep(spec_cutoff + jitter - spec_soft_clamped, spec_cutoff + jitter + spec_soft_clamped, spec_term) * u_spec_intensity * v_color.a * toon;
 
   float rim_dot = 1.0 - max(dot(V, N), 0.0);
   float rim_fresnel = smoothstep(1.0 - u_rim_spread, 1.0, rim_dot);

@@ -18,6 +18,6 @@
 </script>
 <div class="ramp-editor">
   <label>Steps: <input type="range" min="0" max="3" bind:value={steps} on:input={() => onChange(generateRamp(steps))} /></label>
-  <canvas width="256" height="64"></canvas>
+  <canvas width="256" height="64" aria-label={rampData ? "Custom toon ramp" : "Default toon ramp"}></canvas>
   <span>P3-04 1D/2D editor + import/export PNG/JSON</span>
 </div>
