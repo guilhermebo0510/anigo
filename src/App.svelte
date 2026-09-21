@@ -9,6 +9,8 @@
   import { IBL_PROBES } from "./services/ibl_service";
   import { MATERIAL_LIBRARY } from "./services/material_library";
   import { autoSaveService, parseProjectSnapshot, type ProjectStateSnapshot } from "./services/autosave_service";
+  import { isDegradedRecovery, defaultSceneDomain, toProjectSnapshot, type SceneDomainSnapshot } from "./services/project_persistence";
+  import type { CanonicalProjectDocumentV1 } from "./contracts/project_state.v1";
   import {
     CHARACTER_SNAPSHOT_SCHEMA_VERSION,
     clampCatalog,
@@ -960,6 +962,53 @@
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),
+      // P0 persistência: cena + materiais + render viajam com o projeto.
+      scene: getSceneDomain(),
+    };
+  }
+
+  /**
+   * P0 persistência — domínio de cena do autosave.
+   *
+   * Materiais vêm da UI (cores atuais), nós/assets da cena canônica. Background,
+   * MSAA e tonemap ainda não têm controle no Studio, então são gravados com os
+   * valores canônicos — mas passam a fazer parte do arquivo, então quando os
+   * controles existirem nada muda no formato.
+   */
+  function getSceneDomain(): SceneDomainSnapshot {
+    const scene = defaultSceneDomain();
+    const rgba = (hex: string): [number, number, number, number] => {
+      const [r, g, b] = hexToRgb(hex);
+      return [r, g, b, 1];
+    };
+    scene.materials[0] = {
+      ...scene.materials[0],
+      base_color: rgba(baseColorHex),
+      shade_color: rgba(shadowColorHex),
+      outline_color: rgba(outlineColor),
+    };
+    return scene;
+  }
+
+  /**
+   * P0 persistência — documento canônico do projeto.
+   *
+   * A autoria é do núcleo Rust. Enquanto os comandos Tauri que devolvem o
+   * `ProjectState`/`CoreSnapshot` não estiverem ligados (item 5 do P0 de
+   * autoridade), não existe documento autoritativo: o envelope é gravado como
+   * `preview` (degradado) em vez de inventar um.
+   */
+  function getCoreProjectDocument(): CanonicalProjectDocumentV1 | null {
+    return null;
+  }
+
+  /** P0 persistência — preferências de UI que acompanham a sessão. */
+  function getUiStateSnapshot(): Record<string, unknown> {
+    return {
+      workspace: activeWorkspace,
+      inspector_width: inspectorWidth,
+      inspector_visible: inspectorVisible,
+      preset: currentPreset,
     };
   }
 
@@ -982,7 +1031,9 @@
     autoSaveService.configure(
       settings.autoSave,
       settings.autoSaveInterval,
-      getProjectSnapshot
+      getProjectSnapshot,
+      () => isProjectDirty,
+      { getCoreProject: getCoreProjectDocument, getUiState: getUiStateSnapshot }
     );
   }
 
@@ -1309,7 +1360,10 @@
     }
 
     // Initialize real background autosave engine (P0-08: dirty-gated).
-    autoSaveService.configure(true, 5, getProjectSnapshot, () => isProjectDirty);
+    autoSaveService.configure(true, 5, getProjectSnapshot, () => isProjectDirty, {
+      getCoreProject: getCoreProjectDocument,
+      getUiState: getUiStateSnapshot,
+    });
     autoSaveService.onSaveCompleted = (_filePath: string, timeStr: string) => {
       lastAutosaveTime = timeStr;
     };
@@ -1318,17 +1372,32 @@
       alert("Falha no salvamento automático: " + String(err));
     };
 
-    // P0-08: crash-recovery — the autosave cache is now actually restored.
+    // P0 persistência: recuperação de sessão lida e validada (migrações
+    // explícitas; payload inválido é reportado em vez de descartado em silêncio).
     try {
-      const recovery = autoSaveService.readRecoveryCache();
+      const recovery = autoSaveService.recoverSession();
       let cleanAt = 0;
       try {
         cleanAt = Number(localStorage.getItem("anigo_last_clean_save") ?? 0) || 0;
       } catch { /* ignore */ }
-      if (recovery && recovery.timestamp > cleanAt) {
-        const when = new Date(recovery.timestamp).toLocaleString();
-        if (confirm(`Sessão não salva encontrada (autosave de ${when}). Deseja recuperar?`)) {
-          applySnapshot(recovery as unknown as HistoryStateSnapshot);
+      if (recovery.status === "invalid" && recovery.error) {
+        console.warn("[App] autosave cache rejeitado:", recovery.error.code, recovery.error.message);
+        alert(
+          `O autosave encontrado não pôde ser lido (${recovery.error.code}).\n` +
+            `${recovery.error.message}\n\nA sessão atual continuará; o cache foi mantido em disco.`
+        );
+      } else if (recovery.envelope && recovery.envelope.saved_at > cleanAt) {
+        const when = new Date(recovery.envelope.saved_at).toLocaleString();
+        const notes: string[] = [];
+        if (isDegradedRecovery(recovery.envelope)) {
+          notes.push("Este autosave não contém o documento canônico do núcleo (sessão de preview).");
+        }
+        if (recovery.migrations.length > 0) {
+          notes.push(`Migrações aplicadas: ${recovery.migrations.join(" → ")}.`);
+        }
+        const extra = notes.length > 0 ? `\n\n${notes.join("\n")}` : "";
+        if (confirm(`Sessão não salva encontrada (autosave de ${when}). Deseja recuperar?${extra}`)) {
+          applySnapshot(toProjectSnapshot(recovery.envelope.session) as unknown as HistoryStateSnapshot);
           isProjectDirty = true;
         } else {
           autoSaveService.clearRecoveryCache();

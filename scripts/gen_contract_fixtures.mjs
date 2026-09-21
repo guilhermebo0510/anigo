@@ -253,19 +253,89 @@ const fixture = (() => {
   };
 })();
 
+/**
+ * Stable-id fixture: the documented derivation `ast_<fnv1a64(normalize_uri)>`.
+ *
+ * Independent of both implementations — the Rust `AssetId::for_uri` and the TS
+ * `assetIdForUri` must both reproduce these values.
+ */
+function normalizeUri(uri) {
+  let normalized = uri.trim().replace(/\\/g, "/");
+  const query = normalized.indexOf("?");
+  if (query !== -1) normalized = normalized.slice(0, query);
+  const fragment = normalized.indexOf("#");
+  if (fragment !== -1) normalized = normalized.slice(0, fragment);
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  return normalized.toLowerCase();
+}
+
+function fnv1a64(input) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(input)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash;
+}
+
+export function assetIdForUri(uri) {
+  return `ast_${fnv1a64(normalizeUri(uri)).toString(16).padStart(16, "0")}`;
+}
+
+const assetIdsFixture = (() => {
+  const uris = [
+    "anigo://base/anigo_base_male.glb",
+    "anigo://base/anigo_base_female.glb",
+    "anigo://preset/cube",
+    "anigo://preset/uv_sphere",
+    // Normalization cases: trailing spaces, uppercase, query and fragment.
+    "  anigo://base/anigo_base_male.glb  ",
+    "ANIGO://BASE/ANIGO_BASE_MALE.GLB",
+    "anigo://preset/cube?v=2",
+    "anigo://preset/cube#lod1",
+    "./assets/models/character.glb",
+    "anigo://preset/cube?version=2#lod1",
+    "anigo://imports/assets/character_face.glb",
+  ];
+  return {
+    $comment:
+      "Stable asset ids for the frozen derivation `ast_<fnv1a64(normalize_uri(uri))>`. " +
+      "Validated by crates/anigo-core/src/ids.rs::tests (Rust) and " +
+      "src/services/project_persistence.ts::assetIdForUri (TypeScript).",
+    algorithm: "fnv1a64(normalize_uri(uri)) hexadecimal, 16 digits, prefixed with 'ast_'",
+    normalization: "trim, backslashes to slashes, drop ?query, drop #fragment, strip leading ./ , lowercase",
+    ids: uris.map((uri) => ({ uri, asset_id: assetIdForUri(uri) })),
+  };
+})();
+
 const serialized = `${JSON.stringify(fixture, null, 2)}\n`;
 const target = path.join(outDir, "core_snapshot_v1.json");
+const assetIdsSerialized = `${JSON.stringify(assetIdsFixture, null, 2)}\n`;
+const assetIdsTarget = path.join(outDir, "asset_ids_v1.json");
+
+const outputs = [
+  { target, serialized },
+  { target: assetIdsTarget, serialized: assetIdsSerialized },
+];
 
 if (process.argv.includes("--check")) {
-  const current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
-  if (current !== serialized) {
-    console.error(`[gen_contract_fixtures] ${path.relative(root, target)} is stale — run without --check`);
-    process.exit(1);
+  let stale = 0;
+  for (const output of outputs) {
+    const current = fs.existsSync(output.target) ? fs.readFileSync(output.target, "utf8") : "";
+    if (current !== output.serialized) {
+      console.error(
+        `[gen_contract_fixtures] ${path.relative(root, output.target)} is stale — run without --check`
+      );
+      stale++;
+    } else {
+      console.log(`[gen_contract_fixtures] ${path.relative(root, output.target)} is up to date`);
+    }
   }
-  console.log(`[gen_contract_fixtures] ${path.relative(root, target)} is up to date`);
-  process.exit(0);
+  process.exit(stale === 0 ? 0 : 1);
 }
 
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(target, serialized);
-console.log(`[gen_contract_fixtures] wrote ${path.relative(root, target)}`);
+for (const output of outputs) {
+  fs.writeFileSync(output.target, output.serialized);
+  console.log(`[gen_contract_fixtures] wrote ${path.relative(root, output.target)}`);
+}

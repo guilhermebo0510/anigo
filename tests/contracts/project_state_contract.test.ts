@@ -28,6 +28,12 @@ import {
   type CanonicalProjectDocumentV1,
 } from "../../src/contracts/project_state.v1.ts";
 import {
+  assetIdForUri,
+  defaultSceneDomain,
+  fnv1a64,
+  normalizeUri,
+} from "../../src/services/project_persistence.ts";
+import {
   diff,
   fieldsOf,
   numericConst,
@@ -172,6 +178,31 @@ describe("ProjectState v1 — stable ids match ids.rs", () => {
     }
     assert.equal(isStableIdKind("character"), true);
     assert.equal(isStableIdKind("nope"), false);
+  });
+
+  it("asset ids reproduce the frozen fixture (Rust and TS derive the same)", () => {
+    const fixture = JSON.parse(readRepoFile("contracts/fixtures/asset_ids_v1.json")) as {
+      algorithm: string;
+      normalization: string;
+      ids: Array<{ uri: string; asset_id: string }>;
+    };
+    assert.ok(fixture.ids.length > 0);
+    for (const entry of fixture.ids) {
+      assert.equal(assetIdForUri(entry.uri), entry.asset_id, `asset id drift for ${JSON.stringify(entry.uri)}`);
+      assert.equal(isValidStableId(entry.asset_id, "asset"), true);
+      assert.equal(entry.asset_id.length, 20, "asset id must be 'ast_' + 16 hex digits");
+    }
+    // Normalization collapses equivalent URIs (query, fragment, case, spacing).
+    const ids = new Set(fixture.ids.map((entry) => entry.asset_id));
+    assert.ok(ids.size < fixture.ids.length, "normalization must collapse equivalent URIs");
+    // The scene domain registers exactly those ids for the canonical assets.
+    const scene = defaultSceneDomain();
+    assert.deepEqual(
+      scene.assets.map((asset) => asset.asset_id),
+      [assetIdForUri(CANONICAL_URIS.baseMale), assetIdForUri(CANONICAL_URIS.baseFemale)]
+    );
+    assert.equal(fnv1a64("").toString(16), "cbf29ce484222325");
+    assert.equal(normalizeUri("anigo://preset/cube#lod1"), "anigo://preset/cube");
   });
 
   it("morph ids are the slider id with the morph prefix", () => {

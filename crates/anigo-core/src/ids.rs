@@ -421,6 +421,10 @@ pub fn normalize_uri(uri: &str) -> String {
     if let Some(idx) = normalized.find('?') {
         normalized.truncate(idx);
     }
+    // `#fragment` selects a *part* of an asset, so it must not change its id.
+    if let Some(idx) = normalized.find('#') {
+        normalized.truncate(idx);
+    }
     while normalized.starts_with("./") {
         normalized.drain(..2);
     }
@@ -555,6 +559,39 @@ mod tests {
 
         let err = serde_json::from_str::<MaterialId>("\"nod_oops\"");
         assert!(err.is_err(), "deserializing a foreign prefix must fail");
+    }
+
+    /// Cross-language fixture: both implementations must derive the same asset
+    /// ids from `contracts/fixtures/asset_ids_v1.json` (the TypeScript side is
+    /// asserted by `tests/contracts/project_state_contract.test.ts`).
+    #[test]
+    fn asset_ids_match_the_frozen_fixture() {
+        const FIXTURE: &str = include_str!("../../../contracts/fixtures/asset_ids_v1.json");
+        let value: serde_json::Value =
+            serde_json::from_str(FIXTURE).expect("asset id fixture must be valid JSON");
+        let entries = value["ids"].as_array().expect("fixture must expose an 'ids' array");
+        assert!(!entries.is_empty(), "fixture must not be empty");
+
+        for entry in entries {
+            let uri = entry["uri"].as_str().expect("entry must have a uri");
+            let expected = entry["asset_id"].as_str().expect("entry must have an asset_id");
+            let derived = AssetId::for_uri(uri);
+            assert_eq!(derived.as_str(), expected, "asset id drift for '{uri}'");
+            assert!(derived.has_canonical_prefix(), "asset id must keep the 'ast_' prefix");
+            assert_eq!(derived.as_str().len(), 20, "asset id must be 'ast_' + 16 hex digits");
+        }
+    }
+
+    #[test]
+    fn uri_normalization_ignores_query_and_fragment() {
+        assert_eq!(normalize_uri("anigo://preset/cube?version=2"), "anigo://preset/cube");
+        assert_eq!(normalize_uri("anigo://preset/cube#lod1"), "anigo://preset/cube");
+        assert_eq!(normalize_uri("./assets/models/character.glb"), "assets/models/character.glb");
+        assert_eq!(normalize_uri("  ANIGO://BASE/X.GLB  "), "anigo://base/x.glb");
+        assert_eq!(
+            normalize_uri("assets\\models\\character.glb"),
+            "assets/models/character.glb"
+        );
     }
 
     #[test]

@@ -1,0 +1,51 @@
+{
+  "$comment": "Stable asset ids for the frozen derivation `ast_<fnv1a64(normalize_uri(uri))>`. Validated by crates/anigo-core/src/ids.rs::tests (Rust) and src/services/project_persistence.ts::assetIdForUri (TypeScript).",
+  "algorithm": "fnv1a64(normalize_uri(uri)) hexadecimal, 16 digits, prefixed with 'ast_'",
+  "normalization": "trim, backslashes to slashes, drop ?query, drop #fragment, strip leading ./ , lowercase",
+  "ids": [
+    {
+      "uri": "anigo://base/anigo_base_male.glb",
+      "asset_id": "ast_e0f58520caa860ea"
+    },
+    {
+      "uri": "anigo://base/anigo_base_female.glb",
+      "asset_id": "ast_a838aa03263ca597"
+    },
+    {
+      "uri": "anigo://preset/cube",
+      "asset_id": "ast_297187d5deadb902"
+    },
+    {
+      "uri": "anigo://preset/uv_sphere",
+      "asset_id": "ast_afe7ceccd6cb0568"
+    },
+    {
+      "uri": "  anigo://base/anigo_base_male.glb  ",
+      "asset_id": "ast_e0f58520caa860ea"
+    },
+    {
+      "uri": "ANIGO://BASE/ANIGO_BASE_MALE.GLB",
+      "asset_id": "ast_e0f58520caa860ea"
+    },
+    {
+      "uri": "anigo://preset/cube?v=2",
+      "asset_id": "ast_297187d5deadb902"
+    },
+    {
+      "uri": "anigo://preset/cube#lod1",
+      "asset_id": "ast_297187d5deadb902"
+    },
+    {
+      "uri": "./assets/models/character.glb",
+      "asset_id": "ast_475ff5101df6e162"
+    },
+    {
+      "uri": "anigo://preset/cube?version=2#lod1",
+      "asset_id": "ast_297187d5deadb902"
+    },
+    {
+      "uri": "anigo://imports/assets/character_face.glb",
+      "asset_id": "ast_6d04c1e9b72384dc"
+    }
+  ]
+}
