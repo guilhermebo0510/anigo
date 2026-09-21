@@ -809,6 +809,16 @@ export const RENDER_CONTRACT_DATA = {
   },
   "camera": {
     "projection": "perspective_rh",
+    "projection_modes": {
+      "perspective": {
+        "matrix": "perspective_rh",
+        "params": "fov_y (rad), aspect"
+      },
+      "orthographic": {
+        "matrix": "orthographic_rh",
+        "params": "left, right, bottom, top"
+      }
+    },
     "clip_depth": "zero_to_one",
     "matrix_layout": "column_major",
     "up_axis": "y",
@@ -816,7 +826,15 @@ export const RENDER_CONTRACT_DATA = {
     "z_near_default": 0.05,
     "z_far_default": 100,
     "model_from": "scene.nodes[*].world_matrix",
-    "uniform": "camera"
+    "uniform": "camera",
+    "culling": {
+      "volume": "aabb+sphere",
+      "planes_from": "view_proj",
+      "plane_count": 6,
+      "test": "sphere_then_aabb",
+      "space": "world",
+      "metrics": "RenderMetrics.culled_draw_calls"
+    }
   },
   "toon_ramp": {
     "width": 256,

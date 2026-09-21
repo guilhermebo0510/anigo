@@ -14,6 +14,7 @@
   let {
     onResize = undefined,
     onMetrics = undefined,
+    onProjectionChange = undefined,
     onTactileDrag = undefined,
     onTactileDragStart = undefined,
     onTactileDragEnd = undefined,
@@ -22,6 +23,8 @@
   }: {
     onResize?: (w: number, h: number) => void;
     onMetrics?: (m: ViewportMetrics) => void;
+    /** Issue #13: notifica a troca de projeção (perspectiva/ortográfica). */
+    onProjectionChange?: (mode: "perspective" | "orthographic") => void;
     onTactileDrag?: (
       primarySlider: string,
       primaryDelta: number,
@@ -172,6 +175,12 @@
     if (e.key === "f" || e.key === "F" || e.key === "Home") {
       e.preventDefault();
       recenterCamera();
+    }
+    // Issue #13: alternância perspectiva ⇄ ortográfica por atalho (mesma ação
+    // do botão em LightingControls). O enquadramento é preservado pelo renderer.
+    if (e.key === "o" || e.key === "O") {
+      e.preventDefault();
+      toggleProjectionMode();
     }
   }
 
@@ -338,6 +347,46 @@
 
   export function recenterCamera(duration: number = 300) {
     if (renderer) renderer.recenterCamera(duration);
+  }
+
+  /**
+   * Issue #13: alterna perspectiva ⇄ ortográfica sem salto visual (o renderer
+   * casa o enquadramento na distância do alvo).
+   */
+  export function toggleProjectionMode(): "perspective" | "orthographic" {
+    const resolved = (renderer?.toggleProjectionMode()?.mode ??
+      "perspective") as "perspective" | "orthographic";
+    syncProjectionToCore(resolved);
+    onProjectionChange?.(resolved);
+    return resolved;
+  }
+
+  /** Define o modo de projeção explicitamente (botão da UI). */
+  export function setProjectionMode(mode: "perspective" | "orthographic"): "perspective" | "orthographic" {
+    const applied = renderer?.setProjectionMode(mode);
+    const resolved = (applied?.mode ?? mode) as "perspective" | "orthographic";
+    syncProjectionToCore(resolved);
+    onProjectionChange?.(resolved);
+    return resolved;
+  }
+
+  /**
+   * Issue #13: o núcleo é a autoridade dos dados (undo/redo, persistência e o
+   * render headless/exportação), então a troca de projeção vai para ele como
+   * comando canônico — o mesmo caminho de `camera_orbit`/`camera_zoom`.
+   */
+  function syncProjectionToCore(mode: "perspective" | "orthographic") {
+    if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("camera_projection", { orthographic: mode === "orthographic", height: null }))
+      .catch(() => {
+        // Fora do host Tauri (preview no navegador) o núcleo não está presente.
+      });
+  }
+
+  /** `true` quando a câmera está em projeção ortográfica. */
+  export function isProjectionOrthographic(): boolean {
+    return renderer?.isOrthographic() ?? false;
   }
 
   export function setFpsCap(fps: number) {

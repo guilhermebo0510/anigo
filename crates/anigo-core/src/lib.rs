@@ -39,7 +39,10 @@ pub use ids::{
     fnv1a64, is_valid_slug, normalize_uri, slugify, AnimationClipId, AssetId, CameraId, CharacterId,
     IdError, LightId, MaterialId, MorphId, NodeId, ProjectId, SceneId, StableId, ID_MAX_LEN,
 };
-pub use math::{Camera, Transform};
+pub use math::{
+    Aabb, BoundingSphere, Camera, Frustum, FrustumPlane, OrthographicBounds, ProjectionError,
+    ProjectionMode, Transform,
+};
 pub use mesh::{BaseGender, Mesh, Vertex};
 pub use morph::{MorphChannel, MorphTarget, SparseMorphDelta, SparseMorphHeader, SparseMorphSet};
 pub use morph_catalog::{

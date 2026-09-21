@@ -446,6 +446,11 @@ mod tests {
         }
     }
 
+    /// Atalho dos testes: `from_slug` nunca falha (slugifica o que recebe).
+    fn nid(slug: &str) -> NodeId {
+        NodeId::from_slug(slug)
+    }
+
     fn translation(x: f32, y: f32, z: f32) -> Transform {
         Transform {
             translation: Vec3::new(x, y, z),
@@ -465,7 +470,7 @@ mod tests {
         ];
         let world = resolve_world_transforms(&nodes).expect("árvore válida");
         let child = world
-            .get(&NodeId::from_slug("nod_child").unwrap())
+            .get(&nid("nod_child"))
             .copied()
             .expect("filho resolvido");
         // W(child) = W(parent) × T(local) — translação soma.
@@ -498,7 +503,7 @@ mod tests {
 
         let world = resolve_world_transforms(&nodes).expect("árvore válida");
         let leaf = world
-            .get(&NodeId::from_slug("nod_level4").unwrap())
+            .get(&nid("nod_level4"))
             .copied()
             .expect("folha resolvida");
         let difference: Vec<f32> = (leaf - expected)
@@ -511,7 +516,7 @@ mod tests {
             "matriz mundial divergiu do esperado do glam: {difference:?}"
         );
         // E a profundidade da folha é 4 (raiz = 0).
-        assert_eq!(depth_of(&nodes, &NodeId::from_slug("nod_level4").unwrap()), 4);
+        assert_eq!(depth_of(&nodes, &nid("nod_level4")), 4);
     }
 
     #[test]
@@ -524,7 +529,7 @@ mod tests {
         ];
         let world = resolve_world_transforms(&nodes).expect("árvore válida");
         let child = world
-            .get(&NodeId::from_slug("nod_child").unwrap())
+            .get(&nid("nod_child"))
             .copied()
             .expect("filho resolvido");
         assert!((point_of(child) - Vec3::new(2.0, 1.0, 0.0)).length() < 1e-5);
@@ -588,14 +593,14 @@ mod tests {
             slot("nod_b", Some("nod_root"), Transform::default()),
             slot("nod_a1", Some("nod_a"), Transform::default()),
         ];
-        let root = NodeId::from_slug("nod_root").unwrap();
+        let root = nid("nod_root");
         let descendants: Vec<String> = descendants_of(&nodes, &root)
             .into_iter()
             .map(|node| node.to_string())
             .collect();
         assert_eq!(descendants, vec!["nod_a", "nod_b", "nod_a1"]);
 
-        let leaf = NodeId::from_slug("nod_a1").unwrap();
+        let leaf = nid("nod_a1");
         let ancestors: Vec<String> = ancestors_of(&nodes, &leaf)
             .into_iter()
             .map(|node| node.to_string())
@@ -610,9 +615,9 @@ mod tests {
             slot("nod_child", Some("nod_root"), Transform::default()),
             slot("nod_grand", Some("nod_child"), Transform::default()),
         ];
-        let child = NodeId::from_slug("nod_child").unwrap();
-        let grand = NodeId::from_slug("nod_grand").unwrap();
-        let root = NodeId::from_slug("nod_root").unwrap();
+        let child = nid("nod_child");
+        let grand = nid("nod_grand");
+        let root = nid("nod_root");
 
         // Mover o avô para debaixo do neto fecharia ciclo: recusado, estado intacto.
         let error = reparent_checked(&mut nodes, &child, Some(&grand)).expect_err("ciclo");

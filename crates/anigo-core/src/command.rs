@@ -20,8 +20,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::hierarchy::NodeKind;
 use crate::ids::{AssetId, LightId, MaterialId, MorphId, NodeId};
-use crate::math::Transform;
+use crate::math::{Camera, Transform};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
 use crate::project::{
@@ -33,6 +34,30 @@ use crate::somatotype::SomatotypeCoords;
 
 /// Monotonic revision counter of the project (bumped by every applied command).
 pub type Revision = u64;
+
+/// Patch do modo de projeção da câmera (issue #13).
+///
+/// Três campos opcionais porque as duas pontas têm necessidades diferentes: a UI
+/// manda `orthographic` + `ortho_height` (o volume simétrico que preserva o
+/// enquadramento) enquanto o **inverso** de um comando precisa restaurar o
+/// volume exato, que é o que `ortho_bounds` carrega.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CameraProjectionPatch {
+    /// `Some(true)` = ortográfica, `Some(false)` = perspectiva, `None` = mantém.
+    pub orthographic: Option<bool>,
+    /// Altura da silhueta (unidades de mundo): volume simétrico equivalente.
+    pub ortho_height: Option<f32>,
+    /// Volume ortográfico explícito — tem precedência sobre `ortho_height`.
+    pub ortho_bounds: Option<crate::math::OrthographicBounds>,
+}
+
+impl CameraProjectionPatch {
+    /// `true` quando o patch não muda nada.
+    pub fn is_empty(&self) -> bool {
+        self.orthographic.is_none() && self.ortho_height.is_none() && self.ortho_bounds.is_none()
+    }
+}
 
 /// What a command changed — used to decide which caches must be rebuilt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +330,9 @@ pub enum Command {
         up: Option<[f32; 3]>,
         #[serde(default)]
         fov_degrees: Option<f32>,
+        /// Issue #13: modo de projeção (perspectiva/ortográfica) e volume.
+        #[serde(default)]
+        projection: Option<CameraProjectionPatch>,
     },
     /// Orbits the camera around its target (radians).
     OrbitCamera { azimuth: f32, elevation: f32 },
@@ -670,9 +698,41 @@ impl Command {
                 target,
                 up,
                 fov_degrees,
+                projection,
             } => {
-                if eye.is_none() && target.is_none() && up.is_none() && fov_degrees.is_none() {
+                if eye.is_none()
+                    && target.is_none()
+                    && up.is_none()
+                    && fov_degrees.is_none()
+                    && projection.is_none()
+                {
                     return Err(CommandError::NoOp("empty camera patch".to_string()));
+                }
+                if let Some(patch) = projection {
+                    if patch.is_empty() {
+                        return Err(CommandError::NoOp("empty projection patch".to_string()));
+                    }
+                    if let Some(bounds) = patch.ortho_bounds {
+                        if !bounds.is_valid()
+                            || ![bounds.left, bounds.right, bounds.bottom, bounds.top]
+                                .iter()
+                                .all(|value| value.is_finite())
+                        {
+                            return Err(CommandError::InvalidValue {
+                                field: "projection.ortho_bounds".to_string(),
+                                detail: "left < right and bottom < top, all finite".to_string(),
+                            });
+                        }
+                    }
+                    if let Some(height) = patch.ortho_height {
+                        require_finite("projection.ortho_height", height)?;
+                        if height <= 0.0 {
+                            return Err(CommandError::InvalidValue {
+                                field: "projection.ortho_height".to_string(),
+                                detail: "must be greater than zero".to_string(),
+                            });
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -1036,6 +1096,7 @@ impl Command {
                 target,
                 up,
                 fov_degrees,
+                projection,
             } => {
                 let camera = &state.scene.camera.camera;
                 Ok(Command::SetCamera {
@@ -1043,6 +1104,13 @@ impl Command {
                     target: target.map(|_| camera.target.to_array()),
                     up: up.map(|_| camera.up.to_array()),
                     fov_degrees: fov_degrees.map(|_| camera.fov_y.to_degrees()),
+                    // O inverso restaura o volume **exato** (não só a altura):
+                    // um undo não pode recentralizar um volume assimétrico.
+                    projection: projection.map(|_| CameraProjectionPatch {
+                        orthographic: Some(camera.orthographic.is_some()),
+                        ortho_height: camera.orthographic.map(|bounds| bounds.height()),
+                        ortho_bounds: camera.orthographic,
+                    }),
                 })
             }
             Command::OrbitCamera { azimuth, elevation } => Ok(Command::OrbitCamera {
@@ -1326,6 +1394,7 @@ impl Command {
                 target,
                 up,
                 fov_degrees,
+                projection,
             } => {
                 let camera = &mut state.scene.camera.camera;
                 if let Some(value) = eye {
@@ -1339,6 +1408,9 @@ impl Command {
                 }
                 if let Some(value) = fov_degrees {
                     camera.fov_y = value.to_radians();
+                }
+                if let Some(patch) = projection {
+                    apply_camera_projection(camera, *patch);
                 }
                 Ok(())
             }
@@ -1635,6 +1707,56 @@ fn require_known_asset(state: &ProjectState, asset_id: &AssetId) -> Result<(), C
             target: asset_id.to_string(),
         })
     }
+}
+
+/// Issue #13: aplica um patch de projeção à câmera.
+///
+/// Entrar em ortográfica **sem** informar volume usa a altura que reproduz o
+/// enquadramento perspectiva na distância atual do alvo
+/// (`2·d·tan(fov/2)`) — é o que faz a troca de modo não dar salto visual nem
+/// deformar o modelo, a mesma conta do `camera_math.ts` no viewport.
+fn apply_camera_projection(camera: &mut Camera, patch: CameraProjectionPatch) {
+    use crate::math::{OrthographicBounds, ProjectionMode};
+
+    if let Some(bounds) = patch.ortho_bounds {
+        camera.set_projection_mode(ProjectionMode::from(bounds));
+        return;
+    }
+
+    match patch.orthographic {
+        Some(true) => {
+            let height = patch
+                .ortho_height
+                .unwrap_or_else(|| framing_preserving_height(camera));
+            camera.set_projection_mode(ProjectionMode::from(OrthographicBounds::from_height(
+                height,
+                camera.aspect,
+            )));
+        }
+        Some(false) => {
+            camera.set_projection_mode(ProjectionMode::Perspective {
+                fov_y: camera.fov_y,
+                aspect: camera.aspect,
+            });
+        }
+        // Sem troca de modo, `ortho_height` só ajusta um volume já ortográfico.
+        None => {
+            if let Some(height) = patch.ortho_height {
+                if camera.orthographic.is_some() {
+                    camera.set_projection_mode(ProjectionMode::from(
+                        OrthographicBounds::from_height(height, camera.aspect),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Altura (unidades de mundo) que casa o enquadramento perspectiva na
+/// distância atual do alvo: `2 · d · tan(fov_y / 2)`.
+fn framing_preserving_height(camera: &Camera) -> f32 {
+    let distance = (camera.eye - camera.target).length().max(0.01);
+    (2.0 * distance * (camera.fov_y * 0.5).tan()).max(0.01)
 }
 
 /// Issue #12: um vetor de transformação só entra no documento se for finito.
@@ -2175,6 +2297,7 @@ mod tests {
                 target: None,
                 up: None,
                 fov_degrees: Some(50.0),
+                projection: None,
             },
             Command::OrbitCamera {
                 azimuth: 0.2,
@@ -2461,6 +2584,115 @@ mod tests {
     }
 
     #[test]
+    fn camera_projection_switch_preserves_the_framing_and_round_trips() {
+        // Issue #13: entrar em ortográfica sem informar volume preserva o
+        // enquadramento perspectiva na distância do alvo, e o undo devolve o
+        // volume exato (não um volume recentralizado).
+        let mut state = project();
+        let mut history = CommandHistory::new(8);
+        let before = state.clone();
+
+        let perspective = state.scene.camera.camera.build_view_projection_matrix();
+        let sample = state.scene.camera.camera.target
+            + glam::Vec3::new(0.2, -0.1, 0.0);
+        let ndc_before = perspective.project_point3(sample);
+
+        history
+            .execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch {
+                        orthographic: Some(true),
+                        ..CameraProjectionPatch::default()
+                    }),
+                },
+            )
+            .expect("switch to orthographic");
+        let camera = &state.scene.camera.camera;
+        assert!(camera.projection_mode().is_orthographic());
+        let bounds = camera.orthographic.expect("volume ortográfico");
+        // O volume casa o enquadramento: metade da altura visível a `d` é
+        // `d · tan(fov/2)`.
+        let distance = (camera.eye - camera.target).length();
+        let expected_half_height = distance * (camera.fov_y * 0.5).tan();
+        assert!((bounds.height() * 0.5 - expected_half_height).abs() < 1e-4);
+        assert!((bounds.width() / bounds.height() - camera.aspect).abs() < 1e-5);
+
+        // O ponto de referência projeta praticamente no mesmo lugar.
+        let ndc_after = camera.build_view_projection_matrix().project_point3(sample);
+        assert!((ndc_before.x - ndc_after.x).abs() < 1e-3);
+        assert!((ndc_before.y - ndc_after.y).abs() < 1e-3);
+
+        history.undo(&mut state).expect("undo restores the projection");
+        assert_eq!(state, before, "undo volta à perspectiva exatamente");
+
+        // Sem troca de modo e sem altura, o patch é vazio (NoOp).
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch::default()),
+                },
+            ),
+            Err(CommandError::NoOp(_))
+        ));
+
+        // Altura inválida é recusada antes de tocar no estado.
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch {
+                        orthographic: Some(true),
+                        ortho_height: Some(0.0),
+                        ortho_bounds: None,
+                    }),
+                },
+            ),
+            Err(CommandError::InvalidValue { .. })
+        ));
+
+        // Volume explícito assimétrico é preservado pelo inverso.
+        let bounds = crate::math::OrthographicBounds {
+            left: -1.5,
+            right: 2.5,
+            bottom: -0.75,
+            top: 1.25,
+        };
+        history
+            .execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch {
+                        orthographic: Some(true),
+                        ortho_height: None,
+                        ortho_bounds: Some(bounds),
+                    }),
+                },
+            )
+            .expect("explicit volume");
+        assert_eq!(state.scene.camera.camera.orthographic, Some(bounds));
+        history.undo(&mut state).expect("undo");
+        assert!(state.scene.camera.camera.orthographic.is_none());
+    }
+
+    #[test]
     fn add_node_rejects_duplicates_and_unknown_parents() {
         let mut state = project();
         let mut history = CommandHistory::new(8);
@@ -2608,6 +2840,7 @@ mod tests {
                     target: None,
                     up: None,
                     fov_degrees: None,
+                    projection: None,
                 },
             )
             .expect_err("non-finite camera must be rejected");
@@ -2963,6 +3196,12 @@ mod tests {
                 target: None,
                 up: None,
                 fov_degrees: None,
+                // Issue #13: entrar em ortográfica sem volume usa o
+                // enquadramento perspectiva atual (nenhum salto visual).
+                projection: Some(CameraProjectionPatch {
+                    orthographic: Some(true),
+                    ..CameraProjectionPatch::default()
+                }),
             },
             Command::SetLight {
                 light_id: None,

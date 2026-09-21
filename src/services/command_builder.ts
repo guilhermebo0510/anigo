@@ -19,6 +19,7 @@
 import {
   COMMAND_KINDS,
   NODE_KINDS,
+  type CameraProjectionPatchWire,
   type CommandWire,
   type MaterialPatchWire,
   type MeshPresetWire,
@@ -123,6 +124,10 @@ export interface CameraIntent {
   target?: [number, number, number];
   up?: [number, number, number];
   fov_degrees?: number;
+  /** Issue #13: troca perspectiva ⇄ ortográfica (volume opcional). */
+  projection?: CameraProjectionPatchWire;
+  /** Modo atual, quando conhecido: repetir o mesmo modo é no-op. */
+  current_projection?: "perspective" | "orthographic";
 }
 
 /** Local transform patch of a node (issue #12). */
@@ -339,6 +344,54 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
         const problem = finite(intent.fov_degrees, "fov_degrees") ?? inRange(intent.fov_degrees, 1, 179, "fov_degrees");
         if (problem) return problem;
         (command as Record<string, unknown>)["fov_degrees"] = intent.fov_degrees;
+      }
+      if (intent.projection !== undefined) {
+        const patch: CameraProjectionPatchWire = {};
+        if (intent.projection.orthographic !== undefined) {
+          patch.orthographic = intent.projection.orthographic;
+          // Pedir o modo que já está ativo, sem mais nada, não entra no histórico.
+          if (
+            intent.current_projection !== undefined &&
+            intent.current_projection === (patch.orthographic ? "orthographic" : "perspective") &&
+            intent.projection.ortho_height === undefined &&
+            intent.projection.ortho_bounds === undefined &&
+            Object.keys(command).length === 1
+          ) {
+            return fail(
+              "no_op",
+              `a câmera já está em ${intent.current_projection}`,
+              "projection"
+            );
+          }
+        }
+        if (intent.projection.ortho_height !== undefined) {
+          const problem =
+            finite(intent.projection.ortho_height, "ortho_height") ??
+            (intent.projection.ortho_height > 0
+              ? null
+              : fail("invalid_value", "'ortho_height' precisa ser maior que 0", "ortho_height"));
+          if (problem) return problem;
+          patch.ortho_height = intent.projection.ortho_height;
+        }
+        if (intent.projection.ortho_bounds !== undefined) {
+          const bounds = intent.projection.ortho_bounds;
+          for (const key of ["left", "right", "bottom", "top"] as const) {
+            const problem = finite(bounds[key], `ortho_bounds.${key}`);
+            if (problem) return problem;
+          }
+          if (bounds.left >= bounds.right || bounds.bottom >= bounds.top) {
+            return fail(
+              "invalid_value",
+              "'ortho_bounds' precisa de left < right e bottom < top",
+              "ortho_bounds"
+            );
+          }
+          patch.ortho_bounds = { ...bounds };
+        }
+        if (Object.keys(patch).length === 0) {
+          return fail("no_op", "patch de projeção vazio", "projection");
+        }
+        (command as Record<string, unknown>)["projection"] = patch;
       }
       if (Object.keys(command).length === 1) {
         return fail("no_op", "patch de câmera vazio");

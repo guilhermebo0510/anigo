@@ -45,7 +45,9 @@ import { GlbParseError, loadGlbMesh } from "../../services/gltf_loader";
 import {
   DEFAULT_CAMERA_FAR,
   DEFAULT_CAMERA_NEAR,
+  orthographicBoundsForFraming,
   viewProjectionMatrix,
+  type ProjectionModeWire,
 } from "../../services/camera_math";
 // P0 renderer: canonical shader source is `crates/anigo-renderer/shaders/` — the same
 // files the Rust (wgpu) renderer loads with `include_str!`. There is exactly one
@@ -105,6 +107,8 @@ export interface ViewportMetrics {
   drawCalls: number;
   adapterName: string;
   backend: string;
+  /** Issue #13: `perspective` ou `orthographic` (o HUD mostra o modo ativo). */
+  projection: "perspective" | "orthographic";
 }
 
 export type MeshPreset = "mannequin" | "sphere" | "cube";
@@ -294,6 +298,12 @@ export class WebGpuViewportRenderer {
   public target: [number, number, number] = [0.0, 1.0, 0.0];
   public up: [number, number, number] = [0.0, 1.0, 0.0];
   public fov: number = (45.0 * Math.PI) / 180.0;
+  /**
+   * Issue #13: modo de projeção corrente. `null` = perspectiva com o `fov`
+   * atual; quando ortográfico, guarda os limites (o `fov` continua intacto para
+   * a volta não mudar o enquadramento).
+   */
+  private orthographicBounds: { left: number; right: number; bottom: number; top: number } | null = null;
   private recenterAnim: {
     startEye: [number, number, number];
     startTarget: [number, number, number];
@@ -664,6 +674,7 @@ export class WebGpuViewportRenderer {
           drawCalls: 0,
           adapterName: "GPU Error: " + (e?.error?.message || "uncaptured"),
           backend: "WebGPU-Error",
+          projection: this.projectionMode().mode,
         } as any);
       });
       // push validation scope to surface pipeline errors
@@ -2176,6 +2187,62 @@ export class WebGpuViewportRenderer {
     this.target[2] += right[2] * shiftX + up[2] * shiftY;
   }
 
+  // ==========================================
+  // Projection mode (issue #13)
+  // ==========================================
+
+  /** Distância corrente da câmera ao alvo (usada para casar os enquadramentos). */
+  private cameraDistance(): number {
+    return Math.hypot(
+      this.eye[0] - this.target[0],
+      this.eye[1] - this.target[1],
+      this.eye[2] - this.target[2]
+    );
+  }
+
+  /** Modo de projeção corrente (perspectiva por padrão). */
+  public projectionMode(aspect?: number): ProjectionModeWire {
+    if (this.orthographicBounds) {
+      return { mode: "orthographic", ...this.orthographicBounds };
+    }
+    return { mode: "perspective", fov_y: this.fov, aspect: aspect ?? this.currentAspect() };
+  }
+
+  private currentAspect(): number {
+    const width = this.canvas?.width ?? 1;
+    const height = this.canvas?.height ?? 1;
+    return height > 0 ? width / height : 16 / 9;
+  }
+
+  /**
+   * Troca o modo de projeção **sem salto visual**: ao entrar em ortográfica, os
+   * limites são calculados para reproduzir o enquadramento perspectiva na
+   * distância do alvo; ao voltar, o `fov` original (intacto) reassume.
+   */
+  public setProjectionMode(mode: "perspective" | "orthographic"): ProjectionModeWire {
+    if (mode === "orthographic") {
+      this.orthographicBounds = orthographicBoundsForFraming(
+        this.fov,
+        this.currentAspect(),
+        this.cameraDistance()
+      );
+    } else {
+      this.orthographicBounds = null;
+    }
+    // O laço de rAF já redesenha a cada quadro; nada a agendar aqui.
+    return this.projectionMode();
+  }
+
+  /** Alterna perspectiva ⇄ ortográfica (atalho/botão da UI). */
+  public toggleProjectionMode(): ProjectionModeWire {
+    return this.setProjectionMode(this.orthographicBounds ? "perspective" : "orthographic");
+  }
+
+  /** `true` quando a câmera está em projeção ortográfica. */
+  public isOrthographic(): boolean {
+    return this.orthographicBounds !== null;
+  }
+
   public recenterCamera(duration: number = 300) {
     if (duration <= 0) {
       this.recenterAnim = null;
@@ -2560,6 +2627,7 @@ export class WebGpuViewportRenderer {
             drawCalls: 2, // cel + outline
             adapterName,
             backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
+            projection: this.projectionMode().mode,
           });
         }
       }
@@ -2580,6 +2648,9 @@ export class WebGpuViewportRenderer {
         clipDepth: isWebGPU ? "zero_to_one" : "minus_one_to_one",
         near: DEFAULT_CAMERA_NEAR,
         far: DEFAULT_CAMERA_FAR,
+        // Issue #13: o modo de projeção entra aqui — um só lugar monta a
+        // matriz, então perspectiva e ortográfica não podem divergir.
+        projection: this.projectionMode(aspect),
       }
     );
   }

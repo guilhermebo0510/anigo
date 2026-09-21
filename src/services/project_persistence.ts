@@ -304,6 +304,14 @@ function tonemap(value: unknown, fallback: TonemapName): TonemapName {
  * Issue #12: tipo do nó — `mesh` é o valor neutro (`NodeKind::Mesh` é o
  * `Default` do Rust), então um payload antigo continua válido.
  */
+/**
+ * Issue #13: modo de projeção persistido na sessão — valor desconhecido cai na
+ * perspectiva, que é o padrão de todo o contrato.
+ */
+function projectionMode(value: unknown): "perspective" | "orthographic" {
+  return value === "orthographic" ? "orthographic" : "perspective";
+}
+
 function nodeKindOrDefault(value: unknown): NodeKindWire {
   return typeof value === "string" && (NODE_KINDS as readonly string[]).includes(value)
     ? (value as NodeKindWire)
@@ -440,6 +448,7 @@ export function parseSessionState(value: unknown): SessionState {
     cameraTarget: vec3(source["cameraTarget"], [0, 1, 0]),
     cameraUp: vec3(source["cameraUp"], [0, 1, 0]),
     fov: num(source["fov"], 45),
+    cameraProjection: projectionMode(source["cameraProjection"]),
     timestamp: num(source["timestamp"], Date.now()),
     version: str(source["version"], DEFAULT_APP_VERSION),
     characterSchemaVersion,

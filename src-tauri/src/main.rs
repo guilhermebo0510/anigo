@@ -36,6 +36,8 @@ pub struct ExportFrameResponse {
     pub adapter_name: String,
     pub backend: String,
     pub draw_calls: u32,
+    /// Issue #13: draw calls suprimidas pelo frustum culling neste quadro.
+    pub culled_draw_calls: u32,
     pub triangle_count: usize,
     pub render_time_ms: f64,
     pub manifest: serde_json::Value,
@@ -46,6 +48,8 @@ pub struct ViewportFrameResponse {
     pub image_base64: String,
     pub render_time_ms: f64,
     pub draw_calls: u32,
+    /// Issue #13: draw calls suprimidas pelo frustum culling neste quadro.
+    pub culled_draw_calls: u32,
     pub triangle_count: usize,
     pub adapter_name: String,
     pub backend: String,
@@ -265,6 +269,7 @@ async fn render_viewport_frame(
         image_base64,
         render_time_ms: metrics.render_time_ms,
         draw_calls: metrics.draw_calls,
+        culled_draw_calls: metrics.culled_draw_calls,
         triangle_count: metrics.triangle_count,
         adapter_name: metrics.adapter_name,
         backend: metrics.backend,
@@ -283,6 +288,35 @@ async fn camera_orbit(
     apply_session_command(
         &mut state,
         anigo_core::command::Command::OrbitCamera { azimuth, elevation },
+    )
+}
+
+/// Issue #13: modo de projeção da câmera canônica (perspectiva ⇄ ortográfica).
+///
+/// O viewport alterna a própria matriz e chama este comando com o mesmo pedido,
+/// então o núcleo (autoridade dos dados, undo/redo e render headless/export)
+/// fica exatamente no estado que a tela mostra. Sem `height`, o núcleo usa a
+/// altura que reproduz o enquadramento perspectiva atual — nenhum salto visual.
+#[tauri::command]
+async fn camera_projection(
+    orthographic: bool,
+    height: Option<f32>,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let mut state = state.lock().await;
+    apply_session_command(
+        &mut state,
+        anigo_core::command::Command::SetCamera {
+            eye: None,
+            target: None,
+            up: None,
+            fov_degrees: None,
+            projection: Some(anigo_core::command::CameraProjectionPatch {
+                orthographic: Some(orthographic),
+                ortho_height: height,
+                ortho_bounds: None,
+            }),
+        },
     )
 }
 
@@ -847,6 +881,7 @@ async fn core_export_frame(
         adapter_name: metrics.adapter_name,
         backend: metrics.backend,
         draw_calls: metrics.draw_calls,
+        culled_draw_calls: metrics.culled_draw_calls,
         triangle_count: metrics.triangle_count,
         render_time_ms: metrics.render_time_ms,
         manifest: serde_json::from_str(&manifest_json)
@@ -963,6 +998,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             render_viewport_frame,
             camera_orbit,
+            camera_projection,
             camera_zoom,
             camera_pan,
             load_mesh_preset,

@@ -389,6 +389,12 @@ export function renderContractFixture() {
     },
     camera: {
       projection: "perspective_rh",
+      // Issue #13: a câmera tem dois modos; ambos escrevem a MESMA `view_proj`,
+      // então o shader é o mesmo e nada mais no grafo muda.
+      projection_modes: {
+        perspective: { matrix: "perspective_rh", params: "fov_y (rad), aspect" },
+        orthographic: { matrix: "orthographic_rh", params: "left, right, bottom, top" },
+      },
       clip_depth: "zero_to_one",
       matrix_layout: "column_major",
       up_axis: "y",
@@ -397,6 +403,15 @@ export function renderContractFixture() {
       z_far_default: 100.0,
       model_from: "scene.nodes[*].world_matrix",
       uniform: "camera",
+      // Issue #13: o culling é feito em espaço de mundo, antes do RenderPass.
+      culling: {
+        volume: "aabb+sphere",
+        planes_from: "view_proj",
+        plane_count: 6,
+        test: "sphere_then_aabb",
+        space: "world",
+        metrics: "RenderMetrics.culled_draw_calls",
+      },
     },
     toon_ramp: {
       width: 256,
