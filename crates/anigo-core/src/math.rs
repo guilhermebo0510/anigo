@@ -751,7 +751,7 @@ mod tests {
         .matrix(0.05, 100.0);
         let near = matrix * Vec4::new(0.0, 0.0, -0.05, 1.0);
         let far = matrix * Vec4::new(0.0, 0.0, -100.0, 1.0);
-        assert!((near.z - 0.0).abs() < 1e-5);
+        assert!(near.z.abs() < 1e-5);
         assert!((far.z - 1.0).abs() < 1e-5);
     }
 }

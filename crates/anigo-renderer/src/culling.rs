@@ -59,6 +59,16 @@ impl SceneVolume {
     /// consultada quando a esfera é interceptada — o caso em que o volume
     /// encosta no plano e a decisão precisa ser mais fina.
     pub fn is_visible(&self, frustum: &Frustum) -> bool {
+        // Um volume não finito (matriz corrompida, malha com NaN) é tratado como
+        // visível: o pior caso possível é desenhar demais, nunca apagar
+        // geometria que deveria estar na tela.
+        if !self.sphere.center.is_finite()
+            || !self.sphere.radius.is_finite()
+            || !self.aabb.min.is_finite()
+            || !self.aabb.max.is_finite()
+        {
+            return true;
+        }
         if !frustum.intersects_sphere(&self.sphere) {
             return false;
         }
@@ -191,6 +201,19 @@ mod tests {
             volume.is_visible(&frustum),
             "matriz inválida não pode virar sumiço de geometria"
         );
+
+        // O mesmo vale quando o volume em si já vem corrompido.
+        let poisoned = SceneVolume {
+            aabb: Aabb {
+                min: Vec3::new(f32::INFINITY, 0.0, 0.0),
+                max: Vec3::new(f32::NAN, 1.0, 1.0),
+            },
+            sphere: BoundingSphere::new(Vec3::new(f32::NAN, 0.0, 0.0), f32::NAN),
+        };
+        assert!(poisoned.is_visible(&frustum));
+        let (visible, report) = cull_volumes(&[poisoned], &frustum);
+        assert_eq!(visible, vec![0]);
+        assert_eq!(report.culled, 0);
     }
 
     #[test]

@@ -990,6 +990,12 @@ impl HeadlessRenderer {
 
         let mut draw_calls = 0;
         let mut triangle_count = 0;
+        // Issue #13: o frustum sai da mesma `view_proj` que o shader recebe, e
+        // cada nó vira um volume em espaço de mundo (uma vez por quadro, nunca
+        // por vértice). O contador vive fora do escopo do passe porque a
+        // telemetria é montada depois dele.
+        let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
+        let mut culled_draw_calls = 0u32;
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1018,12 +1024,6 @@ impl HeadlessRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            // Issue #13: o frustum sai da mesma `view_proj` que o shader
-            // recebe, e cada nó vira um volume em espaço de mundo (uma vez por
-            // quadro, nunca por vértice).
-            let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
-            let mut culled_draw_calls = 0u32;
 
             for node in &scene.nodes {
                 if !node.visible {
