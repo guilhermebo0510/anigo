@@ -449,7 +449,8 @@ mod tests {
                 Duration::from_millis(2000)
             ]
         );
-        assert_eq!(schedule.total_budget(), Duration::from_millis(4500));
+        // 500 + 1000 + 2000 — o orçamento é a soma dos atrasos congelados.
+        assert_eq!(schedule.total_budget(), Duration::from_millis(3500));
         assert!(!schedule.is_exhausted(2));
         assert!(schedule.is_exhausted(3));
         assert_eq!(schedule.delay_for_attempt(3), None);
