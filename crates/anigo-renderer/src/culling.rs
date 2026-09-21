@@ -164,15 +164,27 @@ mod tests {
         // Muito à direita: fora do cone horizontal.
         let far_right = SceneVolume::from_local(&unit_cube(), &Mat4::from_translation(Vec3::new(60.0, 1.0, 0.0)));
         assert!(!far_right.is_visible(&frustum));
-        // Encostando na fronteira: o teste conservador não pode recusar.
+
+        // Exatamente sobre o plano direito (na altura/alvo do meio): o teste
+        // conservador **precisa** aceitar — recusar aqui cortaria geometria
+        // encostada na borda da tela.
+        let plane = frustum.plane(anigo_core::math::FrustumPlane::Right);
+        let on_plane_x = -(plane.y * 1.0 + plane.w) / plane.x;
         let borderline = SceneVolume::from_local(
             &unit_cube(),
-            &Mat4::from_translation(Vec3::new(1.05, 1.0, 0.0)),
+            &Mat4::from_translation(Vec3::new(on_plane_x, 1.0, 0.0)),
         );
         assert!(
             borderline.is_visible(&frustum),
-            "volume que encosta no plano precisa continuar desenhando"
+            "volume sobre o plano (x = {on_plane_x}) precisa continuar desenhando"
         );
+
+        // Um pouco além já é recusado (o teste não é frouxo).
+        let past_plane = SceneVolume::from_local(
+            &unit_cube(),
+            &Mat4::from_translation(Vec3::new(on_plane_x + 2.0, 1.0, 0.0)),
+        );
+        assert!(!past_plane.is_visible(&frustum));
     }
 
     #[test]

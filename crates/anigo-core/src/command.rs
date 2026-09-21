@@ -3189,12 +3189,10 @@ mod tests {
                 target: None,
                 up: None,
                 fov_degrees: None,
-                // Issue #13: entrar em ortográfica sem volume usa o
-                // enquadramento perspectiva atual (nenhum salto visual).
-                projection: Some(CameraProjectionPatch {
-                    orthographic: Some(true),
-                    ..CameraProjectionPatch::default()
-                }),
+                // Issue #13: nem um patch de projeção **vazio** passa (trocar de
+                // modo é comando de verdade, mas `SetCamera` sem campo nenhum
+                // continua sendo NoOp).
+                projection: None,
             },
             Command::SetLight {
                 light_id: None,
