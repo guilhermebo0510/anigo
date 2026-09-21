@@ -17,10 +17,13 @@ restante vai no resumo impresso no log.
 import re
 import sys
 
-MAX_BLOCKS = 12
+MAX_BLOCKS = 40
 CONTEXT = 7
 MAX_CHARS = 60000
 
+# O cargo coloriza a saída mesmo em pipeline (o runner não é TTY, mas o cargo
+# detecta `TERM`/`CLICOLOR_FORCE`); sem limpar os escapes o `^error[` não casa.
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HEADER = re.compile(r"^(error|warning)(\[[A-Za-z0-9_]+\])?:")
 LOCATION = re.compile(r"^\s*-->")
 
@@ -28,7 +31,7 @@ LOCATION = re.compile(r"^\s*-->")
 def annotate(path: str, label: str) -> int:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            lines = handle.read().splitlines()
+            lines = [ANSI.sub("", line) for line in handle.read().splitlines()]
     except OSError as error:
         print(f"::error::{label}: log ilegível ({error})")
         return 1
@@ -49,7 +52,7 @@ def annotate(path: str, label: str) -> int:
             index += 1
 
     if not blocks:
-        tail = "\n".join(lines[-25:]) or "(log vazio)"
+        tail = "\n".join(lines[-400:]) or "(log vazio)"
         message = f"{label} falhou; nenhum bloco 'error[...]' reconhecido. Fim do log:\n{tail}"
         print(escape(message, prefix="::error::"))
         return 1

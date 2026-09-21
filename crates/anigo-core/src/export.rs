@@ -246,7 +246,7 @@ pub fn build_export_manifest(request: &ExportRequest<'_>) -> Result<ExportManife
     };
 
     // 2. Deformação: os mesmos canais/pesos do snapshot (esparso, |w| > 1e-6).
-    let (_, channels, deltas) =
+    let (_, _channels, deltas) =
         request
             .morph_set
             .pack_all_channels(request.weights, base.vertices.len() as u32);
