@@ -45,7 +45,7 @@ function buildTestGlb(opts: TestAssetOpts = {}): ArrayBuffer {
   const accessors: Array<Record<string, unknown>> = [
     { bufferView: 0, componentType: 5126, count: 3, type: "VEC3" },
     { bufferView: 1, componentType: 5126, count: 3, type: "VEC3" },
-    { bufferView: 2, componentType: 5123, count: 3, type: "SCALAR" },
+    { bufferView: 2, componentType: 5122, count: 3, type: "SCALAR" },
   ];
 
   const attributes: Record<string, number> = { POSITION: 0, NORMAL: 1 };
@@ -68,7 +68,7 @@ function buildTestGlb(opts: TestAssetOpts = {}): ArrayBuffer {
     const bvW = bufferViews.length;
     bufferViews.push({ buffer: 0, byteOffset: offW, byteLength: weights.byteLength });
     const accJ = accessors.length;
-    accessors.push({ bufferView: bvJ, componentType: 5123, count: 3, type: "VEC4" });
+    accessors.push({ bufferView: bvJ, componentType: 5122, count: 3, type: "VEC4" });
     const accW = accessors.length;
     accessors.push({ bufferView: bvW, componentType: 5126, count: 3, type: "VEC4" });
     attributes["JOINTS_0"] = accJ;
