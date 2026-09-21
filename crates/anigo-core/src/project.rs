@@ -1355,7 +1355,10 @@ pub fn migrate_legacy_snapshot(mut object: Map<String, Value>) -> Result<Value, 
         .cloned()
         .unwrap_or_default();
     let default_proportions = CharacterProportions::default();
-    let canonical_key = |legacy: &str| slug_key(legacy);
+    // O payload legado guarda as proporções em camelCase (`headScale`), não no
+    // snake_case canônico: ler `head_scale` devolvia sempre o fallback e a
+    // migração descartava as proporções autoradas em silêncio.
+    let legacy_key = |canonical: &str| camel_key(canonical);
     let proportions_json = {
         let mut map = Map::new();
         let pairs = [
@@ -1369,7 +1372,7 @@ pub fn migrate_legacy_snapshot(mut object: Map<String, Value>) -> Result<Value, 
             (default_proportions.height_overall, "height_overall"),
         ];
         for (fallback, key) in pairs {
-            map.insert(key.to_string(), json!(number_at(&proportions, &canonical_key(key), fallback)));
+            map.insert(key.to_string(), json!(number_at(&proportions, &legacy_key(key), fallback)));
         }
         Value::Object(map)
     };
@@ -1622,6 +1625,28 @@ fn preset_label(preset: &str) -> String {
         "female" => "Anime Mannequin (Female)".to_string(),
         _ => "Anime Mannequin".to_string(),
     }
+}
+
+/// camelCases a canonical field name (`head_scale` → `headScale`).
+///
+/// Inverso de [`slug_key`]: o autosave legado do TypeScript grava as proporções
+/// em camelCase, então a migração precisa procurar por essa forma.
+fn camel_key(canonical: &str) -> String {
+    let mut out = String::with_capacity(canonical.len());
+    let mut uppercase_next = false;
+    for character in canonical.chars() {
+        if character == '_' {
+            uppercase_next = true;
+            continue;
+        }
+        if uppercase_next {
+            out.extend(character.to_uppercase());
+            uppercase_next = false;
+        } else {
+            out.push(character);
+        }
+    }
+    out
 }
 
 /// snake_cases a legacy camelCase field name (`headScale` → `head_scale`).
@@ -1971,6 +1996,20 @@ mod tests {
         assert_eq!(slug_key("headScale"), "head_scale");
         assert_eq!(slug_key("shoulderWidth"), "shoulder_width");
         assert_eq!(slug_key("heightOverall"), "height_overall");
+        // `camel_key` é o inverso (é o que a migração do payload legado usa).
+        for canonical in [
+            "head_scale",
+            "head_ratio",
+            "shoulder_width",
+            "leg_length",
+            "arm_length",
+            "neck_length",
+            "torso_length",
+            "height_overall",
+        ] {
+            assert_eq!(slug_key(&camel_key(canonical)), canonical);
+        }
+        assert_eq!(camel_key("height_overall"), "heightOverall");
     }
 
     #[test]

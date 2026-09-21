@@ -119,14 +119,18 @@ def failing_test_blocks(lines: list[str]) -> list[str]:
             continue
         kept = [lines[index].strip()]
         index += 1
-        # A mensagem do panic vem na linha seguinte ao cabeçalho e é curta
-        # (ex.: "assertion failed: …" ou o texto do `assert!(…)`) — sempre
-        # fica, mesmo quando não casa com KEEP_LINE.
-        keep_message = True
-        while index < len(lines) and not BLOCK_HEADER.match(lines[index]):
-            if len(kept) < MAX_BLOCK_LINES and (keep_message or KEEP_LINE.match(lines[index])):
+        # As **duas** linhas seguintes são o cabeçalho do panic
+        # (`panicked at arquivo:linha:coluna:`) e a mensagem da asserção — que
+        # não casa com KEEP_LINE e é justamente o diagnóstico (ex.: "osso da
+        # cabeça em y = …", o dump de `SkinAssignmentSummary`, o erro de
+        # isomerismo). Elas entram sempre.
+        for _ in range(2):
+            if index < len(lines) and not BLOCK_HEADER.match(lines[index]):
                 kept.append(_truncate(lines[index].strip(), 220))
-            keep_message = False
+                index += 1
+        while index < len(lines) and not BLOCK_HEADER.match(lines[index]):
+            if len(kept) < MAX_BLOCK_LINES and KEEP_LINE.match(lines[index]):
+                kept.append(_truncate(lines[index].strip(), 220))
             index += 1
         blocks.append("\n".join(kept))
     return blocks
