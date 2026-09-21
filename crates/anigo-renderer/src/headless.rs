@@ -87,21 +87,6 @@ impl HeadlessRenderer {
         // P1-01/P1-02: falha de ambiente vira diagnóstico observável (com código)
         // antes de virar `anyhow::Error`.
         //
-        // A checagem é feita por `enumerate_adapters` de propósito: sem nenhum
-        // adaptador, `request_adapter` **entra em pânico dentro do wgpu** (não
-        // devolve `None`), e um runner sem GPU derrubava os testes de GPU em vez
-        // de fazê-los pular pelo caminho de erro previsto aqui.
-        if instance
-            .enumerate_adapters(wgpu::Backends::all())
-            .is_empty()
-        {
-            diagnostics::report(
-                "device_unavailable",
-                "nenhum adaptador wgpu compatível encontrado (headless não pode renderizar)",
-            );
-            anyhow::bail!("Failed to find suitable GPU adapter for ANIGO engine");
-        }
-
         // Além do caminho `None`, o wgpu 24 aborta com um pânico **cru** (sem
         // mensagem) quando o runner não tem backend utilizável — é o caso do CI.
         // Um pânico aqui seria um crash de ambiente, e é exatamente o que
