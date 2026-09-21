@@ -76,7 +76,8 @@ export function toonRampBytes(spec) {
 }
 
 function shader(name, relativePath, language, role, entryPoints) {
-  const source = fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  const raw = fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  const source = raw.replace(/\r\n/g, "\n");
   return {
     name,
     path: relativePath,

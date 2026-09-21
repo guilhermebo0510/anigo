@@ -808,13 +808,14 @@ mod tests {
     fn every_production_shader_matches_its_frozen_hash() {
         assert_eq!(shaders_with_role("production").len(), 3);
         for (name, source) in PRODUCTION_SHADERS {
-            let actual = fnv1a64(source.as_bytes());
+            let normalized = source.replace("\r\n", "\n");
+            let actual = fnv1a64(normalized.as_bytes());
             assert_eq!(
                 actual,
                 contract_hash_as_u64(shader_hash(name)),
                 "shader '{}' divergiu do render contract ({} bytes de fonte)",
                 name,
-                source.len()
+                normalized.len()
             );
             assert!(
                 shader_path(name).starts_with("crates/anigo-renderer/shaders/"),

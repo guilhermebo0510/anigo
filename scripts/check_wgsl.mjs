@@ -356,7 +356,7 @@ function main() {
   const readShader = (relative) => {
     const file = path.join(root, relative);
     if (!fs.existsSync(file)) throw new Error(`shader não encontrado: ${relative}`);
-    return fs.readFileSync(file, "utf8");
+    return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
   };
   let problems;
   try {

@@ -1,0 +1,26 @@
+# Auto detect text files and perform LF normalization on checkout and commit
+* text=auto eol=lf
+
+# Explicit text files
+*.wgsl text eol=lf
+*.glsl text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.rs text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.svg text eol=lf
+
+# Binary files
+*.glb binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary

@@ -17,7 +17,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(here, "..", "..");
 
 export function readRepoFile(relativePath: string): string {
-  return fs.readFileSync(path.join(REPO_ROOT, relativePath), "utf8");
+  return fs.readFileSync(path.join(REPO_ROOT, relativePath), "utf8").replace(/\r\n/g, "\n");
 }
 
 /**
