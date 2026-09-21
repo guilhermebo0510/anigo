@@ -118,7 +118,7 @@ pub struct UncapturedErrorRecord {
     /// (o campo é texto estável para telemetria, não enum: um lado novo pode
     /// aparecer sem quebrar a deserialização de dados antigos).
     pub source: String,
-    /// Mensagem de erro (texto do `wgpu::DeviceError`/driver).
+    /// Mensagem de erro (texto do `wgpu::Error`/driver).
     pub message: String,
     /// Milissegundos desde o epoch UNIX (telemetria comparável entre Rust ⇄ TS).
     pub at_ms: u64,
@@ -148,6 +148,33 @@ impl UncapturedErrorRecord {
             message: reason.into(),
             at_ms: Self::now_ms(),
         }
+    }
+
+    /// Erro cru entregue pelo callback `on_uncaptured_error`, **classificado**
+    /// pela origem: `validation` (bug de código/dados — o mais comum), `internal`
+    /// (limite de sistema/driver, o caminho típico de uma queda de GPU) e
+    /// `out_of_memory` (VRAM esgotada).
+    ///
+    /// A classificação importa para a recuperação: só `internal`/`out_of_memory`
+    /// costumam acompanhar perda de device; `validation` é corrigível no dia
+    /// seguinte sem recriar o device.
+    pub fn from_wgpu_error(error: &wgpu::Error) -> Self {
+        let (source, message) = match error {
+            wgpu::Error::OutOfMemory { .. } => ("out_of_memory", error.to_string()),
+            wgpu::Error::Validation { .. } => ("validation", error.to_string()),
+            wgpu::Error::Internal { .. } => ("internal", error.to_string()),
+        };
+        Self {
+            source: source.to_string(),
+            message,
+            at_ms: Self::now_ms(),
+        }
+    }
+
+    /// `true` quando a origem do erro justifica recriar o device (limite de
+    /// sistema/VRAM) em vez de apenas registrar.
+    pub fn suggests_device_recreation(&self) -> bool {
+        matches!(self.source.as_str(), "internal" | "out_of_memory" | "device_lost")
     }
 }
 
@@ -215,9 +242,12 @@ impl UncapturedErrorBus {
     /// produtor legítimo do canal (MPSC de verdade).
     pub fn install_on(&self, device: &wgpu::Device) {
         let sender = self.sender.clone();
-        device.on_uncaptured_error(Some(Box::new(move |error: &wgpu::DeviceError| {
-            let _ = sender.send(UncapturedErrorRecord::uncaptured(error.to_string()));
-        })));
+        // wgpu 24: `on_uncaptured_error(Box<dyn UncapturedErrorHandler>)` com
+        // `UncapturedErrorHandler: Fn(Error) + Send + 'static` — o handler recebe
+        // o `wgpu::Error` **por valor** (não há `Option` nem `&`).
+        device.on_uncaptured_error(Box::new(move |error: wgpu::Error| {
+            let _ = sender.send(UncapturedErrorRecord::from_wgpu_error(&error));
+        }));
     }
 
     /// Entrada de teste/simulação: injeta um registro no **mesmo** canal que o
@@ -296,7 +326,7 @@ impl ReconnectSchedule {
         let shifted = self
             .base_ms
             .checked_mul(1u64 << attempt.min(63))
-            .and_then(|value| value.checked_min(self.max_ms))
+            .map(|value| value.min(self.max_ms))
             .unwrap_or(self.max_ms);
         Some(Duration::from_millis(shifted))
     }
@@ -438,6 +468,43 @@ mod tests {
 
         diagnostics::clear();
         clear_recent_errors();
+    }
+
+    #[test]
+    fn uncaptured_errors_are_classified_by_origin() {
+        // `wgpu::Error::Validation` é bug de código/dados: registrar basta.
+        let validation = wgpu::Error::Validation {
+            source: Box::<dyn std::error::Error + Send + Sync>::from("bad binding"),
+            description: "shader validation: bad binding 5".to_string(),
+        };
+        let record = UncapturedErrorRecord::from_wgpu_error(&validation);
+        assert_eq!(record.source, "validation");
+        assert!(record.message.contains("bad binding 5"));
+        assert!(!record.suggests_device_recreation());
+
+        // `Internal` é o caminho típico de queda de driver: recriar o device.
+        let internal = wgpu::Error::Internal {
+            source: Box::<dyn std::error::Error + Send + Sync>::from("driver reset"),
+            description: "device lost (driver reset)".to_string(),
+        };
+        let record = UncapturedErrorRecord::from_wgpu_error(&internal);
+        assert_eq!(record.source, "internal");
+        assert!(record.suggests_device_recreation());
+
+        // VRAM esgotada: também justifica recriação (o estado da GPU é refeito
+        // a partir do snapshot canônico, que vive na CPU).
+        let out_of_memory = wgpu::Error::OutOfMemory {
+            source: Box::<dyn std::error::Error + Send + Sync>::from("vram"),
+        };
+        assert_eq!(
+            UncapturedErrorRecord::from_wgpu_error(&out_of_memory).source,
+            "out_of_memory"
+        );
+        assert!(UncapturedErrorRecord::from_wgpu_error(&out_of_memory).suggests_device_recreation());
+
+        // A perda explícita de device e um erro genérico completam a matriz.
+        assert!(UncapturedErrorRecord::device_lost("connection_lost").suggests_device_recreation());
+        assert!(!UncapturedErrorRecord::uncaptured("io error").suggests_device_recreation());
     }
 
     #[test]
