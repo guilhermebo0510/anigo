@@ -186,3 +186,95 @@ export const CANONICAL_CHARACTER_PRESETS: CharacterPreset[] = [
 export function getCharacterPreset(id: string): CharacterPreset | undefined {
   return CANONICAL_CHARACTER_PRESETS.find((p) => p.id === id);
 }
+
+// ---------------------------------------------------------------------------
+// P0-01: contract freeze + validation. The CharacterPreset shape above is the
+// ONLY sanctioned contract; AnatomyInspector/App consume it (model,
+// somatotype.{endo,meso,ecto}, proportions, sliders). Any drift must fail
+// loudly here and in CI tests, never as a runtime TypeError.
+// ---------------------------------------------------------------------------
+
+/** Compile-time freeze: every entry must satisfy the full CharacterPreset. */
+export const CANONICAL_CHARACTER_PRESET_IDS = [
+  "shonen_hero",
+  "shojo_idol",
+  "muscular_berserker",
+  "plus_size",
+  "chibi",
+  "heroic_8_5c",
+] as const satisfies ReadonlyArray<string>;
+
+export interface PresetValidationIssue {
+  presetId: string;
+  field: string;
+  message: string;
+}
+
+/**
+ * Validates a preset against the catalog (ids exist, values in range,
+ * somatotype normalizable, gender polarity canonical). Pure — tested in Node.
+ */
+export function validateCharacterPreset(
+  preset: CharacterPreset,
+  catalog: {
+    get(id: string): { min: number; max: number } | undefined;
+    isSomatotypeValid(e: number, m: number, c: number): boolean;
+  }
+): PresetValidationIssue[] {
+  const issues: PresetValidationIssue[] = [];
+  const id = preset.id ?? "<unknown>";
+  if (preset.model !== "male" && preset.model !== "female") {
+    issues.push({ presetId: id, field: "model", message: `invalid model: ${String(preset.model)}` });
+  }
+  const s = preset.somatotype;
+  if (!s || !catalog.isSomatotypeValid(s.endo, s.meso, s.ecto)) {
+    issues.push({
+      presetId: id,
+      field: "somatotype",
+      message: `somatotype must be finite non-negative with sum=1, got ${JSON.stringify(s)}`,
+    });
+  }
+  if (
+    typeof preset.genderDimorphism !== "number" ||
+    !Number.isFinite(preset.genderDimorphism) ||
+    preset.genderDimorphism < 0 ||
+    preset.genderDimorphism > 1
+  ) {
+    issues.push({
+      presetId: id,
+      field: "genderDimorphism",
+      message: `must be finite in [0,1], got ${String(preset.genderDimorphism)}`,
+    });
+  }
+  // Canonical polarity: dimorphism must agree with the base model.
+  if (preset.model === "male" && preset.genderDimorphism < 0.5) {
+    issues.push({
+      presetId: id,
+      field: "genderDimorphism",
+      message: `male preset must have dimorphism >= 0.5 (canonical 1.0 = Male)`,
+    });
+  }
+  if (preset.model === "female" && preset.genderDimorphism > 0.5) {
+    issues.push({
+      presetId: id,
+      field: "genderDimorphism",
+      message: `female preset must have dimorphism <= 0.5 (canonical 0.0 = Female)`,
+    });
+  }
+  const sliders = preset.sliders ?? {};
+  for (const [key, val] of Object.entries(sliders)) {
+    const def = catalog.get(key);
+    if (!def) {
+      issues.push({ presetId: id, field: `sliders.${key}`, message: "unknown slider id" });
+      continue;
+    }
+    if (typeof val !== "number" || !Number.isFinite(val) || val < def.min || val > def.max) {
+      issues.push({
+        presetId: id,
+        field: `sliders.${key}`,
+        message: `value ${String(val)} outside [${def.min}, ${def.max}]`,
+      });
+    }
+  }
+  return issues;
+}

@@ -9,6 +9,26 @@ import {
   type RaycastHit,
   type TactileDragResult
 } from "./tactile";
+import {
+  clampCatalog,
+  clampNumber,
+  getSliderDef,
+  isKnownSliderId,
+  sanitizeFinite,
+} from "../../services/character_state";
+import { CANONICAL_SLIDERS, type MorphSlider } from "../../services/morph_catalog";
+import {
+  buildSparseMorphSet,
+  channelDenominator,
+  genericMorphDelta,
+  isExplicitMorph,
+  normalizeWeight,
+  packChannelWeights,
+  recomputeNormals,
+  type MeshBounds,
+  type SparseMorphSet,
+} from "../../services/morph_engine";
+import { GlbParseError, loadGlbMesh } from "../../services/gltf_loader";
 // P0-04: single source of truth — WGSL now imported from canonical shaders/ (was 4 duplicated copies)
 // @ts-ignore - Vite ?raw import
 import celShaderSource from "../../../shaders/cel_shading.wgsl?raw";
@@ -83,6 +103,12 @@ export function packVertices(vertices: VertexData[]): Float32Array {
   return f32;
 }
 
+/** Scratch delta reused by the generic fallback (no per-vertex allocation). */
+const GENERIC_DELTA_TMP = { dx: 0, dy: 0, dz: 0 };
+
+/** Pseudo-channels for the linear somatotype components (GPU sparse path). */
+const SOMA_CHANNEL_IDS = ["__soma_endo", "__soma_meso", "__soma_ecto"] as const;
+
 export class WebGpuViewportRenderer {
   private canvas: HTMLCanvasElement;
   private backend: "webgpu" | "webgl2" = "webgpu";
@@ -133,6 +159,17 @@ export class WebGpuViewportRenderer {
   private morphedVertexBuffer: GPUBuffer | null = null;
   private morphBindGroup: GPUBindGroup | null = null;
   private morphVertexCount: number = 0;
+  // P0-05: live GPU sparse-morph state (channels = 157 sliders + 3 somatotype).
+  private gpuMorphSet: SparseMorphSet | null = null;
+  private gpuMorphActive: boolean = false;
+  private gpuMorphDirty: boolean = false;
+  private gpuRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingSomatotype: [number, number, number] | null = null;
+  // P0-05: persistent buffer capacities (no destroy/create churn per event).
+  private vertexCapacityBytes: number = 0;
+  private indexCapacityBytes: number = 0;
+  /** P0-10: model load failures surface here (and throw to the caller). */
+  public onModelLoadError?: (message: string) => void;
 
   // Somatotype & Morphs State (Sub-Sprint 3.3 & 3.5)
   public somatotypeEndo: number = 0.33;
@@ -886,6 +923,9 @@ export class WebGpuViewportRenderer {
     this.currentPreset = preset;
     if (headScale !== undefined) this.headScale = headScale;
     if (headRatio !== undefined) this.headRatio = headRatio;
+    // P0-05: sparse morph channels only exist for the mannequin base.
+    if (preset !== "mannequin") this.gpuMorphActive = false;
+    else if (this.gpuMorphSet && this.morphBindGroup) this.gpuMorphActive = true;
     this.buildGeometryBuffers();
   }
 
@@ -903,16 +943,19 @@ export class WebGpuViewportRenderer {
     torsoLength?: number;
     heightOverall?: number;
   }) {
-    if (params.headScale !== undefined) this.headScale = params.headScale;
-    if (params.headRatio !== undefined) this.headRatio = params.headRatio;
-    if (params.shoulderWidth !== undefined) this.shoulderWidth = params.shoulderWidth;
-    if (params.legLength !== undefined) this.legLength = params.legLength;
-    if (params.armLength !== undefined) this.armLength = params.armLength;
-    if (params.neckLength !== undefined) this.neckLength = params.neckLength;
-    if (params.torsoLength !== undefined) this.torsoLength = params.torsoLength;
-    if (params.heightOverall !== undefined) this.heightOverall = params.heightOverall;
+    if (params.headScale !== undefined) this.headScale = sanitizeFinite(params.headScale, this.headScale);
+    if (params.headRatio !== undefined) this.headRatio = sanitizeFinite(params.headRatio, this.headRatio);
+    if (params.shoulderWidth !== undefined) this.shoulderWidth = sanitizeFinite(params.shoulderWidth, this.shoulderWidth);
+    if (params.legLength !== undefined) this.legLength = sanitizeFinite(params.legLength, this.legLength);
+    if (params.armLength !== undefined) this.armLength = sanitizeFinite(params.armLength, this.armLength);
+    if (params.neckLength !== undefined) this.neckLength = sanitizeFinite(params.neckLength, this.neckLength);
+    if (params.torsoLength !== undefined) this.torsoLength = sanitizeFinite(params.torsoLength, this.torsoLength);
+    if (params.heightOverall !== undefined) this.heightOverall = sanitizeFinite(params.heightOverall, this.heightOverall);
 
     if (this.currentPreset === "mannequin") {
+      // P0-05: proportions bake into the GPU base → invalidate + rebuild debounced.
+      this.gpuMorphActive = false;
+      this.scheduleGpuMorphRebuild();
       this.buildGeometryBuffers();
     }
   }
@@ -993,44 +1036,211 @@ export class WebGpuViewportRenderer {
     });
   }
 
-  public setSomatotype(endo: number, meso: number, ecto: number) {
-    this.somatotypeEndo = endo;
-    this.somatotypeMeso = meso;
-    this.somatotypeEcto = ecto;
-    if (this.currentPreset === "mannequin") {
-      this.buildGeometryBuffers();
+  // ------------------------------------------------------------------
+  // P0-05: live GPU sparse-morph path (was dead code — upload never called)
+  // ------------------------------------------------------------------
+
+  /** Coverage report: every catalog slider deforms (explicit or procedural). */
+  public getMorphCoverage(): { implemented: number; total: number; explicit: number } {
+    const total = CANONICAL_SLIDERS.length;
+    let explicit = 0;
+    for (const s of CANONICAL_SLIDERS) if (isExplicitMorph(s.id)) explicit++;
+    return { implemented: total, total, explicit };
+  }
+
+  private gpuBuildPending: boolean = false;
+
+  private scheduleGpuMorphRebuild(): void {
+    if (this.gpuRebuildTimer !== null) clearTimeout(this.gpuRebuildTimer);
+    this.gpuRebuildTimer = setTimeout(() => {
+      this.gpuRebuildTimer = null;
+      if (!this.device || !this.morphPipeline) return;
+      if (this.currentPreset !== "mannequin") return;
+      if (!this.canonicalBaseVertices || !this.canonicalIndices) return;
+      try {
+        this.rebuildGpuMorphSet();
+      } catch (e) {
+        console.warn("[ANIGO 3D] scheduled GPU morph rebuild failed:", e);
+      }
+    }, 250);
+  }
+
+  /** Channel weights for the current live state (sliders + 3 somatotype). */
+  private currentChannelWeights(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const def of CANONICAL_SLIDERS) {
+      const raw = this.activeMorphWeights.get(def.id);
+      if (raw === undefined) continue;
+      const denom = channelDenominator(def);
+      const w = (raw - def.defaultValue) / denom;
+      if (w !== 0 && Number.isFinite(w)) out.set(def.id, w);
+    }
+    if (this.somatotypeEndo !== 0) out.set(SOMA_CHANNEL_IDS[0], this.somatotypeEndo);
+    if (this.somatotypeMeso !== 0) out.set(SOMA_CHANNEL_IDS[1], this.somatotypeMeso);
+    if (this.somatotypeEcto !== 0) out.set(SOMA_CHANNEL_IDS[2], this.somatotypeEcto);
+    return out;
+  }
+
+  /**
+   * Builds the SparseMorphSet for the current base mesh + proportions by
+   * numeric differentiation of the (linear) deformation engine, then uploads
+   * it via uploadSparseMorphData(). Falls back to CPU on any failure.
+   */
+  private rebuildGpuMorphSet(): void {
+    this.gpuMorphActive = false;
+    this.gpuMorphSet = null;
+    if (!this.device || !this.morphPipeline || !this.morphBindGroupLayout) return;
+    if (this.currentPreset !== "mannequin") return;
+    const base = this.canonicalBaseVertices;
+    const indices = this.canonicalIndices;
+    if (!base || !indices) return;
+
+    const t0 = performance.now();
+    // Save live state (restored in `finally`).
+    const savedWeights = this.activeMorphWeights;
+    const savedEndo = this.somatotypeEndo;
+    const savedMeso = this.somatotypeMeso;
+    const savedEcto = this.somatotypeEcto;
+    const STRIDE = 18; // packVertices floats per vertex
+    // Capture live weights BEFORE the differentiation scratch state.
+    const liveWeights = this.currentChannelWeights();
+    try {
+      // Base at defaults (proportions stay baked in).
+      this.activeMorphWeights = new Map();
+      this.somatotypeEndo = 0;
+      this.somatotypeMeso = 0;
+      this.somatotypeEcto = 0;
+      const baseOut = this.applyAnatomicalDeformations(base, indices);
+      const vCount = Math.floor(baseOut.vertices.length / STRIDE);
+      const basePos = new Float32Array(vCount * 3);
+      const baseNorm = new Float32Array(vCount * 3);
+      for (let v = 0; v < vCount; v++) {
+        basePos[v * 3] = baseOut.vertices[v * STRIDE];
+        basePos[v * 3 + 1] = baseOut.vertices[v * STRIDE + 1];
+        basePos[v * 3 + 2] = baseOut.vertices[v * STRIDE + 2];
+        baseNorm[v * 3] = baseOut.vertices[v * STRIDE + 3];
+        baseNorm[v * 3 + 1] = baseOut.vertices[v * STRIDE + 4];
+        baseNorm[v * 3 + 2] = baseOut.vertices[v * STRIDE + 5];
+      }
+      const extract = (packed: Float32Array): { positions: Float32Array; normals: Float32Array } => {
+        const positions = new Float32Array(vCount * 3);
+        const normals = new Float32Array(vCount * 3);
+        for (let v = 0; v < vCount; v++) {
+          positions[v * 3] = packed[v * STRIDE];
+          positions[v * 3 + 1] = packed[v * STRIDE + 1];
+          positions[v * 3 + 2] = packed[v * STRIDE + 2];
+          normals[v * 3] = packed[v * STRIDE + 3];
+          normals[v * 3 + 1] = packed[v * STRIDE + 4];
+          normals[v * 3 + 2] = packed[v * STRIDE + 5];
+        }
+        return { positions, normals };
+      };
+
+      const perChannel: Array<{ sliderId: string; positions: Float32Array; normals: Float32Array }> = [];
+      for (const def of CANONICAL_SLIDERS) {
+        const denom = channelDenominator(def);
+        this.activeMorphWeights = new Map([[def.id, def.defaultValue + denom]]);
+        const ch = this.applyAnatomicalDeformations(base, indices);
+        const pn = extract(ch.vertices);
+        perChannel.push({ sliderId: def.id, positions: pn.positions, normals: pn.normals });
+      }
+      // Linear somatotype pseudo-channels.
+      this.activeMorphWeights = new Map();
+      this.somatotypeEndo = 1;
+      this.somatotypeMeso = 0;
+      this.somatotypeEcto = 0;
+      {
+        const pn = extract(this.applyAnatomicalDeformations(base, indices).vertices);
+        perChannel.push({ sliderId: SOMA_CHANNEL_IDS[0], positions: pn.positions, normals: pn.normals });
+      }
+      this.somatotypeEndo = 0;
+      this.somatotypeMeso = 1;
+      this.somatotypeEcto = 0;
+      {
+        const pn = extract(this.applyAnatomicalDeformations(base, indices).vertices);
+        perChannel.push({ sliderId: SOMA_CHANNEL_IDS[1], positions: pn.positions, normals: pn.normals });
+      }
+      this.somatotypeEndo = 0;
+      this.somatotypeMeso = 0;
+      this.somatotypeEcto = 1;
+      {
+        const pn = extract(this.applyAnatomicalDeformations(base, indices).vertices);
+        perChannel.push({ sliderId: SOMA_CHANNEL_IDS[2], positions: pn.positions, normals: pn.normals });
+      }
+
+      const set = buildSparseMorphSet(vCount, basePos, baseNorm, perChannel);
+      this.uploadSparseMorphData(
+        {
+          activeChannels: set.channels.length,
+          totalVertices: set.totalVertices,
+          totalDeltas: set.totalDeltas,
+        },
+        baseOut.vertices,
+        set.deltasF32,
+        packChannelWeights(set, liveWeights)
+      );
+      this.gpuMorphSet = set;
+      this.gpuMorphActive = true;
+      this.gpuMorphDirty = false;
+      const vramKB =
+        (baseOut.vertices.byteLength + set.deltasF32.byteLength + set.channels.length * 16) / 1024;
+      console.info(
+        `[ANIGO 3D] GPU sparse morphs live: ${set.channels.length} channels, ` +
+          `${set.totalDeltas} deltas, ~${vramKB.toFixed(0)} KB, built in ${(performance.now() - t0).toFixed(0)} ms`
+      );
+    } catch (e) {
+      console.warn("[ANIGO 3D] GPU morph build failed, CPU fallback:", e);
+      this.gpuMorphActive = false;
+      this.gpuMorphSet = null;
+    } finally {
+      this.activeMorphWeights = savedWeights;
+      this.somatotypeEndo = savedEndo;
+      this.somatotypeMeso = savedMeso;
+      this.somatotypeEcto = savedEcto;
     }
   }
 
-  public setGenderDimorphism(gender: number) {
-    // P1-09 gender queue — batch with morph sliders
-    const g = Math.max(0.0, Math.min(1.0, gender));
-    this.pendingGender = g;
-    this.morphDirty = true;
-    if (this.morphRaf === null) {
-      this.morphRaf = requestAnimationFrame(() => {
-        this.morphRaf = null;
-        if (!this.morphDirty) return;
-        this.morphDirty = false;
-        const batch = new Map(this.pendingMorphSliders);
-        this.pendingMorphSliders.clear();
-        const pg = this.pendingGender; this.pendingGender = null;
-        this.flushPendingMorphBatch(batch, pg);
-      });
-    }
-    return;
+  public setSomatotype(endo: number, meso: number, ecto: number) {
+    // P0-02: sanitize at the boundary (NaN/Inf can never enter the engine).
+    // NOTE (P1-02 follow-up): the TS viewport still treats components as
+    // independent amplitudes while Rust uses normalized barycentric coords;
+    // unification under one engine is tracked separately.
+    const e = clampNumber(sanitizeFinite(endo, this.somatotypeEndo), 0, 1);
+    const m = clampNumber(sanitizeFinite(meso, this.somatotypeMeso), 0, 1);
+    const c = clampNumber(sanitizeFinite(ecto, this.somatotypeEcto), 0, 1);
+    this.pendingSomatotype = [e, m, c];
+    this.queueMorphFlush();
   }
-  private _orig_setGender_placeholder(){}
+
+  public setGenderDimorphism(gender: number) {
+    // P0-02: NaN guard — genderDimorphism can never become NaN again.
+    const g = clampNumber(sanitizeFinite(gender, this.genderDimorphism), 0.0, 1.0);
+    this.pendingGender = g;
+    this.queueMorphFlush();
+  }
+
   public _setGenderDimorphism_original(gender: number) {
-    this.genderDimorphism = Math.max(0.0, Math.min(1.0, gender));
+    this.genderDimorphism = clampNumber(sanitizeFinite(gender, this.genderDimorphism), 0.0, 1.0);
     if (this.currentPreset === "mannequin") {
       this.buildGeometryBuffers();
     }
   }
 
   public setMorphSlider(name: string, weight: number) {
-    // P1-09 queue slider — coalesce per-frame (was dispatching GPU every pointermove)
-    this.pendingMorphSliders.set(name, weight);
+    // P0-09: unknown ids are rejected loudly (no orphan state); known ids
+    // are catalog-clamped on this write path like every other.
+    if (!isKnownSliderId(name)) {
+      console.warn(`[ANIGO 3D] setMorphSlider: unknown slider "${name}" ignored`);
+      return;
+    }
+    const clamped = clampCatalog(name, weight);
+    if (clamped === null) return;
+    this.pendingMorphSliders.set(name, clamped);
+    this.queueMorphFlush();
+  }
+
+  /** P0-05: coalesces all morph/gender/somatotype writes to ONE rebuild per frame. */
+  private queueMorphFlush(): void {
     this.morphDirty = true;
     if (this.morphRaf === null) {
       this.morphRaf = requestAnimationFrame(() => {
@@ -1039,32 +1249,52 @@ export class WebGpuViewportRenderer {
         this.morphDirty = false;
         const batch = new Map(this.pendingMorphSliders);
         this.pendingMorphSliders.clear();
-        const g = this.pendingGender; this.pendingGender = null;
-        this.flushPendingMorphBatch(batch, g);
+        const g = this.pendingGender;
+        this.pendingGender = null;
+        const s = this.pendingSomatotype;
+        this.pendingSomatotype = null;
+        this.flushPendingMorphBatch(batch, g, s);
       });
     }
-    return;
   }
-  private flushPendingMorphBatch(batch: Map<string, number>, pendingGender: number | null): void {
+
+  private flushPendingMorphBatch(
+    batch: Map<string, number>,
+    pendingGender: number | null,
+    pendingSoma: [number, number, number] | null
+  ): void {
     try {
       for (const [n, w] of batch) {
-        (this as any)._applyMorphSliderInternal(n, w);
+        this.activeMorphWeights.set(n, w);
       }
       if (pendingGender !== null) {
         this.genderDimorphism = pendingGender;
       }
-      const ch = (this as any).morphChannelsData as Float32Array | undefined;
-      if (ch && this.morphChannelsBuffer && this.device) {
-        this.device.queue.writeBuffer(this.morphChannelsBuffer as ArrayBuffer, 0, ch as any);
+      if (pendingSoma !== null) {
+        this.somatotypeEndo = pendingSoma[0];
+        this.somatotypeMeso = pendingSoma[1];
+        this.somatotypeEcto = pendingSoma[2];
       }
-    } catch (e) { console.warn('[P1-09] flush batch', e); }
+      if (this.currentPreset !== "mannequin") return;
+      if (this.gpuMorphActive && this.gpuMorphSet) {
+        // P0-05: GPU path — weights upload happens in renderWebGPU.
+        this.gpuMorphDirty = true;
+        return;
+      }
+      // CPU fallback path — exactly ONE rebuild for the whole batch.
+      this.buildGeometryBuffers();
+    } catch (e) {
+      console.warn("[ANIGO 3D] flushPendingMorphBatch:", e);
+    }
   }
+
   private _applyMorphSliderInternal(name: string, weight: number) {
     this.activeMorphWeights.set(name, weight);
-    if (this.currentPreset === "mannequin") {
+    if (this.currentPreset === "mannequin" && !this.gpuMorphActive) {
       this.buildGeometryBuffers();
+    } else {
+      this.gpuMorphDirty = true;
     }
-  
   }
 
   public setLight(
@@ -1192,21 +1422,27 @@ export class WebGpuViewportRenderer {
 
     this.indexCount = data.indices.length;
 
-    // WebGPU Buffers
+    // WebGPU Buffers — P0-05: persistent pair, recreated ONLY on growth.
     if (this.device) {
-      if (this.vertexBuffer) this.vertexBuffer.destroy();
-      if (this.indexBuffer) this.indexBuffer.destroy();
-
-      this.vertexBuffer = this.device.createBuffer({
-        size: data.vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
+      if (!this.vertexBuffer || data.vertices.byteLength > this.vertexCapacityBytes) {
+        this.vertexBuffer?.destroy();
+        // 1.5x headroom + 256B alignment to absorb small topology changes.
+        this.vertexCapacityBytes = Math.ceil(data.vertices.byteLength * 1.5 / 256) * 256;
+        this.vertexBuffer = this.device.createBuffer({
+          size: this.vertexCapacityBytes,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+      }
       this.device.queue.writeBuffer(this.vertexBuffer, 0, data.vertices);
 
-      this.indexBuffer = this.device.createBuffer({
-        size: data.indices.byteLength,
-        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      });
+      if (!this.indexBuffer || data.indices.byteLength > this.indexCapacityBytes) {
+        this.indexBuffer?.destroy();
+        this.indexCapacityBytes = Math.ceil(data.indices.byteLength * 1.5 / 256) * 256;
+        this.indexBuffer = this.device.createBuffer({
+          size: this.indexCapacityBytes,
+          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        });
+      }
       this.device.queue.writeBuffer(this.indexBuffer, 0, data.indices);
     }
 
@@ -1383,6 +1619,30 @@ export class WebGpuViewportRenderer {
     const endo = this.somatotypeEndo;
     const meso = this.somatotypeMeso;
     const ecto = this.somatotypeEcto;
+
+    // P0-04: generic fallback prep — bounds + active non-explicit sliders.
+    // Guarantees EVERY catalog slider exposed in the UI deforms the mesh.
+    let meshBounds: MeshBounds = { minY: 0, maxY: 1.7 };
+    {
+      let mn = Infinity;
+      let mx = -Infinity;
+      for (const bv of baseVertices) {
+        const by = bv.pos[1];
+        if (by < mn) mn = by;
+        if (by > mx) mx = by;
+      }
+      if (mn < mx && Number.isFinite(mn) && Number.isFinite(mx)) {
+        meshBounds = { minY: mn, maxY: mx };
+      }
+    }
+    const genericActive: Array<{ def: MorphSlider; w: number }> = [];
+    for (const [id, raw] of this.activeMorphWeights) {
+      if (isExplicitMorph(id)) continue;
+      const def = getSliderDef(id);
+      if (!def) continue;
+      const w = normalizeWeight(def, raw);
+      if (w !== 0 && Number.isFinite(w)) genericActive.push({ def, w });
+    }
 
     for (let i = 0; i < vertices.length; i++) {
       const v = vertices[i];
@@ -1636,32 +1896,40 @@ export class WebGpuViewportRenderer {
         }
       }
 
+      // --- P0-04: generic procedural fallback (every non-explicit slider) ---
+      if (genericActive.length > 0) {
+        for (let gi = 0; gi < genericActive.length; gi++) {
+          const g = genericActive[gi];
+          const d = genericMorphDelta(g.def, g.w, x, y, z, nx, ny, nz, meshBounds, GENERIC_DELTA_TMP);
+          if (d !== null) {
+            x += d.dx;
+            y += d.dy;
+            z += d.dz;
+          }
+        }
+      }
+
       v.pos[0] = x;
       v.pos[1] = y;
       v.pos[2] = z;
     }
 
-    // P0-11: recompute normals after anatomical deformations (was stale → wrong half-lambert)
+    // P0-06: normals recomputed after deformation via the shared pure
+    // implementation (identical math, now unit-tested in morph_engine).
     {
-      const acc = new Float32Array(vertices.length * 3);
-      for (let i = 0; i < rawIndices.length; i += 3) {
-        const a = rawIndices[i], b = rawIndices[i+1], c = rawIndices[i+2];
-        const pa = vertices[a].pos, pb = vertices[b].pos, pc = vertices[c].pos;
-        const ab = [pb[0]-pa[0], pb[1]-pa[1], pb[2]-pa[2]];
-        const ac = [pc[0]-pa[0], pc[1]-pa[1], pc[2]-pa[2]];
-        const nx = ab[1]*ac[2] - ab[2]*ac[1];
-        const ny = ab[2]*ac[0] - ab[0]*ac[2];
-        const nz = ab[0]*ac[1] - ab[1]*ac[0];
-        const len = Math.hypot(nx, ny, nz) || 1.0;
-        const fn = [nx/len, ny/len, nz/len];
-        acc[a*3] += fn[0]; acc[a*3+1] += fn[1]; acc[a*3+2] += fn[2];
-        acc[b*3] += fn[0]; acc[b*3+1] += fn[1]; acc[b*3+2] += fn[2];
-        acc[c*3] += fn[0]; acc[c*3+1] += fn[1]; acc[c*3+2] += fn[2];
-      }
+      const positions = new Float32Array(vertices.length * 3);
+      const normals = new Float32Array(vertices.length * 3);
       for (let i = 0; i < vertices.length; i++) {
-        const x = acc[i*3], y = acc[i*3+1], z = acc[i*3+2];
-        const l = Math.hypot(x,y,z);
-        if (l > 1e-6) vertices[i].normal = [x/l, y/l, z/l] as any;
+        positions[i * 3] = vertices[i].pos[0];
+        positions[i * 3 + 1] = vertices[i].pos[1];
+        positions[i * 3 + 2] = vertices[i].pos[2];
+        normals[i * 3] = vertices[i].normal[0];
+        normals[i * 3 + 1] = vertices[i].normal[1];
+        normals[i * 3 + 2] = vertices[i].normal[2];
+      }
+      recomputeNormals(positions, rawIndices, normals);
+      for (let i = 0; i < vertices.length; i++) {
+        vertices[i].normal = [normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]];
       }
     }
 
@@ -1699,145 +1967,74 @@ export class WebGpuViewportRenderer {
         this.canonicalIndices = cached.indices;
         this.canonicalGender = gender;
         this.buildGeometryBuffers();
+        // P0-05: GPU channels follow the active base mesh.
+        this.gpuMorphActive = false;
+        this.gpuMorphSet = null;
+        this.scheduleGpuMorphRebuild();
         return;
       }
       const resp = await fetch(url, { signal: this.loadAbortController.signal });
       if (!resp.ok) throw new Error(`[P2-12] GLB fetch failed ${resp.status} ${url}`); // P2-12
       const buffer = await resp.arrayBuffer();
-      const dv = new DataView(buffer);
-      
-      const magic = dv.getUint32(0, true);
-      const version = dv.getUint32(4, true);
-      const length = dv.getUint32(8, true);
-      
-      const chunk0Len = dv.getUint32(12, true);
-      const chunk0Type = dv.getUint32(16, true); // JSON
-      const jsonStr = new TextDecoder().decode(new Uint8Array(buffer, 20, chunk0Len));
-      const gltf = JSON.parse(jsonStr);
-      
-      let binBuffer: ArrayBuffer | null = null;
-      let chunk1Offset = 20 + chunk0Len;
-      if (chunk1Offset < length) {
-        const chunk1Len = dv.getUint32(chunk1Offset, true);
-        const chunk1Type = dv.getUint32(chunk1Offset + 4, true); // BIN
-        binBuffer = buffer.slice(chunk1Offset + 8, chunk1Offset + 8 + chunk1Len);
+      // P0-10: validating multi-primitive loader (magic/version/chunks checked,
+      // quantized attributes, node transforms, skins preserved — see gltf_loader).
+      let decoded;
+      try {
+        decoded = loadGlbMesh(buffer);
+      } catch (e) {
+        if (e instanceof GlbParseError) {
+          throw new Error(`Modelo "${gender}" inválido (${url}): ${e.message}`);
+        }
+        throw e;
       }
-      
-      if (!binBuffer || !gltf.meshes || gltf.meshes.length === 0) return;
-      
-      // P2-12 multi-mesh/multi-primitive support stub (currently mesh0 prim0, full merge in next iteration)
-      const prim = gltf.meshes[0].primitives[0]; // TODO iterate all meshes
-      
-      const getAccessorData = (accessorIdx: number) => {
-          const accessor = gltf.accessors[accessorIdx];
-          const bufferView = gltf.bufferViews[accessor.bufferView];
-          const offset = (bufferView.byteOffset || 0) + (accessor.byteOffset || 0);
-          return { accessor, offset, bufferView };
-      };
-
-      const posData = getAccessorData(prim.attributes.POSITION);
-      const normData = getAccessorData(prim.attributes.NORMAL);
-      const uvData = prim.attributes.TEXCOORD_0 !== undefined ? getAccessorData(prim.attributes.TEXCOORD_0) : null;
-      // P0-01: Resolve anime vertex color channel with canonical priority and neutral fallback.
-      // GLB canonicals store shading attributes as _ANIGO_COLOR; COLOR_0 is legacy fallback.
-      // Neutral [1, 0.5, 1, 1] is required because G is a bias centred at 0.5.
+      for (const w of decoded.warnings) {
+        console.warn(`[ANIGO 3D] GLB ${gender}: ${w}`);
+      }
+      const mesh = decoded.mesh;
+      // ANIME shading channel neutral: G is a bias centred at 0.5.
       const ANIME_ATTR_NEUTRAL: [number, number, number, number] = [1.0, 0.5, 1.0, 1.0];
-      let colAttrName: string | null = null;
-      if (prim.attributes._ANIGO_COLOR !== undefined) colAttrName = "_ANIGO_COLOR";
-      else if (prim.attributes.COLOR_0 !== undefined) colAttrName = "COLOR_0";
-      const colData = colAttrName !== null ? getAccessorData((prim.attributes as any)[colAttrName]) : null;
-      if (!colData) {
-        console.warn(`[ANIGO][GLTF] mesh sem canal de shading (${colAttrName ?? "nenhum"}); usando neutro ${ANIME_ATTR_NEUTRAL}`);
-      }
-      const idxData = prim.indices !== undefined ? getAccessorData(prim.indices) : null;
-      
-      const vertexCount = posData.accessor.count;
-      
-      const readFloatArray = (accData: any, numComponents: number) => {
-        const arr = new Float32Array(vertexCount * numComponents);
-        const stride = accData.bufferView.byteStride || (numComponents * 4);
-        const dv2 = new DataView(binBuffer!);
-        for (let i = 0; i < vertexCount; i++) {
-          for (let j = 0; j < numComponents; j++) {
-            arr[i * numComponents + j] = dv2.getFloat32(accData.offset + i * stride + j * 4, true);
-          }
-        }
-        return arr;
-      };
+      const vertexCount = mesh.positions.length / 3;
+      console.info(
+        `[ANIGO 3D] GLB ${gender}: ${vertexCount} verts, ${mesh.indices.length} idx, ` +
+          `${mesh.primitiveCount} primitive(s)${mesh.joints ? ", skinned" : ", rigid"}`
+      );
 
-      // Supports FLOAT (5126), UNSIGNED_BYTE (5121) and UNSIGNED_SHORT (5123) with normalization, matching Rust mesh.rs.
-      const readColorArray = (accData: any, numComponents: number) => {
-        const compType: number = accData.accessor.componentType;
-        const typeStr: string = accData.accessor.type;
-        const comps = typeStr === "VEC4" ? 4 : typeStr === "VEC3" ? 3 : numComponents;
-        const strideBytes = accData.bufferView.byteStride || (comps * (compType === 5121 ? 1 : compType === 5123 ? 2 : 4));
-        const dv2 = new DataView(binBuffer!);
-        const out = new Float32Array(vertexCount * comps);
-        for (let i = 0; i < vertexCount; i++) {
-          const base = accData.offset + i * strideBytes;
-          for (let j = 0; j < comps; j++) {
-            if (compType === 5126) {
-              out[i * comps + j] = dv2.getFloat32(base + j * 4, true);
-            } else if (compType === 5121) {
-              out[i * comps + j] = dv2.getUint8(base + j) / 255.0;
-            } else if (compType === 5123) {
-              out[i * comps + j] = dv2.getUint16(base + j * 2, true) / 65535.0;
-            } else {
-              // Fallback: treat as float
-              out[i * comps + j] = dv2.getFloat32(base + j * 4, true);
-            }
-          }
-        }
-        return { arr: out, comps };
-      };
-
-      const positions = readFloatArray(posData, 3);
-      const normals = readFloatArray(normData, 3);
-      const uvs = uvData ? readFloatArray(uvData, 2) : new Float32Array(vertexCount * 2);
-      
-      let colors: Float32Array | null = null;
-      let colComps = 4;
-      if (colData) {
-        const decoded = readColorArray(colData, 4);
-        colors = decoded.arr;
-        colComps = decoded.comps;
-      }
-      
-      const vertices: VertexData[] = [];
+      const vertices: VertexData[] = new Array(vertexCount);
       for (let i = 0; i < vertexCount; i++) {
-          let r = ANIME_ATTR_NEUTRAL[0], g = ANIME_ATTR_NEUTRAL[1], b = ANIME_ATTR_NEUTRAL[2], a = ANIME_ATTR_NEUTRAL[3];
-          if (colors) {
-              if (colComps === 4) {
-                  r = colors[i*4]; g = colors[i*4+1]; b = colors[i*4+2]; a = colors[i*4+3];
-              } else {
-                  r = colors[i*3]; g = colors[i*3+1]; b = colors[i*3+2];
-              }
+        let r = ANIME_ATTR_NEUTRAL[0];
+        let g = ANIME_ATTR_NEUTRAL[1];
+        let b = ANIME_ATTR_NEUTRAL[2];
+        let a = ANIME_ATTR_NEUTRAL[3];
+        if (mesh.colors) {
+          if (mesh.colorComps === 4) {
+            r = mesh.colors[i * 4];
+            g = mesh.colors[i * 4 + 1];
+            b = mesh.colors[i * 4 + 2];
+            a = mesh.colors[i * 4 + 3];
+          } else {
+            r = mesh.colors[i * 3];
+            g = mesh.colors[i * 3 + 1];
+            b = mesh.colors[i * 3 + 2];
           }
-          vertices.push({
-              pos: [positions[i*3], positions[i*3+1], positions[i*3+2]],
-              normal: [normals[i*3], normals[i*3+1], normals[i*3+2]],
-              uv: [uvs[i*2], uvs[i*2+1]],
-              color: [r, g, b, a],
-              joints: [0,0,0,0],
-              weights: [1,0,0,0],
-          });
+        }
+        vertices[i] = {
+          pos: [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]],
+          normal: [mesh.normals[i * 3], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]],
+          uv: [mesh.uvs[i * 2], mesh.uvs[i * 2 + 1]],
+          color: [r, g, b, a],
+          joints:
+            mesh.joints !== null
+              ? [mesh.joints[i * 4], mesh.joints[i * 4 + 1], mesh.joints[i * 4 + 2], mesh.joints[i * 4 + 3]]
+              : [0, 0, 0, 0],
+          weights:
+            mesh.weights !== null
+              ? [mesh.weights[i * 4], mesh.weights[i * 4 + 1], mesh.weights[i * 4 + 2], mesh.weights[i * 4 + 3]]
+              : [1, 0, 0, 0],
+        };
       }
-      
-      let rawIndices: number[] = [];
-      if (idxData) {
-          const dv2 = new DataView(binBuffer!);
-          const stride = idxData.bufferView.byteStride || (idxData.accessor.componentType === 5123 ? 2 : 4);
-          for (let i = 0; i < idxData.accessor.count; i++) {
-              if (idxData.accessor.componentType === 5123) {
-                  rawIndices.push(dv2.getUint16(idxData.offset + i * stride, true));
-              } else if (idxData.accessor.componentType === 5125) {
-                  rawIndices.push(dv2.getUint32(idxData.offset + i * stride, true));
-              }
-          }
-      } else {
-          for (let i=0; i<vertexCount; i++) rawIndices.push(i);
-      }
-      
+
+      const rawIndices: number[] = Array.from(mesh.indices);
+
       this.canonicalBaseVertices = vertices;
       this.canonicalIndices = new Uint32Array(rawIndices);
       this.canonicalModelCache.set(gender, { vertices, indices: new Uint32Array(rawIndices) });
@@ -1846,8 +2043,16 @@ export class WebGpuViewportRenderer {
 
       this.currentPreset = "mannequin";
       this.buildGeometryBuffers();
+      // P0-05: GPU channels follow the active base mesh.
+      this.gpuMorphActive = false;
+      this.gpuMorphSet = null;
+      this.scheduleGpuMorphRebuild();
     } catch (e) {
+      // P0-10: failures propagate (caller + UI callback) — never silent cube.
+      if (e instanceof DOMException && e.name === "AbortError") return;
       console.error("[ANIGO 3D] Failed to load canonical model:", e);
+      this.onModelLoadError?.(e instanceof Error ? e.message : String(e));
+      throw e;
     }
   }
 
@@ -2349,7 +2554,48 @@ export class WebGpuViewportRenderer {
     // 5. Render Passes (Compute Sparse Morphs followed by NPR Cel-Shading)
     const commandEncoder = this.device.createCommandEncoder();
 
-    if (this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0) {
+    // P0-05: lazy one-time build once model + compute pipeline both exist.
+    if (
+      !this.gpuMorphSet &&
+      !this.gpuBuildPending &&
+      this.morphPipeline &&
+      this.currentPreset === "mannequin" &&
+      this.canonicalBaseVertices &&
+      this.canonicalIndices
+    ) {
+      this.gpuBuildPending = true;
+      setTimeout(() => {
+        try {
+          this.rebuildGpuMorphSet();
+        } catch (e) {
+          console.warn("[ANIGO 3D] lazy GPU morph build failed:", e);
+        } finally {
+          this.gpuBuildPending = false;
+        }
+      }, 50);
+    }
+
+    if (
+      this.gpuMorphActive &&
+      this.gpuMorphSet &&
+      this.morphPipeline &&
+      this.morphBindGroup &&
+      this.morphedVertexBuffer &&
+      this.morphVertexCount > 0
+    ) {
+      // P0-05: per-frame channel weights (slider + somatotype), then dispatch.
+      if (this.gpuMorphDirty && this.morphChannelsBuffer) {
+        try {
+          this.device.queue.writeBuffer(
+            this.morphChannelsBuffer,
+            0,
+            packChannelWeights(this.gpuMorphSet, this.currentChannelWeights())
+          );
+        } catch (e) {
+          console.warn("[ANIGO 3D] channel weight upload failed:", e);
+        }
+        this.gpuMorphDirty = false;
+      }
       this.dispatchSparseMorphs(commandEncoder, this.morphVertexCount);
     }
 
@@ -2374,7 +2620,7 @@ export class WebGpuViewportRenderer {
       },
     });
 
-    const activeVbo = (this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
+    const activeVbo = (this.gpuMorphActive && this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
       ? this.morphedVertexBuffer
       : this.vertexBuffer!;
     passEncoder.setVertexBuffer(0, activeVbo);
@@ -2646,6 +2892,7 @@ export class WebGpuViewportRenderer {
     }
     this.recenterAnim = null;
     if (this.morphRaf !== null) { try { cancelAnimationFrame(this.morphRaf); } catch (_) {} this.morphRaf = null; }
+    if (this.gpuRebuildTimer !== null) { try { clearTimeout(this.gpuRebuildTimer); } catch (_) {} this.gpuRebuildTimer = null; }
     this.pendingMorphSliders?.clear?.();
     this.isPaused = true;
     // P1-15: complete resource cleanup (was leaking pipelines/bindGroups/compute)

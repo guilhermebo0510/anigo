@@ -1,6 +1,8 @@
 // ANIGO Viewport 3D Tactile Manipulation Engine (Sub-Sprint 3.13)
 // Real-time raycasting against canonical humanoid collision capsules and screen-to-slider projection.
 
+import { isKnownSliderId, type SliderId } from "../../services/character_state";
+
 export type AnatomicalSegment =
   | "Head"
   | "Neck"
@@ -36,9 +38,9 @@ export interface Capsule {
 }
 
 export interface TactileDragResult {
-  primarySlider: string;
+  primarySlider: SliderId;
   primaryDelta: number;
-  secondarySlider?: string;
+  secondarySlider?: SliderId;
   secondaryDelta?: number;
 }
 
@@ -403,11 +405,37 @@ export function projectTactileDrag(
       };
     case "LeftCalf":
     case "RightCalf":
+      // P0-09: fixed orphan ids (calf_gastrocnemius_volume / ankle_achilles_definition
+      // never existed in the catalog) → canonical LowerLimbs sliders.
       return {
-        primarySlider: "calf_gastrocnemius_volume",
+        primarySlider: "calf_circumference",
         primaryDelta: dxNdc * 0.50,
-        secondarySlider: "ankle_achilles_definition",
+        secondarySlider: "gastrocnemius_height",
         secondaryDelta: -dyNdc * 0.50,
       };
+  }
+}
+
+/**
+ * P0-09: every slider id emitted by the tactile engine must exist in the
+ * catalog. Throws in dev/tests when violated; the CI contract test asserts
+ * zero orphans across all 13 segments.
+ */
+export function assertTactileIdsValid(): void {
+  const segments: AnatomicalSegment[] = [
+    "Head", "Neck", "Chest", "Waist", "Pelvis",
+    "LeftUpperArm", "RightUpperArm", "LeftForearm", "RightForearm",
+    "LeftThigh", "RightThigh", "LeftCalf", "RightCalf",
+  ];
+  const orphans: string[] = [];
+  for (const seg of segments) {
+    const r = projectTactileDrag(seg, 0.1, 0.1);
+    if (!isKnownSliderId(r.primarySlider)) orphans.push(`${seg}:${r.primarySlider}`);
+    if (r.secondarySlider && !isKnownSliderId(r.secondarySlider)) {
+      orphans.push(`${seg}:${r.secondarySlider}`);
+    }
+  }
+  if (orphans.length > 0) {
+    throw new Error(`[tactile] orphan slider ids: ${orphans.join(", ")}`);
   }
 }

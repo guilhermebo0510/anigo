@@ -39,5 +39,4 @@ export function devicePixelRatioSafe(): number {
   const v = Number.isFinite(raw) ? raw : 1;
   return Math.min(Math.max(v, 1), 2);
 }
-// alias typo compat
-declare global { interface Window { devicePixelRatio?: number; } }
+// NOTE: no global Window augmentation — lib.dom already declares devicePixelRatio.

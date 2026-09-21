@@ -1,22 +1,24 @@
 <script lang="ts">
+  import {
+    NEUTRAL_SOMATOTYPE,
+    clampGenderDimorphism,
+    normalizeSomatotype,
+    sanitizeFinite,
+    type SomatotypeUpdate,
+  } from "../../services/character_state";
+
   interface Props {
     endomorph?: number;
     mesomorph?: number;
     ectomorph?: number;
     genderDimorphism?: number;
-    onUpdate?: (params: {
-      endomorph: number;
-      mesomorph: number;
-      ectomorph: number;
-      genderDimorphism: number;
-      isContinuous?: boolean;
-    }) => void;
+    onUpdate?: (params: SomatotypeUpdate) => void;
   }
 
   let {
-    endomorph = $bindable(0.33),
-    mesomorph = $bindable(0.34),
-    ectomorph = $bindable(0.33),
+    endomorph = $bindable(NEUTRAL_SOMATOTYPE.endo),
+    mesomorph = $bindable(NEUTRAL_SOMATOTYPE.meso),
+    ectomorph = $bindable(NEUTRAL_SOMATOTYPE.ecto),
     genderDimorphism = $bindable(1.0),
     onUpdate = undefined,
   }: Props = $props();
@@ -32,13 +34,11 @@
 
   // Convert (endo, meso, ecto) to SVG coordinates (px, py)
   function coordsToSvg(e: number, m: number, ec: number): { x: number; y: number } {
-    const sum = (e + m + ec) || 1.0;
-    const ne = e / sum;
-    const nm = m / sum;
-    const nec = ec / sum;
+    // P0-02: sanitize at the boundary — NaN/Inf can never reach the puck.
+    const n = normalizeSomatotype(e, m, ec);
     return {
-      x: ne * V_ENDO.x + nm * V_MESO.x + nec * V_ECTO.x,
-      y: ne * V_ENDO.y + nm * V_MESO.y + nec * V_ECTO.y,
+      x: n.endo * V_ENDO.x + n.meso * V_MESO.x + n.ecto * V_ECTO.x,
+      y: n.endo * V_ENDO.y + n.meso * V_MESO.y + n.ecto * V_ECTO.y,
     };
   }
 
@@ -67,12 +67,20 @@
 
   let puckPos = $derived(coordsToSvg(endomorph, mesomorph, ectomorph));
 
-  function updateFromSvgPoint(px: number, py: number, isContinuous = true) {
-    const c = svgToCoords(px, py);
-    endomorph = c.endo;
-    mesomorph = c.meso;
-    ectomorph = c.ecto;
+  // P0-02: readouts never display NaN even if a parent binds garbage.
+  let safeEndo = $derived(sanitizeFinite(endomorph, NEUTRAL_SOMATOTYPE.endo));
+  let safeMeso = $derived(sanitizeFinite(mesomorph, NEUTRAL_SOMATOTYPE.meso));
+  let safeEcto = $derived(sanitizeFinite(ectomorph, NEUTRAL_SOMATOTYPE.ecto));
+  let safeGender = $derived(clampGenderDimorphism(genderDimorphism));
 
+  function emitUpdate(isContinuous: boolean) {
+    // P0-02: normalize + clamp before every emission; the callback contract
+    // guarantees finite components summing to 1 and gender in [0, 1].
+    const n = normalizeSomatotype(endomorph, mesomorph, ectomorph);
+    endomorph = n.endo;
+    mesomorph = n.meso;
+    ectomorph = n.ecto;
+    genderDimorphism = clampGenderDimorphism(genderDimorphism);
     onUpdate?.({
       endomorph,
       mesomorph,
@@ -80,6 +88,14 @@
       genderDimorphism,
       isContinuous,
     });
+  }
+
+  function updateFromSvgPoint(px: number, py: number, isContinuous = true) {
+    const c = svgToCoords(px, py);
+    endomorph = c.endo;
+    mesomorph = c.meso;
+    ectomorph = c.ecto;
+    emitUpdate(isContinuous);
   }
 
   function handlePointerDown(e: PointerEvent) {
@@ -110,39 +126,22 @@
         } catch (_) {}
       }
       isDragging = false;
-      onUpdate?.({
-        endomorph,
-        mesomorph,
-        ectomorph,
-        genderDimorphism,
-        isContinuous: false,
-      });
+      emitUpdate(false);
     }
   }
 
   function handleGenderChange(e: Event) {
     const val = parseFloat((e.target as HTMLInputElement).value);
-    genderDimorphism = val;
-    onUpdate?.({
-      endomorph,
-      mesomorph,
-      ectomorph,
-      genderDimorphism,
-      isContinuous: false,
-    });
+    genderDimorphism = clampGenderDimorphism(Number.isFinite(val) ? val : genderDimorphism);
+    emitUpdate(false);
   }
 
   function applyPreset(endo: number, meso: number, ecto: number) {
-    endomorph = endo;
-    mesomorph = meso;
-    ectomorph = ecto;
-    onUpdate?.({
-      endomorph,
-      mesomorph,
-      ectomorph,
-      genderDimorphism,
-      isContinuous: false,
-    });
+    const n = normalizeSomatotype(endo, meso, ecto);
+    endomorph = n.endo;
+    mesomorph = n.meso;
+    ectomorph = n.ecto;
+    emitUpdate(false);
   }
 </script>
 
@@ -214,15 +213,15 @@
   <div class="readouts-grid">
     <div class="metric-card meso">
       <span class="m-label">Músculo</span>
-      <span class="m-val">{(mesomorph * 100).toFixed(0)}%</span>
+      <span class="m-val">{(safeMeso * 100).toFixed(0)}%</span>
     </div>
     <div class="metric-card endo">
       <span class="m-label">Gordura</span>
-      <span class="m-val">{(endomorph * 100).toFixed(0)}%</span>
+      <span class="m-val">{(safeEndo * 100).toFixed(0)}%</span>
     </div>
     <div class="metric-card ecto">
       <span class="m-label">Magreza</span>
-      <span class="m-val">{(ectomorph * 100).toFixed(0)}%</span>
+      <span class="m-val">{(safeEcto * 100).toFixed(0)}%</span>
     </div>
   </div>
 
@@ -231,12 +230,12 @@
     <div class="gender-header">
       <span class="g-title">DIMORFISMO DE GÊNERO</span>
       <span class="g-status">
-        {#if genderDimorphism > 0.65}
-          Masculino ({((genderDimorphism) * 100).toFixed(0)}%)
-        {:else if genderDimorphism < 0.35}
-          Feminino ({((1 - genderDimorphism) * 100).toFixed(0)}%)
+        {#if safeGender > 0.65}
+          Masculino ({((safeGender) * 100).toFixed(0)}%)
+        {:else if safeGender < 0.35}
+          Feminino ({((1 - safeGender) * 100).toFixed(0)}%)
         {:else}
-          Andrógino ({((genderDimorphism) * 100).toFixed(0)}%)
+          Andrógino ({((safeGender) * 100).toFixed(0)}%)
         {/if}
       </span>
     </div>

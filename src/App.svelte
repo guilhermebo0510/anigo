@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import Viewport from "./components/viewport/Viewport.svelte";
   import { t, getLanguage, setLanguage, type LanguageCode } from "./i18n";
   import { normalizeBridgePayload } from "./services/bridge_normalizer";
@@ -8,7 +8,20 @@
   import { LIGHT_RIGS } from "./config/light_rigs";
   import { IBL_PROBES } from "./services/ibl_service";
   import { MATERIAL_LIBRARY } from "./services/material_library";
-  import { autoSaveService, type ProjectStateSnapshot } from "./services/autosave_service";
+  import { autoSaveService, parseProjectSnapshot, type ProjectStateSnapshot } from "./services/autosave_service";
+  import {
+    CHARACTER_SNAPSHOT_SCHEMA_VERSION,
+    clampCatalog,
+    clampGenderDimorphism,
+    clampNumber,
+    createDefaultCharacterState,
+    getSliderDef,
+    isKnownSliderId,
+    normalizeSomatotype,
+    sanitizeCharacterState,
+    type CharacterState,
+  } from "./services/character_state";
+  import { CANONICAL_SLIDERS } from "./services/morph_catalog";
 
   // Icons
   import UserIcon from "./components/icons/UserIcon.svelte";
@@ -260,24 +273,155 @@
   let morphSliders = $state<Record<string, number>>({});
   let activeCharacterPreset = $state<string | null>(null);
 
+  // P0-07: canonical character mirror — owned by AnatomyInspector when
+  // mounted, by these App mirrors otherwise. History/project snapshots
+  // always serialize getAppCharacterState().
+  let anatomyInspectorRef: any = $state(null);
+  let inspectorCharacter: CharacterState | null = $state(null);
+  let loadedModelGender: "male" | "female" = $state("male");
+
+  function handleInspectorCharacterChange(state: CharacterState) {
+    inspectorCharacter = state;
+    somatotypeEndo = state.somatotype.endo;
+    somatotypeMeso = state.somatotype.meso;
+    somatotypeEcto = state.somatotype.ecto;
+    genderDimorphism = state.genderDimorphism;
+    morphSliders = { ...state.morphSliders };
+    activeCharacterPreset = state.activePresetId;
+    loadedModelGender = state.baseGender;
+    isProjectDirty = true;
+  }
+
+  function handleInspectorProportionsChange(p: {
+    headScale: number; headRatio: number; shoulderWidth: number;
+    legLength: number; armLength: number; neckLength: number;
+  }) {
+    headScale = p.headScale;
+    headRatio = p.headRatio;
+    shoulderWidth = p.shoulderWidth;
+    legLength = p.legLength;
+    armLength = p.armLength;
+    neckLength = p.neckLength;
+  }
+
+  /** Canonical character snapshot: inspector-owned fields + App-owned proportions/groom. */
+  function getAppCharacterState(): CharacterState {
+    let c: CharacterState | null = null;
+    try {
+      c = anatomyInspectorRef?.getCharacterState?.() ?? null;
+    } catch { /* fall through to mirror */ }
+    if (!c) c = inspectorCharacter;
+    const base = c ? sanitizeCharacterState(c) : createDefaultCharacterState();
+    return {
+      ...base,
+      proportions: {
+        headScale, headRatio, shoulderWidth, legLength, armLength, neckLength,
+        torsoLength: 1.0, heightOverall: 1.0,
+      },
+      hair: { volume: hairVolume, thickness: hairThickness, curvature: hairCurvature, strands: hairStrands },
+      cloth: { layer: clothLayer, tension: clothTension, rigidity: clothRigidity, gravity: clothGravity },
+      accessory: {
+        socket: activeSocket, scale: accessoryScale,
+        offsetX: accessoryOffsetX, offsetY: accessoryOffsetY, offsetZ: accessoryOffsetZ,
+      },
+    };
+  }
+
+  /** Pushes a character state to inspector (if mounted) + viewport + mirrors. */
+  function applyCharacterState(c: CharacterState, opts: { swapModel: boolean } = { swapModel: true }) {
+    const s = sanitizeCharacterState(c);
+    inspectorCharacter = s;
+    somatotypeEndo = s.somatotype.endo;
+    somatotypeMeso = s.somatotype.meso;
+    somatotypeEcto = s.somatotype.ecto;
+    genderDimorphism = s.genderDimorphism;
+    morphSliders = { ...s.morphSliders };
+    activeCharacterPreset = s.activePresetId;
+    headScale = s.proportions.headScale;
+    headRatio = s.proportions.headRatio;
+    shoulderWidth = s.proportions.shoulderWidth;
+    legLength = s.proportions.legLength;
+    armLength = s.proportions.armLength;
+    neckLength = s.proportions.neckLength;
+    hairVolume = s.hair.volume;
+    hairThickness = s.hair.thickness;
+    hairCurvature = s.hair.curvature;
+    hairStrands = s.hair.strands;
+    clothLayer = s.cloth.layer;
+    clothTension = s.cloth.tension;
+    clothRigidity = s.cloth.rigidity;
+    clothGravity = s.cloth.gravity;
+    activeSocket = s.accessory.socket;
+    accessoryScale = s.accessory.scale;
+    accessoryOffsetX = s.accessory.offsetX;
+    accessoryOffsetY = s.accessory.offsetY;
+    accessoryOffsetZ = s.accessory.offsetZ;
+
+    try {
+      anatomyInspectorRef?.setCharacterState?.(s);
+    } catch { /* inspector unmounted — drive viewport directly below */ }
+    if (viewportRef) {
+      viewportRef.setSomatotype?.(s.somatotype.endo, s.somatotype.meso, s.somatotype.ecto);
+      viewportRef.setGenderDimorphism?.(s.genderDimorphism);
+      viewportRef.setProportions?.({ ...s.proportions });
+      // Full reset-then-apply so undone morphs return to default.
+      for (const def of CANONICAL_SLIDERS) {
+        const v = s.morphSliders[def.id];
+        viewportRef.setMorphSlider?.(def.id, v !== undefined ? v : def.defaultValue);
+      }
+      if (opts.swapModel && s.baseGender !== loadedModelGender) {
+        loadedModelGender = s.baseGender;
+        viewportRef.loadCanonicalModel?.(s.baseGender)?.catch?.(() => {});
+      }
+    }
+  }
+
+  // Re-sync a remounting inspector (tool switches unmount it) from the mirror.
+  // Runs ONLY on ref change (mount), never on character edits (no feedback loop).
+  let lastSyncedInspector: any = null;
+  $effect(() => {
+    const ref = anatomyInspectorRef;
+    if (ref && ref !== lastSyncedInspector) {
+      lastSyncedInspector = ref;
+      const mirror = untrack(() => inspectorCharacter);
+      if (mirror) {
+        try {
+          ref.setCharacterState(mirror);
+        } catch { /* ignore */ }
+      }
+    } else if (!ref) {
+      lastSyncedInspector = null;
+    }
+  });
+
   function handleTactileDrag(
     primarySlider: string,
     primaryDelta: number,
     secondarySlider?: string,
     secondaryDelta?: number
   ) {
-    if (primarySlider) {
-      const cur = morphSliders[primarySlider] ?? 0.0;
-      const next = cur + primaryDelta;
-      morphSliders[primarySlider] = next;
-      viewportRef?.setMorphSlider?.(primarySlider, next);
-    }
-    if (secondarySlider && secondaryDelta !== undefined) {
-      const cur = morphSliders[secondarySlider] ?? 0.0;
-      const next = cur + secondaryDelta;
-      morphSliders[secondarySlider] = next;
-      viewportRef?.setMorphSlider?.(secondarySlider, next);
-    }
+    // P0-09: validated + catalog-clamped; inspector mirror kept in sync.
+    const applyOne = (id: string, delta: number) => {
+      if (!isKnownSliderId(id) || !Number.isFinite(delta)) return;
+      const def = getSliderDef(id)!;
+      const cur = morphSliders[id] ?? def.defaultValue;
+      const next = clampNumber(cur + delta, def.min, def.max);
+      morphSliders[id] = next;
+      activeCharacterPreset = null;
+      viewportRef?.setMorphSlider?.(id, next);
+      try {
+        anatomyInspectorRef?.applyExternalMorph?.(id, next);
+      } catch { /* inspector unmounted */ }
+    };
+    if (primarySlider) applyOne(primarySlider, primaryDelta);
+    if (secondarySlider && secondaryDelta !== undefined) applyOne(secondarySlider, secondaryDelta);
+    inspectorCharacter = getAppCharacterState();
+    isProjectDirty = true;
+  }
+
+  function handleTactileDragEnd() {
+    // P0-09: one history entry per tactile gesture.
+    recordHistory("Manipulação tátil do corpo");
   }
 
   // P2-15 sync html lang with i18n
@@ -517,6 +661,8 @@
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),
+      // P0-07: the Personagem domain is part of every history entry.
+      character: getAppCharacterState(),
     };
   }
 
@@ -558,6 +704,14 @@
     if ((snap as any).ambientGround) ambientGround = (snap as any).ambientGround;
     if ((snap as any).specColorHex !== undefined) specColorHex = (snap as any).specColorHex;
     if ((snap as any).rimColor !== undefined) rimColor = (snap as any).rimColor;
+    // P0-07: restore the full Personagem domain (undo/redo covers the body).
+    if (snap.character) {
+      try {
+        applyCharacterState(sanitizeCharacterState(snap.character));
+      } catch (e) {
+        console.warn("[App] applySnapshot character restore failed:", e);
+      }
+    }
     // P0-10: restore camera (was fixed)
     if ((snap as any).cameraEye && (snap as any).cameraTarget) {
       const r: any = (viewportRef as any)?.renderer;
@@ -628,6 +782,15 @@
     }
   }
 
+  function markCleanSave() {
+    isProjectDirty = false;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("anigo_last_clean_save", String(Date.now()));
+      }
+    } catch { /* ignore */ }
+  }
+
   async function handleSaveProject() {
     if (!currentProjectPath) {
       await handleSaveProjectAs();
@@ -638,9 +801,14 @@
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_project_file", { path: currentProjectPath, content: payload })
         .then(() => {
-          isProjectDirty = false;
+          markCleanSave();
         })
-        .catch((err) => console.error("Erro ao salvar:", err));
+        .catch((err) => {
+          console.error("Erro ao salvar:", err);
+          alert("Erro ao salvar projeto: " + err);
+        });
+    } else {
+      markCleanSave();
     }
   }
 
@@ -659,13 +827,14 @@
         await invoke("save_project_file", { path: fullPath, content: payload });
         currentProjectName = name;
         currentProjectPath = fullPath;
-        isProjectDirty = false;
+        markCleanSave();
       } catch (err) {
         console.error("Erro ao salvar como:", err);
+        alert("Erro ao salvar projeto: " + err);
       }
     } else {
       currentProjectName = name;
-      isProjectDirty = false;
+      markCleanSave();
     }
   }
 
@@ -681,8 +850,9 @@
         const dirs = await invoke<{ projects_dir: string }>("get_studio_directories");
         const fullPath = `${dirs.projects_dir}\\${name}`;
         const rawJson = await invoke<string>("load_project_file", { path: fullPath });
-        const data = JSON.parse(rawJson);
-        applySnapshot(data);
+        // P0-08: validated load (schema version + sanitized numerics + character).
+        const data = parseProjectSnapshot(rawJson);
+        applySnapshot(data as unknown as HistoryStateSnapshot);
         currentProjectName = name;
         currentProjectPath = fullPath;
         isProjectDirty = false;
@@ -715,6 +885,13 @@
     lightAzimuth = 45;
     lightElevation = 45;
     lightIntensity = 1.0;
+    // P0-08/P2-06: a new project resets the character too (was leaking the
+    // previous body into the fresh scene).
+    try {
+      applyCharacterState(createDefaultCharacterState(), { swapModel: true });
+    } catch (e) {
+      console.warn("[App] handleNewProject character reset failed:", e);
+    }
     handlePreset("mannequin", false);
     historyService.init(getHistorySnapshot());
   }
@@ -752,7 +929,10 @@
       cameraUp: up,
       fov: fovDeg,
       timestamp: Date.now(),
-      version: "0.1.0",
+      version: "0.2.0",
+      schemaVersion: CHARACTER_SNAPSHOT_SCHEMA_VERSION,
+      // P0-08: the character domain travels with the project.
+      character: getAppCharacterState(),
       lightAzimuth,
       lightElevation,
       toonSmoothness,
@@ -920,7 +1100,8 @@
         await listen("anigo://set_proportions", (event: any) => {
           if (event.payload?.head_scale !== undefined) headScale = event.payload.head_scale;
           if (event.payload?.head_ratio !== undefined) headRatio = event.payload.head_ratio;
-          updateProportions();
+          // P0-07: proportion edits enter history (was record=false always).
+          updateProportions(true);
         });
 
         await listen("anigo://set_outline", (event: any) => {
@@ -1003,35 +1184,80 @@
 
         await listen("anigo://set_character_model", (event: any) => {
           const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
-          if (p.model_type) {
-            genderDimorphism = p.model_type === "female" ? 0.0 : 1.0;
+          // P0-03/P0-09: validated model + canonical polarity + inspector sync.
+          if (p.model_type === "male" || p.model_type === "female") {
+            const c = getAppCharacterState();
+            c.baseGender = p.model_type;
+            genderDimorphism = clampGenderDimorphism(p.model_type === "female" ? 0.0 : 1.0);
+            c.genderDimorphism = genderDimorphism;
+            loadedModelGender = p.model_type;
             viewportRef?.setGenderDimorphism?.(genderDimorphism);
+            viewportRef?.loadCanonicalModel?.(p.model_type)?.catch?.((e: unknown) => {
+              console.error("[App] MCP model load failed:", e);
+            });
+            try {
+              anatomyInspectorRef?.setCharacterState?.(c);
+            } catch { /* inspector unmounted */ }
+            inspectorCharacter = c;
+            isProjectDirty = true;
+            recordHistory(`MCP: trocar modelo (${p.model_type})`);
+          } else if (p.model_type !== undefined) {
+            console.warn("[App] MCP set_character_model: invalid model_type", p.model_type);
           }
         });
 
         await listen("anigo://set_somatotype", (event: any) => {
           const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
-          if (p.endo !== undefined) somatotypeEndo = p.endo;
-          if (p.meso !== undefined) somatotypeMeso = p.meso;
-          if (p.ecto !== undefined) somatotypeEcto = p.ecto;
+          // P0-02/P0-09: normalized + clamped + inspector sync.
+          const n = normalizeSomatotype(
+            p.endo !== undefined ? p.endo : somatotypeEndo,
+            p.meso !== undefined ? p.meso : somatotypeMeso,
+            p.ecto !== undefined ? p.ecto : somatotypeEcto
+          );
+          somatotypeEndo = n.endo;
+          somatotypeMeso = n.meso;
+          somatotypeEcto = n.ecto;
+          activeCharacterPreset = null;
           viewportRef?.setSomatotype?.(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+          try {
+            anatomyInspectorRef?.applyExternalSomatotype?.(somatotypeEndo, somatotypeMeso, somatotypeEcto);
+          } catch { /* inspector unmounted */ }
+          inspectorCharacter = getAppCharacterState();
+          isProjectDirty = true;
+          recordHistory("MCP: ajustar somatótipo", true);
         });
 
         await listen("anigo://apply_morph_slider", (event: any) => {
           const p: any = (typeof _norm !== 'undefined' && _norm !== null ? _norm : event.payload) || {};
+          // P0-09: validated + catalog-clamped + inspector sync.
           if (p.slider_id && p.value !== undefined) {
-            morphSliders[p.slider_id] = p.value;
-            viewportRef?.setMorphSlider?.(p.slider_id, p.value);
+            if (!isKnownSliderId(p.slider_id)) {
+              console.warn("[App] MCP apply_morph_slider: unknown id", p.slider_id);
+              return;
+            }
+            const clamped = clampCatalog(p.slider_id, p.value);
+            if (clamped === null) return;
+            morphSliders[p.slider_id] = clamped;
+            activeCharacterPreset = null;
+            viewportRef?.setMorphSlider?.(p.slider_id, clamped);
+            try {
+              anatomyInspectorRef?.applyExternalMorph?.(p.slider_id, clamped);
+            } catch { /* inspector unmounted */ }
+            inspectorCharacter = getAppCharacterState();
+            isProjectDirty = true;
+            recordHistory(`MCP: ${p.slider_id}`, true);
           }
         });
 
         await listen("anigo://reset_morphs", () => {
-          morphSliders = {};
-          somatotypeEndo = 0.33;
-          somatotypeMeso = 0.34;
-          somatotypeEcto = 0.33;
-          activeCharacterPreset = null;
-          viewportRef?.setSomatotype?.(0.33, 0.34, 0.33);
+          const c = getAppCharacterState();
+          const n = normalizeSomatotype(1 / 3, 1 / 3, 1 / 3);
+          c.morphSliders = {};
+          c.somatotype = n;
+          c.activePresetId = null;
+          applyCharacterState(c, { swapModel: false });
+          isProjectDirty = true;
+          recordHistory("MCP: resetar morphs");
         });
 
         await listen("anigo://ui_action", (event: any) => {
@@ -1082,11 +1308,35 @@
       }
     }
 
-    // Initialize real background autosave engine
-    autoSaveService.configure(true, 5, getProjectSnapshot);
+    // Initialize real background autosave engine (P0-08: dirty-gated).
+    autoSaveService.configure(true, 5, getProjectSnapshot, () => isProjectDirty);
     autoSaveService.onSaveCompleted = (_filePath: string, timeStr: string) => {
       lastAutosaveTime = timeStr;
     };
+    autoSaveService.onSaveError = (err: unknown) => {
+      console.error("[App] autosave failed:", err);
+      alert("Falha no salvamento automático: " + String(err));
+    };
+
+    // P0-08: crash-recovery — the autosave cache is now actually restored.
+    try {
+      const recovery = autoSaveService.readRecoveryCache();
+      let cleanAt = 0;
+      try {
+        cleanAt = Number(localStorage.getItem("anigo_last_clean_save") ?? 0) || 0;
+      } catch { /* ignore */ }
+      if (recovery && recovery.timestamp > cleanAt) {
+        const when = new Date(recovery.timestamp).toLocaleString();
+        if (confirm(`Sessão não salva encontrada (autosave de ${when}). Deseja recuperar?`)) {
+          applySnapshot(recovery as unknown as HistoryStateSnapshot);
+          isProjectDirty = true;
+        } else {
+          autoSaveService.clearRecoveryCache();
+        }
+      }
+    } catch (e) {
+      console.warn("[App] recovery check failed:", e);
+    }
 
     // Initialize history baseline
     historyService.init(getHistorySnapshot());
@@ -1121,12 +1371,13 @@
   });
 
   function handleSliderUpdate(prop: string, val: number) {
-    if (prop === "head_scale") { headScale = val; updateProportions(); }
-    else if (prop === "head_ratio") { headRatio = val; updateProportions(); }
-    else if (prop === "shoulder_width" || prop === "shoulders") { shoulderWidth = val; updateProportions(); }
-    else if (prop === "leg_length" || prop === "legs") { legLength = val; updateProportions(); }
-    else if (prop === "arm_length" || prop === "arms") { armLength = val; updateProportions(); }
-    else if (prop === "neck_length" || prop === "neck") { neckLength = val; updateProportions(); }
+    // P0-07: proportion edits enter history (was record=false always).
+    if (prop === "head_scale") { headScale = val; updateProportions(true); }
+    else if (prop === "head_ratio") { headRatio = val; updateProportions(true); }
+    else if (prop === "shoulder_width" || prop === "shoulders") { shoulderWidth = val; updateProportions(true); }
+    else if (prop === "leg_length" || prop === "legs") { legLength = val; updateProportions(true); }
+    else if (prop === "arm_length" || prop === "arms") { armLength = val; updateProportions(true); }
+    else if (prop === "neck_length" || prop === "neck") { neckLength = val; updateProportions(true); }
     else if (prop === "outline_width") { outlineWidth = val; handleOutlineChange(); }
     else if (prop === "outline_extrusion") { outlineExtrusion = val; outlineWidth = val * 1000; handleOutlineChange(); }
     else if (prop === "shadow_threshold") { shadowThreshold = val; handleShadowThresholdChange(); }
@@ -1717,6 +1968,9 @@
           onResize={(w, h) => { vpWidth = w; vpHeight = h; }}
           onMetrics={handleMetrics}
           onTactileDrag={handleTactileDrag}
+          onTactileDragEnd={handleTactileDragEnd}
+          tactileEnabled={activeWorkspace === "personagem" && (activeTool === "body" || activeTool === "face")}
+          onModelLoadError={(msg) => alert("Erro ao carregar modelo: " + msg)}
         />
       </div>
 
@@ -1811,7 +2065,15 @@
             </div>
           </div>
 
-          <AnatomyInspector {viewportRef} />
+          <AnatomyInspector
+            bind:this={anatomyInspectorRef}
+            {viewportRef}
+            onModelChange={(g) => { loadedModelGender = g; }}
+            onCharacterChange={handleInspectorCharacterChange}
+            onCharacterCommit={(desc) => recordHistory(desc)}
+            onProportionsChange={handleInspectorProportionsChange}
+            onError={(msg) => alert(msg)}
+          />
 
         <!-- TOOL: hair (Cabelo 3D) -->
         {:else if activeTool === "hair"}
