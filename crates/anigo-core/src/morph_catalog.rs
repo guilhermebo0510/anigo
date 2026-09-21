@@ -775,8 +775,15 @@ pub fn build_canonical_sparse_morph_set(base_mesh: &Mesh) -> SparseMorphSet {
                 }
 
                 // Default fallback for any remaining morph sliders:
+                //
+                // P0 (canonical authority): the deformation model is
+                // geometry-only, so *every* slider — including the BoneDelta
+                // ones — receives the zone fallback delta. Bone-driven sliders
+                // keep their skeletal semantics in `bone_sync.rs`; until real
+                // skinning lands (P1-04) their geometric counterpart lives here
+                // so no canonical slider is inert in the viewport/export.
                 _ => {
-                    if slider.mechanism == SliderMechanism::Morph || slider.mechanism == SliderMechanism::Dual {
+                    {
                         match slider.zone {
                             AnatomicalZone::Craniofacial | AnatomicalZone::Eyes | AnatomicalZone::Nose | AnatomicalZone::MouthLips | AnatomicalZone::JawChin | AnatomicalZone::Ears | AnatomicalZone::Eyebrows => {
                                 if v_idx < 425 && z > 0.0 {

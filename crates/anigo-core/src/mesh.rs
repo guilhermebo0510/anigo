@@ -118,7 +118,11 @@ pub enum BaseGender {
 }
 
 /// 3D Geometry mesh consisting of indexed vertices.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq` is derived so scene-level structures (`SceneNode`, `Scene`) can
+/// compare whole render graphs — the parity tests use it to prove that the
+/// viewport and the export paths build the *same* scene from the same project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mesh {
     pub name: String,
     pub vertices: Vec<Vertex>,

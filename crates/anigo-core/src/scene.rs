@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 fn default_shadow_saturation() -> f32 { 1.0 }
 /// Stylized Anime Directional Light with Hue-Shifting parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StylizedLight {
     pub direction: [f32; 3],
     pub color: [f32; 3],
@@ -46,7 +46,7 @@ fn default_outline_smoothness() -> f32 { 0.0 }
 fn default_outline_depth_bias() -> f32 { 0.0 }
 
 /// Stylized Material parameters for Anime NPR Cel-Shading.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StylizedMaterial {
     pub name: String,
     pub base_color: [f32; 4],
@@ -120,7 +120,7 @@ impl Default for StylizedMaterial {
 }
 
 /// A node within the hierarchical scene graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneNode {
     pub id: String,
     pub name: String,
@@ -149,7 +149,7 @@ impl SceneNode {
 }
 
 /// Complete Scene representation containing nodes, camera, lighting, and global parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     pub nodes: Vec<SceneNode>,
     pub camera: Camera,

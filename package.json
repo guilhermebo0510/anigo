@@ -16,8 +16,10 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tauri-apps/cli": "^2.1.0",
     "svelte": "^5.2.7",
+    "tree-sitter-wasms": "^0.1.11",
     "typescript": "^5.7.2",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "web-tree-sitter": "^0.22.6"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1"
