@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 475,
-      "fnv1a64": "9625db908e76e9a3"
+      "lines": 525,
+      "fnv1a64": "8a86bc11e3b88d97"
     },
     {
       "name": "inverted_hull",
@@ -58,6 +58,19 @@ export const RENDER_CONTRACT_DATA = {
       },
       "lines": 41,
       "fnv1a64": "bda7e76d52a49c35"
+    },
+    {
+      "name": "anime_eye",
+      "path": "crates/anigo-renderer/shaders/anime_eye.wgsl",
+      "language": "wgsl",
+      "role": "library",
+      "entry_points": {
+        "parallax": "eye_parallax_uv",
+        "highlight_mask": "eye_highlight_mask",
+        "highlight_rgb": "eye_highlight_rgb"
+      },
+      "lines": 51,
+      "fnv1a64": "9c2baec2b6f6fcfa"
     },
     {
       "name": "webgl2_fallback/cel_vertex",
@@ -221,7 +234,7 @@ export const RENDER_CONTRACT_DATA = {
     "material": {
       "struct": "MaterialUniform",
       "address_space": "uniform",
-      "size": 192,
+      "size": 208,
       "fields": [
         {
           "name": "base_color",
@@ -302,6 +315,13 @@ export const RENDER_CONTRACT_DATA = {
           "offset": 176,
           "size": 16,
           "meaning": "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved"
+        },
+        {
+          "name": "params8",
+          "kind": "vec4",
+          "offset": 192,
+          "size": 16,
+          "meaning": "eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved"
         }
       ]
     },
@@ -988,6 +1008,193 @@ export const RENDER_CONTRACT_DATA = {
     ],
     "golden_note": "sdf = 0.5, face_shadow_smoothness = 0.05, face_shadow_offset = 0, modelo identidade"
   },
+  "anime_eye": {
+    "note": "Íris com parallax mapping (profundidade convexa sem cavidade geométrica) e highlights desenhados à mão desacoplados da iluminação. Slot main recebe a textura de olho (Fase 2 #26) amostrada com o UV parallaxado; com eye off ou depth_scale 0, eye_uv = in.uv e o highlight some — frame congelado intacto.",
+    "parallax_formula": "UV_iris = UV + V_tangent.xy * depth_scale (clamp 0..1)",
+    "v_tangent_basis": "T = normalize(cross(N, up)), B = cross(N, T); V_tangent = (dot(V,T), dot(V,B))",
+    "highlight": {
+      "main_center": [
+   0.38, 0.62
+  ],
+      "main_falloff": [
+   0.075, 0.125
+  ],
+      "main_ellipse_y_scale": 0.72,
+      "second_center": [
+   0.68, 0.34
+  ],
+      "second_falloff": [
+   0.028, 0.055
+  ],
+      "second_intensity": 0.85,
+      "decoupled_from_lighting": true
+    },
+    "block_markers": [
+      "// ANIGO-ANIME-EYE-BEGIN",
+      "// ANIGO-ANIME-EYE-END"
+    ],
+    "shared_by": [
+      "anime_eye",
+      "cel_shading"
+    ],
+    "entry_functions": [
+      "eye_parallax_uv",
+      "eye_highlight_mask",
+      "eye_highlight_rgb"
+    ],
+    "golden": [
+      {
+        "name": "parallax_central",
+        "uv": [
+   0.5, 0.5
+  ],
+        "v_tangent": [
+   0.2, -0.1
+  ],
+        "depth_scale": 0.15,
+        "expected_uv": [
+   0.53, 0.485
+  ]
+      },
+      {
+        "name": "parallax_clamp",
+        "uv": [
+   0.02, 0.98
+  ],
+        "v_tangent": [
+   0.5, 0.5
+  ],
+        "depth_scale": 0.2,
+        "expected_uv": [
+   0.12, 1
+  ]
+      },
+      {
+        "name": "mask_principal",
+        "uv": [
+   0.38, 0.62
+  ],
+        "expected_mask": 1
+      },
+      {
+        "name": "mask_secundario",
+        "uv": [
+   0.68, 0.34
+  ],
+        "expected_mask": 0.85
+      },
+      {
+        "name": "mask_entre_brilhos",
+        "uv": [
+   0.5, 0.5
+  ],
+        "expected_mask": 0
+      }
+    ],
+    "golden_note": "formulas em ponto flutuante duplo, congeladas em f32",
+    "gaze": {
+      "eye_offsets_head_local": {
+        "left": [
+   0.035, -0.01, 0.09
+  ],
+        "right": [
+   -0.035, -0.01, 0.09
+  ]
+      },
+      "max_yaw_degrees": 45,
+      "max_pitch_degrees": 35,
+      "saccade_amplitude_degrees_default": 2.5,
+      "saccade_amplitude_range": [
+   2, 5
+  ],
+      "damping_default": 6,
+      "note": "yaw = atan2(v.x, v.z), pitch = atan2(v.y, hypot(v.x, v.z)) no espaço local da cabeça, v = alvo − olho; clamps físicos impedem rotação além do cômodo. Micro-sacadas: soma de 3 senoides incomensuráveis × amplitude (suave, determinística em (t, seed)).",
+      "golden": [
+        {
+          "name": "frontal",
+          "target": [
+   0, -0.01, 0.4
+  ],
+          "yaw": -0.11242713,
+          "pitch": 0,
+          "note": "convergência natural do olho esquerdo para o centro (−6.44°)"
+        },
+        {
+          "name": "azimut_30",
+          "target": [
+   0.5, 0, 0.8660254
+  ],
+          "yaw": 0.53983635,
+          "pitch": 0.01105322,
+          "note": "alvo a 30° de azimut"
+        },
+        {
+          "name": "elevacao_20",
+          "target": [
+   0, 0.1819852, 0.5
+  ],
+          "yaw": -0.08515939,
+          "pitch": 0.43653914,
+          "note": "alvo a 20° de elevação (visto do olho: 25°)"
+        },
+        {
+          "name": "clamp_esquerda_90",
+          "target": [
+   10, 0, 0.1
+  ],
+          "yaw": 0.78539819,
+          "pitch": 0.00100351,
+          "note": "yaw clampado no limite físico de 45°"
+        },
+        {
+          "name": "clamp_acima",
+          "target": [
+   0.035, 5, 1
+  ],
+          "yaw": 0,
+          "pitch": 0.61086524,
+          "note": "pitch clampado no limite físico de 35°"
+        }
+      ],
+      "saccades": [
+        {
+          "t": 0,
+          "yaw": 0.01888627,
+          "pitch": 0.0121564
+        },
+        {
+          "t": 1,
+          "yaw": 0.01128491,
+          "pitch": 0.00615212
+        },
+        {
+          "t": 2,
+          "yaw": 0.00091829,
+          "pitch": -0.01229176
+        },
+        {
+          "t": 3,
+          "yaw": -0.01041111,
+          "pitch": -0.00766383
+        }
+      ],
+      "saccades_note": "seed 1.23, amplitude 2.5° (radianos); |sacada| ≤ amplitude sempre",
+      "damping": {
+        "from": [
+   0, 0
+  ],
+        "to": [
+   0.1, -0.05
+  ],
+        "damping_per_second": 6,
+        "frames_60fps": 30,
+        "expected": [
+   0.09502129, -0.04751065
+  ],
+        "note": "suavização exponencial 1 − e^(−damping×dt) por frame"
+      }
+    }
+  },
   "targets": {
     "offscreen_color_format": "rgba8unorm",
     "viewport_color_format_policy": "surface_preferred",
@@ -1165,6 +1372,12 @@ export const RENDER_CONTRACT_DATA = {
       "face_shadow_offset": 0,
       "face_shadow_smoothness": 0.05,
       "face_sdf_enabled": false,
+      "eye_depth_scale": 0,
+      "eye_highlight_intensity": 0,
+      "eye_enabled": false,
+      "gaze_tracking_enabled": false,
+      "gaze_saccade_amplitude": 2.5,
+      "gaze_damping": 6,
       "outline_color": [
    0.25, 0.15, 0.2, 1
   ],
@@ -1201,7 +1414,7 @@ export const RENDER_CONTRACT_DATA = {
    0.980000019, 0.920000017, 0.850000024, 1, 0.819999993, 0.730000019, 0.779999971, 1, 1, 1, 1, 1,
    0.575999975, 0.773000002, 0.991999984, 1, 0.579999983, 0.029999999, 0.550000012, 24, 0.699999988,
    0.449999988, -0.383972436, 2, 0.059999999, 0.01, 0.400000006, 0.800000012, 0, 0, 0, 0, 0, 0,
-   0.050000001, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0.050000001, 0, 0
+   0.050000001, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0.050000001, 0, 0, 0, 0, 0, 0
   ],
       "outline_uniform": [
    0.25, 0.150000006, 0.200000003, 1, 0.004, 1.777777791, 0.02, 0.899999976, 0.01, 0, 0, 0

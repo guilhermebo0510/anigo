@@ -268,6 +268,13 @@ const fixture = (() => {
           face_shadow_offset: 0,
           face_shadow_smoothness: 0.05,
           face_sdf_enabled: false,
+          // Fase 2 (#43): olho anime — default = off
+          eye_depth_scale: 0,
+          eye_highlight_intensity: 0,
+          eye_enabled: false,
+          gaze_tracking_enabled: false,
+          gaze_saccade_amplitude: 2.5,
+          gaze_damping: 6.0,
         },
       ],
       nodes: [

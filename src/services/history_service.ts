@@ -66,6 +66,13 @@ export interface HistoryStateSnapshot {
   faceShadowOffset?: number;
   faceShadowSmoothness?: number;
   faceSdfEnabled?: boolean;
+  // Fase 2 (#43): olho anime + solver de olhar
+  eyeDepthScale?: number;
+  eyeHighlightIntensity?: number;
+  eyeEnabled?: boolean;
+  gazeTrackingEnabled?: boolean;
+  gazeSaccadeAmplitude?: number;
+  gazeDamping?: number;
 }
 
 export interface HistoryEntry {

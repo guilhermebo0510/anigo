@@ -99,9 +99,13 @@ export interface MaterialUniformInput {
   faceShadowOffset?: number;
   faceShadowSmoothness?: number;
   faceSdfEnabled?: boolean;
+  // Fase 2 (#43): olho anime (default = off)
+  eyeDepthScale?: number;
+  eyeHighlightIntensity?: number;
+  eyeEnabled?: boolean;
 }
 
-/** Bloco `material` (192 B = 48 f32). */
+/** Bloco `material` (208 B = 52 f32). */
 export function materialUniformFloats(input: MaterialUniformInput): Float32Array {
   const data = new Float32Array(uniformFloats("material"));
   writeVec(data, "material", "base_color", input.baseColor);
@@ -151,6 +155,13 @@ export function materialUniformFloats(input: MaterialUniformInput): Float32Array
     input.faceShadowOffset ?? 0.0,
     input.faceShadowSmoothness ?? 0.05,
     (input.faceSdfEnabled ?? false) ? 1.0 : 0.0,
+    0.0,
+  ]);
+  // Fase 2 (#43): olho anime — off por padrão (eye_uv = in.uv, highlight 0)
+  writeVec(data, "material", "params8", [
+    input.eyeDepthScale ?? 0.0,
+    input.eyeHighlightIntensity ?? 0.0,
+    (input.eyeEnabled ?? false) ? 1.0 : 0.0,
     0.0,
   ]);
   return data;

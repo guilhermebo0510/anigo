@@ -39,6 +39,8 @@ struct MaterialUniform {
     params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: reserved
     // ── Fase 2 (#17) — sombra facial SDF ──────────────────────────────────
     params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: reserved
+    // ── Fase 2 (#43) — olho anime (parallax + highlights) ─────────────────
+    params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: reserved
 };
 
 @group(0) @binding(0)
@@ -280,6 +282,32 @@ fn face_sdf_factor(sdf: f32, threshold: f32, softness: f32) -> f32 {
 }
 // ANIGO-FACE-SDF-END
 
+// Fase 2 (#43): olho anime — a mesma definição canônica que está em
+// anime_eye.wgsl (marcadores conferidos por check:wgsl).
+// ANIGO-ANIME-EYE-BEGIN — bloco compartilhado (byte a byte igual em
+// anime_eye.wgsl e cel_shading.wgsl; conferido por scripts/check_wgsl.mjs)
+fn eye_parallax_uv(uv: vec2<f32>, view_tangent_xy: vec2<f32>, depth_scale: f32) -> vec2<f32> {
+    // V_tangent.xy: direção de visão projetada na base tangente (T, B) da
+    // superfície. depth_scale é a "recalada" da íris (0 = plano, >0 = fundo).
+    return clamp(uv + view_tangent_xy * depth_scale, vec2<f32>(0.0), vec2<f32>(1.0));
+}
+fn eye_highlight_mask(uv: vec2<f32>) -> f32 {
+    // Dois brilhos desenhados à mão (convenção clássica de olho anime):
+    // principal = elipse grande no canto superior-esquerco do olho,
+    // secundário = ponto menor no canto inferior-direito (85% da intensidade).
+    let d_main = length((uv - vec2<f32>(0.38, 0.62)) * vec2<f32>(1.0, 0.72));
+    let main = 1.0 - smoothstep(0.075, 0.125, d_main);
+    let d_second = length(uv - vec2<f32>(0.68, 0.34));
+    let second = (1.0 - smoothstep(0.028, 0.055, d_second)) * 0.85;
+    return max(main, second);
+}
+fn eye_highlight_rgb(mask: f32, intensity: f32) -> vec3<f32> {
+    // Branco linear × mask × intensidade — somado após a iluminação (nunca
+    // multiplicado por luz/sombra): visível mesmo em sombra total.
+    return vec3<f32>(mask * intensity);
+}
+// ANIGO-ANIME-EYE-END
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -288,6 +316,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let N = normalize(in.world_normal);
     let L = normalize(light.direction.xyz);
     let V = normalize(camera.camera_pos.xyz - in.world_position);
+
+    // Fase 2 (#43): UV da íris com parallax — deslocado pela direção de visão
+    // na base tangente (UV + V_tangent.xy × depth_scale). Com eye off ou
+    // depth_scale 0 o resultado é exatamente in.uv (frame congelado intacto).
+    var eye_uv = in.uv;
+    if (material.params8.z > 0.5) {
+        let eye_up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(N.y) > 0.99);
+        let eye_t = normalize(cross(N, eye_up));
+        let eye_b = cross(N, eye_t);
+        let v_tangent = vec2<f32>(dot(V, eye_t), dot(V, eye_b));
+        eye_uv = eye_parallax_uv(in.uv, v_tangent, material.params8.x);
+    }
 
     // 1. Half-Lambert Remapping (0..1)
     let n_dot_l = dot(N, L);
@@ -347,9 +387,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let intensity = clamp(light.direction.w, 0.0, 3.0);
     // Fase 2 (#18): albedo — MToon mainTex (slot ativado por params5.x) ou cor base.
     // A textura modula a cor base (VRoid: mainTex × baseColorFactor).
+    // Fase 2 (#43): quando o olho anime está ativo, o slot main amostra com o
+    // UV parallaxado (a textura de olho desliza com a câmera — íris afundada).
     var base_lin: vec3<f32>;
     if (material.params5.x > 0.5) {
-        base_lin = srgb_to_linear(textureSample(main_tex, main_sampler, in.uv).rgb) * srgb_to_linear(material.base_color.rgb);
+        base_lin = srgb_to_linear(textureSample(main_tex, main_sampler, eye_uv).rgb) * srgb_to_linear(material.base_color.rgb);
     } else {
         base_lin = srgb_to_linear(material.base_color.rgb);
     }
@@ -464,6 +506,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (material.params5.w > 0.5) {
         let emission_map = textureSample(emission_tex, emission_sampler, in.uv).rgb;
         with_rim = with_rim + srgb_to_linear(material.emission_color.rgb) * emission_map * material.params4.x;
+    }
+
+    // Fase 2 (#43): highlights do olho anime — camada desenhada à mão somada
+    // DEPOIS de toda a iluminação (nunca multiplicada por luz/sombra): o
+    // branco dos olhos permanece radiante mesmo em penumbra total.
+    if (material.params8.z > 0.5) {
+        let eye_highlight = eye_highlight_mask(eye_uv) * material.params8.y;
+        with_rim = with_rim + eye_highlight_rgb(eye_highlight, 1.0);
     }
 
     // P1-01: linear→sRGB for display

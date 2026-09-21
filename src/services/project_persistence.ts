@@ -115,6 +115,13 @@ export interface SceneMaterialSnapshot {
   face_shadow_offset: number;
   face_shadow_smoothness: number;
   face_sdf_enabled: boolean;
+  // Fase 2 (#43): olho anime + solver de olhar (default = off)
+  eye_depth_scale: number;
+  eye_highlight_intensity: number;
+  eye_enabled: boolean;
+  gaze_tracking_enabled: boolean;
+  gaze_saccade_amplitude: number;
+  gaze_damping: number;
 }
 
 export interface SceneAssetSnapshot {
@@ -232,6 +239,13 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
         face_shadow_offset: 0.0,
         face_shadow_smoothness: 0.05,
         face_sdf_enabled: false,
+        // Fase 2 (#43): olho anime off por padrão
+        eye_depth_scale: 0.0,
+        eye_highlight_intensity: 0.0,
+        eye_enabled: false,
+        gaze_tracking_enabled: false,
+        gaze_saccade_amplitude: 2.5,
+        gaze_damping: 6.0,
       },
     ],
     assets: [
@@ -391,6 +405,19 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
               template.face_shadow_smoothness
             ),
             face_sdf_enabled: material["face_sdf_enabled"] === true,
+            // Fase 2 (#43): olho anime — tolerante a blocos antigos
+            eye_depth_scale: num(material["eye_depth_scale"], template.eye_depth_scale),
+            eye_highlight_intensity: num(
+              material["eye_highlight_intensity"],
+              template.eye_highlight_intensity
+            ),
+            eye_enabled: material["eye_enabled"] === true,
+            gaze_tracking_enabled: material["gaze_tracking_enabled"] === true,
+            gaze_saccade_amplitude: num(
+              material["gaze_saccade_amplitude"],
+              template.gaze_saccade_amplitude
+            ),
+            gaze_damping: num(material["gaze_damping"], template.gaze_damping),
           },
         ];
       })

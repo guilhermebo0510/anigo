@@ -179,10 +179,10 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformSize("camera"), 208);
   assert.equal(uniformFloats("camera"), 52);
   assert.equal(uniformFloats("light"), 20);
-  // Fase 2 (#18): MToon — 28 → 44 floats (176 B); Fase 2 (#17): SDF facial —
-  // +params7 → 48 floats (192 B)
-  assert.equal(uniformSize("material"), 192);
-  assert.equal(uniformFloats("material"), 48);
+  // Fase 2 (#18): MToon — 28 → 44 floats (176 B); #17: +params7 (192 B);
+  // #43: +params8 (olho anime) → 52 floats (208 B)
+  assert.equal(uniformSize("material"), 208);
+  assert.equal(uniformFloats("material"), 52);
   assert.equal(uniformFloats("outline"), 12);
   assert.equal(uniformFloats("sparse_morph_header"), 4);
   // P1-04: paleta de skinning — 24 ossos × mat4 (16 floats) = 384 floats
@@ -198,12 +198,13 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformOffset("material", "params"), 64);
   assert.equal(uniformOffset("material", "params2"), 80);
   assert.equal(uniformOffset("material", "params3"), 96);
-  // Fase 2 (#18): bloco MToon (112..176); Fase 2 (#17): params7 (176..192)
+  // Fase 2 (#18): bloco MToon (112..176); #17: params7 (176..192); #43: params8
   assert.equal(uniformOffset("material", "emission_color"), 112);
   assert.equal(uniformOffset("material", "params4"), 128);
   assert.equal(uniformOffset("material", "params5"), 144);
   assert.equal(uniformOffset("material", "params6"), 160);
   assert.equal(uniformOffset("material", "params7"), 176);
+  assert.equal(uniformOffset("material", "params8"), 192);
   assert.equal(uniformOffset("light", "ambient_ground"), 64);
   assert.equal(uniformOffset("outline", "params2"), 32);
 
@@ -234,8 +235,8 @@ test("os blocos de uniform batem com os structs #[repr(C)] do Rust", () => {
     material: [
       "base_color", "shade_color", "specular_color", "rim_color",
       "params", "params2", "params3",
-      // Fase 2 (#18): MToon; Fase 2 (#17): SDF facial
-      "emission_color", "params4", "params5", "params6", "params7",
+      // Fase 2 (#18): MToon; #17: SDF facial; #43: olho anime
+      "emission_color", "params4", "params5", "params6", "params7", "params8",
     ],
     outline: ["color", "params", "params2"],
   };
@@ -450,6 +451,10 @@ test("o frame congelado do contrato é reproduzido pelos packers do viewport", (
       faceShadowOffset: material.face_shadow_offset,
       faceShadowSmoothness: material.face_shadow_smoothness,
       faceSdfEnabled: material.face_sdf_enabled,
+      // Fase 2 (#43): olho anime — frame congelado com eye off
+      eyeDepthScale: material.eye_depth_scale,
+      eyeHighlightIntensity: material.eye_highlight_intensity,
+      eyeEnabled: material.eye_enabled,
     }),
     reference.expected.material_uniform,
     "material_uniform"

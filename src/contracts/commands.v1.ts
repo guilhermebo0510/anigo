@@ -70,6 +70,13 @@ export interface MaterialPatchWire {
   face_shadow_offset?: number;
   face_shadow_smoothness?: number;
   face_sdf_enabled?: boolean;
+  // Fase 2 (#43): olho anime + solver de olhar
+  eye_depth_scale?: number;
+  eye_highlight_intensity?: number;
+  eye_enabled?: boolean;
+  gaze_tracking_enabled?: boolean;
+  gaze_saccade_amplitude?: number;
+  gaze_damping?: number;
 }
 
 export type CommandWire =

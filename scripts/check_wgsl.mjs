@@ -331,17 +331,25 @@ export function checkContract(contract, readShader, options = {}) {
     }
   }
 
-  // 3b) Fase 2 (#17): bloco de face SDF idêntico nos shaders que o usam
-  // (mesma regra do skinning: uma definição, vários usos).
-  const faceSdf = contract.face_sdf;
-  if (faceSdf?.block_markers?.length === 2) {
-    const [begin, end] = faceSdf.block_markers;
+  // 3b) Blocos compartilhados de shading (Fase 2 #17 face SDF, #43 olho
+  // anime): a definição canônica vive em um shader library e é copiada
+  // byte-idêntica para o shader que compila no passe — mesma regra do
+  // skinning: uma definição, vários usos.
+  for (const [sectionName, section] of Object.entries({
+    face_sdf: contract.face_sdf,
+    anime_eye: contract.anime_eye,
+  })) {
+    if (!section?.block_markers?.length === 2) {
+      problems.push(`contrato sem '${sectionName}.block_markers' (bloco compartilhado)`);
+      continue;
+    }
+    const [begin, end] = section.block_markers;
     const blocks = new Map();
     for (const { shader, source } of shaderSources.values()) {
       if (shader.language !== "wgsl") continue;
-      if (!faceSdf.shared_by?.includes(shader.name)) continue;
+      if (!section.shared_by?.includes(shader.name)) continue;
       if (!source.includes(begin)) {
-        problems.push(`${shader.path}: shader '${shader.name}' listado em face_sdf.shared_by sem o bloco`);
+        problems.push(`${shader.path}: shader '${shader.name}' listado em ${sectionName}.shared_by sem o bloco`);
         continue;
       }
       const block = extractBlock(source, begin, end, shader.path, problems);
@@ -352,17 +360,17 @@ export function checkContract(contract, readShader, options = {}) {
       for (const [name, block] of blocks) {
         if (block !== firstBlock) {
           problems.push(
-            `face_sdf: bloco de '${name}' difere de '${firstName}' — a definição precisa ser byte-idêntica`
+            `${sectionName}: bloco de '${name}' difere de '${firstName}' — a definição precisa ser byte-idêntica`
           );
         }
       }
-      for (const fn of faceSdf.entry_functions ?? []) {
+      for (const fn of section.entry_functions ?? []) {
         if (!blocks.get(firstName)?.includes(`fn ${fn}(`)) {
-          problems.push(`face_sdf: bloco canônico sem a função '${fn}'`);
+          problems.push(`${sectionName}: bloco canônico sem a função '${fn}'`);
         }
       }
     } else {
-      problems.push("face_sdf: nenhum shader declara o bloco de face SDF");
+      problems.push(`${sectionName}: nenhum shader declara o bloco compartilhado`);
     }
   }
 

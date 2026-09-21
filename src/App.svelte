@@ -571,6 +571,16 @@
   let faceShadowSmoothness = $state(0.05);
   let faceSdfEnabled = $state(false);
 
+  // Olho anime — Fase 2 (#43): parallax da íris + highlights desacoplados
+  // (shader) e settings do solver de olhar (CPU: anigo-ik/eye_tracking.ts).
+  // Default = off (eye_uv = in.uv e highlight 0; frame congelado intacto).
+  let eyeDepthScale = $state(0.0);
+  let eyeHighlightIntensity = $state(0.0);
+  let eyeEnabled = $state(false);
+  let gazeTrackingEnabled = $state(false);
+  let gazeSaccadeAmplitude = $state(2.5); // graus (faixa 2–5 do issue)
+  let gazeDamping = $state(6.0);
+
   // Timeline & Animation
   let currentFrame = $state(1);
   let isPlaying = $state(false);
@@ -836,6 +846,13 @@
       faceShadowOffset,
       faceShadowSmoothness,
       faceSdfEnabled,
+      // Fase 2 (#43): olho anime + solver de olhar
+      eyeDepthScale,
+      eyeHighlightIntensity,
+      eyeEnabled,
+      gazeTrackingEnabled,
+      gazeSaccadeAmplitude,
+      gazeDamping,
       // P0-07: the Personagem domain is part of every history entry.
       character: getAppCharacterState(),
     };
@@ -949,6 +966,13 @@
     if ((snap as any).faceShadowOffset !== undefined) faceShadowOffset = (snap as any).faceShadowOffset;
     if ((snap as any).faceShadowSmoothness !== undefined) faceShadowSmoothness = (snap as any).faceShadowSmoothness;
     if ((snap as any).faceSdfEnabled !== undefined) faceSdfEnabled = (snap as any).faceSdfEnabled;
+    // Fase 2 (#43): olho anime + solver de olhar
+    if ((snap as any).eyeDepthScale !== undefined) eyeDepthScale = (snap as any).eyeDepthScale;
+    if ((snap as any).eyeHighlightIntensity !== undefined) eyeHighlightIntensity = (snap as any).eyeHighlightIntensity;
+    if ((snap as any).eyeEnabled !== undefined) eyeEnabled = (snap as any).eyeEnabled;
+    if ((snap as any).gazeTrackingEnabled !== undefined) gazeTrackingEnabled = (snap as any).gazeTrackingEnabled;
+    if ((snap as any).gazeSaccadeAmplitude !== undefined) gazeSaccadeAmplitude = (snap as any).gazeSaccadeAmplitude;
+    if ((snap as any).gazeDamping !== undefined) gazeDamping = (snap as any).gazeDamping;
     // P0-07: restore the full Personagem domain (undo/redo covers the body).
     if (snap.character) {
       try {
@@ -1666,6 +1690,13 @@
           if (p.face_shadow_offset !== undefined) faceShadowOffset = p.face_shadow_offset;
           if (p.face_shadow_smoothness !== undefined) faceShadowSmoothness = p.face_shadow_smoothness;
           if (p.face_sdf_enabled !== undefined) faceSdfEnabled = p.face_sdf_enabled;
+          // Fase 2 (#43): olho anime + solver de olhar
+          if (p.eye_depth_scale !== undefined) eyeDepthScale = p.eye_depth_scale;
+          if (p.eye_highlight_intensity !== undefined) eyeHighlightIntensity = p.eye_highlight_intensity;
+          if (p.eye_enabled !== undefined) eyeEnabled = p.eye_enabled;
+          if (p.gaze_tracking_enabled !== undefined) gazeTrackingEnabled = p.gaze_tracking_enabled;
+          if (p.gaze_saccade_amplitude !== undefined) gazeSaccadeAmplitude = p.gaze_saccade_amplitude;
+          if (p.gaze_damping !== undefined) gazeDamping = p.gaze_damping;
           updateMaterial(false);
         });
 
@@ -2270,6 +2301,10 @@
         faceShadowOffset,
         faceShadowSmoothness,
         faceSdfEnabled,
+        // Fase 2 (#43): olho anime (parallax + highlights no buffer de material)
+        eyeDepthScale,
+        eyeHighlightIntensity,
+        eyeEnabled,
       });
     }
 
@@ -2311,6 +2346,13 @@
           face_shadow_offset: faceShadowOffset,
           face_shadow_smoothness: faceShadowSmoothness,
           face_sdf_enabled: faceSdfEnabled,
+          // Fase 2 (#43): olho anime + solver de olhar
+          eye_depth_scale: eyeDepthScale,
+          eye_highlight_intensity: eyeHighlightIntensity,
+          eye_enabled: eyeEnabled,
+          gaze_tracking_enabled: gazeTrackingEnabled,
+          gaze_saccade_amplitude: gazeSaccadeAmplitude,
+          gaze_damping: gazeDamping,
         }).catch(() => {});
       });
     }
@@ -2353,6 +2395,13 @@
           face_shadow_offset: faceShadowOffset,
           face_shadow_smoothness: faceShadowSmoothness,
           face_sdf_enabled: faceSdfEnabled,
+          // Fase 2 (#43): olho anime + solver de olhar
+          eye_depth_scale: eyeDepthScale,
+          eye_highlight_intensity: eyeHighlightIntensity,
+          eye_enabled: eyeEnabled,
+          gaze_tracking_enabled: gazeTrackingEnabled,
+          gaze_saccade_amplitude: gazeSaccadeAmplitude,
+          gaze_damping: gazeDamping,
         },
       });
       recordHistory("Ajustar Material Toon", isContinuous, command);
@@ -2763,6 +2812,22 @@
             onCharacterCommit={(desc) => recordHistory(desc, false, morphStateCommand())}
             onProportionsChange={handleInspectorProportionsChange}
             onError={(msg) => alert(msg)}
+            bind:eyeEnabled
+            bind:eyeDepthScale
+            bind:eyeHighlightIntensity
+            bind:gazeTrackingEnabled
+            bind:gazeSaccadeAmplitude
+            bind:gazeDamping
+            onEyeChange={(params) => {
+              eyeEnabled = params.eyeEnabled;
+              eyeDepthScale = params.eyeDepthScale;
+              eyeHighlightIntensity = params.eyeHighlightIntensity;
+              gazeTrackingEnabled = params.gazeTrackingEnabled;
+              gazeSaccadeAmplitude = params.gazeSaccadeAmplitude;
+              gazeDamping = params.gazeDamping;
+              // Fase 2 (#43): parâmetros de material (history captura antes).
+              updateMaterial(!params.isContinuous, params.isContinuous);
+            }}
           />
 
         <!-- TOOL: hair (Cabelo 3D) -->

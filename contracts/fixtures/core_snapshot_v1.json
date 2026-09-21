@@ -574,7 +574,13 @@
         "mtoon_shade_toony": true,
         "face_shadow_offset": 0,
         "face_shadow_smoothness": 0.05,
-        "face_sdf_enabled": false
+        "face_sdf_enabled": false,
+        "eye_depth_scale": 0,
+        "eye_highlight_intensity": 0,
+        "eye_enabled": false,
+        "gaze_tracking_enabled": false,
+        "gaze_saccade_amplitude": 2.5,
+        "gaze_damping": 6
       }
     ],
     "nodes": [

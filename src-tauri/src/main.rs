@@ -297,6 +297,13 @@ async fn set_material_toon_params(
     face_shadow_offset: Option<f32>,
     face_shadow_smoothness: Option<f32>,
     face_sdf_enabled: Option<bool>,
+    // Fase 2 (#43): olho anime + solver de olhar
+    eye_depth_scale: Option<f32>,
+    eye_highlight_intensity: Option<f32>,
+    eye_enabled: Option<bool>,
+    gaze_tracking_enabled: Option<bool>,
+    gaze_saccade_amplitude: Option<f32>,
+    gaze_damping: Option<f32>,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
@@ -337,6 +344,12 @@ async fn set_material_toon_params(
         face_shadow_offset,
         face_shadow_smoothness,
         face_sdf_enabled,
+        eye_depth_scale,
+        eye_highlight_intensity,
+        eye_enabled,
+        gaze_tracking_enabled,
+        gaze_saccade_amplitude,
+        gaze_damping,
         ..Default::default()
     };
 

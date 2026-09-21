@@ -231,6 +231,11 @@ export class WebGpuViewportRenderer {
   private faceShadowSmoothness = 0.05;
   private faceSdfEnabled = false;
 
+  // Fase 2 (#43): olho anime (default = off; settings do solver são CPU)
+  private eyeDepthScale = 0.0;
+  private eyeHighlightIntensity = 0.0;
+  private eyeEnabled = false;
+
   // WebGPU Sparse Morph Compute Pipeline
   private morphPipeline: GPUComputePipeline | null = null;
   private morphBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -1279,6 +1284,10 @@ export class WebGpuViewportRenderer {
     faceShadowOffset?: number;
     faceShadowSmoothness?: number;
     faceSdfEnabled?: boolean;
+    // Fase 2 (#43): olho anime
+    eyeDepthScale?: number;
+    eyeHighlightIntensity?: number;
+    eyeEnabled?: boolean;
   }) {
     if (params.baseColor) this.baseColor = params.baseColor;
     if (params.shadeColor) this.shadeColor = params.shadeColor;
@@ -1315,6 +1324,10 @@ export class WebGpuViewportRenderer {
     if (params.faceShadowOffset !== undefined) this.faceShadowOffset = params.faceShadowOffset;
     if (params.faceShadowSmoothness !== undefined) this.faceShadowSmoothness = params.faceShadowSmoothness;
     if (params.faceSdfEnabled !== undefined) this.faceSdfEnabled = params.faceSdfEnabled;
+    // Fase 2 (#43): parâmetros do olho anime
+    if (params.eyeDepthScale !== undefined) this.eyeDepthScale = params.eyeDepthScale;
+    if (params.eyeHighlightIntensity !== undefined) this.eyeHighlightIntensity = params.eyeHighlightIntensity;
+    if (params.eyeEnabled !== undefined) this.eyeEnabled = params.eyeEnabled;
   }
 
   private buildGeometryBuffers() {
@@ -2217,6 +2230,10 @@ export class WebGpuViewportRenderer {
       faceShadowOffset: this.faceShadowOffset,
       faceShadowSmoothness: this.faceShadowSmoothness,
       faceSdfEnabled: this.faceSdfEnabled,
+      // Fase 2 (#43): olho anime — off → eye_uv = in.uv, highlight 0
+      eyeDepthScale: this.eyeDepthScale,
+      eyeHighlightIntensity: this.eyeHighlightIntensity,
+      eyeEnabled: this.eyeEnabled,
     });
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 

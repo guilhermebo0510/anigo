@@ -106,6 +106,11 @@ export function renderContractFixture() {
       threshold: "face_sdf_threshold",
       factor: "face_sdf_factor",
     }),
+    shader("anime_eye", "crates/anigo-renderer/shaders/anime_eye.wgsl", "wgsl", "library", {
+      parallax: "eye_parallax_uv",
+      highlight_mask: "eye_highlight_mask",
+      highlight_rgb: "eye_highlight_rgb",
+    }),
     shader("webgl2_fallback/cel_vertex", "crates/anigo-renderer/shaders/webgl2_fallback/cel_vertex.glsl", "glsl", "fallback_webgl2", { vertex: "main" }),
     shader("webgl2_fallback/cel_fragment", "crates/anigo-renderer/shaders/webgl2_fallback/cel_fragment.glsl", "glsl", "fallback_webgl2", { fragment: "main" }),
     shader("webgl2_fallback/outline_vertex", "crates/anigo-renderer/shaders/webgl2_fallback/outline_vertex.glsl", "glsl", "fallback_webgl2", { vertex: "main" }),
@@ -150,7 +155,7 @@ export function renderContractFixture() {
       material: {
         struct: "MaterialUniform",
         address_space: "uniform",
-        size: 192,
+        size: 208,
         fields: [
           { name: "base_color", kind: "vec4", offset: 0, size: 16 },
           { name: "shade_color", kind: "vec4", offset: 16, size: 16 },
@@ -166,6 +171,8 @@ export function renderContractFixture() {
           { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved" },
           // Fase 2 (#17): sombra facial SDF
           { name: "params7", kind: "vec4", offset: 176, size: 16, meaning: "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved" },
+          // Fase 2 (#43): olho anime (parallax + highlights desacoplados)
+          { name: "params8", kind: "vec4", offset: 192, size: 16, meaning: "eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved" },
         ],
       },
       outline: {
@@ -434,6 +441,109 @@ export function renderContractFixture() {
       ],
       golden_note: "sdf = 0.5, face_shadow_smoothness = 0.05, face_shadow_offset = 0, modelo identidade",
     },
+    // ---------------------------------------------------------------------
+    // Fase 2 (#43): olho anime — parallax da íris + highlights desacoplados.
+    // Mesma arquitetura da face SDF: definição canônica em anime_eye.wgsl,
+    // cópia byte-idêntica em cel_shading.wgsl (check:wgsl confere). Os números
+    // dourados foram produzidos por implementação independente e congelados:
+    // a referência TS (src/services/eye_tracking.ts) precisa reproduzi-los.
+    // Parallax: UV_iris = UV + V_tangent.xy × depth_scale (clamp 0..1).
+    // Highlights: mask procedural (elipse principal + ponto secundário ×0.85)
+    // somado DEPOIS da iluminação — visível em sombra total (aceite do issue).
+    // ---------------------------------------------------------------------
+    anime_eye: {
+      note:
+        "Íris com parallax mapping (profundidade convexa sem cavidade geométrica) e highlights " +
+        "desenhados à mão desacoplados da iluminação. Slot main recebe a textura de olho " +
+        "(Fase 2 #26) amostrada com o UV parallaxado; com eye off ou depth_scale 0, " +
+        "eye_uv = in.uv e o highlight some — frame congelado intacto.",
+      parallax_formula: "UV_iris = UV + V_tangent.xy * depth_scale (clamp 0..1)",
+      v_tangent_basis: "T = normalize(cross(N, up)), B = cross(N, T); V_tangent = (dot(V,T), dot(V,B))",
+      highlight: {
+        main_center: [0.38, 0.62],
+        main_falloff: [0.075, 0.125],
+        main_ellipse_y_scale: 0.72,
+        second_center: [0.68, 0.34],
+        second_falloff: [0.028, 0.055],
+        second_intensity: 0.85,
+        decoupled_from_lighting: true,
+      },
+      block_markers: ["// ANIGO-ANIME-EYE-BEGIN", "// ANIGO-ANIME-EYE-END"],
+      shared_by: ["anime_eye", "cel_shading"],
+      entry_functions: ["eye_parallax_uv", "eye_highlight_mask", "eye_highlight_rgb"],
+      golden: [
+        {
+          name: "parallax_central",
+          uv: [0.5, 0.5],
+          v_tangent: [0.2, -0.1],
+          depth_scale: 0.15,
+          expected_uv: [0.53, 0.485],
+        },
+        {
+          name: "parallax_clamp",
+          uv: [0.02, 0.98],
+          v_tangent: [0.5, 0.5],
+          depth_scale: 0.2,
+          expected_uv: [0.12, 1.0],
+        },
+        {
+          name: "mask_principal",
+          uv: [0.38, 0.62],
+          expected_mask: 1.0,
+        },
+        {
+          name: "mask_secundario",
+          uv: [0.68, 0.34],
+          expected_mask: 0.85,
+        },
+        {
+          name: "mask_entre_brilhos",
+          uv: [0.5, 0.5],
+          expected_mask: 0.0,
+        },
+      ],
+      golden_note: "formulas em ponto flutuante duplo, congeladas em f32",
+      // Fase 2 (#43): solver de olhar (anigo-ik / eye_tracking.ts) —
+      // giroscópio de azimut/elevação no espaço local da cabeça com clamp
+      // físico + micro-sacadas suaves (2–5°) para olhar vivo.
+      gaze: {
+        eye_offsets_head_local: { left: [0.035, -0.01, 0.09], right: [-0.035, -0.01, 0.09] },
+        max_yaw_degrees: 45,
+        max_pitch_degrees: 35,
+        saccade_amplitude_degrees_default: 2.5,
+        saccade_amplitude_range: [2, 5],
+        damping_default: 6.0,
+        note:
+          "yaw = atan2(v.x, v.z), pitch = atan2(v.y, hypot(v.x, v.z)) no espaço local da cabeça, " +
+          "v = alvo − olho; clamps físicos impedem rotação além do cômodo. Micro-sacadas: soma de 3 " +
+          "senoides incomensuráveis × amplitude (suave, determinística em (t, seed)).",
+        // Números dourados (produzidos por implementação independente,
+        // olhando do olho esquerdo, cabeça identidade em origem): a referência
+        // TS (src/services/eye_tracking.ts) precisa reproduzi-los (1e-5).
+        golden: [
+          { name: "frontal", target: [0, -0.01, 0.4], yaw: -0.11242713, pitch: 0.0, note: "convergência natural do olho esquerdo para o centro (−6.44°)" },
+          { name: "azimut_30", target: [0.5, 0, 0.8660254], yaw: 0.53983635, pitch: 0.01105322, note: "alvo a 30° de azimut" },
+          { name: "elevacao_20", target: [0, 0.1819852, 0.5], yaw: -0.08515939, pitch: 0.43653914, note: "alvo a 20° de elevação (visto do olho: 25°)" },
+          { name: "clamp_esquerda_90", target: [10, 0, 0.1], yaw: 0.78539819, pitch: 0.00100351, note: "yaw clampado no limite físico de 45°" },
+          { name: "clamp_acima", target: [0.035, 5, 1.0], yaw: 0.0, pitch: 0.61086524, note: "pitch clampado no limite físico de 35°" },
+        ],
+        saccades: [
+          { t: 0, yaw: 0.01888627, pitch: 0.0121564 },
+          { t: 1, yaw: 0.01128491, pitch: 0.00615212 },
+          { t: 2, yaw: 0.00091829, pitch: -0.01229176 },
+          { t: 3, yaw: -0.01041111, pitch: -0.00766383 },
+        ],
+        saccades_note: "seed 1.23, amplitude 2.5° (radianos); |sacada| ≤ amplitude sempre",
+        damping: {
+          from: [0, 0],
+          to: [0.1, -0.05],
+          damping_per_second: 6.0,
+          frames_60fps: 30,
+          expected: [0.09502129, -0.04751065],
+          note: "suavização exponencial 1 − e^(−damping×dt) por frame",
+        },
+      },
+    },
     targets: {
       offscreen_color_format: "rgba8unorm",
       viewport_color_format_policy: "surface_preferred",
@@ -534,6 +644,14 @@ export function renderContractFixture() {
         face_shadow_offset: 0.0,
         face_shadow_smoothness: 0.05,
         face_sdf_enabled: false,
+        // Fase 2 (#43): olho anime — desativado no frame congelado
+        eye_depth_scale: 0.0,
+        eye_highlight_intensity: 0.0,
+        eye_enabled: false,
+        // Fase 2 (#43): settings do solver de olhar (CPU, não GPU)
+        gaze_tracking_enabled: false,
+        gaze_saccade_amplitude: 2.5,
+        gaze_damping: 6.0,
         outline_color: [0.25, 0.15, 0.2, 1.0],
         outline_width: 0.004,
         outline_depth_bias: 0.02,
@@ -580,6 +698,9 @@ export function renderContractFixture() {
           // Fase 2 (#17): params7 (face_shadow_offset, face_shadow_smoothness,
           // face_sdf_enabled, reserved) — frame congelado com SDF off.
           0.0, 0.050000001, 0.0, 0.0,
+          // Fase 2 (#43): params8 (eye_depth_scale, eye_highlight_intensity,
+          // eye_enabled, reserved) — frame congelado com olho anime off.
+          0.0, 0.0, 0.0, 0.0,
         ],
         outline_uniform: [
           0.25, 0.150000006, 0.200000003, 1.0, 0.004, 1.777777791, 0.02, 0.899999976,

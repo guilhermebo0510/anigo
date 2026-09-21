@@ -24,6 +24,14 @@
     onCharacterCommit = undefined,
     onError = undefined,
     onProportionsChange = undefined,
+    // Fase 2 (#43): motor de olhos/íris (estado pertence ao App).
+    eyeEnabled = $bindable(false),
+    eyeDepthScale = $bindable(0.0),
+    eyeHighlightIntensity = $bindable(0.0),
+    gazeTrackingEnabled = $bindable(false),
+    gazeSaccadeAmplitude = $bindable(2.5),
+    gazeDamping = $bindable(6.0),
+    onEyeChange = undefined,
   }: {
     viewportRef?: any;
     onModelChange?: (gender: "male" | "female") => void;
@@ -35,6 +43,22 @@
     onError?: (message: string) => void;
     /** Preset proportions (App owns the proportion mirrors). */
     onProportionsChange?: (p: CharacterPreset["proportions"]) => void;
+    /** Fase 2 (#43): parâmetros do olho anime / solver de olhar. */
+    eyeEnabled?: boolean;
+    eyeDepthScale?: number;
+    eyeHighlightIntensity?: number;
+    gazeTrackingEnabled?: boolean;
+    gazeSaccadeAmplitude?: number;
+    gazeDamping?: number;
+    onEyeChange?: (params: {
+      eyeEnabled: boolean;
+      eyeDepthScale: number;
+      eyeHighlightIntensity: number;
+      gazeTrackingEnabled: boolean;
+      gazeSaccadeAmplitude: number;
+      gazeDamping: number;
+      isContinuous: boolean;
+    }) => void;
   } = $props();
 
   let baseGender: BaseGender = $state("male");
@@ -308,6 +332,19 @@
   function resetAllSliders() {
     resetSlidersToDefaults(true);
   }
+
+  // Fase 2 (#43): parâmetros do olho anime / solver de olhar (material).
+  function notifyEyeChange(isContinuous = true) {
+    onEyeChange?.({
+      eyeEnabled,
+      eyeDepthScale,
+      eyeHighlightIntensity,
+      gazeTrackingEnabled,
+      gazeSaccadeAmplitude,
+      gazeDamping,
+      isContinuous,
+    });
+  }
 </script>
 
 <div class="anatomy-inspector">
@@ -378,6 +415,96 @@
       bind:genderDimorphism={genderDimorphism}
       onUpdate={handleSomatotype}
     />
+  </div>
+
+  <!-- Fase 2 (#43): Motor de Olhos/Íris (Anime Eye) -->
+  <div class="eyes-card">
+    <div class="card-title">OLHOS & OLHAR (ANIME)</div>
+
+    <div class="eye-row">
+      <span class="eye-label">Olho Anime (Parallax + Highlights)</span>
+      <input
+        type="checkbox"
+        bind:checked={eyeEnabled}
+        oninput={() => notifyEyeChange(true)}
+        onchange={() => notifyEyeChange(false)}
+      />
+    </div>
+
+    <div class="eye-slider-row">
+      <span class="eye-label">Profundidade da Íris</span>
+      <input
+        type="range"
+        min="0"
+        max="0.25"
+        step="0.005"
+        bind:value={eyeDepthScale}
+        oninput={() => notifyEyeChange(true)}
+        onchange={() => notifyEyeChange(false)}
+      />
+      <span class="eye-value">{eyeDepthScale.toFixed(3)}</span>
+    </div>
+
+    <div class="eye-slider-row">
+      <span class="eye-label">Highlights</span>
+      <input
+        type="range"
+        min="0"
+        max="1.5"
+        step="0.05"
+        bind:value={eyeHighlightIntensity}
+        oninput={() => notifyEyeChange(true)}
+        onchange={() => notifyEyeChange(false)}
+      />
+      <span class="eye-value">{eyeHighlightIntensity.toFixed(2)}</span>
+    </div>
+
+    <div class="card-subtitle">TRACKING DO OLHAR</div>
+
+    <div class="eye-row">
+      <span class="eye-label">Seguir Câmera (Look-At)</span>
+      <input
+        type="checkbox"
+        bind:checked={gazeTrackingEnabled}
+        oninput={() => notifyEyeChange(true)}
+        onchange={() => notifyEyeChange(false)}
+      />
+    </div>
+
+    <div class="eye-slider-row">
+      <span class="eye-label">Micro-Sacadas</span>
+      <input
+        type="range"
+        min="0"
+        max="5"
+        step="0.1"
+        bind:value={gazeSaccadeAmplitude}
+        oninput={() => notifyEyeChange(true)}
+        onchange={() => notifyEyeChange(false)}
+      />
+      <span class="eye-value">{gazeSaccadeAmplitude.toFixed(1)}°</span>
+    </div>
+
+    <div class="eye-slider-row">
+      <span class="eye-label">Damping</span>
+      <input
+        type="range"
+        min="1"
+        max="15"
+        step="0.5"
+        bind:value={gazeDamping}
+        oninput={() => notifyEyeChange(true)}
+        onchange={() => notifyEyeChange(false)}
+      />
+      <span class="eye-value">{gazeDamping.toFixed(1)}</span>
+    </div>
+
+    <div class="eye-hint">
+      Parallax: a íris se afunda conforme a câmera orbita (sem cavidade
+      geométrica). Highlights: brilhos desenhados à mão que permanecem em
+      sombra total. Tracking: o olhar segue a câmera com micro-sacadas (0–5°)
+      aplicadas aos nós LeftEye/RightEye do modelo (VRM).
+    </div>
   </div>
 
   <!-- Slider Search Filter -->
@@ -789,5 +916,70 @@
   }
   .btn-reset-slider:hover {
     color: #cbd5e1;
+  }
+
+  /* Fase 2 (#43): Motor de Olhos/Íris */
+  .eyes-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: #151926;
+    border: 1px solid #242d44;
+    border-radius: 10px;
+  }
+
+  .card-subtitle {
+    margin-top: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #64748b;
+    text-transform: uppercase;
+  }
+
+  .eye-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 0;
+  }
+
+  .eye-slider-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .eye-label {
+    font-size: 12px;
+    color: #cbd5e1;
+  }
+
+  .eye-row input[type="checkbox"],
+  .eye-slider-row input[type="range"] {
+    accent-color: #38bdf8;
+  }
+
+  .eye-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+  }
+
+  .eye-value {
+    font-size: 11px;
+    color: #94a3b8;
+    min-width: 34px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .eye-hint {
+    margin-top: 2px;
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: #64748b;
   }
 </style>

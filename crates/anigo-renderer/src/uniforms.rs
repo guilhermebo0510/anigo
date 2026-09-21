@@ -62,6 +62,10 @@ pub struct MaterialUniform {
     // Fase 2 (#17): sombra facial SDF — offset do threshold, suavidade,
     // ativação (o mapa SDF é o binding 16 do cel, ancorado no neutro 1x1).
     pub params7: [f32; 4], // face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved
+    // Fase 2 (#43): olho anime — recalada do parallax da íris, intensidade
+    // dos highlights desenhados à mão (desacoplados da luz) e ativação.
+    // (Os settings do solver de olhar são CPU — anigo-ik/eye_tracking.ts.)
+    pub params8: [f32; 4], // eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved
 }
 
 impl Default for MaterialUniform {
@@ -82,6 +86,8 @@ impl Default for MaterialUniform {
             params6: [0.0, 0.0, 1.0, 0.0],
             // Fase 2 (#17): SDF facial off por padrão (frame congelado intacto)
             params7: [0.0, 0.05, 0.0, 0.0],
+            // Fase 2 (#43): olho anime off por padrão (frame congelado intacto)
+            params8: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -132,6 +138,13 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
                 m.face_shadow_offset,
                 m.face_shadow_smoothness,
                 m.face_sdf_enabled as f32,
+                0.0,
+            ],
+            // Fase 2 (#43): olho anime (parallax + highlights)
+            params8: [
+                m.eye_depth_scale,
+                m.eye_highlight_intensity,
+                m.eye_enabled as f32,
                 0.0,
             ],
         }
@@ -223,14 +236,15 @@ mod tests {
     #[test]
     fn test_uniform_sizes_and_alignments() {
         // P2-14 Camera 208 B (added model+normal_mat), Light 80 B (added sky/ground),
-        // Material 192 B (Fase 2 #18: +4 vec4s de MToon; #17: +params7 face SDF — 48 floats)
+        // Material 208 B (Fase 2 #18: +4 vec4s de MToon; #17: +params7 face SDF;
+        // #43: +params8 olho anime — 52 floats)
         assert_eq!(std::mem::size_of::<CameraUniform>(), 208);
         assert_eq!(std::mem::size_of::<CameraUniform>() % 16, 0);
 
         assert_eq!(std::mem::size_of::<LightUniform>(), 80);
         assert_eq!(std::mem::size_of::<LightUniform>() % 16, 0);
 
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 192);
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 208);
         assert_eq!(std::mem::size_of::<MaterialUniform>() % 16, 0);
 
         assert_eq!(std::mem::size_of::<OutlineUniform>(), 48);

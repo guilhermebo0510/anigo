@@ -149,6 +149,50 @@ export interface FaceSdfSpecV1 {
   golden_note: string;
 }
 
+/** Fase 2 (#43): olho anime — parallax da íris + highlights + solver de olhar. */
+export interface AnimeEyeSpecV1 {
+  note: string;
+  parallax_formula: string;
+  v_tangent_basis: string;
+  highlight: {
+    main_center: [number, number];
+    main_falloff: [number, number];
+    main_ellipse_y_scale: number;
+    second_center: [number, number];
+    second_falloff: [number, number];
+    second_intensity: number;
+    decoupled_from_lighting: boolean;
+  };
+  block_markers: string[];
+  shared_by: string[];
+  entry_functions: string[];
+  golden: Array<
+    | { name: string; uv: [number, number]; v_tangent: [number, number]; depth_scale: number; expected_uv: [number, number] }
+    | { name: string; uv: [number, number]; expected_mask: number }
+  >;
+  golden_note: string;
+  gaze: {
+    eye_offsets_head_local: { left: [number, number, number]; right: [number, number, number] };
+    max_yaw_degrees: number;
+    max_pitch_degrees: number;
+    saccade_amplitude_degrees_default: number;
+    saccade_amplitude_range: [number, number];
+    damping_default: number;
+    note: string;
+    golden: Array<{ name: string; target: [number, number, number]; yaw: number; pitch: number; note: string }>;
+    saccades: Array<{ t: number; yaw: number; pitch: number }>;
+    saccades_note: string;
+    damping: {
+      from: [number, number];
+      to: [number, number];
+      damping_per_second: number;
+      frames_60fps: number;
+      expected: [number, number];
+      note: string;
+    };
+  };
+}
+
 export interface RenderContractV1 {
   version: number;
   /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
@@ -157,6 +201,8 @@ export interface RenderContractV1 {
   skinning?: SkinningSpecV1;
   /** Fase 2 (#17): sombra facial SDF — bloco compartilhado + golden angular. */
   face_sdf?: FaceSdfSpecV1;
+  /** Fase 2 (#43): olho anime — parallax/highlights + solver de olhar. */
+  anime_eye?: AnimeEyeSpecV1;
   /** P1-03: códigos de validação de malha antes de criar buffers. */
   mesh_validation?: {
     note: string;

@@ -139,6 +139,13 @@ pub struct MaterialPatch {
     pub face_shadow_offset: Option<f32>,
     pub face_shadow_smoothness: Option<f32>,
     pub face_sdf_enabled: Option<bool>,
+    // Fase 2 (#43): olho anime + solver de olhar
+    pub eye_depth_scale: Option<f32>,
+    pub eye_highlight_intensity: Option<f32>,
+    pub eye_enabled: Option<bool>,
+    pub gaze_tracking_enabled: Option<bool>,
+    pub gaze_saccade_amplitude: Option<f32>,
+    pub gaze_damping: Option<f32>,
 }
 
 impl MaterialPatch {
@@ -254,6 +261,25 @@ impl MaterialPatch {
         if let Some(value) = self.face_sdf_enabled {
             material.face_sdf_enabled = value;
         }
+        // Fase 2 (#43): olho anime + solver de olhar
+        if let Some(value) = self.eye_depth_scale {
+            material.eye_depth_scale = value;
+        }
+        if let Some(value) = self.eye_highlight_intensity {
+            material.eye_highlight_intensity = value;
+        }
+        if let Some(value) = self.eye_enabled {
+            material.eye_enabled = value;
+        }
+        if let Some(value) = self.gaze_tracking_enabled {
+            material.gaze_tracking_enabled = value;
+        }
+        if let Some(value) = self.gaze_saccade_amplitude {
+            material.gaze_saccade_amplitude = value;
+        }
+        if let Some(value) = self.gaze_damping {
+            material.gaze_damping = value;
+        }
     }
 
     /// Builds the inverse patch from the current material values.
@@ -317,6 +343,19 @@ impl MaterialPatch {
                 .face_shadow_smoothness
                 .map(|_| material.face_shadow_smoothness),
             face_sdf_enabled: self.face_sdf_enabled.map(|_| material.face_sdf_enabled),
+            // Fase 2 (#43): olho anime + solver de olhar
+            eye_depth_scale: self.eye_depth_scale.map(|_| material.eye_depth_scale),
+            eye_highlight_intensity: self
+                .eye_highlight_intensity
+                .map(|_| material.eye_highlight_intensity),
+            eye_enabled: self.eye_enabled.map(|_| material.eye_enabled),
+            gaze_tracking_enabled: self
+                .gaze_tracking_enabled
+                .map(|_| material.gaze_tracking_enabled),
+            gaze_saccade_amplitude: self
+                .gaze_saccade_amplitude
+                .map(|_| material.gaze_saccade_amplitude),
+            gaze_damping: self.gaze_damping.map(|_| material.gaze_damping),
         }
     }
 

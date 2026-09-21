@@ -48,6 +48,8 @@ impl Default for StylizedLight {
 }
 
 fn default_face_shadow_smoothness() -> f32 { 0.05 }
+fn default_gaze_saccade_amplitude() -> f32 { 2.5 } // graus (Faixa 2–5 do issue #43)
+fn default_gaze_damping() -> f32 { 6.0 }
 fn default_mtoon_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
 fn default_mtoon_emission_intensity() -> f32 { 0.0 }
 fn default_mtoon_second_shade_shift() -> f32 { 0.0 }
@@ -143,6 +145,26 @@ pub struct StylizedMaterial {
     /// Ativa a sombra facial (mapa SDF ancorado no renderer).
     #[serde(default)]
     pub face_sdf_enabled: bool,
+    // Fase 2 (#43): olho anime (parallax + highlights) — off por padrão.
+    /// "Recalada" da íris: profundidade do parallax (UV + V_tangent × scale).
+    #[serde(default)]
+    pub eye_depth_scale: f32,
+    /// Intensidade dos highlights desenhados à mão (desacoplados da luz).
+    #[serde(default)]
+    pub eye_highlight_intensity: f32,
+    /// Ativa o shader do olho anime (parallax + highlights).
+    #[serde(default)]
+    pub eye_enabled: bool,
+    // Fase 2 (#43): solver de olhar (CPU — anigo-ik / eye_tracking.ts, não GPU).
+    /// Rastreamento do olhar para a câmera/alvo (micro-sacadas incluídas).
+    #[serde(default)]
+    pub gaze_tracking_enabled: bool,
+    /// Amplitude das micro-sacadas em graus (faixa 2–5 do issue).
+    #[serde(default = "default_gaze_saccade_amplitude")]
+    pub gaze_saccade_amplitude: f32,
+    /// Damping do tracking (exponencial, 1/s) — quanto maior, mais rígido.
+    #[serde(default = "default_gaze_damping")]
+    pub gaze_damping: f32,
 }
 
 impl Default for StylizedMaterial {
@@ -185,6 +207,12 @@ impl Default for StylizedMaterial {
             face_shadow_offset: 0.0,
             face_shadow_smoothness: default_face_shadow_smoothness(),
             face_sdf_enabled: false,
+            eye_depth_scale: 0.0,
+            eye_highlight_intensity: 0.0,
+            eye_enabled: false,
+            gaze_tracking_enabled: false,
+            gaze_saccade_amplitude: default_gaze_saccade_amplitude(),
+            gaze_damping: default_gaze_damping(),
         }
     }
 }
