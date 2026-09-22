@@ -250,7 +250,8 @@ test("paridade Rust: math.rs, DofSettings, DofUniform, Tauri e headless", () => 
   const headless = readRepoFile("crates/anigo-renderer/src/headless.rs");
   assert.ok(headless.includes("scene.dof.enabled"), "headless não consulta Scene.dof");
   assert.ok(headless.includes("dof_pipeline"), "headless sem pipeline de DoF");
-  assert.ok(headless.includes('depth_resolve_attachment: dof_depth_view'), "profundidade do DoF sem resolve 1×");
+  // wgpu chama o campo `depth_resolve_target` (no browser: depthResolveAttachment).
+  assert.ok(headless.includes("depth_resolve_target: dof_depth_view"), "profundidade do DoF sem resolve 1×");
 
   const main = readRepoFile("src-tauri/src/main.rs");
   assert.ok(main.includes("async fn set_dof_settings"), "Tauri sem set_dof_settings");
