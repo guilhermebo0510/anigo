@@ -120,6 +120,9 @@ pub struct ExportScene {
 }
 
 /// Camada VRM 1.0 do export (meta + humanoid + expressões + molas).
+/// `Deserialize` porque o comando Tauri (`vrm_export` no main.rs) recebe a
+/// camada pronta em JSON e a devolve para o pack binário.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VrmExportData {
     pub meta: Vrm1Meta,
     /// bone name → índice do nó (None = ausente).
