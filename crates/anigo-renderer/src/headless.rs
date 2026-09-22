@@ -1080,7 +1080,9 @@ impl HeadlessRenderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: depth_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             let view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1179,8 +1181,9 @@ impl HeadlessRenderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
-                    // Fase 2 (#53): profundidade 1× resolvida para o DoF amostrar.
-                    depth_resolve_target: dof_depth_view.as_ref(),
+                    // Fase 2 (#53): a resolve da profundidade MSAA→1× é manual
+                    // (copy_texture_to_texture) — o wgpu deste projeto não tem
+                    // o campo de depth resolve no attachment.
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1407,6 +1410,31 @@ impl HeadlessRenderer {
                     triangle_count += mesh.indices.len() / 3;
                 }
             }
+        }
+
+        // Resolve manual da profundidade (MSAA → 1×): o wgpu deste projeto não
+        // expõe depth resolve no attachment; o copy é o padrão do próprio
+        // resolve de cor e só entra quando o DoF pediu a textura 1×.
+        if let Some(dof_depth_texture) = &dof_depth_texture {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &depth_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: dof_depth_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
 
         // Fase 2 (#53): Anime Bokeh DoF — mesmo shader/uniforms do viewport;
@@ -1681,7 +1709,9 @@ impl HeadlessRenderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: depth_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             let view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1834,8 +1864,9 @@ impl HeadlessRenderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
-                    // Fase 2 (#53): profundidade 1× resolvida para o DoF amostrar.
-                    depth_resolve_target: dof_depth_view.as_ref(),
+                    // Fase 2 (#53): a resolve da profundidade MSAA→1× é manual
+                    // (copy_texture_to_texture) — o wgpu deste projeto não tem
+                    // o campo de depth resolve no attachment.
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -2069,6 +2100,31 @@ impl HeadlessRenderer {
                     triangle_count += mesh.indices.len() / 3;
                 }
             }
+        }
+
+        // Resolve manual da profundidade (MSAA → 1×): o wgpu deste projeto não
+        // expõe depth resolve no attachment; o copy é o padrão do próprio
+        // resolve de cor e só entra quando o DoF pediu a textura 1×.
+        if let Some(dof_depth_texture) = &dof_depth_texture {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &depth_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: dof_depth_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
 
         // Fase 2 (#53): Anime Bokeh DoF — idêntico ao do render_scene.

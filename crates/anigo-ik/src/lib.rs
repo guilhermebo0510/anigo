@@ -527,11 +527,13 @@ mod tests {
             let sac = solver.saccades(t);
             assert!(
                 sac.yaw.abs() <= solver.saccade_amplitude + 1e-6,
-                "sacada de yaw fora da amplitude em t={}"
+                "sacada de yaw fora da amplitude em t={}",
+                t
             );
             assert!(
                 sac.pitch.abs() <= solver.saccade_amplitude + 1e-6,
-                "sacada de pitch fora da amplitude em t={}"
+                "sacada de pitch fora da amplitude em t={}",
+                t
             );
             if let Some(prev) = previous {
                 let delta = (sac.yaw - prev.yaw).abs().max((sac.pitch - prev.pitch).abs());

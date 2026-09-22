@@ -195,7 +195,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
     let mut buffer_views: Vec<Value> = Vec::new();
     let mut accessors: Vec<Value> = Vec::new();
 
-    let push_view = |bin: &mut BinWriter, buffer_views: &mut Vec<Value>, offset: usize, byte_length: usize, target: Option<u64>| -> u64 {
+    let push_view = |_bin: &mut BinWriter, buffer_views: &mut Vec<Value>, offset: usize, byte_length: usize, target: Option<u64>| -> u64 {
         let mut entry = Map::new();
         entry.insert("buffer".into(), Value::from(0));
         entry.insert("byteOffset".into(), Value::from(offset));
