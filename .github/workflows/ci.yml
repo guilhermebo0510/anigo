@@ -44,6 +44,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Sem escopo por ref o Rust reusa binários compilados de outras arena/*
+          # (o include_str! congela bytes antigos e o teste de hash diverge da
+          # fixture fresca lida em runtime — foi o caso do inverted_hull 19020B).
+          shared-key: ${{ github.ref_name }}
       - name: dependências de sistema (Tauri/webview)
         run: |
           sudo apt-get update

@@ -721,13 +721,21 @@ impl HeadlessRenderer {
                             has_dynamic_offset: false,
                             min_binding_size: wgpu::BufferSize::new(contract::uniform_size("dof") as u64),
                         },
-                        "texture_2d<f32>" | "texture_depth_2d" => wgpu::BindingType::Texture {
+                        // scene_color: textureSample (op filtrante) exige textura
+                        // filtrável e sampler Filtering na validação da interface.
+                        "texture_2d<f32>" => wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        // scene_depth: texture_depth_2d + textureSampleLevel(0) —
+                        // a classe depth no wgpu é Float não filtrável.
+                        "texture_depth_2d" => wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: false },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        "sampler" => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                        _ => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        _ => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     },
                     count: None,
                 })

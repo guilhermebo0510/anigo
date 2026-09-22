@@ -974,9 +974,17 @@ mod tests {
                 (17, "sampler"),
             ]
         );
+        // Fase 2 (#18): o mapa de espessura do contorno (MToon outlineWidth) é
+        // o binding 3, com sampler dedicado no 4.
         assert_eq!(
             bind_group_entries("outline"),
-            vec![(0, "uniform"), (1, "uniform"), (2, "uniform")]
+            vec![
+                (0, "uniform"),
+                (1, "uniform"),
+                (2, "uniform"),
+                (3, "texture_2d<f32>"),
+                (4, "sampler"),
+            ]
         );
         assert_eq!(bind_group_entries("sparse_morph").len(), 5);
     }
