@@ -2282,44 +2282,11 @@ impl HeadlessRenderer {
 mod tests {
 
 
-    // Debug em CI: sem um logger instalado o wgpu engole o detalhe dos erros
-    // de validação (sobra só "Validation Error"). Este sink mínimo manda o
-    // texto completo para o stdout do teste (visível nas anotações do check).
-    struct StderrLog;
-    impl log::Log for StderrLog {
-        fn enabled(&self, _metadata: &log::Metadata) -> bool {
-            true
-        }
-        fn log(&self, record: &log::Record) {
-            eprintln!("[wgpu-log] {}: {}", record.level(), record.args());
-        }
-        fn flush(&self) {}
-    }
-    static STDERR_LOG: StderrLog = StderrLog;
-    fn ensure_wgpu_logger() {
-        let _ = log::set_logger(&STDERR_LOG);
-        log::set_max_level(log::LevelFilter::Error);
-        let _ = std::env::set_var("RUST_BACKTRACE", "1");
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            let default = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                default(info);
-                if let Some(msg) = info.payload().downcast_ref::<&str>() {
-                    eprintln!("PANIC-PAYLOAD: {msg}");
-                }
-                if let Some(msg) = info.payload().downcast_ref::<String>() {
-                    eprintln!("PANIC-PAYLOAD: {msg}");
-                }
-                eprintln!("PANIC-BACKTRACE:\n{}", std::backtrace::Backtrace::force_capture());
-            }));
-        });
-    }    use super::*;
+    use super::*;
     use anigo_core::scene::{Scene, StylizedMaterial};
 
     #[test]
     fn test_headless_renderer_initialization_and_render() {
-        ensure_wgpu_logger();
         // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
         // de `diagnostics` enquanto este teste reporta `device_unavailable`.
         let _guard = crate::diagnostics::test_guard();
@@ -2348,7 +2315,6 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_canonical_base_mesh() {
-        ensure_wgpu_logger();
         // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
         // de `diagnostics` enquanto este teste reporta `device_unavailable`.
         let _guard = crate::diagnostics::test_guard();
@@ -2373,7 +2339,6 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_sparse_morph_compute_matches_cpu() {
-        ensure_wgpu_logger();
         // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
         // de `diagnostics` enquanto este teste reporta `device_unavailable`.
         let _guard = crate::diagnostics::test_guard();
@@ -2448,7 +2413,6 @@ mod tests {
 
     #[test]
     fn test_headless_renderer_render_scene_with_sparse_morphs() {
-        ensure_wgpu_logger();
         // O coletor de diagnósticos é global: segura o mesmo cadeado dos testes
         // de `diagnostics` enquanto este teste reporta `device_unavailable`.
         let _guard = crate::diagnostics::test_guard();

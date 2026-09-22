@@ -949,7 +949,8 @@ mod tests {
         assert_eq!(morph.compute_entry, Some("cs_accumulate_morphs"));
 
         // P1-04 acrescentou o palette de ossos ao grupo 0: `bones` é o binding 5
-        // do cel e o 2 do contorno (é o que o WGSL declara e o contrato congela).
+        // do cel e o 2 do contorno. Fase 2 acrescentou os slots de textura do
+        // material anime (6-15, MToon) e o mapa SDF da sombra facial (16-17).
         assert_eq!(
             bind_group_entries("cel"),
             vec![
@@ -959,6 +960,18 @@ mod tests {
                 (3, "texture_2d<f32>"),
                 (4, "sampler"),
                 (5, "uniform"),
+                (6, "texture_2d<f32>"),
+                (7, "sampler"),
+                (8, "texture_2d<f32>"),
+                (9, "sampler"),
+                (10, "texture_2d<f32>"),
+                (11, "sampler"),
+                (12, "texture_2d<f32>"),
+                (13, "sampler"),
+                (14, "texture_2d<f32>"),
+                (15, "sampler"),
+                (16, "texture_2d<f32>"),
+                (17, "sampler"),
             ]
         );
         assert_eq!(

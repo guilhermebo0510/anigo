@@ -60,6 +60,27 @@ jobs:
             exit 1
           fi
           tail -5 /tmp/cargo-check.log
+      - name: WGSL dos shaders de produção (naga)
+        # Sem GPU e sem naga no ambiente de desenvolvimento, um shader inválido
+        # só apareceria ao abrir o app. Desde o skinning (P1-04) este passo é
+        # gate de verdade: se o naga instalar, um shader inválido reprova o CI;
+        # se a instalação falhar (rede), o passo avisa e `npm run check:wgsl`
+        # continua cobrindo a paridade shader ⇄ contrato. Roda ANTES do cargo
+        # test para um shader malformado virar erro explícito (com linha),
+        # não um "Validation Error" sem rosto no wgpu.
+        run: |
+          if ! command -v naga >/dev/null 2>&1; then
+            cargo install naga-cli --locked || {
+              echo "::warning::naga indisponível (instalação falhou); a paridade shader ⇄ contrato segue em npm run check:wgsl"
+              exit 0
+            }
+          fi
+          naga crates/anigo-renderer/shaders/cel_shading.wgsl \
+               crates/anigo-renderer/shaders/inverted_hull.wgsl \
+               crates/anigo-renderer/shaders/morph_sparse_compute.wgsl \
+               crates/anigo-renderer/shaders/face_sdf.wgsl \
+               crates/anigo-renderer/shaders/postprocess_dof.wgsl \
+               crates/anigo-renderer/shaders/anime_eye.wgsl
       - name: cargo test (núcleo)
         run: |
           if ! cargo test -p anigo-core > /tmp/cargo-test-core.log 2>&1; then
@@ -84,20 +105,3 @@ jobs:
             exit 1
           fi
           tail -5 /tmp/cargo-test-mcp.log
-      - name: WGSL dos shaders de produção (naga)
-        # Sem GPU e sem naga no ambiente de desenvolvimento, um shader inválido
-        # só apareceria ao abrir o app. Desde o skinning (P1-04) este passo é
-        # gate de verdade: se o naga instalar, um shader inválido reprova o CI;
-        # se a instalação falhar (rede), o passo avisa e `npm run check:wgsl`
-        # continua cobrindo a paridade shader ⇄ contrato.
-        run: |
-          if ! command -v naga >/dev/null 2>&1; then
-            cargo install naga-cli --locked || {
-              echo "::warning::naga indisponível (instalação falhou); a paridade shader ⇄ contrato segue em npm run check:wgsl"
-              exit 0
-            }
-          fi
-          naga crates/anigo-renderer/shaders/cel_shading.wgsl \
-               crates/anigo-renderer/shaders/inverted_hull.wgsl \
-               crates/anigo-renderer/shaders/morph_sparse_compute.wgsl \
-               crates/anigo-renderer/shaders/face_sdf.wgsl

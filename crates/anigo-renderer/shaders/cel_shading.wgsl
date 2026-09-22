@@ -493,7 +493,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (material.params6.x > 0.5) {
         var cam_right = cross(vec3<f32>(0.0, 1.0, 0.0), V);
         let cam_right_len = length(cam_right);
-        cam_right = cam_right_len > 1e-4 ? normalize(cam_right) : vec3<f32>(1.0, 0.0, 0.0);
+        cam_right = select(vec3<f32>(1.0, 0.0, 0.0), normalize(cam_right), cam_right_len > 1e-4);
         let cam_up = cross(V, cam_right);
         let n_view = vec3<f32>(dot(N, cam_right), dot(N, cam_up), dot(N, V));
         let matcap_uv = clamp(n_view.xy * 0.5 + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
