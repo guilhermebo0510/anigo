@@ -2299,6 +2299,21 @@ mod tests {
     fn ensure_wgpu_logger() {
         let _ = log::set_logger(&STDERR_LOG);
         log::set_max_level(log::LevelFilter::Error);
+        let _ = std::env::set_var("RUST_BACKTRACE", "1");
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let default = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                default(info);
+                if let Some(msg) = info.payload().downcast_ref::<&str>() {
+                    eprintln!("PANIC-PAYLOAD: {msg}");
+                }
+                if let Some(msg) = info.payload().downcast_ref::<String>() {
+                    eprintln!("PANIC-PAYLOAD: {msg}");
+                }
+                eprintln!("PANIC-BACKTRACE:\n{}", std::backtrace::Backtrace::force_capture());
+            }));
+        });
     }    use super::*;
     use anigo_core::scene::{Scene, StylizedMaterial};
 
