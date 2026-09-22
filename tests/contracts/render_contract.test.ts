@@ -214,6 +214,7 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.deepEqual(spaces, {
     bones: "uniform",
     camera: "uniform",
+    dof: "uniform", // Fase 2 (#53): Anime Bokeh DoF (48 B)
     light: "uniform",
     material: "uniform",
     outline: "uniform",
@@ -239,6 +240,8 @@ test("os blocos de uniform batem com os structs #[repr(C)] do Rust", () => {
       "emission_color", "params4", "params5", "params6", "params7", "params8",
     ],
     outline: ["color", "params", "params2"],
+    // Fase 2 (#53): Anime Bokeh DoF (48 B / 12 floats)
+    dof: ["params", "resolution", "limits"],
   };
   for (const [block, fields] of Object.entries(expected)) {
     const structName = `pub struct ${block[0].toUpperCase()}${block.slice(1)}Uniform {`;
@@ -294,7 +297,9 @@ test("bind groups conferem com as declarações do WGSL", () => {
 // ---------------------------------------------------------------------------
 
 test("o grafo de passes é o mesmo nos dois renderers", () => {
-  assert.deepEqual(renderPassOrder(), ["outline", "cel"]);
+  // Fase 2 (#53): passe de pós DoF entra no grafo canônico (roda só quando
+  // dof_enabled — only_when no contrato; os dois renderers o tratam igual).
+  assert.deepEqual(renderPassOrder(), ["outline", "cel", "dof_post"]);
   const outline = RENDER_CONTRACT.passes.find((pass) => pass.name === "outline")!;
   assert.equal(outline.cull_mode, "front");
   assert.equal(outline.depth_write, false);

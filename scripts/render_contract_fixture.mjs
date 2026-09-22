@@ -111,6 +111,10 @@ export function renderContractFixture() {
       highlight_mask: "eye_highlight_mask",
       highlight_rgb: "eye_highlight_rgb",
     }),
+    shader("postprocess_dof", "crates/anigo-renderer/shaders/postprocess_dof.wgsl", "wgsl", "production", {
+      vertex: "vs_dof",
+      fragment: "fs_dof",
+    }),
     shader("webgl2_fallback/cel_vertex", "crates/anigo-renderer/shaders/webgl2_fallback/cel_vertex.glsl", "glsl", "fallback_webgl2", { vertex: "main" }),
     shader("webgl2_fallback/cel_fragment", "crates/anigo-renderer/shaders/webgl2_fallback/cel_fragment.glsl", "glsl", "fallback_webgl2", { fragment: "main" }),
     shader("webgl2_fallback/outline_vertex", "crates/anigo-renderer/shaders/webgl2_fallback/outline_vertex.glsl", "glsl", "fallback_webgl2", { vertex: "main" }),
@@ -234,6 +238,18 @@ export function renderContractFixture() {
           { name: "matrices", kind: "array_mat4_f32_24", offset: 0, size: 1536, meaning: "world × inverse bind por osso, na ordem do esqueleto" },
         ],
       },
+      // Fase 2 (#53): Depth of Field cinematográfico (Anime Bokeh DoF)
+      dof: {
+        struct: "DofUniform",
+        address_space: "uniform",
+        size: 48,
+        note: "params = focus_distance(m), f_number, bokeh_shape (0 círculo/1 hex), focal_m; resolution = w, h, z_near, z_far (px/m); limits = max_radius_px, sensor_height_m",
+        fields: [
+          { name: "params", kind: "vec4", offset: 0, size: 16, meaning: "focus_distance (m), f_number, bokeh_shape, focal_m (m)" },
+          { name: "resolution", kind: "vec4", offset: 16, size: 16, meaning: "width_px, height_px, z_near (m), z_far (m)" },
+          { name: "limits", kind: "vec4", offset: 32, size: 16, meaning: "max_radius_px, sensor_height_m (0.024), reserved, reserved" },
+        ],
+      },
       vertex_raw: {
         struct: "VertexRaw",
         address_space: "vertex_and_storage_read",
@@ -301,6 +317,18 @@ export function renderContractFixture() {
           { binding: 4, kind: "storage_read_write", stages: ["compute"], declaration: "var<storage, read_write> out_vertices: array<VertexRaw>" },
         ],
       },
+      {
+        // Fase 2 (#53): passe de DoF — cor + profundidade da cena, um sampler
+        // Nearest (textura de profundidade exige amostragem sem filtragem).
+        name: "dof",
+        group: 0,
+        entries: [
+          { binding: 0, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> dof: DofUniform" },
+          { binding: 1, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var scene_color: texture_2d<f32>" },
+          { binding: 2, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var scene_depth: texture_2d<f32>" },
+          { binding: 3, kind: "sampler", stages: ["fragment"], declaration: "var dof_sampler: sampler" },
+        ],
+      },
     ],
     passes: [
       {
@@ -332,6 +360,24 @@ export function renderContractFixture() {
         depth_bias: { constant: 0, slope_scale: 0.0, clamp: 0.0 },
         blend: "none",
         write_mask: "all",
+      },
+      {
+        // Fase 2 (#53): pós-processamento DoF — roda DEPOIS do cel, só quando
+        // `scene.dof.enabled` (mesmo shader/uniforms no viewport e no headless).
+        order: 2,
+        name: "dof_post",
+        kind: "render",
+        shader: "postprocess_dof",
+        vertex_entry: "vs_dof",
+        fragment_entry: "fs_dof",
+        bind_group: "dof",
+        cull_mode: "back",
+        depth_write: false,
+        depth_compare: "always",
+        blend: "none",
+        write_mask: "all",
+        only_when: "dof_enabled",
+        fullscreen_triangle: true,
       },
       {
         order: -1,
@@ -375,6 +421,9 @@ export function renderContractFixture() {
         { code: "shader_compile_failed", severity: "error" },
         { code: "buffer_creation_failed", severity: "error" },
         { code: "readback_failed", severity: "error" },
+        // Fase 2 (#53): DoF ligado sem as intermediárias 1× (texto/profundidade
+        // resolvida) — o passe é pulado com diagnóstico, sem derrubar o frame.
+        { code: "dof_unavailable", severity: "warning" },
       ],
     },
     // ---------------------------------------------------------------------
@@ -542,6 +591,87 @@ export function renderContractFixture() {
           expected: [0.09502129, -0.04751065],
           note: "suavização exponencial 1 − e^(−damping×dt) por frame",
         },
+      },
+    },
+    // Fase 2 (#53): Câmera cinematográfica — lentes, Anime Bokeh DoF e
+    // tracking de alvo. Os goldens são de precisão dupla congelados em f32;
+    // anigo-core::math, src/services/camera_cinematic.ts e
+    // postprocess_dof.wgsl implementam as MESMAS fórmulas (CoC idêntica nos
+    // três — paridade conferida por teste).
+    cinematography: {
+      note:
+        "Presets de lente (24/35/50/85/135 mm em sensor full-frame 24 mm de altura), " +
+        "DoF por Circle of Confusion (passo de pós com bokeh circular/hexagonal) e " +
+        "tracking de alvo com amortecimento exponencial. Desligado (dof.enabled=false) " +
+        "o passo de pós não existe — frame congelado intacto.",
+      lens: {
+        sensor_height_mm: 24.0,
+        fov_formula: "fov_y = 2 * atan(sensor_height_mm / 2 / focal_mm)",
+        presets: [
+          { id: "24", focal_mm: 24.0, name: "Ação Panorâmica", fov_y_degrees: 53.130102 },
+          { id: "35", focal_mm: 35.0, name: "Corpo Inteiro", fov_y_degrees: 37.849289 },
+          { id: "50", focal_mm: 50.0, name: "Visão Humana Neutra", fov_y_degrees: 26.991467 },
+          { id: "85", focal_mm: 85.0, name: "Retrato Anime", fov_y_degrees: 16.071421 },
+          { id: "135", focal_mm: 135.0, name: "Close-up Dramático", fov_y_degrees: 10.159216 },
+        ],
+        reframe: {
+          formula: "r' = r * tan(fov_from/2) / tan(fov_to/2)",
+          golden: {
+            from_mm: 50.0,
+            to_mm: 85.0,
+            radius: 3.0,
+            expected_radius: 5.100000,
+            note: "trocar 50→85 mm afasta o orbitador para o sujeito manter o tamanho em tela (aceite 2)",
+          },
+        },
+      },
+      dof: {
+        coc_formula: "CoC = |(D - F_dist) / D| * F^2 / (N * (F_dist - F))",
+        coc_variables:
+          "D = distância do fragmento (m), F_dist = distância de foco (m), F = focal (m), N = número f",
+        coc_to_pixels: "radius_px = min(CoC / sensor_height_m * image_height_px, max_radius_px)",
+        bokeh_shapes: { 0: "circle", 1: "hexagon" },
+        samples: { disc_points: 16, center_always_included: true, note: "amostra central com peso 1 impede halo/serrilha no contorno em foco (aceite 1)" },
+        defaults: { focus_distance_m: 2.0, f_number: 2.0, focal_mm: 50.0, max_radius_px: 16.0, bokeh_shape: 0 },
+        golden: [
+          { name: "em_foco", frag_dist: 2.0, focus_dist: 2.0, focal_m: 0.05, f_number: 2.0, expected_coc: 0.0, note: "plano de foco → CoC zero (rosto nítido)" },
+          { name: "50mm_f2_frente", frag_dist: 1.0, focus_dist: 2.0, focal_m: 0.05, f_number: 2.0, expected_coc: 0.00064103 },
+          { name: "50mm_f2_atras", frag_dist: 3.0, focus_dist: 2.0, focal_m: 0.05, f_number: 2.0, expected_coc: 0.00021368, note: "atras do plano o CoC e menor (fisica do fino-lente)" },
+          { name: "85mm_f2_atras", frag_dist: 3.0, focus_dist: 1.5, focal_m: 0.085, f_number: 2.0, expected_coc: 0.00127650 },
+          { name: "135mm_f18_closeup", frag_dist: 0.5, focus_dist: 1.0, focal_m: 0.135, f_number: 1.8, expected_coc: 0.01170520, note: "close-up dramatico: bokeh enorme" },
+        ],
+        bokeh_px_golden: {
+          image_height_px: 1080,
+          sensor_height_m: 0.024,
+          values: [
+            { name: "50mm_f2_frente", coc: 0.00064103, expected_radius_px: 28.8462, note: "acima do teto → clamp" },
+            { name: "50mm_f2_frente_clampado", max_radius_px: 16.0, expected_radius_px: 16.0 },
+            { name: "50mm_f4_atras", coc: 0.00010684, expected_radius_px: 4.8078 },
+          ],
+        },
+      },
+      tracking: {
+        modes: ["off", "head", "hips", "poi"],
+        target_positions: {
+          head: [0.0, 1.49, 0.0],
+          hips: [0.0, 0.85, 0.0],
+          note: "pontos canônicos do esqueleto humanoide (cabeça e centro de massa); poi = ponto arbitrário do usuário",
+        },
+        damping: {
+          formula: "target += (desejado - target) * (1 - e^(-damping * dt))",
+          default_damping_per_second: 6.0,
+          golden: {
+            from: [0.0, 0.0, 0.0],
+            to: [1.0, 0.5, 0.0],
+            damping_per_second: 6.0,
+            frames_60fps: 30,
+            expected: [0.95021296, 0.47510648, 0.0],
+            note: "amortecimento exponencial por componente; nunca ultrapassa o alvo",
+          },
+        },
+        note:
+          "o tracking move target e eye juntos (mesmo delta amortecido) — o enquadramento " +
+          "é mantido enquanto o personagem se move (aceite 3); roda no viewport (CPU) a cada frame",
       },
     },
     targets: {

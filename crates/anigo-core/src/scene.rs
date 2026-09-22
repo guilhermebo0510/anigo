@@ -246,6 +246,59 @@ impl SceneNode {
     }
 }
 
+/// Fase 2 (#53): Depth of Field cinematográfico (Anime Bokeh DoF).
+///
+/// Vem no JSON da cena (default = desligado — o passe de pós é pulado e a
+/// imagem é idêntica ao frame congelado). Os mesmos valores chegam ao shader
+/// `postprocess_dof.wgsl` (uniform `DofUniform`) no viewport e no headless.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DofSettings {
+    /// Ativa o passe de DoF pós-projeto.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Distância de foco (m) — o plano milimetricamente nítido (olhos/rosto).
+    #[serde(default = "default_dof_focus_distance")]
+    pub focus_distance: f32,
+    /// Número f (abertura) — menor = mais bokeh.
+    #[serde(default = "default_dof_f_number")]
+    pub f_number: f32,
+    /// Distância focal em mm (lente ativa) — entra na fórmula do CoC.
+    #[serde(default = "default_dof_focal_mm")]
+    pub focal_mm: f32,
+    /// Formato da abertura: 0 = bokeh circular, 1 = hexagonal clássico de anime.
+    #[serde(default)]
+    pub bokeh_shape: u32,
+    /// Raio máximo do bokeh em pixels (teto para não custar além do necessário).
+    #[serde(default = "default_dof_max_radius_px")]
+    pub max_radius_px: f32,
+}
+
+impl Default for DofSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            focus_distance: default_dof_focus_distance(),
+            f_number: default_dof_f_number(),
+            focal_mm: default_dof_focal_mm(),
+            bokeh_shape: 0,
+            max_radius_px: default_dof_max_radius_px(),
+        }
+    }
+}
+
+fn default_dof_focus_distance() -> f32 {
+    2.0
+}
+fn default_dof_f_number() -> f32 {
+    2.0
+}
+fn default_dof_focal_mm() -> f32 {
+    50.0
+}
+fn default_dof_max_radius_px() -> f32 {
+    16.0
+}
+
 /// Complete Scene representation containing nodes, camera, lighting, and global parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
@@ -259,6 +312,9 @@ pub struct Scene {
     /// proporções são assadas na malha base).
     #[serde(default = "SkinPayload::canonical_base")]
     pub skin: SkinPayload,
+    /// Fase 2 (#53): DoF cinematográfico — default off (sem campo, sem passe).
+    #[serde(default)]
+    pub dof: DofSettings,
 }
 
 impl Default for Scene {
@@ -273,6 +329,7 @@ impl Default for Scene {
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0], // P0-04: unified with viewport clearColor (was 0.12,0.13,0.16)
             skin: SkinPayload::canonical_base(),
+            dof: DofSettings::default(),
         }
     }
 }
@@ -285,6 +342,7 @@ impl Scene {
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0],
             skin: SkinPayload::canonical_base(),
+            dof: DofSettings::default(),
         }
     }
 

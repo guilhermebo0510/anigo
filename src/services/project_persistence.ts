@@ -80,6 +80,15 @@ export interface SceneDomainSnapshot {
   nodes: SceneNodeSnapshot[];
   materials: SceneMaterialSnapshot[];
   assets: SceneAssetSnapshot[];
+  /** Fase 2 (#53): Anime Bokeh DoF (Scene.dof) — off por padrão. */
+  dof: {
+    enabled: boolean;
+    focus_distance: number;
+    f_number: number;
+    focal_mm: number;
+    bokeh_shape: number;
+    max_radius_px: number;
+  };
 }
 
 export interface SceneNodeSnapshot {
@@ -205,6 +214,15 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
       input_texture_space: "srgb",
       working_space: "linear_srgb",
       display_space: "srgb",
+    },
+    // Fase 2 (#53): DoF cinematográfico off (os mesmos defaults de Scene.dof)
+    dof: {
+      enabled: false,
+      focus_distance: 2.0,
+      f_number: 2.0,
+      focal_mm: 50.0,
+      bokeh_shape: 0,
+      max_radius_px: 16.0,
     },
     nodes: [
       {
@@ -460,6 +478,25 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
     nodes: nodes.length > 0 ? nodes : defaults.nodes,
     materials: materials.length > 0 ? materials : defaults.materials,
     assets,
+    // Fase 2 (#53): DoF — tolerante a blocos antigos (sem campo → default off)
+    dof: parseDofSettings(source["dof"], defaults.dof),
+  };
+}
+
+/** Fase 2 (#53): parser tolerante do bloco `dof` (arquivos antigos não têm). */
+function parseDofSettings(
+  value: unknown,
+  defaults: SceneDomainSnapshot["dof"]
+): SceneDomainSnapshot["dof"] {
+  if (typeof value !== "object" || value === null) return { ...defaults };
+  const source = value as Record<string, unknown>;
+  return {
+    enabled: source["enabled"] === true,
+    focus_distance: num(source["focus_distance"], defaults.focus_distance),
+    f_number: num(source["f_number"], defaults.f_number),
+    focal_mm: num(source["focal_mm"], defaults.focal_mm),
+    bokeh_shape: num(source["bokeh_shape"], defaults.bokeh_shape) === 1 ? 1 : 0,
+    max_radius_px: num(source["max_radius_px"], defaults.max_radius_px),
   };
 }
 

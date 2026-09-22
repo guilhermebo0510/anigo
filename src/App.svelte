@@ -24,6 +24,8 @@
     type CharacterState,
   } from "./services/character_state";
   import { CANONICAL_SLIDERS } from "./services/morph_catalog";
+  // Fase 2 (#53): câmera cinematográfica — presets de lente + reframe
+  import { LENS_PRESETS, lensFovY, reframeRadius } from "./services/camera_cinematic";
 
   // Icons
   import UserIcon from "./components/icons/UserIcon.svelte";
@@ -592,8 +594,19 @@
   let ikWeight = $state(1.0);
 
   // Camera Parameters
-  let focalLength = $state(50);
   let cameraFov = $state(45);
+
+  // Fase 2 (#53): câmera cinematográfica — lente ativa (mm), Anime Bokeh DoF
+  // e tracking de alvo. Defaults = DoF off (passe de pós inexistente) e
+  // tracking off (orbitador livre). O mesmo estado viaja no snapshot do
+  // projeto (Scene.dof) e no history (undo/redo).
+  let lensFocalMm = $state(50);
+  let dofEnabled = $state(false);
+  let dofFocus = $state(2.0);
+  let dofFNumber = $state(2.0);
+  let dofBokehShape = $state<0 | 1>(0);
+  let trackingMode = $state<"off" | "head" | "hips" | "poi">("off");
+  let trackingDamping = $state(6.0);
 
   // Settings
   let targetFpsCap = $state(120);
@@ -853,6 +866,14 @@
       gazeTrackingEnabled,
       gazeSaccadeAmplitude,
       gazeDamping,
+      // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+      lensFocalMm,
+      dofEnabled,
+      dofFocus,
+      dofFNumber,
+      dofBokehShape,
+      trackingMode,
+      trackingDamping,
       // P0-07: the Personagem domain is part of every history entry.
       character: getAppCharacterState(),
     };
@@ -973,6 +994,14 @@
     if ((snap as any).gazeTrackingEnabled !== undefined) gazeTrackingEnabled = (snap as any).gazeTrackingEnabled;
     if ((snap as any).gazeSaccadeAmplitude !== undefined) gazeSaccadeAmplitude = (snap as any).gazeSaccadeAmplitude;
     if ((snap as any).gazeDamping !== undefined) gazeDamping = (snap as any).gazeDamping;
+    // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+    if ((snap as any).lensFocalMm !== undefined) lensFocalMm = (snap as any).lensFocalMm;
+    if ((snap as any).dofEnabled !== undefined) dofEnabled = (snap as any).dofEnabled;
+    if ((snap as any).dofFocus !== undefined) dofFocus = (snap as any).dofFocus;
+    if ((snap as any).dofFNumber !== undefined) dofFNumber = (snap as any).dofFNumber;
+    if ((snap as any).dofBokehShape !== undefined) dofBokehShape = (snap as any).dofBokehShape;
+    if ((snap as any).trackingMode !== undefined) trackingMode = (snap as any).trackingMode;
+    if ((snap as any).trackingDamping !== undefined) trackingDamping = (snap as any).trackingDamping;
     // P0-07: restore the full Personagem domain (undo/redo covers the body).
     if (snap.character) {
       try {
@@ -1034,6 +1063,9 @@
     updateMaterial(false);
     handleOutlineChange(false);
     handleShadowThresholdChange(false);
+    // Fase 2 (#53): reposição do estado cinematográfico no renderer/núcleo
+    // (undo/redo e carga de projeto deixam DoF/lente/tracking consistentes).
+    applyCinematicState();
     reportLiveTelemetry();
   }
 
@@ -1398,6 +1430,14 @@
       cameraTarget: target,
       cameraUp: up,
       fov: fovDeg,
+      // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+      lensFocalMm,
+      dofEnabled,
+      dofFocus,
+      dofFNumber,
+      dofBokehShape,
+      trackingMode,
+      trackingDamping,
       timestamp: Date.now(),
       version: "0.2.0",
       schemaVersion: CHARACTER_SNAPSHOT_SCHEMA_VERSION,
@@ -1454,6 +1494,15 @@
       base_color: rgba(baseColorHex),
       shade_color: rgba(shadowColorHex),
       outline_color: rgba(outlineColor),
+    };
+    // Fase 2 (#53): DoF cinematográfico — o mesmo Scene.dof que o headless usa.
+    scene.dof = {
+      enabled: dofEnabled,
+      focus_distance: dofFocus,
+      f_number: dofFNumber,
+      focal_mm: lensFocalMm,
+      bokeh_shape: dofBokehShape,
+      max_radius_px: 16.0,
     };
     return scene;
   }
@@ -1978,6 +2027,83 @@
   onDestroy(() => {
     autoSaveService.destroy();
   });
+
+  // ── Fase 2 (#53): câmera cinematográfica (lentes, DoF, tracking) ────────
+
+  /** Empurra o estado cinematográfico para o renderer + núcleo (headless). */
+  function applyCinematicState() {
+    const r = (viewportRef as any)?.renderer;
+    if (!r) return;
+    r.setDofSettings?.({
+      enabled: dofEnabled,
+      focusDistance: dofFocus,
+      fNumber: dofFNumber,
+      focalMm: lensFocalMm,
+      bokehShape: dofBokehShape,
+    });
+    r.setTrackingSettings?.({ mode: trackingMode, dampingPerSecond: trackingDamping });
+    // O Scene.dof do núcleo manda no headless (mesmos bytes no passe de pós).
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/core").then(({ invoke }) =>
+        invoke("set_dof_settings", {
+          enabled: dofEnabled,
+          focusDistance: dofFocus,
+          fNumber: dofFNumber,
+          focalMm: lensFocalMm,
+          bokehShape: dofBokehShape,
+          maxRadiusPx: 16.0,
+        }).catch(() => {})
+      );
+    }
+  }
+
+  /**
+   * Preset de lente: troca o FOV e REFREME o orbitador (raio × tan razão)
+   * para o sujeito manter o tamanho em tela — aceite 2: 24 → 85 mm muda a
+   * perspectiva sem mover o orbitador bruscamente.
+   */
+  function applyLensPreset(presetFocalMm: number, presetName: string) {
+    const r = (viewportRef as any)?.renderer;
+    if (!r) return;
+    const newFov = lensFovY(presetFocalMm); // rad
+    const eye: [number, number, number] = r.eye ?? [0, 1.5, 3.5];
+    const target: [number, number, number] = r.target ?? [0, 1, 0];
+    const dx = eye[0] - target[0];
+    const dy = eye[1] - target[1];
+    const dz = eye[2] - target[2];
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist > 0.001) {
+      const newDist = reframeRadius(dist, r.fov ?? (45 * Math.PI) / 180, newFov);
+      const clampedDist = Math.max(0.2, Math.min(40.0, newDist)); // clamp do orbitador
+      const s = clampedDist / dist;
+      r.eye = [target[0] + dx * s, target[1] + dy * s, target[2] + dz * s];
+    }
+    r.fov = newFov;
+    cameraFov = Math.round((newFov * 180) / Math.PI);
+    lensFocalMm = presetFocalMm;
+    applyCinematicState();
+    // Entry UI-only: o estado viaja no snapshot (applySnapshot repõe tudo).
+    recordHistory(`Lente ${presetFocalMm} mm — ${presetName}`, false, null);
+  }
+
+  /** FOV manual (slider): sem lente ativa (o preset é desconectado). */
+  function applyManualFov(degrees: number) {
+    const r = (viewportRef as any)?.renderer;
+    if (!r) return;
+    r.fov = (degrees * Math.PI) / 180;
+    lensFocalMm = 0; // nenhum preset corresponde
+    recordHistory(`FOV manual ${Math.round(degrees)}°`, false, null);
+  }
+
+  function handleDofToggle() {
+    applyCinematicState();
+    recordHistory(dofEnabled ? "Ativar Bokeh DoF" : "Desativar Bokeh DoF", false, null);
+  }
+
+  function handleTrackingChange() {
+    applyCinematicState();
+    recordHistory(`Tracking: ${trackingMode}`, false, null);
+  }
 
   function handleSliderUpdate(prop: string, val: number) {
     // P0-07: proportion edits enter history (was record=false always).
@@ -4083,14 +4209,98 @@
             <div class="group-title">LENTE & CÂMERA DE CENA</div>
             <div class="slider-row">
               <span class="label">Campo de Visão (FOV)</span>
-              <input type="range" min="25" max="90" step="1" bind:value={cameraFov} />
+              <input
+                type="range"
+                min="25"
+                max="90"
+                step="1"
+                bind:value={cameraFov}
+                onchange={() => applyManualFov(cameraFov)}
+              />
               <span class="val-tag">{cameraFov}°</span>
             </div>
 
+            <!-- Fase 2 (#53): presets cinematográficos (sensor full-frame 24 mm) -->
+            <div class="group-title">LENTES CINEMATOGRÁFICAS</div>
             <div class="btn-grid">
-              <button class="btn-secondary" class:selected={focalLength === 24} onclick={() => focalLength = 24}>24mm Grande Angular</button>
-              <button class="btn-secondary" class:selected={focalLength === 50} onclick={() => focalLength = 50}>50mm Retrato Anime</button>
-              <button class="btn-secondary" class:selected={focalLength === 85} onclick={() => focalLength = 85}>85mm Telefoto</button>
+              {#each LENS_PRESETS as preset (preset.id)}
+                <button
+                  class="btn-secondary"
+                  class:selected={lensFocalMm === preset.focalMm}
+                  onclick={() => applyLensPreset(preset.focalMm, preset.name)}
+                  title="fov_y {Math.round((lensFovY(preset.focalMm) * 180) / Math.PI)}° — reframa o orbitador sem salta"
+                >
+                  {preset.focalMm} mm · {preset.name}
+                </button>
+              {/each}
+            </div>
+
+            <!-- Fase 2 (#53): Anime Bokeh DoF (CoC + bokeh circular/hex) -->
+            <div class="group-title">PROFUNDIDADE DE CAMPO (BOKEH)</div>
+            <div class="toggle-row">
+              <span class="label">Desfocar fundo (DoF)</span>
+              <input type="checkbox" bind:checked={dofEnabled} onchange={handleDofToggle} />
+            </div>
+            <div class="slider-row">
+              <span class="label">Plano de Foco</span>
+              <input
+                type="range"
+                min="0.5"
+                max="10"
+                step="0.1"
+                bind:value={dofFocus}
+                onchange={applyCinematicState}
+              />
+              <span class="val-tag">{dofFocus.toFixed(1)} m</span>
+            </div>
+            <div class="slider-row">
+              <span class="label">Abertura (número f)</span>
+              <input
+                type="range"
+                min="1.2"
+                max="16"
+                step="0.1"
+                bind:value={dofFNumber}
+                onchange={applyCinematicState}
+              />
+              <span class="val-tag">f/{dofFNumber.toFixed(1)}</span>
+            </div>
+            <div class="btn-grid">
+              <button
+                class="btn-secondary"
+                class:selected={dofBokehShape === 0}
+                onclick={() => { dofBokehShape = 0; handleDofToggle(); }}
+              >
+                Bokeh Circular
+              </button>
+              <button
+                class="btn-secondary"
+                class:selected={dofBokehShape === 1}
+                onclick={() => { dofBokehShape = 1; handleDofToggle(); }}
+              >
+                Bokeh Hexagonal
+              </button>
+            </div>
+
+            <!-- Fase 2 (#53): tracking de alvo (câmera em movimento) -->
+            <div class="group-title">TRACKING DO ALVO</div>
+            <div class="btn-grid">
+              <button class="btn-secondary" class:selected={trackingMode === "off"} onclick={() => { trackingMode = "off"; handleTrackingChange(); }}>Livre</button>
+              <button class="btn-secondary" class:selected={trackingMode === "head"} onclick={() => { trackingMode = "head"; handleTrackingChange(); }}>Cabeça</button>
+              <button class="btn-secondary" class:selected={trackingMode === "hips"} onclick={() => { trackingMode = "hips"; handleTrackingChange(); }}>Centro (Hips)</button>
+              <button class="btn-secondary" class:selected={trackingMode === "poi"} onclick={() => { trackingMode = "poi"; handleTrackingChange(); }}>Ponto de Interesse</button>
+            </div>
+            <div class="slider-row">
+              <span class="label">Amortecimento</span>
+              <input
+                type="range"
+                min="1"
+                max="15"
+                step="0.5"
+                bind:value={trackingDamping}
+                onchange={handleTrackingChange}
+              />
+              <span class="val-tag">{trackingDamping.toFixed(1)}</span>
             </div>
           </div>
 

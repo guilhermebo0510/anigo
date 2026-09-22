@@ -95,8 +95,9 @@ test("contrato: cel e outline declaram a paleta como uniform de vértice", () =>
     assert.deepEqual(entry.stages, ["vertex"]);
     assert.match(entry.declaration, /bones: BonePalette/);
   }
-  // o contorno desenha antes do cel (e os dois compartilham a paleta)
-  assert.deepEqual(renderPassOrder(), ["outline", "cel"]);
+  // o contorno desenha antes do cel (e os dois compartilham a paleta);
+  // Fase 2 (#53): o passe de pós DoF completa o grafo
+  assert.deepEqual(renderPassOrder(), ["outline", "cel", "dof_post"]);
 });
 
 test("shaders WGSL: bloco de skinning idêntico e LBS sem repetição de conta", () => {

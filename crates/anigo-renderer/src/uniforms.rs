@@ -171,6 +171,53 @@ impl Default for OutlineUniform {
     }
 }
 
+/// Fase 2 (#53): Depth of Field cinematográfico (Anime Bokeh DoF) — 48 B,
+/// layout do bloco `dof` do contrato. O MESMO empacotamento roda no
+/// viewport (`dofUniformFloats` em render_uniforms.ts); o passe só existe
+/// quando `Scene.dof.enabled`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct DofUniform {
+    // x: focus_distance (m), y: f_number, z: bokeh_shape (0 círculo/1 hex), w: focal_m (m)
+    pub params: [f32; 4],
+    // x: width_px, y: height_px, z: z_near (m), w: z_far (m)
+    pub resolution: [f32; 4],
+    // x: max_radius_px, y: sensor_height_m (0.024), z/w: reserved
+    pub limits: [f32; 4],
+}
+
+impl DofUniform {
+    /// Empacota os settings da cena + dimensões/planos da câmera nos 48 B
+    /// do bloco `dof` (a ordem dos floats é a do `postprocess_dof.wgsl`).
+    pub fn from_settings(
+        focus_distance: f32,
+        f_number: f32,
+        bokeh_shape: u32,
+        focal_mm: f32,
+        max_radius_px: f32,
+        width_px: u32,
+        height_px: u32,
+        z_near: f32,
+        z_far: f32,
+    ) -> Self {
+        Self {
+            params: [focus_distance, f_number, f32::from(bokeh_shape), focal_mm / 1000.0],
+            resolution: [f32::from(width_px), f32::from(height_px), z_near, z_far],
+            limits: [max_radius_px, 0.024, 0.0, 0.0],
+        }
+    }
+}
+
+impl Default for DofUniform {
+    fn default() -> Self {
+        Self {
+            params: [2.0, 2.0, 0.0, 0.05],
+            resolution: [1.0, 1.0, 0.05, 100.0],
+            limits: [16.0, 0.024, 0.0, 0.0],
+        }
+    }
+}
+
 /// P1-04: paleta de skinning — `joint_count` matrizes de 16 floats, no layout
 /// do bloco `bones` do contrato (`array<mat4x4<f32>, 24>` = 1536 B).
 pub const MAX_PALETTE_JOINTS: usize = 24;

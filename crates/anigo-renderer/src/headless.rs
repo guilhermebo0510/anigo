@@ -67,6 +67,12 @@ pub struct HeadlessRenderer {
     /// nunca chega na imagem com os slots off.
     pub mtoon_neutral_view: wgpu::TextureView,
     pub mtoon_neutral_sampler: wgpu::Sampler,
+    /// Fase 2 (#53): Anime Bokeh DoF — passe de pós-processamento (o MESMO
+    /// shader/uniforms do viewport). Só roda quando `Scene.dof.enabled`.
+    dof_pipeline: wgpu::RenderPipeline,
+    dof_bind_group_layout: wgpu::BindGroupLayout,
+    /// Textura de profundidade só é amostrável com sampler sem filtragem.
+    dof_nearest_sampler: wgpu::Sampler,
 }
 
 impl HeadlessRenderer {
@@ -695,6 +701,85 @@ impl HeadlessRenderer {
             cache: None,
         });
 
+        // Fase 2 (#53): Anime Bokeh DoF — fullscreen triangle (sem vertex
+        // buffer), sem profundidade, 1x. O layout vem do bind group `dof` do
+        // contrato; o passe só roda quando `Scene.dof.enabled`.
+        let dof_pass_spec = contract::render_pass("dof_post");
+        let dof_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Postprocess DoF Shader"),
+            source: wgpu::ShaderSource::Wgsl(contract::POSTPROCESS_DOF_WGSL.into()),
+        });
+        let dof_layout_entries: Vec<wgpu::BindGroupLayoutEntry> =
+            contract::bind_group_entries("dof")
+                .into_iter()
+                .map(|(binding, kind)| wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: match kind {
+                        "uniform" => wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(contract::uniform_size("dof") as u64),
+                        },
+                        "texture_2d<f32>" => wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        "sampler" => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        _ => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    },
+                    count: None,
+                })
+                .collect();
+        let dof_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("DoF Bind Group Layout"),
+            entries: &dof_layout_entries,
+        });
+        let dof_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("DoF Pipeline Layout"),
+            bind_group_layouts: &[&dof_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let dof_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Anime Bokeh DoF Pipeline"),
+            layout: Some(&dof_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &dof_shader,
+                entry_point: Some(dof_pass_spec.vertex_entry.unwrap_or("vs_dof")),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &dof_shader,
+                entry_point: Some(dof_pass_spec.fragment_entry.unwrap_or("fs_dof")),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: contract::offscreen_color_format(),
+                    blend: dof_pass_spec.blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: dof_pass_spec.cull_mode,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        let dof_nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("DoF Depth Sampler (nearest)"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         Ok(Self {
             device,
             queue,
@@ -711,6 +796,9 @@ impl HeadlessRenderer {
             toon_ramp_sampler,
             mtoon_neutral_view,
             mtoon_neutral_sampler,
+            dof_pipeline,
+            dof_bind_group_layout,
+            dof_nearest_sampler,
         })
     }
 
@@ -925,10 +1013,39 @@ impl HeadlessRenderer {
         let msaa_view = msaa_texture
             .as_ref()
             .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
+
+        // Fase 2 (#53): Anime Bokeh DoF — com DoF ligado, a cena resolve numa
+        // textura intermediária 1× (amostrável) e o passe de pós escreve na
+        // textura que é lida de volta. Sem DoF, tudo é exatamente como antes
+        // (frame congelado intacto).
+        let dof_enabled = scene.dof.enabled;
+        let scene_texture = if dof_enabled {
+            Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Offscreen Color Texture (DoF scene, 1x)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }))
+        } else {
+            None
+        };
+        let scene_view = scene_texture
+            .as_ref()
+            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
         let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
-            match &msaa_view {
-                Some(view) => (view, Some(&color_view)),
-                None => (&color_view, None),
+            match (&msaa_view, &scene_view) {
+                (Some(view), Some(intermediate)) => (view, Some(intermediate)),
+                (Some(view), None) => (view, Some(&color_view)),
+                (None, Some(intermediate)) => (intermediate, None),
+                (None, None) => (&color_view, None),
             };
 
         let depth_desc = wgpu::TextureDescriptor {
@@ -947,6 +1064,29 @@ impl HeadlessRenderer {
         };
         let depth_texture = self.device.create_texture(&depth_desc);
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Profundidade 1× resolvida — o passe de DoF precisa AMOSTRAR a
+        // distância (a MSAA depth só existe como attachment).
+        let (dof_depth_texture, dof_depth_view) = if dof_enabled && sample_count > 1 {
+            let resolved = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Offscreen Depth Texture (DoF resolve, 1x)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: depth_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
+            (Some(resolved), Some(view))
+        } else {
+            (None, None)
+        };
 
         // 2. Setup Camera Uniform
         let mut camera_copy = scene.camera.clone();
@@ -1038,6 +1178,8 @@ impl HeadlessRenderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
+                    // Fase 2 (#53): profundidade 1× resolvida para o DoF amostrar.
+                    depth_resolve_attachment: dof_depth_view.as_ref(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1242,6 +1384,11 @@ impl HeadlessRenderer {
                                 render_pass.set_pipeline(&self.cel_pipeline);
                                 render_pass.set_bind_group(0, &cel_bind_group, &[]);
                             }
+                            // Fase 2 (#53): passe de pós — roda UMA vez depois
+                            // do laço de nós (não por nó).
+                            "dof_post" => {
+                                continue;
+                            }
                             other => {
                                 // P1-01: passe sem pipeline vira diagnóstico
                                 // observável (era `debug_assert!`).
@@ -1258,6 +1405,78 @@ impl HeadlessRenderer {
 
                     triangle_count += mesh.indices.len() / 3;
                 }
+            }
+        }
+
+        // Fase 2 (#53): Anime Bokeh DoF — mesmo shader/uniforms do viewport;
+        // a cena já resolveu na textura intermediária 1×. Sem as
+        // intermediárias o passe é pulado com diagnóstico (sem panic).
+        if dof_enabled {
+            if let (Some(scene_view_for_dof), Some(dof_depth_for_dof)) =
+                (scene_view.as_ref(), dof_depth_view.as_ref())
+            {
+            let dof_uniform = crate::uniforms::DofUniform::from_settings(
+                scene.dof.focus_distance,
+                scene.dof.f_number,
+                scene.dof.bokeh_shape,
+                scene.dof.focal_mm,
+                scene.dof.max_radius_px,
+                width,
+                height,
+                scene.camera.z_near,
+                scene.camera.z_far,
+            );
+            let dof_uniform_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("DofUniform"),
+                contents: bytemuck::bytes_of(&dof_uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let dof_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("DoF Bind Group"),
+                layout: &self.dof_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: dof_uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: scene_view_for_dof.bind(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: dof_depth_for_dof.bind(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.dof_nearest_sampler.bind(),
+                    },
+                ],
+            });
+            let dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Anime Bokeh DoF Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            dof_pass.set_pipeline(&self.dof_pipeline);
+            dof_pass.set_bind_group(0, &dof_bind_group, &[]);
+            // Fullscreen triangle: 3 vértices, sem buffer (vs_dof deriva da index).
+            dof_pass.draw(0..3, 0..1);
+            draw_calls += 1;
+            } else {
+                diagnostics::report(
+                    "dof_unavailable",
+                    "DoF habilitado sem as texturas intermediárias 1× — passe pulado neste frame",
+                );
             }
         }
 
@@ -1399,10 +1618,37 @@ impl HeadlessRenderer {
         let msaa_view = msaa_texture
             .as_ref()
             .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
+
+        // Fase 2 (#53): mesmo fluxo de DoF do render_scene (intermediária 1×
+        // + profundidade resolvida; sem DoF, comportamento anterior).
+        let dof_enabled = scene.dof.enabled;
+        let scene_texture = if dof_enabled {
+            Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Offscreen Color Texture (Morphed, DoF scene, 1x)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }))
+        } else {
+            None
+        };
+        let scene_view = scene_texture
+            .as_ref()
+            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
         let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
-            match &msaa_view {
-                Some(view) => (view, Some(&color_view)),
-                None => (&color_view, None),
+            match (&msaa_view, &scene_view) {
+                (Some(view), Some(intermediate)) => (view, Some(intermediate)),
+                (Some(view), None) => (view, Some(&color_view)),
+                (None, Some(intermediate)) => (intermediate, None),
+                (None, None) => (&color_view, None),
             };
 
         let depth_desc = wgpu::TextureDescriptor {
@@ -1421,6 +1667,27 @@ impl HeadlessRenderer {
         };
         let depth_texture = self.device.create_texture(&depth_desc);
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let (dof_depth_texture, dof_depth_view) = if dof_enabled && sample_count > 1 {
+            let resolved = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Offscreen Depth Texture (Morphed, DoF resolve, 1x)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: depth_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
+            (Some(resolved), Some(view))
+        } else {
+            (None, None)
+        };
 
         // 2. Setup Morph Compute Buffers
         let header_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1566,6 +1833,8 @@ impl HeadlessRenderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
+                    // Fase 2 (#53): profundidade 1× resolvida para o DoF amostrar.
+                    depth_resolve_attachment: dof_depth_view.as_ref(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1777,6 +2046,11 @@ impl HeadlessRenderer {
                                 render_pass.set_pipeline(&self.cel_pipeline);
                                 render_pass.set_bind_group(0, &cel_bind_group, &[]);
                             }
+                            // Fase 2 (#53): passe de pós — roda UMA vez depois
+                            // do laço de nós (não por nó).
+                            "dof_post" => {
+                                continue;
+                            }
                             other => {
                                 // P1-01: passe sem pipeline vira diagnóstico
                                 // observável (era `debug_assert!`).
@@ -1793,6 +2067,75 @@ impl HeadlessRenderer {
 
                     triangle_count += mesh.indices.len() / 3;
                 }
+            }
+        }
+
+        // Fase 2 (#53): Anime Bokeh DoF — idêntico ao do render_scene.
+        if dof_enabled {
+            if let (Some(scene_view_for_dof), Some(dof_depth_for_dof)) =
+                (scene_view.as_ref(), dof_depth_view.as_ref())
+            {
+            let dof_uniform = crate::uniforms::DofUniform::from_settings(
+                scene.dof.focus_distance,
+                scene.dof.f_number,
+                scene.dof.bokeh_shape,
+                scene.dof.focal_mm,
+                scene.dof.max_radius_px,
+                width,
+                height,
+                scene.camera.z_near,
+                scene.camera.z_far,
+            );
+            let dof_uniform_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("DofUniform (Morphed)"),
+                contents: bytemuck::bytes_of(&dof_uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let dof_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("DoF Bind Group (Morphed)"),
+                layout: &self.dof_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: dof_uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: scene_view_for_dof.bind(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: dof_depth_for_dof.bind(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.dof_nearest_sampler.bind(),
+                    },
+                ],
+            });
+            let dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Anime Bokeh DoF Pass (Morphed)"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            dof_pass.set_pipeline(&self.dof_pipeline);
+            dof_pass.set_bind_group(0, &dof_bind_group, &[]);
+            dof_pass.draw(0..3, 0..1);
+            draw_calls += 1;
+            } else {
+                diagnostics::report(
+                    "dof_unavailable",
+                    "DoF habilitado sem as texturas intermediárias 1× — passe pulado neste frame",
+                );
             }
         }
 

@@ -56,6 +56,9 @@ import celShaderSource from "../../../crates/anigo-renderer/shaders/cel_shading.
 import outlineShaderSource from "../../../crates/anigo-renderer/shaders/inverted_hull.wgsl?raw";
 // @ts-ignore - Vite ?raw import
 import morphComputeSource from "../../../crates/anigo-renderer/shaders/morph_sparse_compute.wgsl?raw";
+// Fase 2 (#53): passe de pós Depth of Field (Anime Bokeh DoF)
+// @ts-ignore - Vite ?raw import
+import dofShaderSource from "../../../crates/anigo-renderer/shaders/postprocess_dof.wgsl?raw";
 // P0 renderer: the WebGL2 fallback is *not* production — its sources live in
 // `webgl2_fallback/` and are listed as `role: "fallback_webgl2"` in the contract.
 // @ts-ignore - Vite ?raw import
@@ -88,11 +91,14 @@ import {
 } from "../../contracts/render_contract.v1";
 import {
   cameraUniformFloats,
+  dofUniformFloats,
   lightUniformFloats,
   materialUniformFloats,
   outlineUniformFloats,
   IDENTITY_MAT4,
 } from "../../services/render_uniforms";
+// Fase 2 (#53): câmera cinematográfica — tracking de alvo (CPU, por frame)
+import { stepTracking, type TrackingMode, TRACKING_DAMPING_DEFAULT } from "../../services/camera_cinematic";
 
 export interface ViewportMetrics {
   fps: number;
@@ -235,6 +241,30 @@ export class WebGpuViewportRenderer {
   private eyeDepthScale = 0.0;
   private eyeHighlightIntensity = 0.0;
   private eyeEnabled = false;
+
+  // Fase 2 (#53): Anime Bokeh DoF (default = off → passe de pós não existe,
+  // imagem idêntica ao frame congelado) + tracking de alvo (CPU, por frame).
+  private dofEnabled = false;
+  private dofFocusDistance = 2.0;
+  private dofFNumber = 2.0;
+  private dofFocalMm = 50.0;
+  private dofBokehShape = 0; // 0 = círculo, 1 = hexágono
+  private dofMaxRadiusPx = 16.0;
+  private trackingMode: TrackingMode = "off";
+  private trackingDamping = TRACKING_DAMPING_DEFAULT;
+  private trackingPoi: [number, number, number] = [0.0, 0.0, 0.0];
+  private lastRenderTime = 0;
+
+  // Pipeline/buffers do passe de DoF (criados em buildShadersAndPipelines;
+  // as texturas intermediárias acompanham o resize).
+  private dofPipeline: GPURenderPipeline | null = null;
+  private dofUniformBuffer: GPUBuffer | null = null;
+  private dofBindGroup: GPUBindGroup | null = null;
+  private dofNearestSampler: GPUSampler | null = null;
+  private dofColorTexture: GPUTexture | null = null;
+  private dofColorView: GPUTextureView | null = null;
+  private dofDepthTexture: GPUTexture | null = null;
+  private dofDepthView: GPUTextureView | null = null;
 
   // WebGPU Sparse Morph Compute Pipeline
   private morphPipeline: GPUComputePipeline | null = null;
@@ -478,6 +508,8 @@ export class WebGpuViewportRenderer {
     assertShaderSource("cel_shading", celShaderSource);
     assertShaderSource("inverted_hull", outlineShaderSource);
     assertShaderSource("morph_sparse_compute", morphComputeSource);
+    // Fase 2 (#53): DoF — mesmo byte-for-byte que o headless (include_str!)
+    assertShaderSource("postprocess_dof", dofShaderSource);
     assertShaderSource("webgl2_fallback/cel_vertex", vsCel);
     assertShaderSource("webgl2_fallback/cel_fragment", fsCel);
     assertShaderSource("webgl2_fallback/outline_vertex", vsOutline);
@@ -565,6 +597,48 @@ export class WebGpuViewportRenderer {
       },
       multisample: { count: msaaSampleCount() },
     });
+
+    // Fase 2 (#53): passe de DoF — fullscreen triangle (sem vertex buffer),
+    // sem profundidade, resolve direto no alvo de apresentação (swapchain no
+    // viewport; textura final no headless). O MESMO pipeline/shader roda nos
+    // dois backends com os mesmos bytes de uniform.
+    const dofPass = passSpec("dof_post");
+    if (dofPass) {
+      const dofModule = this.device.createShaderModule({ code: dofShaderSource });
+      this.dofPipeline = this.device.createRenderPipeline({
+        layout: "auto",
+        vertex: {
+          module: dofModule,
+          entryPoint: dofPass.vertex_entry ?? "vs_dof",
+          buffers: [],
+        },
+        fragment: {
+          module: dofModule,
+          entryPoint: dofPass.fragment_entry ?? "fs_dof",
+          // `as`: o `blendStateOf` devolve strings literais genéricas; o lib
+          // antigo do TS não as enxerga como GPUBlendFactor (mesmo problema
+          // que cel/outline, já dentro do orçamento do baseline).
+          targets: [{ format: this.format, blend: blendStateOf(dofPass) as GPUBlendState | undefined }],
+        },
+        primitive: {
+          topology: "triangle-list",
+          cullMode: (dofPass.cull_mode ?? "back") as any,
+        },
+        multisample: { count: 1 },
+      });
+      // Textura de profundidade só é amostrável com sampler sem filtragem.
+      this.dofNearestSampler = this.device.createSampler({
+        magFilter: "nearest",
+        minFilter: "nearest",
+        addressModeU: "clamp-to-edge",
+        addressModeV: "clamp-to-edge",
+      });
+      this.dofUniformBuffer = this.device.createBuffer({
+        label: "DofUniform",
+        size: uniformSize("dof"),
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
 
     try {
       const morphModule = this.device.createShaderModule({
@@ -1330,6 +1404,42 @@ export class WebGpuViewportRenderer {
     if (params.eyeEnabled !== undefined) this.eyeEnabled = params.eyeEnabled;
   }
 
+  /**
+   * Fase 2 (#53): Anime Bokeh DoF — settings do passe de pós-processamento.
+   * `enabled: false` (default) remove o passe: imagem idêntica ao frame
+   * congelado. Os mesmos valores chegam ao headless (Scene.dof).
+   */
+  public setDofSettings(settings: {
+    enabled?: boolean;
+    focusDistance?: number;
+    fNumber?: number;
+    focalMm?: number;
+    bokehShape?: 0 | 1;
+    maxRadiusPx?: number;
+  }): void {
+    if (settings.enabled !== undefined) this.dofEnabled = settings.enabled;
+    if (settings.focusDistance !== undefined) this.dofFocusDistance = settings.focusDistance;
+    if (settings.fNumber !== undefined) this.dofFNumber = settings.fNumber;
+    if (settings.focalMm !== undefined) this.dofFocalMm = settings.focalMm;
+    if (settings.bokehShape !== undefined) this.dofBokehShape = settings.bokehShape === 1 ? 1 : 0;
+    if (settings.maxRadiusPx !== undefined) this.dofMaxRadiusPx = settings.maxRadiusPx;
+  }
+
+  /**
+   * Fase 2 (#53): tracking de alvo — trava o foco suavemente na cabeça,
+   * no centro de massa (Hips) ou num ponto de interesse arbitrário, com
+   * amortecimento exponencial (1/s). Modo "off" desliga o passo por frame.
+   */
+  public setTrackingSettings(settings: {
+    mode?: TrackingMode;
+    dampingPerSecond?: number;
+    poi?: [number, number, number];
+  }): void {
+    if (settings.mode !== undefined) this.trackingMode = settings.mode;
+    if (settings.dampingPerSecond !== undefined) this.trackingDamping = settings.dampingPerSecond;
+    if (settings.poi !== undefined) this.trackingPoi = settings.poi;
+  }
+
   private buildGeometryBuffers() {
     let data: { vertices: Float32Array; indices: Uint32Array };
 
@@ -1840,6 +1950,25 @@ export class WebGpuViewportRenderer {
           usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
         this.msaaColorView = this.msaaColorTexture.createView();
+        // Fase 2 (#53): intermediários do DoF (resolve da cor + profundidade
+        // 1× amostrável). Sem MSAA: o passe de pós lê um pixel por pixel.
+        if (this.dofColorTexture) { try { this.dofColorTexture.destroy(); } catch (_) {} }
+        if (this.dofDepthTexture) { try { this.dofDepthTexture.destroy(); } catch (_) {} }
+        this.dofColorTexture = this.device.createTexture({
+          size: [realWidth, realHeight],
+          format: this.format,
+          sampleCount: 1,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.dofColorView = this.dofColorTexture.createView();
+        this.dofDepthTexture = this.device.createTexture({
+          size: [realWidth, realHeight],
+          format: depthFormat() as any,
+          sampleCount: 1,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.dofDepthView = this.dofDepthTexture.createView();
+        this.dofBindGroup = null; // views novas → bind group será remontado
       } else if (this.backend === "webgl2" && this.gl) {
         this.gl.viewport(0, 0, realWidth, realHeight);
       }
@@ -2140,6 +2269,26 @@ export class WebGpuViewportRenderer {
       this.updateRecenterAnimation();
       const startTime = performance.now();
 
+      // Fase 2 (#53): tracking de alvo — o rig (target + eye) persegue a
+      // cabeça/hips/ponto de interesse com amortecimento; o orbitador livre
+      // continua funcionando por cima (mesmo delta nos dois).
+      if (this.trackingMode !== "off") {
+        const dt = this.lastRenderTime > 0 ? (startTime - this.lastRenderTime) / 1000 : 1 / 60;
+        const stepped = stepTracking(
+          this.target,
+          this.eye,
+          this.trackingMode,
+          this.trackingDamping,
+          this.trackingPoi,
+          dt
+        );
+        if (stepped.moved) {
+          this.target = stepped.target;
+          this.eye = stepped.eye;
+        }
+      }
+      this.lastRenderTime = startTime;
+
       if (this.backend === "webgpu") {
         this.renderWebGPU(startTime);
       } else if (this.backend === "webgl2") {
@@ -2283,12 +2432,24 @@ export class WebGpuViewportRenderer {
     }
 
     // P0-07: MSAA resolve (msaa view → swapchain)
+    // Fase 2 (#53): com DoF ativo o resolve vai para a textura intermediária
+    // (cor + profundidade 1×) e o passe de pós escreve no swapchain.
+    const dofActive =
+      this.dofEnabled &&
+      !!this.dofPipeline &&
+      !!this.dofColorView &&
+      !!this.dofDepthView;
     const colorView = this.msaaColorView ?? textureView;
-    const resolveTarget = this.msaaColorView ? textureView : undefined;
+    const resolveTarget = this.msaaColorView
+      ? dofActive && this.dofColorView
+        ? this.dofColorView
+        : textureView
+      : undefined;
     const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [
         {
-          view: colorView,
+          // `as`: `msaaColorView` é `| null`; o lib antigo não aceita null aqui.
+          view: colorView as GPUTextureView,
           resolveTarget,
           clearValue: {
             r: this.clearColor[0],
@@ -2300,12 +2461,15 @@ export class WebGpuViewportRenderer {
           storeOp: "store",
         },
       ],
+      // `as any`: `depthResolveAttachment` (resolve do MSAA depth → textura
+      // 1× amostrável, Fase 2 #53) não existe no lib.dom antigo do TS.
       depthStencilAttachment: {
         view: this.depthView,
+        depthResolveAttachment: dofActive ? this.dofDepthView : undefined,
         depthClearValue: 1.0,
         depthLoadOp: "clear",
         depthStoreOp: "store",
-      },
+      } as any,
     });
 
     const activeVbo = (this.gpuMorphActive && this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
@@ -2330,6 +2494,47 @@ export class WebGpuViewportRenderer {
     }
 
     passEncoder.end();
+
+    // Fase 2 (#53): Anime Bokeh DoF — mesmo shader/uniforms do headless.
+    if (dofActive && this.dofUniformBuffer && this.dofNearestSampler) {
+      this.device.queue.writeBuffer(
+        this.dofUniformBuffer,
+        0,
+        dofUniformFloats({
+          focusDistance: this.dofFocusDistance,
+          fNumber: this.dofFNumber,
+          bokehShape: this.dofBokehShape,
+          focalMm: this.dofFocalMm,
+          maxRadiusPx: this.dofMaxRadiusPx,
+          widthPx: this.canvas.width,
+          heightPx: this.canvas.height,
+          zNear: DEFAULT_CAMERA_NEAR,
+          zFar: DEFAULT_CAMERA_FAR,
+        })
+      );
+      if (!this.dofBindGroup) {
+        this.dofBindGroup = this.device.createBindGroup({
+          layout: this.dofPipeline!.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.dofUniformBuffer } },
+            { binding: 1, resource: this.dofColorView! },
+            { binding: 2, resource: this.dofDepthView! },
+            { binding: 3, resource: this.dofNearestSampler },
+          ],
+        });
+      }
+      const dofPassEncoder = commandEncoder.beginRenderPass({
+        colorAttachments: [
+          { view: textureView, loadOp: "load", storeOp: "store" },
+        ],
+      });
+      dofPassEncoder.setPipeline(this.dofPipeline!);
+      dofPassEncoder.setBindGroup(0, this.dofBindGroup);
+      // Fullscreen triangle: 3 vértices, sem buffer (vs_dof deriva da index).
+      dofPassEncoder.draw(3);
+      dofPassEncoder.end();
+    }
+
     this.device.queue.submit([commandEncoder.finish()]);
 
     this.recordMetrics(startTime, "WebGPU Hardware");
@@ -2581,6 +2786,13 @@ export class WebGpuViewportRenderer {
     if (this.outlineBuffer) { try { this.outlineBuffer.destroy(); } catch (_) {} this.outlineBuffer = null; }
     if (this.depthTexture) { try { this.depthTexture.destroy(); } catch (_) {} this.depthTexture = null; this.depthView = null; }
     if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} this.msaaColorTexture = null; this.msaaColorView = null; }
+    // Fase 2 (#53): intermediários/buffer do passe de DoF
+    if (this.dofColorTexture) { try { this.dofColorTexture.destroy(); } catch (_) {} this.dofColorTexture = null; this.dofColorView = null; }
+    if (this.dofDepthTexture) { try { this.dofDepthTexture.destroy(); } catch (_) {} this.dofDepthTexture = null; this.dofDepthView = null; }
+    if (this.dofUniformBuffer) { this.dofUniformBuffer.destroy(); this.dofUniformBuffer = null; }
+    this.dofBindGroup = null;
+    this.dofPipeline = null;
+    this.dofNearestSampler = null;
     if (this.toonRampTexture) { try { this.toonRampTexture.destroy(); } catch (_) {} this.toonRampTexture = null; }
     // Fase 2 (#18): neutro 1x1 dos slots MToon
     if (this.mtoonNeutralTexture) { try { this.mtoonNeutralTexture.destroy(); } catch (_) {} this.mtoonNeutralTexture = null; }

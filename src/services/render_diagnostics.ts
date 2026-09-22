@@ -71,6 +71,8 @@ export const DIAGNOSTIC_CODES = [
   "buffer_creation_failed",
   /** Leitura de buffer da GPU (readback) falhou. */
   "readback_failed",
+  /** Fase 2 (#53): DoF habilitado sem as intermediárias 1× — passe pulado. */
+  "dof_unavailable",
 ] as const;
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[number];

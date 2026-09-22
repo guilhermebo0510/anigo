@@ -384,6 +384,43 @@ async fn set_material_toon_params(
     apply_session_command(&mut state, command)
 }
 
+// Fase 2 (#53): Anime Bokeh DoF — settings da cena (o mesmo `Scene.dof` que o
+// headless usa no `render_scene`). Não é um comando do núcleo (não há
+// histórico inverso): é estado de pós-processamento, idêntico ao `RenderState`
+// no papel de "como renderizar", e o snapshot de persistência o carrega.
+#[tauri::command]
+async fn set_dof_settings(
+    enabled: Option<bool>,
+    focus_distance: Option<f32>,
+    f_number: Option<f32>,
+    focal_mm: Option<f32>,
+    bokeh_shape: Option<u8>,
+    max_radius_px: Option<f32>,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let mut state = state.lock().await;
+    let dof = &mut state.scene.dof;
+    if let Some(value) = enabled {
+        dof.enabled = value;
+    }
+    if let Some(value) = focus_distance {
+        dof.focus_distance = value;
+    }
+    if let Some(value) = f_number {
+        dof.f_number = value;
+    }
+    if let Some(value) = focal_mm {
+        dof.focal_mm = value;
+    }
+    if let Some(value) = bokeh_shape {
+        dof.bokeh_shape = u32::from(value == 1);
+    }
+    if let Some(value) = max_radius_px {
+        dof.max_radius_px = value;
+    }
+    Ok(())
+}
+
 static LAST_CMD_TELEMETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[tauri::command]
@@ -974,6 +1011,7 @@ fn main() {
             load_mesh_preset,
             set_light_params,
             set_material_toon_params,
+            set_dof_settings,
             report_live_telemetry,
             get_live_telemetry,
             get_studio_directories,

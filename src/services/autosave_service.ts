@@ -68,6 +68,15 @@ export interface ProjectStateSnapshot {
   specColorHex?: string;
   rimColor?: string;
   lightColor?: [number, number, number];
+  // Fase 2 (#53): estado cinemático (lente + DoF + tracking) — o valor vive no
+  // viewport (renderer), o snapshot só o carrega/leva para restaurar a sessão.
+  lensFocalMm?: number;
+  dofEnabled?: boolean;
+  dofFocus?: number;
+  dofFNumber?: number;
+  dofBokehShape?: 0 | 1;
+  trackingMode?: "off" | "head" | "hips" | "poi";
+  trackingDamping?: number;
 }
 
 export interface AutoSaveOptions {

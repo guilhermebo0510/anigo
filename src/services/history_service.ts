@@ -73,6 +73,14 @@ export interface HistoryStateSnapshot {
   gazeTrackingEnabled?: boolean;
   gazeSaccadeAmplitude?: number;
   gazeDamping?: number;
+  // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+  lensFocalMm?: number;
+  dofEnabled?: boolean;
+  dofFocus?: number;
+  dofFNumber?: number;
+  dofBokehShape?: 0 | 1;
+  trackingMode?: "off" | "head" | "hips" | "poi";
+  trackingDamping?: number;
 }
 
 export interface HistoryEntry {

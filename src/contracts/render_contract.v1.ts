@@ -92,6 +92,8 @@ export interface PassSpecV1 {
   write_mask?: string;
   workgroup_size?: number;
   only_when?: string;
+  /** Fase 2 (#53): passe de pós com fullscreen triangle (sem vertex buffer). */
+  fullscreen_triangle?: boolean;
 }
 
 export interface ToonRampRowV1 {
@@ -193,6 +195,59 @@ export interface AnimeEyeSpecV1 {
   };
 }
 
+/** Fase 2 (#53): câmera cinematográfica — lentes, DoF (CoC/bokeh) e tracking. */
+export interface CinematographySpecV1 {
+  note: string;
+  lens: {
+    sensor_height_mm: number;
+    fov_formula: string;
+    presets: Array<{ id: string; focal_mm: number; name: string; fov_y_degrees: number }>;
+    reframe: {
+      formula: string;
+      golden: { from_mm: number; to_mm: number; radius: number; expected_radius: number; note: string };
+    };
+  };
+  dof: {
+    coc_formula: string;
+    coc_variables: string;
+    coc_to_pixels: string;
+    bokeh_shapes: Record<number, string>;
+    samples: { disc_points: number; center_always_included: boolean; note: string };
+    defaults: { focus_distance_m: number; f_number: number; focal_mm: number; max_radius_px: number; bokeh_shape: number };
+    golden: Array<{
+      name: string;
+      frag_dist: number;
+      focus_dist: number;
+      focal_m: number;
+      f_number: number;
+      expected_coc: number;
+      note?: string;
+    }>;
+    bokeh_px_golden: {
+      image_height_px: number;
+      sensor_height_m: number;
+      values: Array<{ name: string; coc: number; max_radius_px?: number; expected_radius_px: number; note?: string }>;
+    };
+  };
+  tracking: {
+    modes: string[];
+    target_positions: { head: [number, number, number]; hips: [number, number, number]; note: string };
+    damping: {
+      formula: string;
+      default_damping_per_second: number;
+      golden: {
+        from: [number, number, number];
+        to: [number, number, number];
+        damping_per_second: number;
+        frames_60fps: number;
+        expected: [number, number, number];
+        note: string;
+      };
+    };
+    note: string;
+  };
+}
+
 export interface RenderContractV1 {
   version: number;
   /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
@@ -203,6 +258,8 @@ export interface RenderContractV1 {
   face_sdf?: FaceSdfSpecV1;
   /** Fase 2 (#43): olho anime — parallax/highlights + solver de olhar. */
   anime_eye?: AnimeEyeSpecV1;
+  /** Fase 2 (#53): câmera cinematográfica — lentes, Anime Bokeh DoF, tracking. */
+  cinematography?: CinematographySpecV1;
   /** P1-03: códigos de validação de malha antes de criar buffers. */
   mesh_validation?: {
     note: string;

@@ -186,6 +186,49 @@ export function outlineUniformFloats(input: OutlineUniformInput): Float32Array {
   return data;
 }
 
+// ─── Fase 2 (#53): Depth of Field cinematográfico (Anime Bokeh DoF) ────────
+
+/**
+ * Inputs do buffer `DofUniform` (48 B / 12 floats — bloco `dof` do contrato):
+ * params = [focus_distance (m), f_number, bokeh_shape (0 círculo/1 hex),
+ * focal_m (m)]; resolution = [width_px, height_px, z_near (m), z_far (m)];
+ * limits = [max_radius_px, sensor_height_m (0.024), reserved, reserved].
+ *
+ * O MESMO empacotamento roda no headless Rust (`headless.rs`) — o golden do
+ * contrato (cinematography) garante a paridade byte a byte.
+ */
+export interface DofUniformInput {
+  /** Distância de foco (m) — o plano milimetricamente nítido. */
+  focusDistance: number;
+  /** Número f (abertura) — menor = mais bokeh. */
+  fNumber: number;
+  /** 0 = bokeh circular, 1 = hexagonal. */
+  bokehShape: number;
+  /** Distância focal ativa em mm (vira metros no buffer). */
+  focalMm: number;
+  /** Raio máximo do bokeh em px (teto de custo). */
+  maxRadiusPx: number;
+  /** Dimensões do alvo em px. */
+  widthPx: number;
+  heightPx: number;
+  /** Plano próximo/longe (m) para linearizar a profundidade. */
+  zNear: number;
+  zFar: number;
+}
+
+export function dofUniformFloats(input: DofUniformInput): Float32Array {
+  const data = new Float32Array(uniformFloats("dof"));
+  writeVec(data, "dof", "params", [
+    input.focusDistance,
+    input.fNumber,
+    input.bokehShape,
+    input.focalMm / 1000.0,
+  ]);
+  writeVec(data, "dof", "resolution", [input.widthPx, input.heightPx, input.zNear, input.zFar]);
+  writeVec(data, "dof", "limits", [input.maxRadiusPx, 0.024, 0.0, 0.0]);
+  return data;
+}
+
 /** Cabeçalho do compute de morphs esparsos (`SparseMorphHeader`, 4×u32). */
 export function sparseMorphHeader(
   activeChannelCount: number,
