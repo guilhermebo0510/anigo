@@ -91,7 +91,14 @@ jobs:
                crates/anigo-renderer/shaders/postprocess_dof.wgsl \
                crates/anigo-renderer/shaders/anime_eye.wgsl; do
             echo "naga: validando $f"
-            naga "$f" > /dev/null
+            # 2º positional = ARQUIVO DE SAÍDA: /dev/null recebe a versão
+            # normalizada em vez de clobbertar o próximo shader (1º arg só
+            # deu exit 255 nesta versão do naga-cli).
+            if ! naga "$f" /dev/null > /tmp/naga-log.txt 2>&1; then
+              cat /tmp/naga-log.txt
+              python3 scripts/annotate_rust_errors.py /tmp/naga-log.txt "naga $f"
+              exit 1
+            fi
           done
       - name: cargo test (núcleo)
         run: |

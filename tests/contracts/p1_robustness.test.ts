@@ -166,5 +166,5 @@ test("item 7 — CI cobre build, testes, contratos e Rust", () => {
   // O passo valida um arquivo por vez: o 2º positional do naga-cli é o
   // ARQUIVO DE SAÍDA ("naga a.wgsl b.wgsl" sobrescreve b com a normalizado!)
   assert.match(ci, /for f in crates\/anigo-renderer\/shaders\/cel_shading\.wgsl/);
-  assert.match(ci, /naga "\$f" > \/dev\/null/);
+  assert.match(ci, /naga "\$f" \/dev\/null > \/tmp\/naga-log\.txt/);
 });
