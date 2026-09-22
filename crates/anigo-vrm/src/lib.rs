@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(vrm.human_bone_node("hips"), Some(Some(2)));
         assert_eq!(vrm.human_bone_node("leftUpperArm"), Some(None));
         for (i, name) in vrm1::VRM1_EXPRESSION_PRESETS.iter().enumerate() {
-            let binding = vrm.expression.preset.get(name).expect("preset");
+            let binding = vrm.expression.preset.get(*name).expect("preset");
             assert_eq!(binding.get("blendShape").and_then(Value::as_u64), Some(i as u64));
         }
         assert_eq!(vrm.expression.custom.get("wink").and_then(|b| b.get("blendShape")).and_then(Value::as_u64), Some(16));

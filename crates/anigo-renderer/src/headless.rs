@@ -1441,15 +1441,15 @@ impl HeadlessRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: scene_view_for_dof.bind(),
+                        resource: scene_view_for_dof.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: dof_depth_for_dof.bind(),
+                        resource: dof_depth_for_dof.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: self.dof_nearest_sampler.bind(),
+                        resource: self.dof_nearest_sampler.as_entire_binding(),
                     },
                 ],
             });
@@ -2101,15 +2101,15 @@ impl HeadlessRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: scene_view_for_dof.bind(),
+                        resource: scene_view_for_dof.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: dof_depth_for_dof.bind(),
+                        resource: dof_depth_for_dof.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: self.dof_nearest_sampler.bind(),
+                        resource: self.dof_nearest_sampler.as_entire_binding(),
                     },
                 ],
             });

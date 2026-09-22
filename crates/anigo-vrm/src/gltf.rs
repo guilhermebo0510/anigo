@@ -394,7 +394,7 @@ fn detect_node_cycles(nodes: &[Value]) -> Result<(), GltfError> {
             let children = nodes[idx]
                 .get("children")
                 .and_then(Value::as_array)
-                .map(|c| c.iter().filter_map(Value::as_u64).filter(|c| *c as usize < nodes.len()).collect::<Vec<_>>())
+                .map(|c| c.iter().filter_map(Value::as_u64).filter(|c| (*c as usize) < nodes.len()).collect::<Vec<_>>())
                 .unwrap_or_default();
             let advanced = loop {
                 if next_child >= children.len() {

@@ -312,7 +312,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         let view = push_view(&mut bin, &mut buffer_views, bin.write_f32(&ibm_values), ibm_values.len() * 4, None);
         let mut entry = Map::new();
         entry.insert("name".into(), Value::from(skin.name.clone().unwrap_or_else(|| format!("skin_{skin_index}"))));
-        entry.insert("joints".into(), Value::Array(skin.joints.iter().map(Value::from).collect()));
+        entry.insert("joints".into(), Value::Array(skin.joints.iter().map(|v| Value::from(*v)).collect()));
         entry.insert("inverseBindMatrices".into(), Value::from(push_accessor(&mut accessors, view, 5126, skin.inverse_bind_matrices.len() as u64, "MAT4")));
         if let Some(skeleton) = skin.skeleton {
             entry.insert("skeleton".into(), Value::from(skeleton));
@@ -457,7 +457,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             entry.insert("weights".into(), Value::Array(weights.iter().map(|v| Value::from(*v as f64)).collect()));
         }
         if !node.children.is_empty() {
-            entry.insert("children".into(), Value::Array(node.children.iter().map(Value::from).collect()));
+            entry.insert("children".into(), Value::Array(node.children.iter().map(|v| Value::from(*v)).collect()));
         }
         nodes_json.push(Value::Object(entry));
     }
@@ -558,7 +558,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
                     );
                     entry.insert(
                         "colliderGroups".into(),
-                        Value::Array(group.collider_groups.iter().map(Value::from).collect()),
+                        Value::Array(group.collider_groups.iter().map(|v| Value::from(*v)).collect()),
                     );
                     Value::Object(entry)
                 })
@@ -609,7 +609,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
     json.insert("scene".into(), Value::from(0));
     let mut scene_json = Map::new();
     scene_json.insert("name".into(), Value::from(scene.name.clone().unwrap_or_else(|| "ANIGO Scene".to_string())));
-    scene_json.insert("nodes".into(), Value::Array(scene.root_nodes.iter().map(Value::from).collect()));
+    scene_json.insert("nodes".into(), Value::Array(scene.root_nodes.iter().map(|v| Value::from(*v)).collect()));
     json.insert("scenes".into(), Value::Array(vec![Value::Object(scene_json)]));
     json.insert("nodes".into(), Value::Array(nodes_json));
     json.insert("meshes".into(), Value::Array(meshes_json));

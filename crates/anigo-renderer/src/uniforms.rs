@@ -122,15 +122,15 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
                 m.mtoon_matcap_intensity,
             ],
             params5: [
-                m.mtoon_main_texture_enabled as f32,
-                m.mtoon_shade_texture_enabled as f32,
-                m.mtoon_second_shade_texture_enabled as f32,
-                m.mtoon_emission_texture_enabled as f32,
+                (m.mtoon_main_texture_enabled as u32) as f32,
+                (m.mtoon_shade_texture_enabled as u32) as f32,
+                (m.mtoon_second_shade_texture_enabled as u32) as f32,
+                (m.mtoon_emission_texture_enabled as u32) as f32,
             ],
             params6: [
-                m.mtoon_matcap_enabled as f32,
+                (m.mtoon_matcap_enabled as u32) as f32,
                 m.mtoon_matcap_mode as f32,
-                m.mtoon_shade_toony as f32,
+                (m.mtoon_shade_toony as u32) as f32,
                 0.0,
             ],
             // Fase 2 (#17): sombra facial SDF
@@ -201,8 +201,8 @@ impl DofUniform {
         z_far: f32,
     ) -> Self {
         Self {
-            params: [focus_distance, f_number, f32::from(bokeh_shape), focal_mm / 1000.0],
-            resolution: [f32::from(width_px), f32::from(height_px), z_near, z_far],
+            params: [focus_distance, f_number, bokeh_shape as f32, focal_mm / 1000.0],
+            resolution: [width_px as f32, height_px as f32, z_near, z_far],
             limits: [max_radius_px, 0.024, 0.0, 0.0],
         }
     }

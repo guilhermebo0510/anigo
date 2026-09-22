@@ -534,7 +534,7 @@ fn parse_spring_bone(raw: Option<&Value>, node_count: usize, warnings: &mut Vec<
     else {
         return Err(fail(Vrm1ErrorCode::BadSpringBone, "VRMC_springBone.secondaryRig ausente"));
     };
-    let check_node = |node: u64, where_: &str| {
+    let mut check_node = |node: u64, where_: &str| {
         if node as usize >= node_count {
             warnings.push(format!("springBone {where_}.node={node} fora da faixa — mola será ignorada em runtime"));
         }
