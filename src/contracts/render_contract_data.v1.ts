@@ -81,8 +81,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_dof",
         "fragment": "fs_dof"
       },
-      "lines": 134,
-      "fnv1a64": "2caa9896a0efd4ce"
+      "lines": 135,
+      "fnv1a64": "bc62be0801b4c5d1"
     },
     {
       "name": "webgl2_fallback/cel_vertex",
@@ -837,11 +837,11 @@ export const RENDER_CONTRACT_DATA = {
         },
         {
           "binding": 2,
-          "kind": "texture_2d<f32>",
+          "kind": "texture_depth_2d",
           "stages": [
             "fragment"
           ],
-          "declaration": "var scene_depth: texture_2d<f32>"
+          "declaration": "var scene_depth: texture_depth_2d"
         },
         {
           "binding": 3,

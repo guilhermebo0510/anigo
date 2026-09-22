@@ -190,7 +190,7 @@ test("contrato: bloco DofUniform (48 B), bind group dof e passe dof_post", () =>
   const byBinding = new Map(group.entries.map((e) => [e.binding, e.kind]));
   assert.equal(byBinding.get(0), "uniform");
   assert.equal(byBinding.get(1), "texture_2d<f32>");
-  assert.equal(byBinding.get(2), "texture_2d<f32>");
+  assert.equal(byBinding.get(2), "texture_depth_2d"); // depth24plus só liga como depth texture
   assert.equal(byBinding.get(3), "sampler");
 
   const pass = RENDER_CONTRACT.passes.find((p) => p.name === "dof_post");

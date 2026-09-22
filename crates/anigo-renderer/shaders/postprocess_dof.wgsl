@@ -32,7 +32,8 @@ struct DofUniform {
 
 @group(0) @binding(0) var<uniform> dof: DofUniform;
 @group(0) @binding(1) var scene_color: texture_2d<f32>;
-@group(0) @binding(2) var scene_depth: texture_2d<f32>;
+// Profundidade real do frame: depth24plus só liga como texture_depth_2d (texture_2d<f32> falha na validação do wgpu/browser).
+@group(0) @binding(2) var scene_depth: texture_depth_2d;
 @group(0) @binding(3) var dof_sampler: sampler;
 
 // Disco de amostragem determinístico (16 pontos): 4 anel interno (r=0.5) +
@@ -107,7 +108,7 @@ fn aperture_mask(p: vec2<f32>, shape: f32) -> f32 {
 @fragment
 fn fs_dof(@builtin(position) pos: vec4<f32>) -> @builtin(color) vec4<f32> {
     let uv = pos.xy / dof.resolution.xy;
-    let frag_dist = linearize_depth(textureSample(scene_depth, dof_sampler, uv).r);
+    let frag_dist = linearize_depth(textureSampleLevel(scene_depth, dof_sampler, uv, 0));
 
     // Raio do bokeh em px: CoC (m no sensor) → fração da altura do sensor →
     // px da imagem, limitado por `limits.x` (teto de custo).

@@ -924,7 +924,9 @@ mod tests {
 
     #[test]
     fn pass_graph_is_shared_with_the_viewport() {
-        assert_eq!(render_pass_order(), vec!["outline", "cel"]);
+        // Fase 2 (#53): o passe de pós DoF completa o grafo canônico (roda só
+        // quando dof_enabled — only_when no contrato).
+        assert_eq!(render_pass_order(), vec!["outline", "cel", "dof_post"]);
 
         let outline = render_pass("outline");
         assert_eq!(outline.shader, "inverted_hull");

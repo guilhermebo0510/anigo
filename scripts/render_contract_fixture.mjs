@@ -325,7 +325,7 @@ export function renderContractFixture() {
         entries: [
           { binding: 0, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> dof: DofUniform" },
           { binding: 1, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var scene_color: texture_2d<f32>" },
-          { binding: 2, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var scene_depth: texture_2d<f32>" },
+          { binding: 2, kind: "texture_depth_2d", stages: ["fragment"], declaration: "var scene_depth: texture_depth_2d" },
           { binding: 3, kind: "sampler", stages: ["fragment"], declaration: "var dof_sampler: sampler" },
         ],
       },
