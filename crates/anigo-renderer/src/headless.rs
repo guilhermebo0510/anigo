@@ -1482,7 +1482,7 @@ impl HeadlessRenderer {
                     },
                 ],
             });
-            let dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Anime Bokeh DoF Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_view,
@@ -2170,7 +2170,7 @@ impl HeadlessRenderer {
                     },
                 ],
             });
-            let dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Anime Bokeh DoF Pass (Morphed)"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_view,
