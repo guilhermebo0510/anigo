@@ -810,6 +810,19 @@ mod tests {
     #[test]
     fn every_production_shader_matches_its_frozen_hash() {
         assert_eq!(shaders_with_role("production").len(), 4);
+        // DEBUG temporário (CI fantasma): o include_str! carrega 19020 bytes
+        // para inverted_hull no runner mesmo com a árvore de 4814 bytes —
+        // comparar embedded vs leitura em runtime e mostrar o conteúdo.
+        let runtime_path = concat!(env!("CARGO_MANIFEST_DIR"), "/shaders/inverted_hull.wgsl");
+        let runtime = std::fs::read_to_string(runtime_path).unwrap_or_else(|e| format!("erro: {e}"));
+        eprintln!(
+            "PROBE hull: embedded={}B runtime={}B | fnv_e={:x} fnv_r={:x} | head_e={:?}",
+            INVERTED_HULL_WGSL.len(),
+            runtime.len(),
+            fnv1a64(INVERTED_HULL_WGSL.replace("\r\n", "\n").as_bytes()),
+            fnv1a64(runtime.replace("\r\n", "\n").as_bytes()),
+            &INVERTED_HULL_WGSL[..INVERTED_HULL_WGSL.len().min(160)]
+        );
         for (name, source) in PRODUCTION_SHADERS {
             let normalized = source.replace("\r\n", "\n");
             let actual = fnv1a64(normalized.as_bytes());
