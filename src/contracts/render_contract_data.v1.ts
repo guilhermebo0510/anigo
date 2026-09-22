@@ -20,7 +20,7 @@ export const RENDER_CONTRACT_DATA = {
         "fragment": "fs_main"
       },
       "lines": 525,
-      "fnv1a64": "8a86bc11e3b88d97"
+      "fnv1a64": "12f7db9edf750e49"
     },
     {
       "name": "inverted_hull",
