@@ -744,6 +744,7 @@ impl HeadlessRenderer {
         let dof_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Anime Bokeh DoF Pipeline"),
             layout: Some(&dof_pipeline_layout),
+            cache: None,
             vertex: wgpu::VertexState {
                 module: &dof_shader,
                 entry_point: Some(dof_pass_spec.vertex_entry.unwrap_or("vs_dof")),
@@ -1179,7 +1180,7 @@ impl HeadlessRenderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     // Fase 2 (#53): profundidade 1× resolvida para o DoF amostrar.
-                    depth_resolve_attachment: dof_depth_view.as_ref(),
+                    depth_resolve_target: dof_depth_view.as_ref(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1441,15 +1442,15 @@ impl HeadlessRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: scene_view_for_dof.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(scene_view_for_dof),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: dof_depth_for_dof.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(dof_depth_for_dof),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: self.dof_nearest_sampler.as_entire_binding(),
+                        resource: wgpu::BindingResource::Sampler(&self.dof_nearest_sampler),
                     },
                 ],
             });
@@ -1834,7 +1835,7 @@ impl HeadlessRenderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     // Fase 2 (#53): profundidade 1× resolvida para o DoF amostrar.
-                    depth_resolve_attachment: dof_depth_view.as_ref(),
+                    depth_resolve_target: dof_depth_view.as_ref(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -2101,15 +2102,15 @@ impl HeadlessRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: scene_view_for_dof.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(scene_view_for_dof),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: dof_depth_for_dof.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(dof_depth_for_dof),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: self.dof_nearest_sampler.as_entire_binding(),
+                        resource: wgpu::BindingResource::Sampler(&self.dof_nearest_sampler),
                     },
                 ],
             });

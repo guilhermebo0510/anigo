@@ -753,7 +753,8 @@ pub fn map_mtoon_to_anime_material(material: &Value, mtoon: Option<&Vrm1MToon>) 
         })
         .unwrap_or([1.0, 1.0, 1.0, 1.0]);
     let emission_intensity = if mtoon.is_some() { 1.0 } else { 0.0 };
-    let mtoon = mtoon.unwrap_or(&Vrm1MToon::default());
+    let mtoon_default = Vrm1MToon::default();
+    let mtoon = mtoon.unwrap_or(&mtoon_default);
     let base_color = [
         base_factor[0] * mtoon.multiply[0],
         base_factor[1] * mtoon.multiply[1],

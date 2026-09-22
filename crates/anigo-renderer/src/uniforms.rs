@@ -137,14 +137,14 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
             params7: [
                 m.face_shadow_offset,
                 m.face_shadow_smoothness,
-                m.face_sdf_enabled as f32,
+                (m.face_sdf_enabled as u32) as f32,
                 0.0,
             ],
             // Fase 2 (#43): olho anime (parallax + highlights)
             params8: [
                 m.eye_depth_scale,
                 m.eye_highlight_intensity,
-                m.eye_enabled as f32,
+                (m.eye_enabled as u32) as f32,
                 0.0,
             ],
         }

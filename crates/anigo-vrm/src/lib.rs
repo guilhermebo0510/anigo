@@ -22,8 +22,6 @@ pub mod exporter;
 pub mod gltf;
 pub mod vrm1;
 
-use serde_json::Value;
-
 pub use exporter::{
     export_glb, export_gltf, ExportAnimation, ExportAnimationTrack, ExportMaterial, ExportMToon,
     ExportMesh, ExportMorphDelta, ExportNode, ExportPrimitive, ExportScene, ExportSkin, ExportVertex,
@@ -42,6 +40,12 @@ pub use vrm1::{
 // API de alto nível (fronteira Tauri)
 // ---------------------------------------------------------------------------
 
+impl From<Vrm1Error> for GltfError {
+    fn from(err: Vrm1Error) -> Self {
+        GltfError { code: GltfErrorCode::BadAsset, message: err.to_string() }
+    }
+}
+
 /// Resultado de `parse_model`: modelo glTF parseado + camada VRM (se for).
 #[derive(Debug, Clone)]
 pub struct ParseModelResult {
@@ -54,10 +58,12 @@ pub struct ParseModelResult {
 pub fn parse_model(bytes: &[u8]) -> Result<ParseModelResult, GltfError> {
     let (json, bin) = parse_glb(bytes)?;
     let (buffers, warnings) = resolve_glb_buffers(&json, &bin, |_uri| None)?;
-    let mut model = parse_gltf(
-        json,
-        |_index, _uri| Ok(buffers.clone()),
-    )?;
+    let buffer_index = |index: usize, _uri: Option<&str>| -> Result<Vec<u8>, GltfError> {
+        buffers.get(index).cloned().ok_or_else(|| {
+            GltfError::new(GltfErrorCode::BadBufferIndex, format!("buffer {index} ausente no GLB"))
+        })
+    };
+    let mut model = parse_gltf(json, buffer_index)?;
     model.warnings.extend(warnings);
     let vrm = if is_vrm_document(&model.json) { Some(parse_vrm1(&model)?) } else { None };
     Ok(ParseModelResult { model, vrm })
@@ -117,6 +123,7 @@ pub fn export_model(scene: &ExportScene, vrm: Option<&VrmExportData>) -> Vec<u8>
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use super::*;
 
     fn sample_scene() -> ExportScene {

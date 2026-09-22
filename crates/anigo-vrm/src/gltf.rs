@@ -193,7 +193,7 @@ pub fn parse_gltf(
     json: Value,
     buffer_resolver: impl Fn(usize, Option<&str>) -> Result<Vec<u8>, GltfError>,
 ) -> Result<ParsedGltf, GltfError> {
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
     let version = json
         .get("asset")
         .and_then(|a| a.get("version"))
