@@ -38,6 +38,8 @@ export interface ProjectStateSnapshot {
   cameraTarget: [number, number, number];
   cameraUp?: [number, number, number];
   fov?: number;
+  /** Issue #13: modo de projeção da câmera (`perspective`/`orthographic`). */
+  cameraProjection?: "perspective" | "orthographic";
   timestamp: number;
   version: string;
   lightAzimuth?: number;

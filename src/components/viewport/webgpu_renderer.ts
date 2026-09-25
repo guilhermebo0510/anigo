@@ -45,7 +45,9 @@ import { GlbParseError, loadGlbMesh } from "../../services/gltf_loader";
 import {
   DEFAULT_CAMERA_FAR,
   DEFAULT_CAMERA_NEAR,
+  orthographicBoundsForFraming,
   viewProjectionMatrix,
+  type ProjectionModeWire,
 } from "../../services/camera_math";
 // P0 renderer: canonical shader source is `crates/anigo-renderer/shaders/` — the same
 // files the Rust (wgpu) renderer loads with `include_str!`. There is exactly one
@@ -69,6 +71,10 @@ import fsCel from "../../../crates/anigo-renderer/shaders/webgl2_fallback/cel_fr
 import vsOutline from "../../../crates/anigo-renderer/shaders/webgl2_fallback/outline_vertex.glsl?raw";
 // @ts-ignore - Vite ?raw import
 import fsOutline from "../../../crates/anigo-renderer/shaders/webgl2_fallback/outline_fragment.glsl?raw";
+// Issue #11: calendário de reconexão após perda de device — o mesmo
+// `ReconnectSchedule::default` do Rust (`device_recovery.rs`): 500ms, 1s, 2s.
+const DEVICE_RECONNECT_DELAYS_MS = [500, 1000, 2000] as const;
+
 // P0 renderer: todo o estado de pipeline (passes, MSAA, formatos, blend, depth,
 // uniforms e toon ramp) vem do contrato congelado — não existem literais de
 // renderização espalhados neste arquivo.
@@ -78,7 +84,9 @@ import {
   depthFormat,
   filterMode,
   msaaSampleCount,
+  renderGraph,
   renderPasses,
+  renderPassOrder,
   RENDER_CONTRACT,
   bonePaletteBytes,
   skinning,
@@ -89,6 +97,10 @@ import {
   uniformSize,
   vertexBufferLayout,
 } from "../../contracts/render_contract.v1";
+import {
+  DEPTH_PREPASS_PASS,
+  planRenderGraphPasses,
+} from "../../services/render_graph_plan";
 import {
   cameraUniformFloats,
   dofUniformFloats,
@@ -107,6 +119,8 @@ export interface ViewportMetrics {
   drawCalls: number;
   adapterName: string;
   backend: string;
+  /** Issue #13: `perspective` ou `orthographic` (o HUD mostra o modo ativo). */
+  projection: "perspective" | "orthographic";
 }
 
 export type MeshPreset = "mannequin" | "sphere" | "cube";
@@ -199,6 +213,12 @@ export class WebGpuViewportRenderer {
   private sampleCount: number = msaaSampleCount();
   private celPipeline: GPURenderPipeline | null = null;
   private outlinePipeline: GPURenderPipeline | null = null; // P1-06 uses custom extruded normals (geometry includes outlineNormal attribute when available)
+  /** Issue #14: pipeline só-profundidade do pré-passe (sem fragmento). */
+  private depthPrepassPipeline: GPURenderPipeline | null = null;
+  /** Issue #14: overrides do render graph vindos do snapshot do núcleo. */
+  private graphOrder: string[] = [];
+  private graphDisabled: string[] = [];
+  private graphDepthPrepass = false;
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null; // P2-14 model+normal matrix per object (was identity)
@@ -347,6 +367,12 @@ export class WebGpuViewportRenderer {
   public target: [number, number, number] = [0.0, 1.0, 0.0];
   public up: [number, number, number] = [0.0, 1.0, 0.0];
   public fov: number = (45.0 * Math.PI) / 180.0;
+  /**
+   * Issue #13: modo de projeção corrente. `null` = perspectiva com o `fov`
+   * atual; quando ortográfico, guarda os limites (o `fov` continua intacto para
+   * a volta não mudar o enquadramento).
+   */
+  private orthographicBounds: { left: number; right: number; bottom: number; top: number } | null = null;
   private recenterAnim: {
     startEye: [number, number, number];
     startTarget: [number, number, number];
@@ -409,6 +435,30 @@ export class WebGpuViewportRenderer {
   private wasPausedByVisibility: boolean = false;
   public onMetricsUpdate?: (metrics: ViewportMetrics) => void;
 
+  // Issue #11: tolerância a falhas e recuperação de perda de device WebGPU.
+  // A queda é interceptada no listener da Promise `device.lost`: queda
+  // esperada (`reason === "destroyed"`) só registra; crash (`"unknown"` /
+  // `"connection_lost"`) dispara reconexão automática com backoff exponencial
+  // (500ms → 1s → 2s) e overlay, em vez de travar a UI.
+  private destroyed: boolean = false;
+  private deviceLostHandlerInstalled: boolean = false;
+  private reconnecting: boolean = false;
+  private reconnectOverlay: HTMLDivElement | null = null;
+  /**
+   * Issue #11: modo de apresentação explícito — `fifo` (VSync ligado),
+   * `immediate` (menor latência) e `mailbox` (quando suportado pela GPU).
+   */
+  private presentMode: "fifo" | "immediate" | "mailbox" = "fifo";
+  /**
+   * Issue #11, aceitação #3: notificação de recuperação para a UI (rodapé) —
+   * eventos + tempo de recuperação, espelhando `DeviceRecreationReport` do Rust.
+   */
+  public onDeviceRecovery?: (info: {
+    attempts: number;
+    elapsedMs: number;
+    expected: boolean;
+  }) => void;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
   }
@@ -431,39 +481,21 @@ export class WebGpuViewportRenderer {
         });
         if (this.adapter) {
           this.device = await this.adapter.requestDevice();
-          this.context = this.canvas.getContext("webgpu");
+            this.context = this.canvas.getContext("webgpu");
           if (this.context) {
             this.format = navigator.gpu.getPreferredCanvasFormat();
             this.context.configure({
               device: this.device,
               format: this.format,
               alphaMode: "premultiplied",
-              presentMode: this.vsyncEnabled ? "fifo" : "immediate",
+              // Issue #11: modo de apresentação explícito (Fifo/Immediate/Mailbox).
+              presentMode: this.getPresentMode(),
             });
 
             // P0-06: observe GPU validation errors (was silent black screen)
-            try {
-              (this.device as any).addEventListener?.("uncapturederror", (e: any) => {
-                this.report("gpu_device_error", "erro não capturado do device WebGPU", {
-                  detail: String(e?.error?.message ?? e?.error ?? e ?? "uncaptured"),
-                });
-                // surface as observable metric fallback
-                this.onMetricsUpdate?.({
-                  fps: 0,
-                  frameTimeMs: 0,
-                  triangles: Math.floor(this.indexCount/3),
-                  drawCalls: 0,
-                  adapterName: "GPU Error: " + (e?.error?.message || "uncaptured"),
-                  backend: "WebGPU-Error",
-                } as any);
-              });
-              // push validation scope to surface pipeline errors
-              (this.device as any).pushErrorScope?.("validation");
-            } catch (e) {
-              this.report("gpu_device_error", "não foi possível instalar o observador de erros da GPU", {
-                detail: e instanceof Error ? e.message : String(e),
-              });
-            }
+            this.installDeviceErrorObservers();
+            // Issue #11: listener da Promise `device.lost` (recuperação de crash).
+            this.installDeviceLostHandler();
 
             this.buildShadersAndPipelines();
             this.buildGeometryBuffers();
@@ -639,6 +671,29 @@ export class WebGpuViewportRenderer {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
     }
+    // Issue #14: pré-passe de profundidade — mesmo vértice do cel (`vs_main`),
+    // mesmo bind group (layout explícito do cel, não `auto`), sem fragmento:
+    // só escreve o z-buffer para o Early-Z do passe principal.
+    this.depthPrepassPipeline = this.device.createRenderPipeline({
+      layout: this.device.createPipelineLayout({
+        bindGroupLayouts: [this.celPipeline.getBindGroupLayout(0)],
+      }),
+      vertex: {
+        module: celModule,
+        entryPoint: celPass.vertex_entry ?? "vs_main",
+        buffers: [contractVertexLayout],
+      },
+      primitive: {
+        topology: "triangle-list",
+        cullMode: (celPass.cull_mode ?? "back") as any,
+      },
+      depthStencil: {
+        format: depthFormat() as any,
+        depthWriteEnabled: true,
+        depthCompare: (renderGraph().passes[DEPTH_PREPASS_PASS]?.depth_compare ?? "less") as any,
+      },
+      multisample: { count: msaaSampleCount() },
+    });
 
     try {
       const morphModule = this.device.createShaderModule({
@@ -694,6 +749,235 @@ export class WebGpuViewportRenderer {
         detail: e instanceof Error ? e.message : String(e),
       });
     }
+  }
+
+  // ==========================================
+  // Issue #11 — Tolerância a falhas e recuperação de device
+  // ==========================================
+
+  private sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Modo de apresentação em vigor (Fifo = VSync ligado). */
+  private getPresentMode(): "fifo" | "immediate" | "mailbox" {
+    return this.presentMode;
+  }
+
+  /**
+   * Issue #11: configuração explícita do modo de apresentação — `fifo`
+   * (VSync ligado), `immediate` (menor latência) e `mailbox` (quando a GPU
+   * suporta; o driver resolve o fallback). Reconfigura o contexto ativo.
+   * Devolve `false` quando o modo é inválido.
+   */
+  public setPresentMode(mode: "fifo" | "immediate" | "mailbox"): boolean {
+    if (mode !== "fifo" && mode !== "immediate" && mode !== "mailbox") return false;
+    this.presentMode = mode;
+    this.vsyncEnabled = mode === "fifo";
+    if (this.device && this.context) {
+      try {
+        // O TS 5.7 ainda não declara `presentMode` em `GPUCanvasConfiguration`.
+        (this.context as any).configure({
+          device: this.device,
+          format: this.format,
+          alphaMode: "premultiplied",
+          presentMode: mode,
+        });
+        return true;
+      } catch (e) {
+        this.report("context_configure_failed", "não foi possível aplicar o modo de apresentação pedido", {
+          detail: e instanceof Error ? e.message : String(e),
+        });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Observadores de erro do device (P0-06), instaláveis após cada recriação. */
+  private installDeviceErrorObservers(): void {
+    if (!this.device) return;
+    try {
+      (this.device as any).addEventListener?.("uncapturederror", (e: any) => {
+        this.report("gpu_device_error", "erro não capturado do device WebGPU", {
+          detail: String(e?.error?.message ?? e?.error ?? e ?? "uncaptured"),
+        });
+        // surface as observable metric fallback
+        this.onMetricsUpdate?.({
+          fps: 0,
+          frameTimeMs: 0,
+          triangles: Math.floor(this.indexCount/3),
+          drawCalls: 0,
+          adapterName: "GPU Error: " + (e?.error?.message || "uncaptured"),
+          backend: "WebGPU-Error",
+          projection: this.projectionMode().mode,
+        } as any);
+      });
+      // push validation scope to surface pipeline errors
+      (this.device as any).pushErrorScope?.("validation");
+    } catch (e) {
+      this.report("gpu_device_error", "não foi possível instalar o observador de erros da GPU", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /**
+   * Issue #11: listener da Promise `device.lost`.
+   *
+   * Diferencia queda esperada (`reason === "destroyed"` — o nosso próprio
+   * `destroy()`) de crash (`reason === "unknown"` / `"connection_lost"`):
+   * a primeira só registra; a segunda reconecta com backoff exponencial.
+   */
+  private installDeviceLostHandler(): void {
+    if (!this.device || this.deviceLostHandlerInstalled) return;
+    this.deviceLostHandlerInstalled = true;
+    const device = this.device;
+    const lost = (device as any).lost as Promise<{ reason?: string; message?: string } | undefined> | undefined;
+    if (typeof lost?.then !== "function") return;
+    void lost.then((info) => {
+      void this.handleDeviceLost(info?.reason ?? "unknown", info?.message);
+    });
+  }
+
+  /** Handler central de perda de device (issue #11). */
+  private async handleDeviceLost(reason: string, message?: string): Promise<void> {
+    if (this.destroyed || this.reconnecting) return;
+
+    // Queda esperada: quem encerrou foi o próprio renderer (destroy) — sem
+    // reconexão, apenas registro observável (mesmo canal de diagnóstico).
+    if (reason === "destroyed") {
+      this.report("device_lost", "device WebGPU encerrado (esperado — destroy)", {
+        detail: message ?? "destroyed",
+      });
+      return;
+    }
+
+    // Crash (unknown/connection_lost): reconexão automática com backoff
+    // exponcial (500ms → 1s → 2s) e overlay — a UI nunca trava.
+    this.isPaused = true;
+    this.reconnecting = true;
+    this.report("device_lost", "device WebGPU perdido — reconexão automática em andamento", {
+      detail: message ?? reason,
+    });
+    this.showReconnectOverlay(1);
+    const startedAt = performance.now();
+
+    for (let attempt = 0; attempt < DEVICE_RECONNECT_DELAYS_MS.length; attempt++) {
+      await this.sleepMs(DEVICE_RECONNECT_DELAYS_MS[attempt]);
+      if (this.destroyed) {
+        this.reconnecting = false;
+        return;
+      }
+      try {
+        await this.rebuildWebGpuDevice();
+        const elapsedMs = performance.now() - startedAt;
+        this.hideReconnectOverlay();
+        this.reconnecting = false;
+        this.deviceLostHandlerInstalled = false;
+        this.isPaused = false;
+        this.lastFrameTimestamp = performance.now();
+        this.report("device_recreated", `device WebGPU recuperado (tentativa ${attempt + 1})`, {
+          detail: `recuperação em ${elapsedMs.toFixed(0)} ms`,
+        });
+        // Aceitação #3: notificação informativa com evento + tempo de recuperação.
+        this.onDeviceRecovery?.({ attempts: attempt + 1, elapsedMs, expected: false });
+        return;
+      } catch (e) {
+        this.showReconnectOverlay(attempt + 2);
+        this.report("device_lost", `tentativa ${attempt + 1} de reconexão falhou`, {
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    // Calendário esgotado: degradação observável, sem crash.
+    this.reconnecting = false;
+    this.hideReconnectOverlay();
+    this.report("device_unavailable", "reconexão automática WebGPU falhou (3 tentativas)", {
+      detail: "verifique driver/GPU manualmente — o viewport segue no último quadro válido",
+    });
+  }
+
+  /**
+   * Re-solicita adapter + device, reconfigura o canvas e re-aloca todos os
+   * buffers/pipelines (aceitação #2: estado do personagem reapresentado nos
+   * novos buffers — a geometria vem do snapshot canônico do núcleo).
+   */
+  private async rebuildWebGpuDevice(): Promise<void> {
+    if (typeof navigator === "undefined" || !navigator.gpu) {
+      throw new Error("WebGPU indisponível para a reconexão");
+    }
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) throw new Error("nenhum adaptador para a reconexão");
+    const device = await adapter.requestDevice();
+
+    this.adapter = adapter as any;
+    this.device = device;
+    this.installDeviceErrorObservers();
+    this.installDeviceLostHandler();
+
+    const context = this.canvas.getContext("webgpu") as GPUCanvasContext | null;
+    if (!context) throw new Error("contexto do canvas indisponível após a perda do device");
+    this.context = context;
+    this.format = navigator.gpu.getPreferredCanvasFormat();
+    // O TS 5.7 ainda não declara `presentMode` em `GPUCanvasConfiguration` —
+    // o mesmo padrão de cast pontual que o restante do arquivo usa.
+    (context as any).configure({
+      device,
+      format: this.format,
+      alphaMode: "premultiplied",
+      presentMode: this.getPresentMode(),
+    });
+
+    // PSOs e buffers essenciais re-alocados no device novo.
+    this.buildShadersAndPipelines();
+    this.buildGeometryBuffers();
+    this.buildUniformBuffers();
+
+    // Estado do personagem: a geometria canônica (morphs, pesos, paleta de
+    // skinning) desce de novo pelos buffers novos — nada é recalculado aqui.
+    if (this.coreGeometry) {
+      this.uploadCoreGeometry(this.coreGeometry);
+    } else {
+      // Modo degradado: os handles de morph do device morto não servem mais.
+      this.morphBindGroup = null;
+      this.gpuMorphActive = false;
+      this.gpuMorphDirty = false;
+    }
+
+    const w = this.canvas.clientWidth > 50 ? this.canvas.clientWidth : this.cssWidth;
+    const h = this.canvas.clientHeight > 50 ? this.canvas.clientHeight : this.cssHeight;
+    this.resize(w, h);
+    this.backend = "webgpu";
+  }
+
+  /** Overlay de reconexão (a UI nunca trava: o canvas segue o último quadro). */
+  private showReconnectOverlay(nextAttempt: number): void {
+    this.hideReconnectOverlay();
+    try {
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
+        "background:rgba(26,29,46,0.82);color:#9ecbff;padding:16px;text-align:center;" +
+        "font:13px sans-serif;z-index:9999;pointer-events:none";
+      overlay.textContent =
+        `[ANIGO] Conexão com a GPU perdida — reconectando ` +
+        `(tentativa ${Math.min(nextAttempt, DEVICE_RECONNECT_DELAYS_MS.length)}/${DEVICE_RECONNECT_DELAYS_MS.length})…`;
+      (this.canvas.parentElement ?? document.body).appendChild(overlay);
+      this.reconnectOverlay = overlay;
+    } catch {
+      // Sem DOM (ambiente de teste): o canal de diagnóstico já cobre o evento.
+    }
+  }
+
+  private hideReconnectOverlay(): void {
+    try {
+      this.reconnectOverlay?.remove();
+    } catch {
+      // remove() em node já destacado: ignorável.
+    }
+    this.reconnectOverlay = null;
   }
 
   // ==========================================
@@ -1072,6 +1356,16 @@ export class WebGpuViewportRenderer {
     if (Array.isArray(background) && background.length === 4 && background.every((c) => Number.isFinite(c))) {
       this.clearColor = [background[0], background[1], background[2], background[3]];
     }
+    // Issue #14: o plano do quadro vem do snapshot (ordem/ativação/pré-passe).
+    const graphOrder = delivery.state?.render?.graph_order;
+    this.graphOrder = Array.isArray(graphOrder)
+      ? graphOrder.filter((name): name is string => typeof name === "string")
+      : [];
+    const graphDisabled = delivery.state?.render?.graph_disabled;
+    this.graphDisabled = Array.isArray(graphDisabled)
+      ? graphDisabled.filter((name): name is string => typeof name === "string")
+      : [];
+    this.graphDepthPrepass = delivery.state?.render?.depth_prepass === true;
     this.liveWeights.clear();
 
     let geometryUploaded = false;
@@ -1995,13 +2289,20 @@ export class WebGpuViewportRenderer {
   public setVsync(enabled: boolean) {
     if (this.vsyncEnabled !== enabled) {
       this.vsyncEnabled = enabled;
+      // Issue #11: o VSync é o modo `fifo`; desligado vira `immediate`
+      // (a menos que o modo explícito pedido seja `mailbox`).
+      if (enabled) {
+        this.presentMode = "fifo";
+      } else if (this.presentMode !== "mailbox") {
+        this.presentMode = "immediate";
+      }
       if (this.device && this.context) {
         try {
           this.context.configure({
             device: this.device,
             format: this.format,
             alphaMode: "premultiplied",
-            presentMode: enabled ? "fifo" : "immediate", // P2-11 check caps, fallback if unsupported
+            presentMode: this.getPresentMode(),
           });
         } catch (e) {
           this.report("context_configure_failed", "não foi possível reconfigurar o canvas (vsync/present)", {
@@ -2166,6 +2467,62 @@ export class WebGpuViewportRenderer {
     this.target[0] += right[0] * shiftX + up[0] * shiftY;
     this.target[1] += right[1] * shiftX + up[1] * shiftY;
     this.target[2] += right[2] * shiftX + up[2] * shiftY;
+  }
+
+  // ==========================================
+  // Projection mode (issue #13)
+  // ==========================================
+
+  /** Distância corrente da câmera ao alvo (usada para casar os enquadramentos). */
+  private cameraDistance(): number {
+    return Math.hypot(
+      this.eye[0] - this.target[0],
+      this.eye[1] - this.target[1],
+      this.eye[2] - this.target[2]
+    );
+  }
+
+  /** Modo de projeção corrente (perspectiva por padrão). */
+  public projectionMode(aspect?: number): ProjectionModeWire {
+    if (this.orthographicBounds) {
+      return { mode: "orthographic", ...this.orthographicBounds };
+    }
+    return { mode: "perspective", fov_y: this.fov, aspect: aspect ?? this.currentAspect() };
+  }
+
+  private currentAspect(): number {
+    const width = this.canvas?.width ?? 1;
+    const height = this.canvas?.height ?? 1;
+    return height > 0 ? width / height : 16 / 9;
+  }
+
+  /**
+   * Troca o modo de projeção **sem salto visual**: ao entrar em ortográfica, os
+   * limites são calculados para reproduzir o enquadramento perspectiva na
+   * distância do alvo; ao voltar, o `fov` original (intacto) reassume.
+   */
+  public setProjectionMode(mode: "perspective" | "orthographic"): ProjectionModeWire {
+    if (mode === "orthographic") {
+      this.orthographicBounds = orthographicBoundsForFraming(
+        this.fov,
+        this.currentAspect(),
+        this.cameraDistance()
+      );
+    } else {
+      this.orthographicBounds = null;
+    }
+    // O laço de rAF já redesenha a cada quadro; nada a agendar aqui.
+    return this.projectionMode();
+  }
+
+  /** Alterna perspectiva ⇄ ortográfica (atalho/botão da UI). */
+  public toggleProjectionMode(): ProjectionModeWire {
+    return this.setProjectionMode(this.orthographicBounds ? "perspective" : "orthographic");
+  }
+
+  /** `true` quando a câmera está em projeção ortográfica. */
+  public isOrthographic(): boolean {
+    return this.orthographicBounds !== null;
   }
 
   public recenterCamera(duration: number = 300) {
@@ -2431,6 +2788,47 @@ export class WebGpuViewportRenderer {
       this.dispatchSparseMorphs(commandEncoder, this.morphVertexCount);
     }
 
+    // Issue #14: o plano do quadro — ordem/ativação do snapshot sobre a ordem
+    // do contrato, com o `depth_prepass` ancorado no início quando ligado.
+    // Nome estranho cai no contrato com diagnóstico (a mesma regra do headless).
+    const plan = planRenderGraphPasses(renderPassOrder(), {
+      order: this.graphOrder,
+      disabled: this.graphDisabled,
+      depthPrepass: this.graphDepthPrepass,
+    });
+    if (plan.fellBack) {
+      this.report("render_plan_fallback", "overrides do render graph inválidos — usando a ordem do contrato", {
+        detail: plan.unknownPass
+          ? `passe desconhecido '${plan.unknownPass}'`
+          : "plano vazio (todos os passes desligados)",
+      });
+    }
+    const prepass = plan.passes.includes(DEPTH_PREPASS_PASS) && this.depthPrepassPipeline !== null;
+
+    const activeVbo = (this.gpuMorphActive && this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
+      ? this.morphedVertexBuffer
+      : this.vertexBuffer!;
+
+    // Pré-passe de profundidade: RenderPass só com o anexo de profundidade,
+    // que o passe principal carrega em vez de limpar (Early-Z).
+    if (prepass) {
+      const prepassEncoder = commandEncoder.beginRenderPass({
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: this.depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      });
+      prepassEncoder.setPipeline(this.depthPrepassPipeline!);
+      prepassEncoder.setBindGroup(0, this.celBindGroup!);
+      prepassEncoder.setVertexBuffer(0, activeVbo);
+      prepassEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
+      prepassEncoder.drawIndexed(this.indexCount);
+      prepassEncoder.end();
+    }
+
     // P0-07: MSAA resolve (msaa view → swapchain)
     // Fase 2 (#53): com DoF ativo o resolve vai para a textura intermediária
     // (cor + profundidade 1×) e o passe de pós escreve no swapchain.
@@ -2467,30 +2865,32 @@ export class WebGpuViewportRenderer {
         view: this.depthView,
         depthResolveAttachment: dofActive ? this.dofDepthView : undefined,
         depthClearValue: 1.0,
-        depthLoadOp: "clear",
+        depthLoadOp: prepass ? "load" : "clear",
         depthStoreOp: "store",
       } as any,
     });
 
-    const activeVbo = (this.gpuMorphActive && this.morphPipeline && this.morphBindGroup && this.morphedVertexBuffer && this.morphVertexCount > 0)
-      ? this.morphedVertexBuffer
-      : this.vertexBuffer!;
     passEncoder.setVertexBuffer(0, activeVbo);
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
-    // Ordem dos passes vem do contrato (outline → cel em ordem de `order`),
+    // A ordem dos passes vem do plano (contrato + overrides do snapshot),
     // exatamente como o headless monta o render pass.
-    for (const pass of renderPasses()) {
-      if (pass.name === "outline") {
+    let mainPassDraws = 0;
+    for (const passName of plan.passes) {
+      if (passName === "outline") {
         passEncoder.setPipeline(this.outlinePipeline!);
         passEncoder.setBindGroup(0, this.outlineBindGroup!);
-      } else if (pass.name === "cel") {
+      } else if (passName === "cel") {
         passEncoder.setPipeline(this.celPipeline!);
         passEncoder.setBindGroup(0, this.celBindGroup!);
+      } else if (passName === DEPTH_PREPASS_PASS) {
+        continue; // já executou no passe dedicado acima
       } else {
+        this.report("contract_drift", `passe '${passName}' do plano não tem pipeline no viewport`);
         continue;
       }
       passEncoder.drawIndexed(this.indexCount);
+      mainPassDraws += 1;
     }
 
     passEncoder.end();
@@ -2537,7 +2937,7 @@ export class WebGpuViewportRenderer {
 
     this.device.queue.submit([commandEncoder.finish()]);
 
-    this.recordMetrics(startTime, "WebGPU Hardware");
+    this.recordMetrics(startTime, "WebGPU Hardware", mainPassDraws + (prepass ? 1 : 0));
   }
 
   /**
@@ -2629,7 +3029,7 @@ export class WebGpuViewportRenderer {
     this.recordMetrics(startTime, "WebGL2 Fallback");
   }
 
-  private recordMetrics(startTime: number, adapter: string) {
+  private recordMetrics(startTime: number, adapter: string, drawCalls = 2) {
     // P2-08 real GPU timing (was CPU submit only) + real drawCalls/triangles - pedestal excluded
     const elapsed = performance.now() - startTime;
     this.frameCounter++;
@@ -2647,9 +3047,10 @@ export class WebGpuViewportRenderer {
             fps: currentFps,
             frameTimeMs: elapsed, // TODO GPUQuerySet timestamp when available
             triangles: realTris,
-            drawCalls: 2, // cel + outline
+            drawCalls, // Issue #14: draws do plano (cel + outline + pré-passe quando ligado)
             adapterName,
             backend: this.backend === "webgpu" ? "WebGPU" : "WebGL2",
+            projection: this.projectionMode().mode,
           });
         }
       }
@@ -2670,6 +3071,9 @@ export class WebGpuViewportRenderer {
         clipDepth: isWebGPU ? "zero_to_one" : "minus_one_to_one",
         near: DEFAULT_CAMERA_NEAR,
         far: DEFAULT_CAMERA_FAR,
+        // Issue #13: o modo de projeção entra aqui — um só lugar monta a
+        // matriz, então perspectiva e ortográfica não podem divergir.
+        projection: this.projectionMode(aspect),
       }
     );
   }
@@ -2766,10 +3170,15 @@ export class WebGpuViewportRenderer {
   }
 
   public destroy() {
+    // Issue #11: marca a destruição para o listener de `device.lost` não
+    // interpretar o encerramento como crash (reason === "destroyed" é esperado).
+    this.destroyed = true;
+    this.isPaused = true;
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
     }
+    this.hideReconnectOverlay();
     this.recenterAnim = null;
     this.liveWeights.clear();
     this.channelWeights.clear();
@@ -2824,7 +3233,7 @@ export class WebGpuViewportRenderer {
       this.gl = null; this.glVao = null; this.glVbo = null; this.glIbo = null;
       this.glCelProgram = null; this.glOutlineProgram = null;
     }
-    this.celPipeline = null; this.outlinePipeline = null;
+    this.celPipeline = null; this.outlinePipeline = null; this.depthPrepassPipeline = null;
     this.celBindGroup = null; this.outlineBindGroup = null;
     this.toonRampSampler = null;
     this.mtoonNeutralSampler = null;

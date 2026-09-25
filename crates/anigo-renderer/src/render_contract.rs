@@ -768,14 +768,78 @@ pub fn expected_toon_ramp_fingerprint() -> &'static str {
 // Câmera
 // ---------------------------------------------------------------------------
 
-/// `scene.nodes[0].transform` — a fonte canônica do model matrix.
+/// `scene.nodes[*].world_matrix` — a fonte canônica do model matrix.
+///
+/// A matriz mundial já vem resolvida pelo núcleo (`W = W_pai × T_local`), o que
+/// torna a hierarquia do snapshot a única autoridade sobre a pose do quadro
+/// (issue #12). O contrato antigo dizia `scene.nodes[0].transform`, o que não
+/// expressa nem o nó corrente nem a cadeia de pais.
 pub fn model_matrix_source() -> &'static str {
-    contract()["camera"]["model_from"].as_str().unwrap_or("scene.nodes[0].transform")
+    contract()["camera"]["model_from"]
+        .as_str()
+        .unwrap_or("scene.nodes[*].world_matrix")
 }
 
 /// Bloco de uniform que carrega a câmera (`camera`).
 pub fn camera_uniform_block() -> &'static str {
     contract()["camera"]["uniform"].as_str().unwrap_or("camera")
+}
+
+/// Issue #13: modos de projeção declarados pelo contrato (`perspective` e
+/// `orthographic`), com a matriz de cada um. Os dois escrevem a mesma
+/// `view_proj`, então o shader não precisa saber qual está ativo.
+pub fn projection_modes() -> [(&'static str, &'static str); 2] {
+    let modes = &contract()["camera"]["projection_modes"];
+    [
+        (
+            "perspective",
+            modes["perspective"]["matrix"]
+                .as_str()
+                .unwrap_or("perspective_rh"),
+        ),
+        (
+            "orthographic",
+            modes["orthographic"]["matrix"]
+                .as_str()
+                .unwrap_or("orthographic_rh"),
+        ),
+    ]
+}
+
+/// Issue #13: descrição do frustum culling declarada pelo contrato.
+///
+/// O culling roda em espaço de mundo, com os 6 planos extraídos da `view_proj`;
+/// a telemetria (`RenderMetrics.culled_draw_calls`) fecha o ciclo.
+pub fn culling_report() -> CullingContract {
+    let culling = &contract()["camera"]["culling"];
+    CullingContract {
+        volume: culling["volume"].as_str().unwrap_or("aabb+sphere").to_string(),
+        planes_from: culling["planes_from"]
+            .as_str()
+            .unwrap_or("view_proj")
+            .to_string(),
+        plane_count: culling["plane_count"].as_u64().unwrap_or(6) as usize,
+        test: culling["test"]
+            .as_str()
+            .unwrap_or("sphere_then_aabb")
+            .to_string(),
+        space: culling["space"].as_str().unwrap_or("world").to_string(),
+        metrics: culling["metrics"]
+            .as_str()
+            .unwrap_or("RenderMetrics.culled_draw_calls")
+            .to_string(),
+    }
+}
+
+/// Issue #13: o culling declarado no contrato, já decodificado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CullingContract {
+    pub volume: String,
+    pub planes_from: String,
+    pub plane_count: usize,
+    pub test: String,
+    pub space: String,
+    pub metrics: String,
 }
 
 /// Convenção de profundidade do clip space (`zero_to_one`).
@@ -804,7 +868,18 @@ mod tests {
     fn contract_parses_and_matches_version() {
         assert_eq!(contract()["version"].as_u64(), Some(CONTRACT_VERSION));
         assert_eq!(clip_depth(), "zero_to_one");
-        assert_eq!(model_matrix_source(), "scene.nodes[0].transform");
+        assert_eq!(model_matrix_source(), "scene.nodes[*].world_matrix");
+
+        // Issue #13: os dois modos de projeção e o culling declarados no contrato.
+        let modes = projection_modes();
+        assert_eq!(modes[0], ("perspective", "perspective_rh"));
+        assert_eq!(modes[1], ("orthographic", "orthographic_rh"));
+        let culling = culling_report();
+        assert_eq!(culling.plane_count, 6);
+        assert_eq!(culling.planes_from, "view_proj");
+        assert_eq!(culling.space, "world");
+        assert_eq!(culling.metrics, "RenderMetrics.culled_draw_calls");
+        assert_eq!(culling.test, "sphere_then_aabb");
     }
 
     #[test]

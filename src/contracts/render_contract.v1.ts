@@ -248,8 +248,42 @@ export interface CinematographySpecV1 {
   };
 }
 
+/** Issue #14: semântica de execução de um nó do DAG canônico. */
+export type RenderGraphPassKindV1 =
+  | "depth_prepass"
+  | "opaque"
+  | "outline"
+  | "postprocess"
+  | "compute"
+  | "custom";
+
+/** Issue #14: um nó do DAG canônico de anime (`render_graph.passes`). */
+export interface RenderGraphPassContractV1 {
+  kind: RenderGraphPassKindV1;
+  after: string[];
+  reads: string[];
+  writes: string[];
+  /** Nome do passe executável de hoje (`cel`, `outline`) quando houver. */
+  executes_as?: string;
+  /** Metadados do pré-passe (só `depth_prepass` declara). */
+  shader?: string;
+  vertex_entry?: string;
+  bind_group?: string;
+  depth_compare?: string;
+  enabled_by_default?: boolean;
+}
+
+/** Issue #14: o DAG canônico de anime, congelado no contrato. */
+export interface RenderGraphContractV1 {
+  canonical_order: string[];
+  passes: Record<string, RenderGraphPassContractV1>;
+  resources: Record<string, { kind: string }>;
+}
+
 export interface RenderContractV1 {
   version: number;
+  /** Issue #14: topologia canônica do render graph (seis passes de anime). */
+  render_graph: RenderGraphContractV1;
   /** P1-02: vocabulário de diagnóstico compartilhado com o Rust. */
   diagnostics?: { note: string; codes: DiagnosticCodeSpecV1[] };
   /** P1-04: skinning (paleta de ossos + atributos de vértice). */
@@ -282,6 +316,11 @@ export interface RenderContractV1 {
   };
   camera: {
     projection: string;
+    /** Issue #13: os dois modos de projeção e a matriz de cada um. */
+    projection_modes: {
+      perspective: { matrix: string; params: string };
+      orthographic: { matrix: string; params: string };
+    };
     clip_depth: string;
     matrix_layout: string;
     up_axis: string;
@@ -290,6 +329,15 @@ export interface RenderContractV1 {
     z_far_default: number;
     model_from: string;
     uniform: string;
+    /** Issue #13: onde e como o frustum culling acontece. */
+    culling: {
+      volume: string;
+      planes_from: string;
+      plane_count: number;
+      test: string;
+      space: string;
+      metrics: string;
+    };
   };
   toon_ramp: {
     width: number;
@@ -409,7 +457,59 @@ export function readRenderContract(value: unknown = RENDER_CONTRACT_DATA): Rende
     }
   }
   validateSkinning(contract);
+  validateRenderGraph(contract);
   return contract;
+}
+
+/**
+ * Issue #14: o DAG canônico precisa ser um grafo válido — ordem com nomes
+ * declarados (sem repetido), dependências e recursos apontando para nós que
+ * existem. O planejador (`RenderGraph::build` no Rust) confia nisso para nunca
+ * derrubar o quadro por dado do contrato.
+ */
+function validateRenderGraph(contract: RenderContractV1): void {
+  const graph = contract.render_graph;
+  if (typeof graph !== "object" || graph === null) {
+    throw new RenderContractError("missing_render_graph", "render contract sem a seção 'render_graph'");
+  }
+  if (!Array.isArray(graph.canonical_order) || graph.canonical_order.length === 0) {
+    throw new RenderContractError("bad_render_graph", "render_graph.canonical_order precisa listar os passes");
+  }
+  const declared = new Set(Object.keys(graph.passes ?? {}));
+  const seen = new Set<string>();
+  for (const name of graph.canonical_order) {
+    if (typeof name !== "string" || !declared.has(name)) {
+      throw new RenderContractError("bad_render_graph", `render_graph: '${name}' não é um passe declarado`);
+    }
+    if (seen.has(name)) {
+      throw new RenderContractError("bad_render_graph", `render_graph repete o passe '${name}'`);
+    }
+    seen.add(name);
+  }
+  const resources = new Set(Object.keys(graph.resources ?? {}));
+  for (const [name, pass] of Object.entries(graph.passes)) {
+    for (const list of ["after", "reads", "writes"] as const) {
+      if (!Array.isArray(pass[list])) {
+        throw new RenderContractError("bad_render_graph", `render_graph: passe '${name}' sem '${list}'`);
+      }
+    }
+    for (const dep of pass.after) {
+      if (!declared.has(dep)) {
+        throw new RenderContractError(
+          "bad_render_graph",
+          `render_graph: passe '${name}' depende de '${dep}' (não declarado)`
+        );
+      }
+    }
+    for (const resource of [...pass.reads, ...pass.writes]) {
+      if (!resources.has(resource)) {
+        throw new RenderContractError(
+          "bad_render_graph",
+          `render_graph: passe '${name}' usa o recurso '${resource}' (não declarado)`
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -581,6 +681,16 @@ export function renderPasses(): PassSpecV1[] {
 
 export function computePasses(): PassSpecV1[] {
   return RENDER_CONTRACT.passes.filter((pass) => pass.kind === "compute");
+}
+
+/** Issue #14: o DAG canônico de anime (topologia congelada no contrato). */
+export function renderGraph(): RenderGraphContractV1 {
+  return RENDER_CONTRACT.render_graph;
+}
+
+/** Issue #14: os seis passes canônicos na ordem da especificação. */
+export function renderGraphCanonicalOrder(): string[] {
+  return [...RENDER_CONTRACT.render_graph.canonical_order];
 }
 
 export interface BlendStateLike {

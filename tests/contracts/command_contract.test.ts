@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   COMMAND_CONTRACT_VERSION,
   COMMAND_KINDS,
+  NODE_KINDS,
   isCommandWire,
   type CommandWire,
   type MaterialPatchWire,
@@ -87,7 +88,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       `command kinds drifted: ${diff(rustKinds, [...COMMAND_KINDS])}`
     );
     assert.deepEqual([...wireMembers.keys()], rustKinds, "the union must cover every kind");
-    assert.equal(COMMAND_KINDS.length, 19);
+    assert.equal(COMMAND_KINDS.length, 23);
   });
 
   it("the snake_case array literal matches the exported tuple", () => {
@@ -113,7 +114,17 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
   });
 
   it("optional wire fields are the `#[serde(default)]` fields in Rust", () => {
-    const variants = ["SetProportions", "SetCamera", "SetLight", "SetRenderSettings", "SetMaterialParams", "SetNodeMesh"];
+    const variants = [
+      "SetProportions",
+      "SetCamera",
+      "SetLight",
+      "SetRenderSettings",
+      "SetMaterialParams",
+      "SetNodeMesh",
+      "AddNode",
+      "SetNodeParent",
+      "SetNodeTransform",
+    ];
     for (const variant of variants) {
       const kind = pascalToSnake(variant);
       const member = wireMembers.get(kind);
@@ -124,6 +135,23 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
         `${kind}: optional fields must match the Rust serde defaults`
       );
     }
+  });
+
+  it("os tipos de nó da árvore são os mesmos do Rust (issue #12)", () => {
+    const rustSource = readRepoFile("crates/anigo-core/src/hierarchy.rs");
+    const rustKinds = enumVariants(rustSource, "NodeKind").map(pascalToSnake);
+    assert.deepEqual(
+      [...NODE_KINDS],
+      rustKinds,
+      `NodeKind drifted: ${diff(rustKinds, [...NODE_KINDS])}`
+    );
+    // A lista canônica do Rust precisa conter todos os tipos declarados: uma
+    // variante nova sem entrada em `ALL` passaria despercebida.
+    const all = /pub const ALL: \[Self; (\d+)\] = \[([^\]]*)\]/.exec(rustSource);
+    assert.ok(all, "NodeKind::ALL must be declared with an explicit length");
+    assert.equal(Number(all[1]), rustKinds.length, "ALL must cover every variant");
+    const listed = [...all[2].matchAll(/Self::(\w+)/g)].map((match) => pascalToSnake(match[1]));
+    assert.deepEqual(sorted(listed), sorted(rustKinds), "ALL must list every variant");
   });
 
   it("small enums used by commands are mirrored", () => {

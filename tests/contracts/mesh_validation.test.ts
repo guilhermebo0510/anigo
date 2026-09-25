@@ -138,7 +138,9 @@ test("renderer valida antes de criar buffers", () => {
 test("headless valida a malha antes do VBO", () => {
   const headless = readRepoFile("crates/anigo-renderer/src/headless.rs");
   const firstValidation = headless.indexOf("mesh_validation::validate_mesh(mesh)");
-  const firstBuffer = headless.indexOf("let v_buffer = self.device.create_buffer_init");
+  // Issue #14: o VBO é preparado uma vez por quadro (`vertex_buffer`, fora do
+  // `RenderPass`) — a validação continua vindo antes, nos dois caminhos.
+  const firstBuffer = headless.indexOf("let vertex_buffer = ");
   assert.ok(firstValidation > 0, "headless precisa validar a malha");
   assert.ok(firstValidation < firstBuffer, "validação precisa vir antes da criação do VBO");
   assert.equal(

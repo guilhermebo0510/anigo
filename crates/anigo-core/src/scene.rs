@@ -1,6 +1,10 @@
+use std::collections::BTreeMap;
+
+use crate::hierarchy::{self, HierarchyError, NodeKind};
 use crate::math::{Camera, Transform};
 use crate::mesh::Mesh;
 use crate::snapshot::SkinPayload;
+use glam::Mat4;
 use serde::{Deserialize, Serialize};
 
 fn default_shadow_saturation() -> f32 { 1.0 }
@@ -218,6 +222,10 @@ impl Default for StylizedMaterial {
 }
 
 /// A node within the hierarchical scene graph.
+///
+/// Issue #12: o nó carrega a **transformação local** e a sua posição na árvore
+/// (`parent_id` + `children`). A matriz mundial é derivada — `parent × local` —
+/// e nunca digitada à mão: `Scene::resolve_world_transforms` é a única fonte.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneNode {
     pub id: String,
@@ -226,6 +234,17 @@ pub struct SceneNode {
     pub mesh: Option<Mesh>,
     pub material: Option<StylizedMaterial>,
     pub visible: bool,
+    /// Pai na árvore de transformações (`None` = raiz).
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// Filhos diretos, em ordem de exibição (derivado de `parent_id` por
+    /// `Scene::rebuild_children`; existe materializado para travessias baratas
+    /// e para telemetria/UI).
+    #[serde(default)]
+    pub children: Vec<String>,
+    /// Tipo especializado do nó (`character_root`, `clothing`, `hair`, …).
+    #[serde(default)]
+    pub kind: NodeKind,
 }
 
 impl SceneNode {
@@ -237,12 +256,27 @@ impl SceneNode {
             mesh: None,
             material: Some(StylizedMaterial::default()),
             visible: true,
+            parent_id: None,
+            children: Vec::new(),
+            kind: NodeKind::default(),
         }
     }
 
     pub fn with_mesh(mut self, mesh: Mesh) -> Self {
         self.mesh = Some(mesh);
         self
+    }
+
+    /// Nó preso a um pai (acessório/vestuário/cabelo).
+    pub fn child_of(mut self, parent: impl Into<String>, kind: NodeKind) -> Self {
+        self.parent_id = Some(parent.into());
+        self.kind = kind;
+        self
+    }
+
+    /// `true` quando o nó tem geometria própria e visível para desenhar.
+    pub fn is_drawable(&self) -> bool {
+        self.visible && self.mesh.is_some()
     }
 }
 
@@ -362,6 +396,151 @@ impl Scene {
         self.nodes.iter().filter_map(|n| n.mesh.as_ref()).map(|m| m.indices.len() / 3).sum()
     }
 
+    /// Reconstrói as listas de filhos a partir dos `parent_id` (issue #12).
+    ///
+    /// Chamado depois de qualquer mudança de topologia: assim `children` nunca
+    /// é uma segunda autoridade sobre a árvore — é só o cache ordenado da
+    /// relação declarada em `parent_id`.
+    pub fn rebuild_children(&mut self) {
+        for node in &mut self.nodes {
+            node.children.clear();
+        }
+        // Índice id → posição para resolver os pais sem varrer a lista por nó.
+        let index_of: BTreeMap<String, usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id.clone(), index))
+            .collect();
+        let mut children: Vec<Vec<String>> = vec![Vec::new(); self.nodes.len()];
+        for node in &self.nodes {
+            if let Some(parent) = &node.parent_id {
+                if let Some(parent_index) = index_of.get(parent) {
+                    children[*parent_index].push(node.id.clone());
+                }
+            }
+        }
+        for (index, list) in children.into_iter().enumerate() {
+            self.nodes[index].children = list;
+        }
+    }
+
+    /// Valida a árvore (ids únicos, pais existentes, sem ciclo).
+    pub fn validate_hierarchy(&self) -> Result<(), HierarchyError> {
+        let ids: Vec<&str> = self.nodes.iter().map(|node| node.id.as_str()).collect();
+        let parents: Vec<Option<&str>> = self
+            .nodes
+            .iter()
+            .map(|node| node.parent_id.as_deref())
+            .collect();
+        let locals: Vec<Mat4> = self
+            .nodes
+            .iter()
+            .map(|node| node.transform.to_matrix())
+            .collect();
+        hierarchy::resolve_indexed(&ids, &parents, &locals).map(|_| ())
+    }
+
+    /// Matrizes mundiais de todos os nós (pais antes de filhos), por id.
+    pub fn resolve_world_transforms(&self) -> Result<BTreeMap<String, Mat4>, HierarchyError> {
+        let ids: Vec<&str> = self.nodes.iter().map(|node| node.id.as_str()).collect();
+        let parents: Vec<Option<&str>> = self
+            .nodes
+            .iter()
+            .map(|node| node.parent_id.as_deref())
+            .collect();
+        let locals: Vec<Mat4> = self
+            .nodes
+            .iter()
+            .map(|node| node.transform.to_matrix())
+            .collect();
+        let world = hierarchy::resolve_indexed(&ids, &parents, &locals)?;
+        Ok(self
+            .nodes
+            .iter()
+            .zip(world)
+            .map(|(node, matrix)| (node.id.clone(), matrix))
+            .collect())
+    }
+
+    /// Matriz mundial de um nó (ou `None` se o id não existe / a árvore é
+    /// inválida). O renderer usa isto para o `model` do uniform de câmera.
+    pub fn world_matrix(&self, id: &str) -> Option<Mat4> {
+        self.resolve_world_transforms()
+            .ok()
+            .and_then(|world| world.get(id).copied())
+    }
+
+    /// Filhos diretos de um nó (por id), em ordem de declaração.
+    pub fn children_of(&self, parent: Option<&str>) -> Vec<&SceneNode> {
+        self.nodes
+            .iter()
+            .filter(|node| node.parent_id.as_deref() == parent)
+            .collect()
+    }
+
+    /// Nó pelo id.
+    pub fn node(&self, id: &str) -> Option<&SceneNode> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+
+    /// Nó mutável pelo id.
+    pub fn node_mut(&mut self, id: &str) -> Option<&mut SceneNode> {
+        self.nodes.iter_mut().find(|node| node.id == id)
+    }
+
+    /// Profundidade do nó (raiz = 0); `None` quando o id não existe.
+    pub fn depth_of(&self, id: &str) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut cursor = self.node(id)?.parent_id.clone();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        while let Some(parent) = cursor {
+            if !seen.insert(parent.clone()) {
+                break;
+            }
+            depth += 1;
+            cursor = self.node(&parent)?.parent_id.clone();
+        }
+        Some(depth)
+    }
+
+    /// Ordem topológica dos nós (para desenho/telemetria determinística).
+    pub fn hierarchy_order(&self) -> Result<Vec<usize>, HierarchyError> {
+        let ids: Vec<&str> = self.nodes.iter().map(|node| node.id.as_str()).collect();
+        let parents: Vec<Option<&str>> = self
+            .nodes
+            .iter()
+            .map(|node| node.parent_id.as_deref())
+            .collect();
+        let locals: Vec<Mat4> = self
+            .nodes
+            .iter()
+            .map(|node| node.transform.to_matrix())
+            .collect();
+        hierarchy::resolve_indexed(&ids, &parents, &locals)?;
+        let index_of: BTreeMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        for (index, parent) in parents.iter().enumerate() {
+            match parent.and_then(|parent| index_of.get(parent).copied()) {
+                Some(parent) => children[parent].push(index),
+                None => queue.push_back(index),
+            }
+        }
+        let mut order = Vec::with_capacity(ids.len());
+        while let Some(index) = queue.pop_front() {
+            order.push(index);
+            for child in &children[index] {
+                queue.push_back(*child);
+            }
+        }
+        Ok(order)
+    }
+
     pub fn update_material_for_all(&mut self, material: StylizedMaterial) {
         for node in &mut self.nodes {
             node.material = Some(material.clone());
@@ -405,6 +584,85 @@ mod tests {
         let mat = node.material.as_ref().unwrap();
         assert_eq!(mat.shadow_threshold, 0.65);
         assert_eq!(mat.hue_shift, -25.0);
+    }
+
+    #[test]
+    fn child_world_matrix_follows_the_parent_transform() {
+        // Issue #12, aceitação #1: mexer no pai move o filho sem tocar no filho.
+        let mut scene = Scene::default();
+        scene.nodes.clear();
+        let mut root = SceneNode::new("nod_root", "Root");
+        root.transform.translation = glam::Vec3::new(1.0, 0.0, 0.0);
+        let child = SceneNode::new("nod_hat", "Hat")
+            .child_of("nod_root", NodeKind::Accessory)
+            .with_mesh(Mesh::create_cube(0.2));
+        scene.nodes.push(root);
+        scene.nodes.push(child);
+        scene.rebuild_children();
+
+        let before = scene.world_matrix("nod_hat").expect("matriz do filho");
+        assert!((before.transform_point3(glam::Vec3::ZERO).x - 1.0).abs() < 1e-5);
+
+        // Move o pai: a posição mundial do filho acompanha na hora.
+        scene
+            .node_mut("nod_root")
+            .expect("raiz")
+            .transform
+            .translation = glam::Vec3::new(3.5, 0.0, 0.0);
+        let after = scene.world_matrix("nod_hat").expect("matriz do filho");
+        assert!((after.transform_point3(glam::Vec3::ZERO).x - 3.5).abs() < 1e-5);
+
+        // O filho continua com a transformação local intacta.
+        let child = scene.node("nod_hat").expect("filho");
+        assert!(child.transform.translation.length() < 1e-6);
+        assert_eq!(child.parent_id.as_deref(), Some("nod_root"));
+        assert_eq!(scene.node("nod_root").expect("raiz").children, vec!["nod_hat".to_string()]);
+        assert_eq!(scene.depth_of("nod_hat"), Some(1));
+    }
+
+    #[test]
+    fn rebuild_children_is_derived_and_deterministic() {
+        let mut scene = Scene::new_empty();
+        scene.nodes.push(SceneNode::new("nod_a", "A"));
+        scene.nodes.push(SceneNode::new("nod_b", "B"));
+        scene.nodes.push(SceneNode::new("nod_c", "C").child_of("nod_a", NodeKind::Clothing));
+        scene.nodes.push(SceneNode::new("nod_d", "D").child_of("nod_a", NodeKind::Hair));
+        scene.nodes.push(SceneNode::new("nod_e", "E").child_of("nod_d", NodeKind::Accessory));
+        scene.rebuild_children();
+
+        // Ordem de declaração dentro do nível, filhos antes dos netos na lista
+        // do pai (o que a UI usa para desenhar a árvore).
+        assert_eq!(
+            scene.node("nod_a").expect("nod_a").children,
+            vec!["nod_c".to_string(), "nod_d".to_string()]
+        );
+        assert_eq!(
+            scene.node("nod_d").expect("nod_d").children,
+            vec!["nod_e".to_string()]
+        );
+        assert!(scene.node("nod_e").expect("nod_e").children.is_empty());
+        assert_eq!(scene.children_of(None).len(), 2);
+
+        // Filho declarado antes do pai ainda resolve (ordem topológica).
+        let mut scene = Scene::new_empty();
+        scene.nodes.push(SceneNode::new("nod_child", "Child").child_of("nod_parent", NodeKind::Accessory));
+        scene.nodes.push(SceneNode::new("nod_parent", "Parent"));
+        assert!(scene.validate_hierarchy().is_ok());
+        let order = scene.hierarchy_order().expect("ordem topológica");
+        assert_eq!(order, vec![1, 0]);
+    }
+
+    #[test]
+    fn cyclic_scene_is_rejected() {
+        let mut scene = Scene::new_empty();
+        scene.nodes.push(SceneNode::new("nod_a", "A").child_of("nod_b", NodeKind::Mesh));
+        scene.nodes.push(SceneNode::new("nod_b", "B").child_of("nod_a", NodeKind::Mesh));
+        assert!(matches!(
+            scene.validate_hierarchy(),
+            Err(HierarchyError::Cycle { .. })
+        ));
+        assert!(scene.resolve_world_transforms().is_err());
+        assert!(scene.world_matrix("nod_a").is_none());
     }
 
     #[test]

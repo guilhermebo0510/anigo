@@ -286,6 +286,18 @@ const fixture = (() => {
           translation: [0, 0, 0],
           rotation: [0, 0, 0, 1],
           scale: [1, 1, 1],
+          // Issue #12: a árvore de transformações também faz parte do snapshot
+          // (`W(node) = W(pai) × T(local)`), então o fixture declara a raiz do
+          // personagem com a matriz mundial identidade.
+          parent_id: null,
+          children: [],
+          kind: "character_root",
+          world_matrix: [
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+          ],
         },
       ],
       render: {
@@ -298,6 +310,12 @@ const fixture = (() => {
           display_space: "srgb",
         },
         tonemap: "none",
+        // Issue #14: reconfiguração do render graph via snapshot — ordem dos
+        // passes, passes desligados e o pré-passe de profundidade (o plano é
+        // derivado do contrato + estes três campos, nos dois renderers).
+        graph_order: [],
+        graph_disabled: [],
+        depth_prepass: false,
       },
       deformation_authority: "reference_ts",
       deformation_coverage: {

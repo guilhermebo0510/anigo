@@ -604,6 +604,27 @@
           1,
           1,
           1
+        ],
+        "parent_id": null,
+        "children": [],
+        "kind": "character_root",
+        "world_matrix": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
         ]
       }
     ],
@@ -621,7 +642,10 @@
         "working_space": "linear_srgb",
         "display_space": "srgb"
       },
-      "tonemap": "none"
+      "tonemap": "none",
+      "graph_order": [],
+      "graph_disabled": [],
+      "depth_prepass": false
     },
     "deformation_authority": "reference_ts",
     "deformation_coverage": {

@@ -595,6 +595,8 @@
 
   // Camera Parameters
   let cameraFov = $state(45);
+  /** Issue #13: modo de projeção da câmera do viewport (atalho `O` ou botões). */
+  let cameraProjection = $state<"perspective" | "orthographic">("perspective");
 
   // Fase 2 (#53): câmera cinematográfica — lente ativa (mm), Anime Bokeh DoF
   // e tracking de alvo. Defaults = DoF off (passe de pós inexistente) e
@@ -834,6 +836,7 @@
       cameraTarget: target,
       cameraUp: up,
       fov: fovDeg,
+      cameraProjection,
       outlineOpacity,
       outlineSmoothness,
       outlineDepthBias,
@@ -1018,6 +1021,10 @@
         r.target = (snap as any).cameraTarget;
         if ((snap as any).cameraUp) r.up = (snap as any).cameraUp;
         if ((snap as any).fov) r.fov = (snap as any).fov * Math.PI/180;
+        // Issue #13: o modo de projeção volta com a sessão (o viewport reaplica).
+        if ((snap as any).cameraProjection) {
+          cameraProjection = viewportRef?.setProjectionMode((snap as any).cameraProjection) ?? cameraProjection;
+        }
       }
     }
 
@@ -1438,6 +1445,7 @@
       dofBokehShape,
       trackingMode,
       trackingDamping,
+      cameraProjection,
       timestamp: Date.now(),
       version: "0.2.0",
       schemaVersion: CHARACTER_SNAPSHOT_SCHEMA_VERSION,
@@ -2136,6 +2144,13 @@
     else if (prop === "toon_steps") { toonSteps = val; updateMaterial(); }
     else if (prop === "toon_smoothness" || prop === "shadow_smoothness") { toonSmoothness = val; updateMaterial(); }
     else if (prop === "camera_fov") { cameraFov = val; }
+    else if (prop === "camera_projection") {
+      // Issue #13: o bridge pode pedir explicitamente um modo de projeção
+      // (`perspective`/`orthographic`, ou os sinônimos `orto`/`persp`).
+      const requested = String(val).toLowerCase();
+      const mode = requested.startsWith("o") ? "orthographic" : "perspective";
+      cameraProjection = viewportRef?.setProjectionMode(mode) ?? mode;
+    }
     else if (prop === "current_frame") { currentFrame = Math.round(val); }
   }
 
@@ -2836,6 +2851,7 @@
           onModelLoadError={(msg) => alert("Erro ao carregar modelo: " + msg)}
           onDiagnostic={handleViewportDiagnostic}
           coreSnapshotProvider={coreSnapshotProvider}
+          onProjectionChange={(mode) => { cameraProjection = mode; }}
         />
       </div>
 
@@ -3790,6 +3806,10 @@
             bind:faceShadowOffset
             bind:faceShadowSmoothness
             bind:faceSdfEnabled
+            projectionMode={cameraProjection}
+            onProjectionChange={(mode) => {
+              cameraProjection = viewportRef?.setProjectionMode(mode) ?? mode;
+            }}
             onUpdate={(params) => {
               lightAzimuth = params.azimuth;
               lightElevation = params.elevation;

@@ -14,6 +14,9 @@
     faceShadowOffset?: number;
     faceShadowSmoothness?: number;
     faceSdfEnabled?: boolean;
+    /** Issue #13: modo de projeção da câmera (`perspective`/`orthographic`). */
+    projectionMode?: "perspective" | "orthographic";
+    onProjectionChange?: (mode: "perspective" | "orthographic") => void;
     onUpdate?: (params: {
       azimuth: number;
       elevation: number;
@@ -46,6 +49,8 @@
     faceShadowOffset = $bindable(0),
     faceShadowSmoothness = $bindable(0.05),
     faceSdfEnabled = $bindable(false),
+    projectionMode = "perspective",
+    onProjectionChange = undefined,
     onUpdate = undefined,
     onFaceShadowUpdate = undefined,
   }: Props = $props();
@@ -303,6 +308,39 @@
   </div>
   {/if}
 
+  <!-- Issue #13: projeção da câmera — botões (e o atalho `O` no viewport).
+       A troca preserva o enquadramento: o renderer casa os limites ortográficos
+       com o volume perspectiva na distância do alvo. -->
+  <div class="control-group">
+    <div class="group-title">
+      <span>PROJEÇÃO</span>
+      <span class="val-tag">{projectionMode === "orthographic" ? "ORTO" : "PERSP"}</span>
+    </div>
+    <div class="btn-grid">
+      <button
+        type="button"
+        class="btn-secondary"
+        class:active={projectionMode === "perspective"}
+        aria-pressed={projectionMode === "perspective"}
+        onclick={() => onProjectionChange?.("perspective")}
+      >
+        Perspectiva
+      </button>
+      <button
+        type="button"
+        class="btn-secondary"
+        class:active={projectionMode === "orthographic"}
+        aria-pressed={projectionMode === "orthographic"}
+        onclick={() => onProjectionChange?.("orthographic")}
+      >
+        Ortográfica
+      </button>
+    </div>
+    <div class="hint-row">
+      Silhueta e proporções na vista plana (conferência); atalho <kbd>O</kbd> no viewport.
+    </div>
+  </div>
+
   {#if activeTool === "ambient" || (!["sun", "shadows", "ambient"].includes(activeTool))}
   <div class="control-group">
     <div class="group-title">INTENSIDADE & COR</div>
@@ -450,6 +488,28 @@
     background: #242d44;
     border-color: #38bdf8;
     color: #f1f5f9;
+  }
+
+  .btn-secondary.active {
+    background: #24405e;
+    border-color: #38bdf8;
+    color: #f1f5f9;
+  }
+
+  .hint-row {
+    font-size: 0.68rem;
+    color: #64748b;
+    line-height: 1.35;
+  }
+
+  .hint-row kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.66rem;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 3px;
+    padding: 0 4px;
+    color: #94a3b8;
   }
 
   .preset-dot {

@@ -33,6 +33,72 @@ export interface OrbitCamera {
 export const DEFAULT_CAMERA_NEAR = 0.05;
 export const DEFAULT_CAMERA_FAR = 100.0;
 
+/**
+ * Modo de projeção (issue #13) — espelha `anigo_core::math::ProjectionMode`.
+ *
+ * A câmera do viewport mantém os parâmetros de perspectiva guardados quando
+ * entra em ortográfica, então voltar ao modo perspectiva devolve exatamente o
+ * enquadramento anterior (é o que evita o salto visual ao alternar).
+ */
+export type ProjectionModeWire =
+  | { mode: "perspective"; fov_y: number; aspect: number }
+  | { mode: "orthographic"; left: number; right: number; bottom: number; top: number };
+
+/** Limites do volume ortográfico (issue #13). */
+export interface OrthographicBounds {
+  left: number;
+  right: number;
+  bottom: number;
+  top: number;
+}
+
+/**
+ * Volume ortográfico que reproduz o enquadramento perspectiva **na distância do
+ * alvo** — a troca de modo não muda o tamanho aparente do personagem.
+ *
+ * Numa projeção perspectiva, a meia-altura visível a uma distância `d` é
+ * `d · tan(fov/2)`; usar esse valor como meia-altura ortográfica mantém a
+ * silhueta idêntica no plano do alvo (é a mesma razão usada para casar uma
+ * câmera ortográfica com uma perspectiva em previsualização de jogo).
+ */
+export function orthographicBoundsForFraming(
+  fovY: number,
+  aspect: number,
+  distance: number
+): OrthographicBounds {
+  const halfHeight = Math.max(distance * Math.tan(fovY * 0.5), 1e-4);
+  const halfWidth = halfHeight * Math.max(aspect, 1e-4);
+  return {
+    left: -halfWidth,
+    right: halfWidth,
+    bottom: -halfHeight,
+    top: halfHeight,
+  };
+}
+
+/** `true` quando o modo é ortográfico. */
+export function isOrthographic(mode: ProjectionModeWire): boolean {
+  return mode.mode === "orthographic";
+}
+
+/** Matriz de projeção do modo (mesma convenção de clip do backend). */
+export function projectionMatrixFor(
+  mode: ProjectionModeWire,
+  clipDepth: "zero_to_one" | "minus_one_to_one",
+  near: number = DEFAULT_CAMERA_NEAR,
+  far: number = DEFAULT_CAMERA_FAR
+): Mat4 {
+  if (mode.mode === "orthographic") {
+    const { left, right, bottom, top } = mode;
+    return clipDepth === "minus_one_to_one"
+      ? orthographicRhMinusOneToOne(left, right, bottom, top, near, far)
+      : orthographicRhZeroToOne(left, right, bottom, top, near, far);
+  }
+  return clipDepth === "minus_one_to_one"
+    ? perspectiveRhMinusOneToOne(mode.fov_y, mode.aspect, near, far)
+    : perspectiveRhZeroToOne(mode.fov_y, mode.aspect, near, far);
+}
+
 function cross(a: Vec3, b: Vec3): Vec3 {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
@@ -103,6 +169,46 @@ export function perspectiveRhMinusOneToOne(
   ]);
 }
 
+/** Projeção ortográfica destra com profundidade 0..1 (WebGPU / `orthographic_rh`). */
+export function orthographicRhZeroToOne(
+  left: number,
+  right: number,
+  bottom: number,
+  top: number,
+  near: number = DEFAULT_CAMERA_NEAR,
+  far: number = DEFAULT_CAMERA_FAR
+): Mat4 {
+  const rl = 1.0 / (right - left);
+  const tb = 1.0 / (top - bottom);
+  const nf = 1.0 / (near - far);
+  return new Float32Array([
+    2 * rl, 0, 0, 0,
+    0, 2 * tb, 0, 0,
+    0, 0, nf, 0,
+    -(right + left) * rl, -(top + bottom) * tb, near * nf, 1,
+  ]);
+}
+
+/** Projeção ortográfica destra com profundidade -1..1 (WebGL2/OpenGL). */
+export function orthographicRhMinusOneToOne(
+  left: number,
+  right: number,
+  bottom: number,
+  top: number,
+  near: number = DEFAULT_CAMERA_NEAR,
+  far: number = DEFAULT_CAMERA_FAR
+): Mat4 {
+  const rl = 1.0 / (right - left);
+  const tb = 1.0 / (top - bottom);
+  const nf = 1.0 / (near - far);
+  return new Float32Array([
+    2 * rl, 0, 0, 0,
+    0, 2 * tb, 0, 0,
+    0, 0, 2 * nf, 0,
+    -(right + left) * rl, -(top + bottom) * tb, (far + near) * nf, 1,
+  ]);
+}
+
 /** Multiplicação coluna-maior: `a * b` (aplica `b` antes de `a`). */
 export function multiplyMatrices(a: Mat4 | number[], b: Mat4 | number[]): Mat4 {
   const out = new Float32Array(16);
@@ -120,14 +226,24 @@ export function multiplyMatrices(a: Mat4 | number[], b: Mat4 | number[]): Mat4 {
 export function viewProjectionMatrix(
   camera: OrbitCamera,
   aspect: number,
-  options: { clipDepth?: "zero_to_one" | "minus_one_to_one"; near?: number; far?: number } = {}
+  options: {
+    clipDepth?: "zero_to_one" | "minus_one_to_one";
+    near?: number;
+    far?: number;
+    /** Issue #13: modo de projeção (perspectiva por padrão). */
+    projection?: ProjectionModeWire;
+  } = {}
 ): Mat4 {
   const near = options.near ?? DEFAULT_CAMERA_NEAR;
   const far = options.far ?? DEFAULT_CAMERA_FAR;
-  const projection =
-    options.clipDepth === "minus_one_to_one"
-      ? perspectiveRhMinusOneToOne(camera.fov, aspect, near, far)
-      : perspectiveRhZeroToOne(camera.fov, aspect, near, far);
+  const mode: ProjectionModeWire =
+    options.projection ?? { mode: "perspective", fov_y: camera.fov, aspect };
+  const projection = projectionMatrixFor(
+    mode,
+    options.clipDepth === "minus_one_to_one" ? "minus_one_to_one" : "zero_to_one",
+    near,
+    far
+  );
   return multiplyMatrices(projection, lookAtRh(camera.eye, camera.target, camera.up));
 }
 

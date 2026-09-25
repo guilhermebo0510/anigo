@@ -168,6 +168,23 @@ impl Mesh {
         self
     }
 
+    /// AABB local da malha (issue #13), em espaço de objeto.
+    ///
+    /// É o volume que o culling transforma pela matriz mundial do nó: nenhuma
+    /// conta por vértice é feita por quadro.
+    pub fn local_bounds(&self) -> Option<crate::math::Aabb> {
+        crate::math::Aabb::from_points(
+            self.vertices
+                .iter()
+                .map(|vertex| glam::Vec3::from_array(vertex.position)),
+        )
+    }
+
+    /// Esfera envolvente local da malha (issue #13).
+    pub fn local_bounding_sphere(&self) -> Option<crate::math::BoundingSphere> {
+        self.local_bounds().map(|bounds| bounds.bounding_sphere())
+    }
+
     /// Creates a unit cube with distinct normals per face positioned at the specified center.
     pub fn create_cube_at(size: f32, center: [f32; 3]) -> Self {
         let h = size * 0.5;

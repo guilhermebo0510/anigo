@@ -65,6 +65,10 @@ export const DIAGNOSTIC_CODES = [
   "contract_drift",
   /** Nenhum adaptador/device disponível para renderizar. */
   "device_unavailable",
+  /** O device WebGPU/wgpu foi perdido (driver crash, troca de GPU, suspensão). */
+  "device_lost",
+  /** O device foi recriado e o estado reapresentado (recuperação concluída). */
+  "device_recreated",
   /** Shader de produção não compilou. */
   "shader_compile_failed",
   /** Buffer de GPU não pôde ser criado. */
@@ -73,6 +77,8 @@ export const DIAGNOSTIC_CODES = [
   "readback_failed",
   /** Fase 2 (#53): DoF habilitado sem as intermediárias 1× — passe pulado. */
   "dof_unavailable",
+  /** Issue #14: overrides do grafo inválidos — quadro caiu na ordem do contrato. */
+  "render_plan_fallback",
 ] as const;
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[number];

@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::hierarchy::NodeKind;
 use crate::ids::{AssetId, LightId, MaterialId, MorphId, NodeId};
+use crate::math::{Camera, Transform};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
 use crate::project::{
@@ -32,6 +34,30 @@ use crate::somatotype::SomatotypeCoords;
 
 /// Monotonic revision counter of the project (bumped by every applied command).
 pub type Revision = u64;
+
+/// Patch do modo de projeção da câmera (issue #13).
+///
+/// Três campos opcionais porque as duas pontas têm necessidades diferentes: a UI
+/// manda `orthographic` + `ortho_height` (o volume simétrico que preserva o
+/// enquadramento) enquanto o **inverso** de um comando precisa restaurar o
+/// volume exato, que é o que `ortho_bounds` carrega.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CameraProjectionPatch {
+    /// `Some(true)` = ortográfica, `Some(false)` = perspectiva, `None` = mantém.
+    pub orthographic: Option<bool>,
+    /// Altura da silhueta (unidades de mundo): volume simétrico equivalente.
+    pub ortho_height: Option<f32>,
+    /// Volume ortográfico explícito — tem precedência sobre `ortho_height`.
+    pub ortho_bounds: Option<crate::math::OrthographicBounds>,
+}
+
+impl CameraProjectionPatch {
+    /// `true` quando o patch não muda nada.
+    pub fn is_empty(&self) -> bool {
+        self.orthographic.is_none() && self.ortho_height.is_none() && self.ortho_bounds.is_none()
+    }
+}
 
 /// What a command changed — used to decide which caches must be rebuilt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +470,9 @@ pub enum Command {
         up: Option<[f32; 3]>,
         #[serde(default)]
         fov_degrees: Option<f32>,
+        /// Issue #13: modo de projeção (perspectiva/ortográfica) e volume.
+        #[serde(default)]
+        projection: Option<CameraProjectionPatch>,
     },
     /// Orbits the camera around its target (radians).
     OrbitCamera { azimuth: f32, elevation: f32 },
@@ -486,6 +515,50 @@ pub enum Command {
         #[serde(default)]
         mesh: Option<MeshRef>,
     },
+    /// Issue #12: cria um nó na cena (filho de `parent_id` ou nova raiz).
+    ///
+    /// A posição `index` é explícita para que o undo restaure o nó exatamente
+    /// onde ele estava (ordem determinística faz parte do documento canônico).
+    AddNode {
+        node_id: NodeId,
+        name: String,
+        #[serde(default)]
+        parent_id: Option<NodeId>,
+        #[serde(default)]
+        node_kind: NodeKind,
+        #[serde(default)]
+        transform: Transform,
+        #[serde(default)]
+        mesh: Option<MeshRef>,
+        #[serde(default)]
+        material_id: Option<MaterialId>,
+        index: u32,
+    },
+    /// Issue #12: remove um nó e toda a sua subárvore.
+    ///
+    /// Falha se o nó não existir; o inverso recria a subárvore inteira (com os
+    /// pais na ordem correta), então nada se perde no undo.
+    RemoveNode { node_id: NodeId },
+    /// Issue #12: reparenta um nó (ou o devolve à raiz com `parent_id: None`).
+    ///
+    /// Um parentesco que fecharia ciclo é recusado com
+    /// [`CommandError::InvalidValue`] — a árvore nunca fica inconsistente.
+    SetNodeParent {
+        node_id: NodeId,
+        #[serde(default)]
+        parent_id: Option<NodeId>,
+    },
+    /// Issue #12: patcha a transformação **local** de um nó (o que a UI edita).
+    /// Os filhos acompanham automaticamente pela composição pai × local.
+    SetNodeTransform {
+        node_id: NodeId,
+        #[serde(default)]
+        translation: Option<[f32; 3]>,
+        #[serde(default)]
+        rotation: Option<[f32; 4]>,
+        #[serde(default)]
+        scale: Option<[f32; 3]>,
+    },
     /// Loads a preset mesh into the character node.
     LoadMeshPreset { preset: MeshPreset },
     /// Sets the render background color.
@@ -496,6 +569,15 @@ pub enum Command {
         msaa_samples: Option<u32>,
         #[serde(default)]
         tonemap: Option<crate::project::TonemapOperator>,
+        /// Issue #14: ordem de execução dos passes (nomes do contrato).
+        #[serde(default)]
+        graph_order: Option<Vec<String>>,
+        /// Issue #14: passes desligados (nomes do contrato).
+        #[serde(default)]
+        graph_disabled: Option<Vec<String>>,
+        /// Issue #14: pré-passe de profundidade.
+        #[serde(default)]
+        depth_prepass: Option<bool>,
     },
     /// Renames the project.
     RenameProject { name: String },
@@ -566,6 +648,13 @@ impl Command {
             Command::SetMaterialParams { .. } => "Material".to_string(),
             Command::SetNodeVisibility { .. } => "Visibility".to_string(),
             Command::SetNodeMesh { .. } => "Mesh".to_string(),
+            Command::AddNode { node_id, .. } => format!("Add node {node_id}"),
+            Command::RemoveNode { node_id } => format!("Remove node {node_id}"),
+            Command::SetNodeParent { node_id, parent_id } => match parent_id {
+                Some(parent) => format!("Parent {node_id} under {parent}"),
+                None => format!("Unparent {node_id}"),
+            },
+            Command::SetNodeTransform { node_id, .. } => format!("Transform {node_id}"),
             Command::LoadMeshPreset { preset } => format!("Preset {preset:?}").to_lowercase(),
             Command::SetBackgroundColor { .. } => "Background".to_string(),
             Command::SetRenderSettings { .. } => "Render settings".to_string(),
@@ -592,10 +681,16 @@ impl Command {
             | Command::OrbitCamera { .. }
             | Command::ZoomCamera { .. }
             | Command::PanCamera { .. } => ChangeScope::Camera,
+            // Issue #12: topologia e transformação de nós são apresentação —
+            // não invalidam a geometria base (a malha canônica é a mesma).
             Command::SetLight { .. }
             | Command::SetNodeVisibility { .. }
             | Command::SetBackgroundColor { .. }
-            | Command::SetRenderSettings { .. } => ChangeScope::Presentation,
+            | Command::SetRenderSettings { .. }
+            | Command::AddNode { .. }
+            | Command::RemoveNode { .. }
+            | Command::SetNodeParent { .. }
+            | Command::SetNodeTransform { .. } => ChangeScope::Presentation,
             Command::RenameProject { .. } => ChangeScope::Project,
             Command::Batch { commands } => commands
                 .iter()
@@ -628,6 +723,16 @@ impl Command {
             Command::SetNodeVisibility { node_id, .. } | Command::SetNodeMesh { node_id, .. } => {
                 vec![node_id.to_string()]
             }
+            // Issue #12: a remoção de um nó leva a subárvore junto; o alvo
+            // reportado é a raiz removida (o `ProjectState` é quem sabe listar
+            // os descendentes, e ele já mudou quando o outcome é montado).
+            Command::AddNode { node_id, .. } => vec![node_id.to_string()],
+            Command::RemoveNode { node_id } => vec![node_id.to_string()],
+            Command::SetNodeParent { node_id, parent_id } => match parent_id {
+                Some(parent) => vec![node_id.to_string(), parent.to_string()],
+                None => vec![node_id.to_string()],
+            },
+            Command::SetNodeTransform { node_id, .. } => vec![node_id.to_string()],
             Command::LoadMeshPreset { .. } => vec![NodeId::canonical_character().to_string()],
             Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } => {
                 vec!["rnd_main".to_string()]
@@ -742,9 +847,41 @@ impl Command {
                 target,
                 up,
                 fov_degrees,
+                projection,
             } => {
-                if eye.is_none() && target.is_none() && up.is_none() && fov_degrees.is_none() {
+                if eye.is_none()
+                    && target.is_none()
+                    && up.is_none()
+                    && fov_degrees.is_none()
+                    && projection.is_none()
+                {
                     return Err(CommandError::NoOp("empty camera patch".to_string()));
+                }
+                if let Some(patch) = projection {
+                    if patch.is_empty() {
+                        return Err(CommandError::NoOp("empty projection patch".to_string()));
+                    }
+                    if let Some(bounds) = patch.ortho_bounds {
+                        if !bounds.is_valid()
+                            || ![bounds.left, bounds.right, bounds.bottom, bounds.top]
+                                .iter()
+                                .all(|value| value.is_finite())
+                        {
+                            return Err(CommandError::InvalidValue {
+                                field: "projection.ortho_bounds".to_string(),
+                                detail: "left < right and bottom < top, all finite".to_string(),
+                            });
+                        }
+                    }
+                    if let Some(height) = patch.ortho_height {
+                        require_finite("projection.ortho_height", height)?;
+                        if height <= 0.0 {
+                            return Err(CommandError::InvalidValue {
+                                field: "projection.ortho_height".to_string(),
+                                detail: "must be greater than zero".to_string(),
+                            });
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -844,6 +981,131 @@ impl Command {
                 }
                 Ok(())
             }
+            // ── Issue #12: árvore de transformações ─────────────────────────
+            Command::AddNode {
+                node_id,
+                name,
+                parent_id,
+                transform,
+                mesh,
+                material_id,
+                ..
+            } => {
+                if state.scene.nodes.iter().any(|node| &node.node_id == node_id) {
+                    return Err(CommandError::InvalidValue {
+                        field: "node_id".to_string(),
+                        detail: format!("node '{node_id}' already exists"),
+                    });
+                }
+                if name.trim().is_empty() {
+                    return Err(CommandError::InvalidValue {
+                        field: "name".to_string(),
+                        detail: "node name must not be empty".to_string(),
+                    });
+                }
+                if let Some(parent) = parent_id {
+                    if parent == node_id {
+                        return Err(CommandError::InvalidValue {
+                            field: "parent_id".to_string(),
+                            detail: "a node cannot be its own parent".to_string(),
+                        });
+                    }
+                    if state.scene.node(parent).is_none() {
+                        return Err(CommandError::UnknownTarget {
+                            kind: "scene node",
+                            target: parent.to_string(),
+                        });
+                    }
+                }
+                if let Some(reference) = mesh {
+                    require_known_asset(state, &reference.asset_id)?;
+                }
+                if let Some(material_id) = material_id {
+                    if !state.materials.contains_key(material_id) {
+                        return Err(CommandError::UnknownTarget {
+                            kind: "material",
+                            target: material_id.to_string(),
+                        });
+                    }
+                }
+                validate_transform("transform", *transform)?;
+                Ok(())
+            }
+            Command::RemoveNode { node_id } => {
+                find_node(state, node_id)?;
+                Ok(())
+            }
+            Command::SetNodeParent { node_id, parent_id } => {
+                let node = find_node(state, node_id)?;
+                if let Some(parent_id) = parent_id {
+                    if state.scene.node(parent_id).is_none() {
+                        return Err(CommandError::UnknownTarget {
+                            kind: "scene node",
+                            target: parent_id.to_string(),
+                        });
+                    }
+                    if parent_id == &node.node_id {
+                        return Err(CommandError::InvalidValue {
+                            field: "parent_id".to_string(),
+                            detail: "a node cannot be its own parent".to_string(),
+                        });
+                    }
+                    let subtree = crate::hierarchy::descendants_of(&state.scene.nodes, node_id);
+                    if subtree.iter().any(|descendant| descendant == parent_id) {
+                        return Err(CommandError::InvalidValue {
+                            field: "parent_id".to_string(),
+                            detail: format!(
+                                "'{parent_id}' is a descendant of '{node_id}' (would create a cycle)"
+                            ),
+                        });
+                    }
+                }
+                if node.parent_id == *parent_id {
+                    let current = match parent_id {
+                        Some(parent) => format!("'{parent}'"),
+                        None => "the scene root".to_string(),
+                    };
+                    return Err(CommandError::NoOp(format!(
+                        "node '{node_id}' is already parented to {current}"
+                    )));
+                }
+                Ok(())
+            }
+            Command::SetNodeTransform {
+                node_id,
+                translation,
+                rotation,
+                scale,
+            } => {
+                let node = find_node(state, node_id)?;
+                // Um patch vazio não é comando; um patch que não muda nada é NoOp.
+                if translation.is_none() && rotation.is_none() && scale.is_none() {
+                    return Err(CommandError::NoOp("empty transform patch".to_string()));
+                }
+                // O patch é montado sobre a transformação atual para que o
+                // NoOp seja decidido no **resultado** e a validação final cubra
+                // a combinação (não só cada campo isolado).
+                let mut transform = node.transform;
+                if let Some(translation) = translation {
+                    validate_vector("translation", *translation)?;
+                    transform.translation = glam::Vec3::from_array(*translation);
+                }
+                if let Some(rotation) = rotation {
+                    validate_quaternion(*rotation)?;
+                    transform.rotation = glam::Quat::from_array(*rotation);
+                }
+                if let Some(scale) = scale {
+                    validate_vector("scale", *scale)?;
+                    transform.scale = glam::Vec3::from_array(*scale);
+                }
+                validate_transform("transform", transform)?;
+                if transform == node.transform {
+                    return Err(CommandError::NoOp(format!(
+                        "transform of '{node_id}' already has those values"
+                    )));
+                }
+                Ok(())
+            }
             Command::LoadMeshPreset { preset } => {
                 // Presets resolve to their canonical built-in asset, which every
                 // well-formed project registers (`BUILTIN_MESH_URIS`).
@@ -872,6 +1134,9 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                graph_order,
+                graph_disabled,
+                depth_prepass,
             } => {
                 if let Some(samples) = msaa_samples {
                     if !matches!(samples, 1 | 2 | 4 | 8 | 16) {
@@ -881,7 +1146,21 @@ impl Command {
                         });
                     }
                 }
-                if msaa_samples.is_none() && tonemap.is_none() {
+                // Issue #14: listas do grafo sem nomes vazios nem repetidos (o
+                // renderer resolve nomes desconhecidos contra o contrato e
+                // reporta diagnóstico — o núcleo não conhece os passes).
+                if let Some(order) = graph_order {
+                    validate_pass_name_list("graph_order", order)?;
+                }
+                if let Some(disabled) = graph_disabled {
+                    validate_pass_name_list("graph_disabled", disabled)?;
+                }
+                if msaa_samples.is_none()
+                    && tonemap.is_none()
+                    && graph_order.is_none()
+                    && graph_disabled.is_none()
+                    && depth_prepass.is_none()
+                {
                     return Err(CommandError::NoOp("empty render settings patch".to_string()));
                 }
                 Ok(())
@@ -904,8 +1183,14 @@ impl Command {
                 if commands.is_empty() {
                     return Err(CommandError::NoOp("empty batch".to_string()));
                 }
+                // Um batch é atômico, então cada comando é validado contra o
+                // estado **intermediário** (replay num rascunho), não contra o
+                // estado inicial: é o que permite, por exemplo, recriar um pai e
+                // o filho no mesmo lote — o undo de uma remoção de subárvore.
+                let mut scratch = state.clone();
                 for command in commands {
-                    command.validate(state)?;
+                    command.validate(&scratch)?;
+                    command.apply_unchecked(&mut scratch)?;
                 }
                 Ok(())
             }
@@ -970,6 +1255,7 @@ impl Command {
                 target,
                 up,
                 fov_degrees,
+                projection,
             } => {
                 let camera = &state.scene.camera.camera;
                 Ok(Command::SetCamera {
@@ -977,6 +1263,13 @@ impl Command {
                     target: target.map(|_| camera.target.to_array()),
                     up: up.map(|_| camera.up.to_array()),
                     fov_degrees: fov_degrees.map(|_| camera.fov_y.to_degrees()),
+                    // O inverso restaura o volume **exato** (não só a altura):
+                    // um undo não pode recentralizar um volume assimétrico.
+                    projection: projection.map(|_| CameraProjectionPatch {
+                        orthographic: Some(camera.orthographic.is_some()),
+                        ortho_height: camera.orthographic.map(|bounds| bounds.height()),
+                        ortho_bounds: camera.orthographic,
+                    }),
                 })
             }
             Command::OrbitCamera { azimuth, elevation } => Ok(Command::OrbitCamera {
@@ -1042,6 +1335,76 @@ impl Command {
                     mesh: node.mesh.clone(),
                 })
             }
+            // ── Issue #12: árvore de transformações ─────────────────────────
+            Command::AddNode { node_id, .. } => Ok(Command::RemoveNode {
+                node_id: node_id.clone(),
+            }),
+            Command::RemoveNode { node_id } => {
+                // O inverso da remoção recria a subárvore inteira. A ordem é a
+                // das posições **originais** (ascendente), o que reproduz o
+                // array exatamente; um nó cujo pai também foi removido entra
+                // como raiz e recebe o vínculo no `SetNodeParent` do fim do
+                // lote — referência para frente seria um estado inválido.
+                find_node(state, node_id)?;
+                let removed: std::collections::BTreeSet<NodeId> = std::iter::once(node_id.clone())
+                    .chain(crate::hierarchy::descendants_of(&state.scene.nodes, node_id))
+                    .collect();
+                let mut adds: Vec<Command> = Vec::new();
+                let mut links: Vec<Command> = Vec::new();
+                for (index, slot) in state.scene.nodes.iter().enumerate() {
+                    if !removed.contains(&slot.node_id) {
+                        continue;
+                    }
+                    let parent_inside = slot
+                        .parent_id
+                        .as_ref()
+                        .map(|parent| removed.contains(parent))
+                        .unwrap_or(false);
+                    adds.push(Command::AddNode {
+                        node_id: slot.node_id.clone(),
+                        name: slot.name.clone(),
+                        parent_id: if parent_inside {
+                            None
+                        } else {
+                            slot.parent_id.clone()
+                        },
+                        node_kind: slot.kind,
+                        transform: slot.transform,
+                        mesh: slot.mesh.clone(),
+                        material_id: slot.material_id.clone(),
+                        index: index as u32,
+                    });
+                    if parent_inside {
+                        links.push(Command::SetNodeParent {
+                            node_id: slot.node_id.clone(),
+                            parent_id: slot.parent_id.clone(),
+                        });
+                    }
+                }
+                let mut commands = adds;
+                commands.extend(links);
+                if commands.len() == 1 {
+                    Ok(commands.remove(0))
+                } else {
+                    Ok(Command::Batch { commands })
+                }
+            }
+            Command::SetNodeParent { node_id, .. } => {
+                let node = find_node(state, node_id)?;
+                Ok(Command::SetNodeParent {
+                    node_id: node_id.clone(),
+                    parent_id: node.parent_id.clone(),
+                })
+            }
+            Command::SetNodeTransform { node_id, .. } => {
+                let node = find_node(state, node_id)?;
+                Ok(Command::SetNodeTransform {
+                    node_id: node_id.clone(),
+                    translation: Some(node.transform.translation.to_array()),
+                    rotation: Some(node.transform.rotation.to_array()),
+                    scale: Some(node.transform.scale.to_array()),
+                })
+            }
             Command::LoadMeshPreset { preset } => {
                 let node_id = NodeId::canonical_character();
                 let node = find_node(state, &node_id)?;
@@ -1077,9 +1440,19 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                graph_order,
+                graph_disabled,
+                depth_prepass,
             } => Ok(Command::SetRenderSettings {
                 msaa_samples: msaa_samples.map(|_| state.render.msaa_samples),
                 tonemap: tonemap.map(|_| state.render.tonemap),
+                graph_order: graph_order
+                    .as_ref()
+                    .map(|_| state.render.graph_order.clone()),
+                graph_disabled: graph_disabled
+                    .as_ref()
+                    .map(|_| state.render.graph_disabled.clone()),
+                depth_prepass: depth_prepass.map(|_| state.render.depth_prepass),
             }),
             Command::RenameProject { .. } => Ok(Command::RenameProject {
                 name: state.name.clone(),
@@ -1190,6 +1563,7 @@ impl Command {
                 target,
                 up,
                 fov_degrees,
+                projection,
             } => {
                 let camera = &mut state.scene.camera.camera;
                 if let Some(value) = eye {
@@ -1203,6 +1577,9 @@ impl Command {
                 }
                 if let Some(value) = fov_degrees {
                     camera.fov_y = value.to_radians();
+                }
+                if let Some(patch) = projection {
+                    apply_camera_projection(camera, *patch);
                 }
                 Ok(())
             }
@@ -1289,6 +1666,66 @@ impl Command {
                 node.mesh = mesh.clone();
                 Ok(())
             }
+            // ── Issue #12: árvore de transformações ─────────────────────────
+            Command::AddNode {
+                node_id,
+                name,
+                parent_id,
+                node_kind,
+                transform,
+                mesh,
+                material_id,
+                index,
+            } => {
+                let slot = NodeSlot {
+                    node_id: node_id.clone(),
+                    name: name.clone(),
+                    transform: *transform,
+                    mesh: mesh.clone(),
+                    material_id: material_id.clone(),
+                    visible: true,
+                    parent_id: parent_id.clone(),
+                    kind: *node_kind,
+                };
+                let position = (*index as usize).min(state.scene.nodes.len());
+                state.scene.nodes.insert(position, slot);
+                Ok(())
+            }
+            Command::RemoveNode { node_id } => {
+                // Remove a subárvore inteira: um filho órfão seria inválido, e o
+                // inverse recria tudo de uma vez.
+                let doomed: Vec<NodeId> = std::iter::once(node_id.clone())
+                    .chain(crate::hierarchy::descendants_of(&state.scene.nodes, node_id))
+                    .collect();
+                state
+                    .scene
+                    .nodes
+                    .retain(|node| !doomed.contains(&node.node_id));
+                Ok(())
+            }
+            Command::SetNodeParent { node_id, parent_id } => {
+                let node = find_node_mut(state, node_id)?;
+                node.parent_id = parent_id.clone();
+                Ok(())
+            }
+            Command::SetNodeTransform {
+                node_id,
+                translation,
+                rotation,
+                scale,
+            } => {
+                let node = find_node_mut(state, node_id)?;
+                if let Some(translation) = translation {
+                    node.transform.translation = glam::Vec3::from_array(*translation);
+                }
+                if let Some(rotation) = rotation {
+                    node.transform.rotation = glam::Quat::from_array(*rotation).normalize();
+                }
+                if let Some(scale) = scale {
+                    node.transform.scale = glam::Vec3::from_array(*scale);
+                }
+                Ok(())
+            }
             Command::LoadMeshPreset { preset } => {
                 let node_id = NodeId::canonical_character();
                 let gender = state.character.base_gender;
@@ -1313,12 +1750,24 @@ impl Command {
             Command::SetRenderSettings {
                 msaa_samples,
                 tonemap,
+                graph_order,
+                graph_disabled,
+                depth_prepass,
             } => {
                 if let Some(samples) = msaa_samples {
                     state.render.msaa_samples = *samples;
                 }
                 if let Some(operator) = tonemap {
                     state.render.tonemap = *operator;
+                }
+                if let Some(order) = graph_order {
+                    state.render.graph_order.clone_from(order);
+                }
+                if let Some(disabled) = graph_disabled {
+                    state.render.graph_disabled.clone_from(disabled);
+                }
+                if let Some(prepass) = depth_prepass {
+                    state.render.depth_prepass = *prepass;
                 }
                 Ok(())
             }
@@ -1439,6 +1888,107 @@ fn require_known_asset(state: &ProjectState, asset_id: &AssetId) -> Result<(), C
             target: asset_id.to_string(),
         })
     }
+}
+
+/// Issue #13: aplica um patch de projeção à câmera.
+///
+/// Entrar em ortográfica **sem** informar volume usa a altura que reproduz o
+/// enquadramento perspectiva na distância atual do alvo
+/// (`2·d·tan(fov/2)`) — é o que faz a troca de modo não dar salto visual nem
+/// deformar o modelo, a mesma conta do `camera_math.ts` no viewport.
+fn apply_camera_projection(camera: &mut Camera, patch: CameraProjectionPatch) {
+    use crate::math::{OrthographicBounds, ProjectionMode};
+
+    if let Some(bounds) = patch.ortho_bounds {
+        camera.set_projection_mode(ProjectionMode::from(bounds));
+        return;
+    }
+
+    match patch.orthographic {
+        Some(true) => {
+            let height = patch
+                .ortho_height
+                .unwrap_or_else(|| framing_preserving_height(camera));
+            camera.set_projection_mode(ProjectionMode::from(OrthographicBounds::from_height(
+                height,
+                camera.aspect,
+            )));
+        }
+        Some(false) => {
+            camera.set_projection_mode(ProjectionMode::Perspective {
+                fov_y: camera.fov_y,
+                aspect: camera.aspect,
+            });
+        }
+        // Sem troca de modo, `ortho_height` só ajusta um volume já ortográfico.
+        None => {
+            if let Some(height) = patch.ortho_height {
+                if camera.orthographic.is_some() {
+                    camera.set_projection_mode(ProjectionMode::from(
+                        OrthographicBounds::from_height(height, camera.aspect),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Altura (unidades de mundo) que casa o enquadramento perspectiva na
+/// distância atual do alvo: `2 · d · tan(fov_y / 2)`.
+fn framing_preserving_height(camera: &Camera) -> f32 {
+    let distance = (camera.eye - camera.target).length().max(0.01);
+    (2.0 * distance * (camera.fov_y * 0.5).tan()).max(0.01)
+}
+
+/// Issue #12: um vetor de transformação só entra no documento se for finito.
+fn validate_vector(field: &str, value: [f32; 3]) -> Result<(), CommandError> {
+    for component in value {
+        require_finite(field, component)?;
+    }
+    Ok(())
+}
+
+/// Issue #12: quaternion finito e não nulo (uma rotação válida).
+fn validate_quaternion(value: [f32; 4]) -> Result<(), CommandError> {
+    for component in value {
+        require_finite("rotation", component)?;
+    }
+    let length_squared: f32 = value.iter().map(|component| component * component).sum();
+    if length_squared < 1e-12 {
+        return Err(CommandError::InvalidValue {
+            field: "rotation".to_string(),
+            detail: "quaternion must not be zero".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Issue #14: lista de nomes de passes do render graph — sem vazio, sem
+/// repetido (a pertinência ao contrato é resolvida no renderer).
+fn validate_pass_name_list(field: &str, names: &[String]) -> Result<(), CommandError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in names {
+        if name.trim().is_empty() {
+            return Err(CommandError::InvalidValue {
+                field: field.to_string(),
+                detail: "pass names must not be empty".to_string(),
+            });
+        }
+        if !seen.insert(name.clone()) {
+            return Err(CommandError::InvalidValue {
+                field: field.to_string(),
+                detail: format!("duplicated pass name '{name}'"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Issue #12: transformação local completa (translação, rotação e escala).
+fn validate_transform(field: &str, transform: Transform) -> Result<(), CommandError> {
+    validate_vector(&format!("{field}.translation"), transform.translation.to_array())?;
+    validate_quaternion(transform.rotation.to_array())?;
+    validate_vector(&format!("{field}.scale"), transform.scale.to_array())
 }
 
 fn find_node<'a>(state: &'a ProjectState, node_id: &NodeId) -> Result<&'a NodeSlot, CommandError> {
@@ -1949,6 +2499,7 @@ mod tests {
                 target: None,
                 up: None,
                 fov_degrees: Some(50.0),
+                projection: None,
             },
             Command::OrbitCamera {
                 azimuth: 0.2,
@@ -1995,6 +2546,30 @@ mod tests {
             Command::SetRenderSettings {
                 msaa_samples: Some(8),
                 tonemap: Some(crate::project::TonemapOperator::Neutral),
+                graph_order: None,
+                graph_disabled: None,
+                depth_prepass: None,
+            },
+            // Issue #12: a árvore também passa pelo mesmo contrato de involution
+            // (aplicar, desfazer e refazer sem deixar resíduo). O reparent e a
+            // remoção de subárvore precisam de mais de um nó (e a cena canônica
+            // não aceita ficar vazia), então vivem no teste dedicado
+            // `node_tree_commands_round_trip_with_world_transforms`.
+            Command::AddNode {
+                node_id: NodeId::from_slug("stage"),
+                name: "Stage".to_string(),
+                parent_id: None,
+                node_kind: crate::hierarchy::NodeKind::Group,
+                transform: Transform::default(),
+                mesh: None,
+                material_id: None,
+                index: 1,
+            },
+            Command::SetNodeTransform {
+                node_id: NodeId::canonical_character(),
+                translation: Some([0.5, 0.25, -0.5]),
+                rotation: Some([0.0, 0.0, 0.0, 1.0]),
+                scale: Some([1.0, 1.0, 1.0]),
             },
             Command::RenameProject {
                 name: "Projeto de Teste".to_string(),
@@ -2048,6 +2623,409 @@ mod tests {
                 assert_eq!(state, before, "apply → undo → redo → undo is symmetric");
             }
         }
+    }
+
+    #[test]
+    fn node_tree_commands_round_trip_with_world_transforms() {
+        // Issue #12 — a árvore é editada só por comandos, e o undo devolve
+        // topologia + transformações exatamente como estavam.
+        let mut state = project();
+        let mut history = CommandHistory::new(64);
+        let root = NodeId::canonical_character();
+        let jacket = NodeId::from_slug("jacket");
+        let hood = NodeId::from_slug("hood");
+
+        history
+            .execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: jacket.clone(),
+                    name: "Jacket".to_string(),
+                    parent_id: Some(root.clone()),
+                    node_kind: crate::hierarchy::NodeKind::Clothing,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 1,
+                },
+            )
+            .expect("add node");
+        history
+            .execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: hood.clone(),
+                    name: "Hood".to_string(),
+                    parent_id: Some(jacket.clone()),
+                    node_kind: crate::hierarchy::NodeKind::Hair,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 2,
+                },
+            )
+            .expect("add child node");
+
+        assert_eq!(
+            state
+                .scene
+                .children_of(Some(&root))
+                .iter()
+                .map(|node| node.node_id.clone())
+                .collect::<Vec<_>>(),
+            vec![jacket.clone()]
+        );
+        assert_eq!(state.scene.depth_of(&hood), Some(2));
+
+        // Mover o tronco move a peça pendurada nele — sem tocar no filho.
+        history
+            .execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root.clone(),
+                    translation: Some([2.0, 0.0, 0.0]),
+                    rotation: None,
+                    scale: None,
+                },
+            )
+            .expect("move root");
+        let world = crate::hierarchy::resolve_world_transforms(&state.scene.nodes).expect("world");
+        let hood_world = world.get(&hood).expect("hood matrix");
+        assert!((hood_world.transform_point3(glam::Vec3::ZERO).x - 2.0).abs() < 1e-5);
+        assert!(state.scene.node(&hood).expect("hood").transform.translation.x.abs() < 1e-6);
+
+        // Reparentar para um descendente é recusado (ciclo) e nada muda.
+        let before = state.clone();
+        let error = history
+            .execute(
+                &mut state,
+                Command::SetNodeParent {
+                    node_id: jacket.clone(),
+                    parent_id: Some(hood.clone()),
+                },
+            )
+            .expect_err("cycle must be rejected");
+        assert!(matches!(error, CommandError::InvalidValue { .. }));
+        assert_eq!(state, before, "a rejected command leaves the project untouched");
+
+        // Reparentar a raiz para a jaqueta também fecharia ciclo.
+        assert!(history
+            .execute(
+                &mut state,
+                Command::SetNodeParent {
+                    node_id: root.clone(),
+                    parent_id: Some(jacket.clone()),
+                },
+            )
+            .is_err());
+
+        // NoOp: repetir o mesmo pai é recusado.
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeParent {
+                    node_id: hood.clone(),
+                    parent_id: Some(jacket.clone()),
+                },
+            ),
+            Err(CommandError::NoOp(_))
+        ));
+
+        // Uma segunda raiz mantém a cena não-vazia: o projeto canônico não
+        // aceita remover o último nó (`ProjectError::EmptyScene`).
+        history
+            .execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: NodeId::from_slug("stage"),
+                    name: "Stage".to_string(),
+                    parent_id: None,
+                    node_kind: crate::hierarchy::NodeKind::Group,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 3,
+                },
+            )
+            .expect("add second root");
+
+        // Remover a jaqueta leva a subárvore inteira (o capuz) junto...
+        let snapshot = state.clone();
+        history
+            .execute(
+                &mut state,
+                Command::RemoveNode {
+                    node_id: jacket.clone(),
+                },
+            )
+            .expect("remove subtree");
+        assert_eq!(
+            state
+                .scene
+                .nodes
+                .iter()
+                .map(|node| node.node_id.to_string())
+                .collect::<Vec<_>>(),
+            vec![root.to_string(), "nod_stage".to_string()],
+            "children must never survive their parent"
+        );
+
+        // ...e o undo recria todos os nós com os vínculos e as transformações.
+        history.undo(&mut state).expect("undo restores the subtree");
+        assert_eq!(state, snapshot, "undo restores topology and transforms exactly");
+        assert_eq!(
+            state
+                .scene
+                .children_of(Some(&root))
+                .iter()
+                .map(|node| node.node_id.clone())
+                .collect::<Vec<_>>(),
+            vec![jacket.clone()]
+        );
+        assert_eq!(
+            state.scene.node(&hood).expect("hood").parent_id.as_ref(),
+            Some(&jacket)
+        );
+    }
+
+    #[test]
+    fn camera_projection_switch_preserves_the_framing_and_round_trips() {
+        // Issue #13: entrar em ortográfica sem informar volume preserva o
+        // enquadramento perspectiva na distância do alvo, e o undo devolve o
+        // volume exato (não um volume recentralizado).
+        let mut state = project();
+        let mut history = CommandHistory::new(8);
+        let before = state.clone();
+
+        let perspective = state.scene.camera.camera.build_view_projection_matrix();
+        let sample = state.scene.camera.camera.target
+            + glam::Vec3::new(0.2, -0.1, 0.0);
+        let ndc_before = perspective.project_point3(sample);
+
+        history
+            .execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch {
+                        orthographic: Some(true),
+                        ..CameraProjectionPatch::default()
+                    }),
+                },
+            )
+            .expect("switch to orthographic");
+        let camera = &state.scene.camera.camera;
+        assert!(camera.projection_mode().is_orthographic());
+        let bounds = camera.orthographic.expect("volume ortográfico");
+        // O volume casa o enquadramento: metade da altura visível a `d` é
+        // `d · tan(fov/2)`.
+        let distance = (camera.eye - camera.target).length();
+        let expected_half_height = distance * (camera.fov_y * 0.5).tan();
+        assert!((bounds.height() * 0.5 - expected_half_height).abs() < 1e-4);
+        assert!((bounds.width() / bounds.height() - camera.aspect).abs() < 1e-5);
+
+        // O ponto de referência projeta praticamente no mesmo lugar.
+        let ndc_after = camera.build_view_projection_matrix().project_point3(sample);
+        assert!((ndc_before.x - ndc_after.x).abs() < 1e-3);
+        assert!((ndc_before.y - ndc_after.y).abs() < 1e-3);
+
+        history.undo(&mut state).expect("undo restores the projection");
+        assert_eq!(state, before, "undo volta à perspectiva exatamente");
+
+        // Sem troca de modo e sem altura, o patch é vazio (NoOp).
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch::default()),
+                },
+            ),
+            Err(CommandError::NoOp(_))
+        ));
+
+        // Altura inválida é recusada antes de tocar no estado.
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch {
+                        orthographic: Some(true),
+                        ortho_height: Some(0.0),
+                        ortho_bounds: None,
+                    }),
+                },
+            ),
+            Err(CommandError::InvalidValue { .. })
+        ));
+
+        // Volume explícito assimétrico é preservado pelo inverso.
+        let bounds = crate::math::OrthographicBounds {
+            left: -1.5,
+            right: 2.5,
+            bottom: -0.75,
+            top: 1.25,
+        };
+        history
+            .execute(
+                &mut state,
+                Command::SetCamera {
+                    eye: None,
+                    target: None,
+                    up: None,
+                    fov_degrees: None,
+                    projection: Some(CameraProjectionPatch {
+                        orthographic: Some(true),
+                        ortho_height: None,
+                        ortho_bounds: Some(bounds),
+                    }),
+                },
+            )
+            .expect("explicit volume");
+        assert_eq!(state.scene.camera.camera.orthographic, Some(bounds));
+        history.undo(&mut state).expect("undo");
+        assert!(state.scene.camera.camera.orthographic.is_none());
+    }
+
+    #[test]
+    fn render_graph_settings_round_trip_and_reject_bad_lists() {
+        // Issue #14: ordem/ativação dos passes e o pré-passe via comando, com
+        // undo exato; listas com nome vazio ou repetido são recusadas.
+        let mut state = project();
+        let mut history = CommandHistory::new(8);
+        let before = state.clone();
+
+        history
+            .execute(
+                &mut state,
+                Command::SetRenderSettings {
+                    msaa_samples: None,
+                    tonemap: None,
+                    graph_order: Some(vec!["cel".to_string(), "outline".to_string()]),
+                    graph_disabled: Some(vec!["postprocess".to_string()]),
+                    depth_prepass: Some(true),
+                },
+            )
+            .expect("graph settings apply");
+        assert_eq!(
+            state.render.graph_order,
+            vec!["cel".to_string(), "outline".to_string()]
+        );
+        assert_eq!(state.render.graph_disabled, vec!["postprocess".to_string()]);
+        assert!(state.render.depth_prepass);
+
+        history.undo(&mut state).expect("undo restores the graph");
+        assert_eq!(state, before);
+
+        for bad in [
+            vec!["cel".to_string(), "cel".to_string()],
+            vec!["  ".to_string()],
+        ] {
+            assert!(
+                matches!(
+                    history.execute(
+                        &mut state,
+                        Command::SetRenderSettings {
+                            msaa_samples: None,
+                            tonemap: None,
+                            graph_order: Some(bad),
+                            graph_disabled: None,
+                            depth_prepass: None,
+                        },
+                    ),
+                    Err(CommandError::InvalidValue { .. })
+                ),
+                "lista inválida do grafo precisa ser recusada"
+            );
+        }
+        assert_eq!(state, before, "comando recusado não toca no estado");
+    }
+
+    #[test]
+    fn add_node_rejects_duplicates_and_unknown_parents() {
+        let mut state = project();
+        let mut history = CommandHistory::new(8);
+        let root = NodeId::canonical_character();
+
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::AddNode {
+                    node_id: root.clone(),
+                    name: "Duplicated".to_string(),
+                    parent_id: None,
+                    node_kind: crate::hierarchy::NodeKind::Group,
+                    transform: crate::math::Transform::default(),
+                    mesh: None,
+                    material_id: None,
+                    index: 0,
+                },
+            ),
+            Err(CommandError::InvalidValue { .. })
+        ));
+
+        let orphan = history.execute(
+            &mut state,
+            Command::AddNode {
+                node_id: NodeId::from_slug("orphan"),
+                name: "Orphan".to_string(),
+                parent_id: Some(NodeId::from_slug("missing")),
+                node_kind: crate::hierarchy::NodeKind::Accessory,
+                transform: crate::math::Transform::default(),
+                mesh: None,
+                material_id: None,
+                index: 1,
+            },
+        );
+        assert!(matches!(orphan, Err(CommandError::UnknownTarget { .. })));
+
+        // Transformação não finita e quaternion nulo também são recusados.
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root.clone(),
+                    translation: Some([f32::NAN, 0.0, 0.0]),
+                    rotation: None,
+                    scale: None,
+                },
+            ),
+            Err(CommandError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root.clone(),
+                    translation: None,
+                    rotation: Some([0.0, 0.0, 0.0, 0.0]),
+                    scale: None,
+                },
+            ),
+            Err(CommandError::InvalidValue { .. })
+        ));
+        assert!(matches!(
+            history.execute(
+                &mut state,
+                Command::SetNodeTransform {
+                    node_id: root,
+                    translation: None,
+                    rotation: None,
+                    scale: None,
+                },
+            ),
+            Err(CommandError::NoOp(_))
+        ));
     }
 
     #[test]
@@ -2121,6 +3099,7 @@ mod tests {
                     target: None,
                     up: None,
                     fov_degrees: None,
+                    projection: None,
                 },
             )
             .expect_err("non-finite camera must be rejected");
@@ -2476,6 +3455,10 @@ mod tests {
                 target: None,
                 up: None,
                 fov_degrees: None,
+                // Issue #13: nem um patch de projeção **vazio** passa (trocar de
+                // modo é comando de verdade, mas `SetCamera` sem campo nenhum
+                // continua sendo NoOp).
+                projection: None,
             },
             Command::SetLight {
                 light_id: None,
@@ -2491,6 +3474,9 @@ mod tests {
             Command::SetRenderSettings {
                 msaa_samples: None,
                 tonemap: None,
+                graph_order: None,
+                graph_disabled: None,
+                depth_prepass: None,
             },
             Command::SetNodeVisibility {
                 node_id: NodeId::canonical_character(),

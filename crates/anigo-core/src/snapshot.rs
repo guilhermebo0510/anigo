@@ -33,7 +33,8 @@ use crate::deformation::{
     catalog_weights, DeformationInputs, DeformationError, PROPORTION_POLICY_VERSION,
     SOMATOTYPE_POLICY_VERSION,
 };
-use crate::ids::{AssetId, CharacterId, LightId, MaterialId, MorphId, ProjectId};
+use crate::hierarchy::NodeKind;
+use crate::ids::{AssetId, CharacterId, LightId, MaterialId, MorphId, NodeId, ProjectId};
 use crate::bone_sync::BondSyncManager;
 use crate::mesh::{BaseGender, Mesh, Vertex};
 use crate::morph::SparseMorphSet;
@@ -408,13 +409,23 @@ impl MaterialSnapshot {
 }
 
 /// Render + color management block of the snapshot (§6.2).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+// Issue #14: sem `Copy` — as listas do grafo (`Vec`) não são copiáveis por
+// valor (o snapshot trafega por referência até a serialização Tauri).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderSnapshot {
     pub settings_version: u32,
     pub msaa_samples: u32,
     pub background_color: [f32; 4],
     pub color: ColorManagement,
     pub tonemap: TonemapOperator,
+    /// Issue #14: reconfiguração do render graph — ordem e ativação dos passes
+    /// mais o pré-passe de profundidade (espelho de `RenderState`).
+    #[serde(default)]
+    pub graph_order: Vec<String>,
+    #[serde(default)]
+    pub graph_disabled: Vec<String>,
+    #[serde(default)]
+    pub depth_prepass: bool,
 }
 
 impl From<&RenderState> for RenderSnapshot {
@@ -425,11 +436,20 @@ impl From<&RenderState> for RenderSnapshot {
             background_color: render.background_color,
             color: render.color,
             tonemap: render.tonemap,
+            graph_order: render.graph_order.clone(),
+            graph_disabled: render.graph_disabled.clone(),
+            depth_prepass: render.depth_prepass,
         }
     }
 }
 
 /// Per-node visibility/material binding handed to the renderer.
+///
+/// Issue #12: o nó viaja com a **matriz mundial já resolvida** (a GPU não sabe
+/// o que é hierarquia) *e* com a transformação local (`translation`/`rotation`/
+/// `scale`) que a UI edita. `parent_id`/`children`/`kind` deixam a árvore
+/// explícita no contrato, então o viewport pode seguir um osso sem recalcular
+/// a topologia.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeSnapshot {
     pub node_id: String,
@@ -439,6 +459,32 @@ pub struct NodeSnapshot {
     pub translation: [f32; 3],
     pub rotation: [f32; 4],
     pub scale: [f32; 3],
+    /// Pai na árvore de transformações (`None` = raiz da cena).
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// Filhos diretos, em ordem de declaração (derivado de `parent_id`).
+    #[serde(default)]
+    pub children: Vec<String>,
+    /// Tipo especializado do nó (`character_root`, `clothing`, `hair`, …).
+    #[serde(default)]
+    pub kind: NodeKind,
+    /// `W(node) = W(parent) × T(local)`, em ordem de colunas (o mesmo layout
+    /// do `model` do uniform de câmera).
+    #[serde(default)]
+    pub world_matrix: [f32; 16],
+}
+
+impl NodeSnapshot {
+    /// Matriz mundial como `glam::Mat4` (identidade quando o snapshot veio de
+    /// um payload antigo sem o campo).
+    pub fn world_matrix(&self) -> glam::Mat4 {
+        glam::Mat4::from_cols_array(&self.world_matrix)
+    }
+
+    /// `true` quando o nó é raiz da árvore.
+    pub fn is_root(&self) -> bool {
+        self.parent_id.is_none()
+    }
 }
 
 /// Dynamic (cheap) part of the snapshot: everything that changes per edit.
@@ -776,25 +822,51 @@ pub fn build_dynamic_payload(
             .iter()
             .map(|(id, entry)| MaterialSnapshot::from_material(id, entry))
             .collect(),
-        nodes: project
-            .scene
-            .nodes
-            .iter()
-            .map(|node| NodeSnapshot {
-                node_id: node.node_id.to_string(),
-                name: node.name.clone(),
-                visible: node.visible,
-                material_id: node.material_id.clone(),
-                translation: node.transform.translation.to_array(),
-                rotation: [
-                    node.transform.rotation.x,
-                    node.transform.rotation.y,
-                    node.transform.rotation.z,
-                    node.transform.rotation.w,
-                ],
-                scale: node.transform.scale.to_array(),
-            })
-            .collect(),
+        nodes: {
+            // Issue #12: as matrizes mundiais saem da mesma travessia topológica
+            // que o resto do núcleo usa (e que o headless desenha). Uma cena com
+            // topologia inválida não chega até aqui — `ProjectState::validate`
+            // já a recusou — mas o mapa resolvido é consultado com fallback
+            // identidade para nunca indexar fora da lista.
+            let world = crate::hierarchy::resolve_world_transforms(&project.scene.nodes)
+                .unwrap_or_default();
+            let children_of = |parent: &NodeId| -> Vec<String> {
+                project
+                    .scene
+                    .nodes
+                    .iter()
+                    .filter(|node| node.parent_id.as_ref() == Some(parent))
+                    .map(|node| node.node_id.to_string())
+                    .collect()
+            };
+            project
+                .scene
+                .nodes
+                .iter()
+                .map(|node| NodeSnapshot {
+                    node_id: node.node_id.to_string(),
+                    name: node.name.clone(),
+                    visible: node.visible,
+                    material_id: node.material_id.clone(),
+                    translation: node.transform.translation.to_array(),
+                    rotation: [
+                        node.transform.rotation.x,
+                        node.transform.rotation.y,
+                        node.transform.rotation.z,
+                        node.transform.rotation.w,
+                    ],
+                    scale: node.transform.scale.to_array(),
+                    parent_id: node.parent_id.as_ref().map(NodeId::to_string),
+                    children: children_of(&node.node_id),
+                    kind: node.kind,
+                    world_matrix: world
+                        .get(&node.node_id)
+                        .copied()
+                        .unwrap_or(glam::Mat4::IDENTITY)
+                        .to_cols_array(),
+                })
+                .collect()
+        },
         render: RenderSnapshot::from(&project.render),
         deformation_authority: coverage.authority(),
         deformation_coverage: coverage,
@@ -887,6 +959,61 @@ mod tests {
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("fixture {} unreadable: {e}", path.display()));
         serde_json::from_str(&raw).expect("fixture must be valid JSON")
+    }
+
+    #[test]
+    fn snapshot_exports_resolved_world_matrices_for_the_tree() {
+        // Issue #12: a matriz do filho sai resolvida (`W(pai) × T(local)`): a
+        // GPU/viewport recebem a pose final, e a transformação local continua
+        // intacta para a UI editar.
+        use crate::hierarchy::NodeKind;
+
+        let mut project = ProjectState::default();
+        let root = project.scene.nodes[0].node_id.clone();
+        project.scene.nodes[0].transform.translation = glam::Vec3::new(2.0, 0.0, 0.0);
+        project.scene.nodes.push(
+            crate::project::NodeSlot::new(
+                // `from_slug` adiciona o prefixo canônico: "hat" → "nod_hat".
+                NodeId::from_slug("hat"),
+                "Hat",
+                NodeKind::Accessory,
+            )
+            .child_of(root.clone()),
+        );
+        project.validate().expect("árvore válida");
+
+        let mesh = Mesh::create_canonical_base(project.character.base_gender);
+        let catalog = MorphCatalog::new(project.character.base_gender);
+        let snapshot = build_snapshot(
+            &project,
+            &mesh,
+            &catalog.morph_set,
+            1,
+            0,
+            false,
+            crate::project::URI_BASE_MALE,
+        );
+
+        let root_node = snapshot
+            .dynamic
+            .nodes
+            .iter()
+            .find(|node| node.node_id == root.as_str())
+            .expect("raiz no snapshot");
+        assert!(root_node.is_root());
+        assert_eq!(root_node.children, vec!["nod_hat".to_string()]);
+
+        let hat = snapshot
+            .dynamic
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "nod_hat")
+            .expect("filho no snapshot");
+        assert_eq!(hat.parent_id.as_deref(), Some(root.as_str()));
+        assert_eq!(hat.kind, NodeKind::Accessory);
+        let world = hat.world_matrix();
+        assert!((world.transform_point3(glam::Vec3::ZERO).x - 2.0).abs() < 1e-6);
+        assert!(hat.translation.iter().all(|value| value.abs() < 1e-6));
     }
 
     #[test]
@@ -1039,6 +1166,12 @@ mod tests {
         assert_eq!(dynamic.lights[0].light_id.as_str(), "lgt_key");
         assert_eq!(dynamic.materials[0].material_id.as_str(), "mat_default_anime");
         assert_eq!(dynamic.nodes[0].node_id, "nod_character_base");
+        // Issue #12: o fixture declara a árvore (raiz do personagem) e a matriz
+        // mundial resolvida — identidade, porque a transformação é identidade.
+        assert_eq!(dynamic.nodes[0].kind, crate::hierarchy::NodeKind::CharacterRoot);
+        assert!(dynamic.nodes[0].is_root());
+        assert!(dynamic.nodes[0].children.is_empty());
+        assert!(dynamic.nodes[0].world_matrix().abs_diff_eq(glam::Mat4::IDENTITY, 1e-6));
         assert_eq!(dynamic.render.msaa_samples, 4);
         assert_eq!(dynamic.deformation_authority, DeformationAuthority::ReferenceTs);
         assert_eq!(dynamic.deformation_coverage.total_sliders, 157);
