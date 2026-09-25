@@ -22,6 +22,68 @@ export type ChangeScope =
 
 export type MeshPresetWire = "mannequin" | "cube" | "sphere";
 
+/**
+ * Specialized node type (mirrors Rust `hierarchy::NodeKind`).
+ *
+ * The type travels on the wire because the viewport needs it: clothing/hair
+ * follow the armature (secondary motion), while `group`/`light`/`camera` nodes
+ * carry no geometry of their own.
+ */
+export type NodeKindWire =
+  | "character_root"
+  | "humanoid_bone"
+  | "clothing"
+  | "hair"
+  | "accessory"
+  | "mesh"
+  | "light"
+  | "camera"
+  | "group";
+
+/**
+ * Node types in canonical order — the same list (and the same order) as Rust
+ * `hierarchy::NodeKind::ALL`, drift-checked by the command contract test.
+ */
+export const NODE_KINDS = [
+  "character_root",
+  "humanoid_bone",
+  "clothing",
+  "hair",
+  "accessory",
+  "mesh",
+  "light",
+  "camera",
+  "group",
+] as const satisfies readonly NodeKindWire[];
+
+/** Volume ortográfico (issue #13) — espelha Rust `math::OrthographicBounds`. */
+export interface OrthographicBoundsWire {
+  left: number;
+  right: number;
+  bottom: number;
+  top: number;
+}
+
+/**
+ * Patch do modo de projeção da câmera (issue #13).
+ *
+ * `orthographic` + `ortho_height` é o que a UI manda (volume simétrico que
+ * preserva o enquadramento); `ortho_bounds` existe para o inverso restaurar o
+ * volume exato de um undo.
+ */
+export interface CameraProjectionPatchWire {
+  orthographic?: boolean;
+  ortho_height?: number;
+  ortho_bounds?: OrthographicBoundsWire;
+}
+
+/** Local transform of a node (mirrors Rust `math::Transform`). */
+export interface TransformWire {
+  translation: [number, number, number];
+  rotation: [number, number, number, number];
+  scale: [number, number, number];
+}
+
 export type TonemapOperatorWire = "none" | "reinhard" | "neutral";
 
 export interface MeshRefWire {
@@ -77,6 +139,7 @@ export type CommandWire =
       target?: [number, number, number];
       up?: [number, number, number];
       fov_degrees?: number;
+      projection?: CameraProjectionPatchWire;
     }
   | { kind: "orbit_camera"; azimuth: number; elevation: number }
   | { kind: "zoom_camera"; factor: number }
@@ -96,9 +159,39 @@ export type CommandWire =
   | { kind: "set_material_params"; material_id?: string; patch: MaterialPatchWire }
   | { kind: "set_node_visibility"; node_id: string; visible: boolean }
   | { kind: "set_node_mesh"; node_id: string; mesh?: MeshRefWire | null }
+  | {
+      kind: "add_node";
+      node_id: string;
+      name: string;
+      parent_id?: string | null;
+      node_kind?: NodeKindWire;
+      transform?: TransformWire;
+      mesh?: MeshRefWire | null;
+      material_id?: string | null;
+      index: number;
+    }
+  | { kind: "remove_node"; node_id: string }
+  | { kind: "set_node_parent"; node_id: string; parent_id?: string | null }
+  | {
+      kind: "set_node_transform";
+      node_id: string;
+      translation?: [number, number, number];
+      rotation?: [number, number, number, number];
+      scale?: [number, number, number];
+    }
   | { kind: "load_mesh_preset"; preset: MeshPresetWire }
   | { kind: "set_background_color"; color: [number, number, number, number] }
-  | { kind: "set_render_settings"; msaa_samples?: number; tonemap?: TonemapOperatorWire }
+  // Issue #14: `graph_order`/`graph_disabled` (nomes do contrato) e o
+  // `depth_prepass` viajam no `set_render_settings` (o teste de drift não
+  // tolera comentários entre os campos do membro).
+  | {
+      kind: "set_render_settings";
+      msaa_samples?: number;
+      tonemap?: TonemapOperatorWire;
+      graph_order?: string[];
+      graph_disabled?: string[];
+      depth_prepass?: boolean;
+    }
   | { kind: "rename_project"; name: string }
   | { kind: "batch"; commands: CommandWire[] };
 
@@ -118,6 +211,10 @@ export const COMMAND_KINDS = [
   "set_material_params",
   "set_node_visibility",
   "set_node_mesh",
+  "add_node",
+  "remove_node",
+  "set_node_parent",
+  "set_node_transform",
   "load_mesh_preset",
   "set_background_color",
   "set_render_settings",

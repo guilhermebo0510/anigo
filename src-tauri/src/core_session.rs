@@ -23,7 +23,7 @@ use anigo_core::export::{
     ExportRequest,
 };
 use anigo_core::deformation::{catalog_weights, prepare_base_mesh, DeformationInputs};
-use anigo_core::ids::fnv1a64;
+use anigo_core::ids::{fnv1a64, NodeId};
 use anigo_core::mesh::Mesh;
 use anigo_core::morph::SparseMorphSet;
 use anigo_core::morph_catalog::build_canonical_sparse_morph_set;
@@ -331,9 +331,32 @@ impl CoreSession {
         let camera = self.project.scene.camera.camera.clone();
         let background = self.project.render.background_color;
 
-        let mut node = SceneNode::new("primary_mesh", "Canonical Character").with_mesh(mesh);
-        node.material = material;
-        scene.nodes = vec![node];
+        // Issue #12: a cena do renderer espelha o grafo do projeto — ids, pais
+        // e tipos vêm do `ProjectState` (autoridade única), então o viewport e o
+        // núcleo não podem discordar sobre quem é filho de quem. A malha
+        // deformada vive no nó do personagem; os demais nós (vestuário, cabelo,
+        // acessórios) mantêm as suas transformações e passam a herdar a cadeia.
+        let character_node = NodeId::canonical_character();
+        scene.nodes = self
+            .project
+            .scene
+            .nodes
+            .iter()
+            .map(|slot| {
+                let mut node = SceneNode::new(slot.node_id.to_string(), slot.name.clone());
+                node.transform = slot.transform;
+                node.visible = slot.visible;
+                node.kind = slot.kind;
+                node.parent_id = slot.parent_id.as_ref().map(NodeId::to_string);
+                if slot.node_id == character_node {
+                    node.mesh = Some(mesh.clone());
+                    node.material = material.clone();
+                }
+                node
+            })
+            .collect();
+        // A lista de filhos é derivada do `parent_id` — nunca digitada.
+        scene.rebuild_children();
         if let Some(light) = light {
             scene.light = light;
         }

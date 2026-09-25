@@ -318,7 +318,9 @@ test("alvos, MSAA e formatos vêm do contrato nos dois lados", () => {
   assert.match(renderer, /multisample: \{ count: msaaSampleCount\(\) \}/);
   assert.match(renderer, /size: uniformSize\("camera"\)/);
   assert.match(renderer, /const contractVertexLayout = vertexBufferLayout\(\)/);
-  assert.match(renderer, /for \(const pass of renderPasses\(\)\)/);
+  // Issue #14: o loop é dirigido pelo plano (contrato + overrides do snapshot).
+  assert.match(renderer, /for \(const passName of plan\.passes\)/);
+  assert.match(renderer, /planRenderGraphPasses\(renderPassOrder\(\),/);
   // literais de layout que saíram do renderer (se voltarem, a unificação se perde)
   for (const forbidden of ['size: 208', 'size: 112', 'size: 48,', 'sampleCount: 4', 'format: "depth24plus"', 'arrayStride: 72']) {
     assert.equal(renderer.includes(forbidden), false, `renderer ainda tem o literal ${forbidden}`);
@@ -329,7 +331,9 @@ test("alvos, MSAA e formatos vêm do contrato nos dois lados", () => {
   assert.match(headless, /contract::depth_format\(\)/);
   assert.match(headless, /contract::msaa_sample_count\(\)/);
   assert.match(headless, /resolve_target,/);
-  assert.match(headless, /for pass_name in contract::render_pass_order\(\)/);
+  // Issue #14: o loop é dirigido pelo plano (contrato + overrides do snapshot).
+  assert.match(headless, /for pass_name in &plan\.order/);
+  assert.match(headless, /RenderGraph::from_contract\(\)/);
   assert.equal(/sample_count: 1,\n\s+dimension: wgpu::TextureDimension::D2,\n\s+format: wgpu::TextureFormat::Rgba8Unorm,/.test(headless), false);
   const toonRamp = readRepoFile("crates/anigo-renderer/src/render_contract.rs");
   assert.match(toonRamp, /pub fn toon_ramp_bytes\(\)/);
@@ -345,7 +349,7 @@ test("as convenções de câmera do contrato são as implementadas", () => {
   assert.equal(RENDER_CONTRACT.camera.clip_depth, "zero_to_one");
   assert.equal(RENDER_CONTRACT.camera.matrix_layout, "column_major");
   assert.equal(RENDER_CONTRACT.camera.up_axis, "y");
-  assert.equal(RENDER_CONTRACT.camera.model_from, "scene.nodes[0].transform");
+  assert.equal(RENDER_CONTRACT.camera.model_from, "scene.nodes[*].world_matrix");
 
   // profundidade 0..1: near → 0, far → 1 (clip space do wgpu)
   const proj = perspectiveRhZeroToOne(45 * (Math.PI / 180), 16 / 9, 0.05, 100);

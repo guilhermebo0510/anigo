@@ -40,6 +40,12 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   pan_camera: "camera",
   set_light: "presentation",
   set_node_visibility: "presentation",
+  // Issue #12: a topologia e a transformação dos nós são apresentação — a
+  // geometria base (a malha canônica deformada) continua a mesma.
+  add_node: "presentation",
+  remove_node: "presentation",
+  set_node_parent: "presentation",
+  set_node_transform: "presentation",
   set_background_color: "presentation",
   set_render_settings: "presentation",
   rename_project: "project",

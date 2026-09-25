@@ -20,6 +20,8 @@ export const MORPH_CHANNEL_STRIDE_BYTES = 16;
 /** Channels with |weight| below this value are treated as inactive (mirrors Rust `epsilon`). */
 export const MORPH_WEIGHT_EPSILON = 1e-6;
 
+import type { NodeKindWire } from "./commands.v1";
+
 export type BaseGenderWire = "Male" | "Female";
 
 export type DeformationAuthority = "core" | "reference_ts";
@@ -151,9 +153,21 @@ export interface NodeSnapshotWire {
   name: string;
   visible: boolean;
   material_id: string | null;
+  /** Local translation of the node (what the inspector edits). */
   translation: [number, number, number];
   rotation: [number, number, number, number];
   scale: [number, number, number];
+  /** Parent in the transform tree (`null` = scene root) — issue #12. */
+  parent_id: string | null;
+  /** Direct children, in declaration order (derived from `parent_id`). */
+  children: string[];
+  /** Specialized node type (`character_root`, `clothing`, `hair`, …). */
+  kind: NodeKindWire;
+  /**
+   * `W(node) = W(parent) × T(local)`, column-major — the matrix the renderer
+   * uploads as `model`. Resolved in the core so both renderers agree.
+   */
+  world_matrix: number[];
 }
 
 export interface RenderSnapshotWire {
@@ -162,6 +176,12 @@ export interface RenderSnapshotWire {
   background_color: [number, number, number, number];
   color: ColorManagementWire;
   tonemap: TonemapOperatorWire;
+  /** Issue #14: ordem de execução dos passes (nomes do contrato; vazio = contrato). */
+  graph_order: string[];
+  /** Issue #14: passes desligados (nomes do contrato). */
+  graph_disabled: string[];
+  /** Issue #14: pré-passe de profundidade antes do passe principal. */
+  depth_prepass: boolean;
 }
 
 export interface DynamicStatePayloadWire {
