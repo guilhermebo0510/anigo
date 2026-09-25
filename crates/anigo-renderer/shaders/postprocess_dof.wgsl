@@ -108,7 +108,7 @@ fn aperture_mask(p: vec2<f32>, shape: f32) -> f32 {
 @fragment
 fn fs_dof(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = pos.xy / dof.resolution.xy;
-    let frag_dist = linearize_depth(textureSampleLevel(scene_depth, dof_sampler, uv, 0));
+    let frag_dist = linearize_depth(textureLoad(scene_depth, vec2<i32>(pos.xy), 0));
 
     // Raio do bokeh em px: CoC (m no sensor) → fração da altura do sensor →
     // px da imagem, limitado por `limits.x` (teto de custo).
