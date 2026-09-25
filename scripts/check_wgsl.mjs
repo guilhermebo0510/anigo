@@ -331,6 +331,49 @@ export function checkContract(contract, readShader, options = {}) {
     }
   }
 
+  // 3b) Blocos compartilhados de shading (Fase 2 #17 face SDF, #43 olho
+  // anime): a definição canônica vive em um shader library e é copiada
+  // byte-idêntica para o shader que compila no passe — mesma regra do
+  // skinning: uma definição, vários usos.
+  for (const [sectionName, section] of Object.entries({
+    face_sdf: contract.face_sdf,
+    anime_eye: contract.anime_eye,
+  })) {
+    if (!section?.block_markers?.length === 2) {
+      problems.push(`contrato sem '${sectionName}.block_markers' (bloco compartilhado)`);
+      continue;
+    }
+    const [begin, end] = section.block_markers;
+    const blocks = new Map();
+    for (const { shader, source } of shaderSources.values()) {
+      if (shader.language !== "wgsl") continue;
+      if (!section.shared_by?.includes(shader.name)) continue;
+      if (!source.includes(begin)) {
+        problems.push(`${shader.path}: shader '${shader.name}' listado em ${sectionName}.shared_by sem o bloco`);
+        continue;
+      }
+      const block = extractBlock(source, begin, end, shader.path, problems);
+      if (block) blocks.set(shader.name, block);
+    }
+    if (blocks.size > 0) {
+      const [firstName, firstBlock] = [...blocks.entries()][0];
+      for (const [name, block] of blocks) {
+        if (block !== firstBlock) {
+          problems.push(
+            `${sectionName}: bloco de '${name}' difere de '${firstName}' — a definição precisa ser byte-idêntica`
+          );
+        }
+      }
+      for (const fn of section.entry_functions ?? []) {
+        if (!blocks.get(firstName)?.includes(`fn ${fn}(`)) {
+          problems.push(`${sectionName}: bloco canônico sem a função '${fn}'`);
+        }
+      }
+    } else {
+      problems.push(`${sectionName}: nenhum shader declara o bloco compartilhado`);
+    }
+  }
+
   // 4) paleta dos shaders de fallback (GLSL) — mesmo contrato, outra linguagem
   const paletteUniform = "u_bones";
   for (const shader of contract.shaders) {

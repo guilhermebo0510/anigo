@@ -31,7 +31,16 @@ struct MaterialUniform {
     rim_color: vec4<f32>,       // P0-09: separate rim tint (was light.shadow_color)
     params: vec4<f32>,          // x: shadow_threshold, y: shadow_smoothness, z: spec_intensity, w: spec_power
     params2: vec4<f32>,         // x: rim_intensity, y: rim_spread, z: hue_shift_rad, w: toon_steps
-    params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: unused, w: unused
+    params3: vec4<f32>,         // x: spec_softness, y: spec_offset, z: spec_size, w: ao_intensity
+    // ── Fase 2 (#18) — material anime VRoid/MToon ─────────────────────────
+    emission_color: vec4<f32>,  // MToon subEmission (cor, HDR via intensity)
+    params4: vec4<f32>,         // x: emission_intensity, y: second_shade_shift, z: second_shade_softness, w: matcap_intensity
+    params5: vec4<f32>,         // x: main_tex_enabled, y: shade_tex_enabled, z: second_shade_enabled, w: emission_enabled
+    params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: reserved
+    // ── Fase 2 (#17) — sombra facial SDF ──────────────────────────────────
+    params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: reserved
+    // ── Fase 2 (#43) — olho anime (parallax + highlights) ─────────────────
+    params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: reserved
 };
 
 @group(0) @binding(0)
@@ -48,6 +57,48 @@ var toon_ramp_tex: texture_2d<f32>;
 
 @group(0) @binding(4)
 var toon_ramp_sampler: sampler;
+
+// Fase 2 (#18): slots de textura do material anime (VRoid/MToon). Sem textura,
+// o slot é desativado pelo flag em material.params5 e o passe segue 100%
+// procedural (o renderer ancora um neutro 1x1 nesses bindings).
+@group(0) @binding(6)
+var main_tex: texture_2d<f32>;
+
+@group(0) @binding(7)
+var main_sampler: sampler;
+
+@group(0) @binding(8)
+var shade_tex: texture_2d<f32>;
+
+@group(0) @binding(9)
+var shade_sampler: sampler;
+
+@group(0) @binding(10)
+var second_shade_tex: texture_2d<f32>;
+
+@group(0) @binding(11)
+var second_shade_sampler: sampler;
+
+@group(0) @binding(12)
+var emission_tex: texture_2d<f32>;
+
+@group(0) @binding(13)
+var emission_sampler: sampler;
+
+@group(0) @binding(14)
+var sphere_add_tex: texture_2d<f32>;
+
+@group(0) @binding(15)
+var sphere_add_sampler: sampler;
+
+// Fase 2 (#17): mapa SDF da sombra facial (canal R; ver face_sdf.wgsl).
+// Sem textura, o slot é desativado por material.params7.z e o renderer
+// ancora o neutro 1x1 branco (fator de sombra 0).
+@group(0) @binding(16)
+var face_sdf_tex: texture_2d<f32>;
+
+@group(0) @binding(17)
+var face_sdf_sampler: sampler;
 
 struct BonePalette {
     matrices: array<mat4x4<f32>, 24>,
@@ -208,6 +259,55 @@ fn tonemap_reinhard(x: vec3<f32>) -> vec3<f32> {
     return x / (1.0 + x);
 }
 
+// Fase 2 (#17): sombra facial SDF — a mesma definição canônica que está em
+// face_sdf.wgsl (marcadores conferidos por check:wgsl).
+// ANIGO-FACE-SDF-BEGIN — bloco compartilhado (byte a byte igual em
+// face_sdf.wgsl e cel_shading.wgsl; conferido por scripts/check_wgsl.mjs)
+fn face_sdf_theta(local_x: vec3<f32>, local_z: vec3<f32>, light_dir: vec3<f32>) -> f32 {
+    let lx = dot(light_dir, local_x);
+    let lz = dot(light_dir, local_z);
+    return atan2(lx, lz);
+}
+fn face_sdf_threshold(theta: f32, offset: f32) -> f32 {
+    // light_front: 1 = luz frontal (theta ≈ 0), 0 = luz traseira (|theta| ≈ π).
+    // A banda de sombra cresce até 0.25 de threshold quando a luz vai para o
+    // lado/costas; offset é o controle do usuário (face_shadow_offset).
+    let light_front = cos(theta) * 0.5 + 0.5;
+    return 0.5 + (1.0 - light_front) * 0.25 + offset;
+}
+fn face_sdf_factor(sdf: f32, threshold: f32, softness: f32) -> f32 {
+    // 1 = totalmente na sombra, 0 = fora da região de sombra.
+    let s = max(softness, 0.001);
+    return 1.0 - smoothstep(threshold - s, threshold + s, sdf);
+}
+// ANIGO-FACE-SDF-END
+
+// Fase 2 (#43): olho anime — a mesma definição canônica que está em
+// anime_eye.wgsl (marcadores conferidos por check:wgsl).
+// ANIGO-ANIME-EYE-BEGIN — bloco compartilhado (byte a byte igual em
+// anime_eye.wgsl e cel_shading.wgsl; conferido por scripts/check_wgsl.mjs)
+fn eye_parallax_uv(uv: vec2<f32>, view_tangent_xy: vec2<f32>, depth_scale: f32) -> vec2<f32> {
+    // V_tangent.xy: direção de visão projetada na base tangente (T, B) da
+    // superfície. depth_scale é a "recalada" da íris (0 = plano, >0 = fundo).
+    return clamp(uv + view_tangent_xy * depth_scale, vec2<f32>(0.0), vec2<f32>(1.0));
+}
+fn eye_highlight_mask(uv: vec2<f32>) -> f32 {
+    // Dois brilhos desenhados à mão (convenção clássica de olho anime):
+    // principal = elipse grande no canto superior-esquerco do olho,
+    // secundário = ponto menor no canto inferior-direito (85% da intensidade).
+    let d_main = length((uv - vec2<f32>(0.38, 0.62)) * vec2<f32>(1.0, 0.72));
+    let main = 1.0 - smoothstep(0.075, 0.125, d_main);
+    let d_second = length(uv - vec2<f32>(0.68, 0.34));
+    let second = (1.0 - smoothstep(0.028, 0.055, d_second)) * 0.85;
+    return max(main, second);
+}
+fn eye_highlight_rgb(mask: f32, intensity: f32) -> vec3<f32> {
+    // Branco linear × mask × intensidade — somado após a iluminação (nunca
+    // multiplicado por luz/sombra): visível mesmo em sombra total.
+    return vec3<f32>(mask * intensity);
+}
+// ANIGO-ANIME-EYE-END
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -216,6 +316,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let N = normalize(in.world_normal);
     let L = normalize(light.direction.xyz);
     let V = normalize(camera.camera_pos.xyz - in.world_position);
+
+    // Fase 2 (#43): UV da íris com parallax — deslocado pela direção de visão
+    // na base tangente (UV + V_tangent.xy × depth_scale). Com eye off ou
+    // depth_scale 0 o resultado é exatamente in.uv (frame congelado intacto).
+    var eye_uv = in.uv;
+    if (material.params8.z > 0.5) {
+        let eye_up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(N.y) > 0.99);
+        let eye_t = normalize(cross(N, eye_up));
+        let eye_b = cross(N, eye_t);
+        let v_tangent = vec2<f32>(dot(V, eye_t), dot(V, eye_b));
+        eye_uv = eye_parallax_uv(in.uv, v_tangent, material.params8.x);
+    }
 
     // 1. Half-Lambert Remapping (0..1)
     let n_dot_l = dot(N, L);
@@ -273,7 +385,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 6. Base Lit and Shadow Blending + P2-04 Hemisphere Ambient
     let intensity = clamp(light.direction.w, 0.0, 3.0);
-    let base_lin = srgb_to_linear(material.base_color.rgb);
+    // Fase 2 (#18): albedo — MToon mainTex (slot ativado por params5.x) ou cor base.
+    // A textura modula a cor base (VRoid: mainTex × baseColorFactor).
+    // Fase 2 (#43): quando o olho anime está ativo, o slot main amostra com o
+    // UV parallaxado (a textura de olho desliza com a câmera — íris afundada).
+    var base_lin: vec3<f32>;
+    if (material.params5.x > 0.5) {
+        base_lin = srgb_to_linear(textureSample(main_tex, main_sampler, eye_uv).rgb) * srgb_to_linear(material.base_color.rgb);
+    } else {
+        base_lin = srgb_to_linear(material.base_color.rgb);
+    }
     let light_lin = srgb_to_linear(light.color.rgb);
     var lit_color = base_lin * light_lin * intensity;
 
@@ -284,9 +405,49 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient_hemi = mix(ground_lin, sky_lin, hemi) * clamp(light.color.w, 0.0, 2.0);
     let ambient_term = ambient_hemi;
     // P2-05 AO modulates shadow/ambient, not spec/rim
-    let shadow_color = hue_shifted_shadow * ambient_term * ao;
+    var shadow_color = hue_shifted_shadow * ambient_term * ao;
+
+    // Fase 2 (#18): MToon shade map — quando habilitado (params5.y) substitui a
+    // sombra computada (VRoid: shadeTex define a cor da primeira banda).
+    // shade_toony (params6.z) quantiza a amostra em `toon_steps` bandas, a
+    // convenção VRoid de "shade toony".
+    if (material.params5.y > 0.5) {
+        var shade_sample = textureSample(shade_tex, shade_sampler, in.uv).rgb;
+        if (material.params6.z > 0.5) {
+            let shade_steps = max(toon_steps, 1.0);
+            shade_sample = floor(shade_sample * shade_steps + 0.5) / shade_steps;
+        }
+        shadow_color = srgb_to_linear(shade_sample) * ambient_term * ao;
+    }
+
     let lit_color_ao = lit_color; // direct light not occluded (only shadow)
-    let base_cel = mix(shadow_color, lit_color_ao, toon_factor);
+    var base_cel = mix(shadow_color, lit_color_ao, toon_factor);
+
+    // Fase 2 (#18): segunda banda de sombra (MToon second shade) — faixa profunda
+    // abaixo de (threshold - second_shade_shift). A textura do slot é multiplicada
+    // pela sombra base escurecida (0.45) — com o neutro branco ancorado o resultado
+    // é exatamente shade_lin × 0.45, a convenção de segunda sombra do VRoid.
+    if (material.params5.z > 0.5) {
+        let second_shift = max(material.params4.y, 0.0);
+        let second_threshold = max(threshold - second_shift, 0.001);
+        let second_soft = max(material.params4.z, 0.001);
+        let second_blend = smoothstep(second_threshold - second_soft, second_threshold + second_soft, half_lambert);
+        let deep_color = srgb_to_linear(textureSample(second_shade_tex, second_shade_sampler, in.uv).rgb) * shade_lin * 0.45;
+        let deep_band = deep_color * ambient_term * ao;
+        base_cel = mix(deep_band, base_cel, second_blend);
+    }
+
+    // Fase 2 (#17): sombra facial SDF — azimut da luz projetado no espaço
+    // local da cabeça (eixo Z local = frente do rosto). A região do SDF
+    // (nasal/olhos/queixo) escurece 28% — sem textura real ancorada o fator
+    // fica 0 e o resultado é idêntico ao frame congelado.
+    if (material.params7.z > 0.5) {
+        let face_sdf = textureSample(face_sdf_tex, face_sdf_sampler, in.uv).r;
+        let face_theta = face_sdf_theta(camera.model[0].xyz, camera.model[2].xyz, L);
+        let face_thr = face_sdf_threshold(face_theta, material.params7.x);
+        let face_factor = face_sdf_factor(face_sdf, face_thr, material.params7.y);
+        base_cel = mix(base_cel, base_cel * 0.72, face_factor);
+    }
 
     // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")
     let H = normalize(L + V);
@@ -324,7 +485,37 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 9. Final Color Composition — P2-05 AO already in base_cel, not here
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
     let rim_rgb = srgb_to_linear(material.rim_color.rgb);
-    let with_rim = lit_highlighted + (rim_rgb * rim_term);
+    var with_rim = lit_highlighted + (rim_rgb * rim_term);
+
+    // Fase 2 (#18): matcap (MToon sphereAdd) — normal na base da câmera derivada
+    // de V e up (o uniform só carrega view_proj, então reconstruímos a base):
+    // uv = N_view.xy × 0.5 + 0.5. Modo normal multiplica, additive soma.
+    if (material.params6.x > 0.5) {
+        var cam_right = cross(vec3<f32>(0.0, 1.0, 0.0), V);
+        let cam_right_len = length(cam_right);
+        cam_right = select(vec3<f32>(1.0, 0.0, 0.0), normalize(cam_right), cam_right_len > 1e-4);
+        let cam_up = cross(V, cam_right);
+        let n_view = vec3<f32>(dot(N, cam_right), dot(N, cam_up), dot(N, V));
+        let matcap_uv = clamp(n_view.xy * 0.5 + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
+        let matcap = srgb_to_linear(textureSample(sphere_add_tex, sphere_add_sampler, matcap_uv).rgb) * material.params4.w;
+        with_rim = mix(with_rim * matcap, with_rim + matcap, material.params6.y);
+    }
+
+    // Fase 2 (#18): sub-emission (MToon) — desacoplada da iluminação, somada em
+    // linear antes do tonemap (brilho persistente mesmo em sombra).
+    if (material.params5.w > 0.5) {
+        let emission_map = textureSample(emission_tex, emission_sampler, in.uv).rgb;
+        with_rim = with_rim + srgb_to_linear(material.emission_color.rgb) * emission_map * material.params4.x;
+    }
+
+    // Fase 2 (#43): highlights do olho anime — camada desenhada à mão somada
+    // DEPOIS de toda a iluminação (nunca multiplicada por luz/sombra): o
+    // branco dos olhos permanece radiante mesmo em penumbra total.
+    if (material.params8.z > 0.5) {
+        let eye_highlight = eye_highlight_mask(eye_uv) * material.params8.y;
+        with_rim = with_rim + eye_highlight_rgb(eye_highlight, 1.0);
+    }
+
     // P1-01: linear→sRGB for display
     let exposure = exp2(light.ambient_sky.w); // P3-01 exposure EV stored in sky.w (fallback 0)
     let final_linear = clamp(with_rim * exposure, vec3<f32>(0.0), vec3<f32>(10.0));

@@ -421,6 +421,30 @@ async fn set_material_toon_params(
     outline_smoothness: Option<f32>,
     outline_depth_bias: Option<f32>,
     shadow_saturation: Option<f32>,
+    // Fase 2 (#18): material anime VRoid/MToon
+    mtoon_emission_color: Option<[f32; 4]>,
+    mtoon_emission_intensity: Option<f32>,
+    mtoon_second_shade_shift: Option<f32>,
+    mtoon_second_shade_softness: Option<f32>,
+    mtoon_matcap_intensity: Option<f32>,
+    mtoon_main_texture_enabled: Option<bool>,
+    mtoon_shade_texture_enabled: Option<bool>,
+    mtoon_second_shade_texture_enabled: Option<bool>,
+    mtoon_emission_texture_enabled: Option<bool>,
+    mtoon_matcap_enabled: Option<bool>,
+    mtoon_matcap_mode: Option<u8>,
+    mtoon_shade_toony: Option<bool>,
+    // Fase 2 (#17): sombra facial SDF
+    face_shadow_offset: Option<f32>,
+    face_shadow_smoothness: Option<f32>,
+    face_sdf_enabled: Option<bool>,
+    // Fase 2 (#43): olho anime + solver de olhar
+    eye_depth_scale: Option<f32>,
+    eye_highlight_intensity: Option<f32>,
+    eye_enabled: Option<bool>,
+    gaze_tracking_enabled: Option<bool>,
+    gaze_saccade_amplitude: Option<f32>,
+    gaze_damping: Option<f32>,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let mut state = state.lock().await;
@@ -446,6 +470,27 @@ async fn set_material_toon_params(
         outline_opacity,
         outline_smoothness,
         outline_depth_bias,
+        mtoon_emission_color,
+        mtoon_emission_intensity,
+        mtoon_second_shade_shift,
+        mtoon_second_shade_softness,
+        mtoon_matcap_intensity,
+        mtoon_main_texture_enabled,
+        mtoon_shade_texture_enabled,
+        mtoon_second_shade_texture_enabled,
+        mtoon_emission_texture_enabled,
+        mtoon_matcap_enabled,
+        mtoon_matcap_mode,
+        mtoon_shade_toony,
+        face_shadow_offset,
+        face_shadow_smoothness,
+        face_sdf_enabled,
+        eye_depth_scale,
+        eye_highlight_intensity,
+        eye_enabled,
+        gaze_tracking_enabled,
+        gaze_saccade_amplitude,
+        gaze_damping,
         ..Default::default()
     };
 
@@ -478,6 +523,43 @@ async fn set_material_toon_params(
         anigo_core::command::Command::Batch { commands }
     };
     apply_session_command(&mut state, command)
+}
+
+// Fase 2 (#53): Anime Bokeh DoF — settings da cena (o mesmo `Scene.dof` que o
+// headless usa no `render_scene`). Não é um comando do núcleo (não há
+// histórico inverso): é estado de pós-processamento, idêntico ao `RenderState`
+// no papel de "como renderizar", e o snapshot de persistência o carrega.
+#[tauri::command]
+async fn set_dof_settings(
+    enabled: Option<bool>,
+    focus_distance: Option<f32>,
+    f_number: Option<f32>,
+    focal_mm: Option<f32>,
+    bokeh_shape: Option<u8>,
+    max_radius_px: Option<f32>,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let mut state = state.lock().await;
+    let dof = &mut state.scene.dof;
+    if let Some(value) = enabled {
+        dof.enabled = value;
+    }
+    if let Some(value) = focus_distance {
+        dof.focus_distance = value;
+    }
+    if let Some(value) = f_number {
+        dof.f_number = value;
+    }
+    if let Some(value) = focal_mm {
+        dof.focal_mm = value;
+    }
+    if let Some(value) = bokeh_shape {
+        dof.bokeh_shape = u32::from(value == 1);
+    }
+    if let Some(value) = max_radius_px {
+        dof.max_radius_px = value;
+    }
+    Ok(())
 }
 
 static LAST_CMD_TELEMETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -954,6 +1036,105 @@ async fn load_project_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Erro ao ler arquivo de projeto: {}", e))
 }
 
+// ---------------------------------------------------------------------------
+// Fase 2 (#25): interoperabilidade glTF 2.0 / VRM 1.0 — comandos Tauri.
+// A validação roda no parser Rust (`anigo-vrm`), espelho do módulo TS;
+// o resumo e os metadados VRM viajam serializados (nada de silêncio).
+// ---------------------------------------------------------------------------
+
+/// Resposta de `vrm_import_model` — metadados VRM 1.0 para o diálogo de import.
+#[derive(Clone, Serialize)]
+struct VrmMetaInfo {
+    title: String,
+    author: String,
+    version: String,
+    year: i64,
+    humanoid_bones: std::collections::BTreeMap<String, Option<u64>>,
+    expression_presets: std::collections::BTreeMap<String, u64>,
+    expression_custom: std::collections::BTreeMap<String, u64>,
+    mtoon_material_count: usize,
+    spring_bone_groups: usize,
+    node_constraint_count: usize,
+    warnings: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct VrmImportInfo {
+    summary: anigo_vrm::ImportSummary,
+    vrm: Option<VrmMetaInfo>,
+}
+
+/// Valida um arquivo `.glb`/`.gltf`/`.vrm` (parser Rust, códigos estáveis).
+#[tauri::command]
+async fn vrm_validate_model(path: String) -> Result<anigo_vrm::ValidationResult, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Erro ao ler '{path}': {e}"))?;
+    Ok(anigo_vrm::validate_model(&bytes))
+}
+
+/// Importa (valida + extrai metadados) um modelo. A geometria em si é decodada
+/// pelo viewport via `src/services/vrm` — este comando dá o resumo para a UI.
+#[tauri::command]
+async fn vrm_import_model(path: String) -> Result<VrmImportInfo, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Erro ao ler '{path}': {e}"))?;
+    let result = anigo_vrm::parse_model(&bytes)
+        .map_err(|e| format!("Falha na validação ({}): {}", e.code.as_str(), e.message))?;
+    let summary = anigo_vrm::summarize_import(&result.model.json);
+    let vrm = result.vrm.map(|parsed| {
+        let mut humanoid_bones = std::collections::BTreeMap::new();
+        for (bone, entry) in &parsed.humanoid.human_bones {
+            humanoid_bones.insert(bone.clone(), entry.get("node").and_then(serde_json::Value::as_u64));
+        }
+        let mut expression_presets = std::collections::BTreeMap::new();
+        for (name, binding) in &parsed.expression.preset {
+            if let Some(index) = binding.get("blendShape").and_then(serde_json::Value::as_u64) {
+                expression_presets.insert(name.clone(), index);
+            }
+        }
+        let mut expression_custom = std::collections::BTreeMap::new();
+        for (name, binding) in &parsed.expression.custom {
+            if let Some(index) = binding.get("blendShape").and_then(serde_json::Value::as_u64) {
+                expression_custom.insert(name.clone(), index);
+            }
+        }
+        VrmMetaInfo {
+            title: parsed.meta.title,
+            author: parsed.meta.author,
+            version: parsed.meta.version,
+            year: parsed.meta.year,
+            humanoid_bones,
+            expression_presets,
+            expression_custom,
+            mtoon_material_count: parsed.materials.iter().filter(|m| m.is_some()).count(),
+            spring_bone_groups: parsed.spring_bone.as_ref().map(|s| s.groups.len()).unwrap_or(0),
+            node_constraint_count: parsed.node_constraints.iter().filter(|c| c.is_some()).count(),
+            warnings: parsed.warnings,
+        }
+    });
+    Ok(VrmImportInfo { summary, vrm })
+}
+
+/// Exporta a cena normalizada (JSON) para `.glb`/`.vrm` no caminho dado.
+/// `vrm_json` presente → saída `.vrm` com camadas VRM 1.0.
+#[tauri::command]
+async fn vrm_export_model(
+    path: String,
+    scene_json: String,
+    vrm_json: Option<String>,
+) -> Result<String, String> {
+    let scene: anigo_vrm::ExportScene = serde_json::from_str(&scene_json)
+        .map_err(|e| format!("Cena inválida: {e}"))?;
+    let vrm = match vrm_json {
+        Some(json) => Some(
+            serde_json::from_str::<anigo_vrm::VrmExportData>(&json)
+                .map_err(|e| format!("Camada VRM inválida: {e}"))?,
+        ),
+        None => None,
+    };
+    let bytes = anigo_vrm::export_model(&scene, vrm.as_ref());
+    std::fs::write(&path, &bytes).map_err(|e| format!("Erro ao gravar '{path}': {e}"))?;
+    Ok(path)
+}
+
 fn main() {
     // P2: Initialize structured tracing for the Tauri app shell.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1019,6 +1200,7 @@ fn main() {
             load_mesh_preset,
             set_light_params,
             set_material_toon_params,
+            set_dof_settings,
             report_live_telemetry,
             get_live_telemetry,
             get_studio_directories,
@@ -1041,6 +1223,9 @@ fn main() {
             core_deformed_mesh,
             core_export_glb,
             core_export_frame,
+            vrm_validate_model,
+            vrm_import_model,
+            vrm_export_model,
             headless_device_status,
         ])
         .build(tauri::generate_context!());

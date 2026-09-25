@@ -24,6 +24,8 @@
     type CharacterState,
   } from "./services/character_state";
   import { CANONICAL_SLIDERS } from "./services/morph_catalog";
+  // Fase 2 (#53): câmera cinematográfica — presets de lente + reframe
+  import { LENS_PRESETS, lensFovY, reframeRadius } from "./services/camera_cinematic";
 
   // Icons
   import UserIcon from "./components/icons/UserIcon.svelte";
@@ -554,6 +556,33 @@
   let baseColorHex = $state("#faeae0");
   let shadowColorHex = $state("#9995be");
 
+  // MToon (VRoid) — Fase 2 (#18): parâmetros VRMC_materials_mtoon.
+  // Defaults = material sem texturas (slots off), o mesmo do núcleo Rust.
+  let mtoonEmissionColorHex = $state("#000000");
+  let mtoonEmissionIntensity = $state(0.0);
+  let mtoonSecondShadeShift = $state(0.0);
+  let mtoonSecondShadeSoftness = $state(0.05);
+  let mtoonMatcapIntensity = $state(0.0);
+  let mtoonMatcapEnabled = $state(false);
+  let mtoonMatcapMode = $state(0);
+  let mtoonShadeToony = $state(true);
+
+  // Sombra facial SDF — Fase 2 (#17): parâmetros do material (Genshin style).
+  // Default = off (o renderer ancora o neutro 1x1; a imagem não muda).
+  let faceShadowOffset = $state(0.0);
+  let faceShadowSmoothness = $state(0.05);
+  let faceSdfEnabled = $state(false);
+
+  // Olho anime — Fase 2 (#43): parallax da íris + highlights desacoplados
+  // (shader) e settings do solver de olhar (CPU: anigo-ik/eye_tracking.ts).
+  // Default = off (eye_uv = in.uv e highlight 0; frame congelado intacto).
+  let eyeDepthScale = $state(0.0);
+  let eyeHighlightIntensity = $state(0.0);
+  let eyeEnabled = $state(false);
+  let gazeTrackingEnabled = $state(false);
+  let gazeSaccadeAmplitude = $state(2.5); // graus (faixa 2–5 do issue)
+  let gazeDamping = $state(6.0);
+
   // Timeline & Animation
   let currentFrame = $state(1);
   let isPlaying = $state(false);
@@ -565,10 +594,21 @@
   let ikWeight = $state(1.0);
 
   // Camera Parameters
-  let focalLength = $state(50);
   let cameraFov = $state(45);
   /** Issue #13: modo de projeção da câmera do viewport (atalho `O` ou botões). */
   let cameraProjection = $state<"perspective" | "orthographic">("perspective");
+
+  // Fase 2 (#53): câmera cinematográfica — lente ativa (mm), Anime Bokeh DoF
+  // e tracking de alvo. Defaults = DoF off (passe de pós inexistente) e
+  // tracking off (orbitador livre). O mesmo estado viaja no snapshot do
+  // projeto (Scene.dof) e no history (undo/redo).
+  let lensFocalMm = $state(50);
+  let dofEnabled = $state(false);
+  let dofFocus = $state(2.0);
+  let dofFNumber = $state(2.0);
+  let dofBokehShape = $state<0 | 1>(0);
+  let trackingMode = $state<"off" | "head" | "hips" | "poi">("off");
+  let trackingDamping = $state(6.0);
 
   // Settings
   let targetFpsCap = $state(120);
@@ -809,6 +849,34 @@
       specColorHex,
       rimColor,
       lightColor: hexToRgb(sunColor),
+      // Fase 2 (#18): MToon (VRoid)
+      mtoonEmissionColorHex,
+      mtoonEmissionIntensity,
+      mtoonSecondShadeShift,
+      mtoonSecondShadeSoftness,
+      mtoonMatcapIntensity,
+      mtoonMatcapEnabled,
+      mtoonMatcapMode,
+      mtoonShadeToony,
+      // Fase 2 (#17): SDF facial
+      faceShadowOffset,
+      faceShadowSmoothness,
+      faceSdfEnabled,
+      // Fase 2 (#43): olho anime + solver de olhar
+      eyeDepthScale,
+      eyeHighlightIntensity,
+      eyeEnabled,
+      gazeTrackingEnabled,
+      gazeSaccadeAmplitude,
+      gazeDamping,
+      // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+      lensFocalMm,
+      dofEnabled,
+      dofFocus,
+      dofFNumber,
+      dofBokehShape,
+      trackingMode,
+      trackingDamping,
       // P0-07: the Personagem domain is part of every history entry.
       character: getAppCharacterState(),
     };
@@ -909,6 +977,34 @@
     if ((snap as any).ambientGround) ambientGround = (snap as any).ambientGround;
     if ((snap as any).specColorHex !== undefined) specColorHex = (snap as any).specColorHex;
     if ((snap as any).rimColor !== undefined) rimColor = (snap as any).rimColor;
+    // Fase 2 (#18): MToon (VRoid)
+    if ((snap as any).mtoonEmissionColorHex !== undefined) mtoonEmissionColorHex = (snap as any).mtoonEmissionColorHex;
+    if ((snap as any).mtoonEmissionIntensity !== undefined) mtoonEmissionIntensity = (snap as any).mtoonEmissionIntensity;
+    if ((snap as any).mtoonSecondShadeShift !== undefined) mtoonSecondShadeShift = (snap as any).mtoonSecondShadeShift;
+    if ((snap as any).mtoonSecondShadeSoftness !== undefined) mtoonSecondShadeSoftness = (snap as any).mtoonSecondShadeSoftness;
+    if ((snap as any).mtoonMatcapIntensity !== undefined) mtoonMatcapIntensity = (snap as any).mtoonMatcapIntensity;
+    if ((snap as any).mtoonMatcapEnabled !== undefined) mtoonMatcapEnabled = (snap as any).mtoonMatcapEnabled;
+    if ((snap as any).mtoonMatcapMode !== undefined) mtoonMatcapMode = (snap as any).mtoonMatcapMode;
+    if ((snap as any).mtoonShadeToony !== undefined) mtoonShadeToony = (snap as any).mtoonShadeToony;
+    // Fase 2 (#17): SDF facial
+    if ((snap as any).faceShadowOffset !== undefined) faceShadowOffset = (snap as any).faceShadowOffset;
+    if ((snap as any).faceShadowSmoothness !== undefined) faceShadowSmoothness = (snap as any).faceShadowSmoothness;
+    if ((snap as any).faceSdfEnabled !== undefined) faceSdfEnabled = (snap as any).faceSdfEnabled;
+    // Fase 2 (#43): olho anime + solver de olhar
+    if ((snap as any).eyeDepthScale !== undefined) eyeDepthScale = (snap as any).eyeDepthScale;
+    if ((snap as any).eyeHighlightIntensity !== undefined) eyeHighlightIntensity = (snap as any).eyeHighlightIntensity;
+    if ((snap as any).eyeEnabled !== undefined) eyeEnabled = (snap as any).eyeEnabled;
+    if ((snap as any).gazeTrackingEnabled !== undefined) gazeTrackingEnabled = (snap as any).gazeTrackingEnabled;
+    if ((snap as any).gazeSaccadeAmplitude !== undefined) gazeSaccadeAmplitude = (snap as any).gazeSaccadeAmplitude;
+    if ((snap as any).gazeDamping !== undefined) gazeDamping = (snap as any).gazeDamping;
+    // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+    if ((snap as any).lensFocalMm !== undefined) lensFocalMm = (snap as any).lensFocalMm;
+    if ((snap as any).dofEnabled !== undefined) dofEnabled = (snap as any).dofEnabled;
+    if ((snap as any).dofFocus !== undefined) dofFocus = (snap as any).dofFocus;
+    if ((snap as any).dofFNumber !== undefined) dofFNumber = (snap as any).dofFNumber;
+    if ((snap as any).dofBokehShape !== undefined) dofBokehShape = (snap as any).dofBokehShape;
+    if ((snap as any).trackingMode !== undefined) trackingMode = (snap as any).trackingMode;
+    if ((snap as any).trackingDamping !== undefined) trackingDamping = (snap as any).trackingDamping;
     // P0-07: restore the full Personagem domain (undo/redo covers the body).
     if (snap.character) {
       try {
@@ -974,6 +1070,9 @@
     updateMaterial(false);
     handleOutlineChange(false);
     handleShadowThresholdChange(false);
+    // Fase 2 (#53): reposição do estado cinematográfico no renderer/núcleo
+    // (undo/redo e carga de projeto deixam DoF/lente/tracking consistentes).
+    applyCinematicState();
     reportLiveTelemetry();
   }
 
@@ -1338,6 +1437,14 @@
       cameraTarget: target,
       cameraUp: up,
       fov: fovDeg,
+      // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+      lensFocalMm,
+      dofEnabled,
+      dofFocus,
+      dofFNumber,
+      dofBokehShape,
+      trackingMode,
+      trackingDamping,
       cameraProjection,
       timestamp: Date.now(),
       version: "0.2.0",
@@ -1395,6 +1502,15 @@
       base_color: rgba(baseColorHex),
       shade_color: rgba(shadowColorHex),
       outline_color: rgba(outlineColor),
+    };
+    // Fase 2 (#53): DoF cinematográfico — o mesmo Scene.dof que o headless usa.
+    scene.dof = {
+      enabled: dofEnabled,
+      focus_distance: dofFocus,
+      f_number: dofFNumber,
+      focal_mm: lensFocalMm,
+      bokeh_shape: dofBokehShape,
+      max_radius_px: 16.0,
     };
     return scene;
   }
@@ -1616,6 +1732,28 @@
           if (p.outline_color && Array.isArray(p.outline_color) && p.outline_color.length >= 3) {
             outlineColor = rgbToHex(p.outline_color);
           }
+          // Fase 2 (#18): MToon — espelha os parâmetros vindos do núcleo
+          if (p.mtoon_emission_color && Array.isArray(p.mtoon_emission_color) && p.mtoon_emission_color.length >= 3) {
+            mtoonEmissionColorHex = rgbToHex(p.mtoon_emission_color);
+          }
+          if (p.mtoon_emission_intensity !== undefined) mtoonEmissionIntensity = p.mtoon_emission_intensity;
+          if (p.mtoon_second_shade_shift !== undefined) mtoonSecondShadeShift = p.mtoon_second_shade_shift;
+          if (p.mtoon_second_shade_softness !== undefined) mtoonSecondShadeSoftness = p.mtoon_second_shade_softness;
+          if (p.mtoon_matcap_intensity !== undefined) mtoonMatcapIntensity = p.mtoon_matcap_intensity;
+          if (p.mtoon_matcap_enabled !== undefined) mtoonMatcapEnabled = p.mtoon_matcap_enabled;
+          if (p.mtoon_matcap_mode !== undefined) mtoonMatcapMode = p.mtoon_matcap_mode;
+          if (p.mtoon_shade_toony !== undefined) mtoonShadeToony = p.mtoon_shade_toony;
+          // Fase 2 (#17): SDF facial
+          if (p.face_shadow_offset !== undefined) faceShadowOffset = p.face_shadow_offset;
+          if (p.face_shadow_smoothness !== undefined) faceShadowSmoothness = p.face_shadow_smoothness;
+          if (p.face_sdf_enabled !== undefined) faceSdfEnabled = p.face_sdf_enabled;
+          // Fase 2 (#43): olho anime + solver de olhar
+          if (p.eye_depth_scale !== undefined) eyeDepthScale = p.eye_depth_scale;
+          if (p.eye_highlight_intensity !== undefined) eyeHighlightIntensity = p.eye_highlight_intensity;
+          if (p.eye_enabled !== undefined) eyeEnabled = p.eye_enabled;
+          if (p.gaze_tracking_enabled !== undefined) gazeTrackingEnabled = p.gaze_tracking_enabled;
+          if (p.gaze_saccade_amplitude !== undefined) gazeSaccadeAmplitude = p.gaze_saccade_amplitude;
+          if (p.gaze_damping !== undefined) gazeDamping = p.gaze_damping;
           updateMaterial(false);
         });
 
@@ -1897,6 +2035,83 @@
   onDestroy(() => {
     autoSaveService.destroy();
   });
+
+  // ── Fase 2 (#53): câmera cinematográfica (lentes, DoF, tracking) ────────
+
+  /** Empurra o estado cinematográfico para o renderer + núcleo (headless). */
+  function applyCinematicState() {
+    const r = (viewportRef as any)?.renderer;
+    if (!r) return;
+    r.setDofSettings?.({
+      enabled: dofEnabled,
+      focusDistance: dofFocus,
+      fNumber: dofFNumber,
+      focalMm: lensFocalMm,
+      bokehShape: dofBokehShape,
+    });
+    r.setTrackingSettings?.({ mode: trackingMode, dampingPerSecond: trackingDamping });
+    // O Scene.dof do núcleo manda no headless (mesmos bytes no passe de pós).
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/core").then(({ invoke }) =>
+        invoke("set_dof_settings", {
+          enabled: dofEnabled,
+          focusDistance: dofFocus,
+          fNumber: dofFNumber,
+          focalMm: lensFocalMm,
+          bokehShape: dofBokehShape,
+          maxRadiusPx: 16.0,
+        }).catch(() => {})
+      );
+    }
+  }
+
+  /**
+   * Preset de lente: troca o FOV e REFREME o orbitador (raio × tan razão)
+   * para o sujeito manter o tamanho em tela — aceite 2: 24 → 85 mm muda a
+   * perspectiva sem mover o orbitador bruscamente.
+   */
+  function applyLensPreset(presetFocalMm: number, presetName: string) {
+    const r = (viewportRef as any)?.renderer;
+    if (!r) return;
+    const newFov = lensFovY(presetFocalMm); // rad
+    const eye: [number, number, number] = r.eye ?? [0, 1.5, 3.5];
+    const target: [number, number, number] = r.target ?? [0, 1, 0];
+    const dx = eye[0] - target[0];
+    const dy = eye[1] - target[1];
+    const dz = eye[2] - target[2];
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist > 0.001) {
+      const newDist = reframeRadius(dist, r.fov ?? (45 * Math.PI) / 180, newFov);
+      const clampedDist = Math.max(0.2, Math.min(40.0, newDist)); // clamp do orbitador
+      const s = clampedDist / dist;
+      r.eye = [target[0] + dx * s, target[1] + dy * s, target[2] + dz * s];
+    }
+    r.fov = newFov;
+    cameraFov = Math.round((newFov * 180) / Math.PI);
+    lensFocalMm = presetFocalMm;
+    applyCinematicState();
+    // Entry UI-only: o estado viaja no snapshot (applySnapshot repõe tudo).
+    recordHistory(`Lente ${presetFocalMm} mm — ${presetName}`, false, null);
+  }
+
+  /** FOV manual (slider): sem lente ativa (o preset é desconectado). */
+  function applyManualFov(degrees: number) {
+    const r = (viewportRef as any)?.renderer;
+    if (!r) return;
+    r.fov = (degrees * Math.PI) / 180;
+    lensFocalMm = 0; // nenhum preset corresponde
+    recordHistory(`FOV manual ${Math.round(degrees)}°`, false, null);
+  }
+
+  function handleDofToggle() {
+    applyCinematicState();
+    recordHistory(dofEnabled ? "Ativar Bokeh DoF" : "Desativar Bokeh DoF", false, null);
+  }
+
+  function handleTrackingChange() {
+    applyCinematicState();
+    recordHistory(`Tracking: ${trackingMode}`, false, null);
+  }
 
   function handleSliderUpdate(prop: string, val: number) {
     // P0-07: proportion edits enter history (was record=false always).
@@ -2188,6 +2403,7 @@
     const shadeRgb = hexToRgb(shadowColorHex);
     const outlineRgb = hexToRgb(outlineColor);
     const specRgb = hexToRgb(specColorHex);
+    const mtoonEmissionRgb = hexToRgb(mtoonEmissionColorHex);
 
     const rimRgbLocal = hexToRgb(rimColor);
     if (viewportRef?.setMaterialParams) {
@@ -2212,6 +2428,24 @@
         outlineSmoothness,
         outlineDepthBias,
         shadowSaturation,
+        // Fase 2 (#18): MToon — textura real chega com o texture manager (#26);
+        // enquanto isso os slots ancoram o neutro 1x1 do renderer.
+        mtoonEmissionColor: [mtoonEmissionRgb[0], mtoonEmissionRgb[1], mtoonEmissionRgb[2], 1.0],
+        mtoonEmissionIntensity,
+        mtoonSecondShadeShift,
+        mtoonSecondShadeSoftness,
+        mtoonMatcapIntensity,
+        mtoonMatcapEnabled,
+        mtoonMatcapMode,
+        mtoonShadeToony,
+        // Fase 2 (#17): SDF facial
+        faceShadowOffset,
+        faceShadowSmoothness,
+        faceSdfEnabled,
+        // Fase 2 (#43): olho anime (parallax + highlights no buffer de material)
+        eyeDepthScale,
+        eyeHighlightIntensity,
+        eyeEnabled,
       });
     }
 
@@ -2239,6 +2473,27 @@
           outline_smoothness: outlineSmoothness,
           outline_depth_bias: outlineDepthBias,
           shadow_saturation: shadowSaturation,
+          // Fase 2 (#18): MToon — o núcleo é a fonte do material que o
+          // headless desenha (paridade com o viewport).
+          mtoon_emission_color: [mtoonEmissionRgb[0], mtoonEmissionRgb[1], mtoonEmissionRgb[2], 1.0],
+          mtoon_emission_intensity: mtoonEmissionIntensity,
+          mtoon_second_shade_shift: mtoonSecondShadeShift,
+          mtoon_second_shade_softness: mtoonSecondShadeSoftness,
+          mtoon_matcap_intensity: mtoonMatcapIntensity,
+          mtoon_matcap_enabled: mtoonMatcapEnabled,
+          mtoon_matcap_mode: mtoonMatcapMode,
+          mtoon_shade_toony: mtoonShadeToony,
+          // Fase 2 (#17): SDF facial
+          face_shadow_offset: faceShadowOffset,
+          face_shadow_smoothness: faceShadowSmoothness,
+          face_sdf_enabled: faceSdfEnabled,
+          // Fase 2 (#43): olho anime + solver de olhar
+          eye_depth_scale: eyeDepthScale,
+          eye_highlight_intensity: eyeHighlightIntensity,
+          eye_enabled: eyeEnabled,
+          gaze_tracking_enabled: gazeTrackingEnabled,
+          gaze_saccade_amplitude: gazeSaccadeAmplitude,
+          gaze_damping: gazeDamping,
         }).catch(() => {});
       });
     }
@@ -2268,6 +2523,26 @@
           outline_smoothness: outlineSmoothness,
           outline_depth_bias: outlineDepthBias,
           ao_intensity: aoIntensity,
+          // Fase 2 (#18): MToon no history (undo/redo repõe os parâmetros)
+          mtoon_emission_color: [mtoonEmissionRgb[0], mtoonEmissionRgb[1], mtoonEmissionRgb[2], 1.0],
+          mtoon_emission_intensity: mtoonEmissionIntensity,
+          mtoon_second_shade_shift: mtoonSecondShadeShift,
+          mtoon_second_shade_softness: mtoonSecondShadeSoftness,
+          mtoon_matcap_intensity: mtoonMatcapIntensity,
+          mtoon_matcap_enabled: mtoonMatcapEnabled,
+          mtoon_matcap_mode: mtoonMatcapMode,
+          mtoon_shade_toony: mtoonShadeToony,
+          // Fase 2 (#17): SDF facial no history (undo/redo repõe os parâmetros)
+          face_shadow_offset: faceShadowOffset,
+          face_shadow_smoothness: faceShadowSmoothness,
+          face_sdf_enabled: faceSdfEnabled,
+          // Fase 2 (#43): olho anime + solver de olhar
+          eye_depth_scale: eyeDepthScale,
+          eye_highlight_intensity: eyeHighlightIntensity,
+          eye_enabled: eyeEnabled,
+          gaze_tracking_enabled: gazeTrackingEnabled,
+          gaze_saccade_amplitude: gazeSaccadeAmplitude,
+          gaze_damping: gazeDamping,
         },
       });
       recordHistory("Ajustar Material Toon", isContinuous, command);
@@ -2679,6 +2954,22 @@
             onCharacterCommit={(desc) => recordHistory(desc, false, morphStateCommand())}
             onProportionsChange={handleInspectorProportionsChange}
             onError={(msg) => alert(msg)}
+            bind:eyeEnabled
+            bind:eyeDepthScale
+            bind:eyeHighlightIntensity
+            bind:gazeTrackingEnabled
+            bind:gazeSaccadeAmplitude
+            bind:gazeDamping
+            onEyeChange={(params) => {
+              eyeEnabled = params.eyeEnabled;
+              eyeDepthScale = params.eyeDepthScale;
+              eyeHighlightIntensity = params.eyeHighlightIntensity;
+              gazeTrackingEnabled = params.gazeTrackingEnabled;
+              gazeSaccadeAmplitude = params.gazeSaccadeAmplitude;
+              gazeDamping = params.gazeDamping;
+              // Fase 2 (#43): parâmetros de material (history captura antes).
+              updateMaterial(!params.isContinuous, params.isContinuous);
+            }}
           />
 
         <!-- TOOL: hair (Cabelo 3D) -->
@@ -2989,6 +3280,129 @@
                   onchange={() => { updateMaterial(true, false); updateLighting(true, false); }}
                 />
                 <span class="color-hex">{shadowColorHex.toUpperCase()}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fase 2 (#18): material anime VRoid/MToon (VRMC_materials_mtoon) -->
+          <div class="control-group">
+            <div class="group-title">
+              MTOON (VROID)
+              <span class="val-tag" style="opacity: 0.7;">emissão</span>
+            </div>
+            <div class="color-row">
+              <span class="label">Sub-Emissão</span>
+              <div class="color-input-wrapper">
+                <input
+                  type="color"
+                  bind:value={mtoonEmissionColorHex}
+                  oninput={() => updateMaterial(true, true)}
+                  onchange={() => updateMaterial(true, false)}
+                />
+                <span class="color-hex">{mtoonEmissionColorHex.toUpperCase()}</span>
+              </div>
+            </div>
+            <div class="slider-row">
+              <span class="label">Intensidade</span>
+              <input
+                type="range"
+                min="0.0"
+                max="2.0"
+                step="0.05"
+                bind:value={mtoonEmissionIntensity}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonEmissionIntensity.toFixed(2)}x</span>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <div class="group-title">SEGUNDO SHADE</div>
+            <div class="slider-row">
+              <span class="label">Offset da Bandas</span>
+              <input
+                type="range"
+                min="-1.0"
+                max="1.0"
+                step="0.01"
+                bind:value={mtoonSecondShadeShift}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonSecondShadeShift.toFixed(2)}</span>
+            </div>
+            <div class="slider-row">
+              <span class="label">Suavidade</span>
+              <input
+                type="range"
+                min="0.001"
+                max="0.5"
+                step="0.005"
+                bind:value={mtoonSecondShadeSoftness}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonSecondShadeSoftness.toFixed(3)}</span>
+            </div>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                bind:checked={mtoonShadeToony}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span>Shade Toony (banda dura na sombra)</span>
+            </label>
+          </div>
+
+          <div class="control-group">
+            <div class="group-title">
+              MATCAP (SPHERE ADD)
+              <span class="val-tag" class:on={mtoonMatcapEnabled} style="opacity: 0.7;">
+                {mtoonMatcapEnabled ? "on" : "off"}
+              </span>
+            </div>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                bind:checked={mtoonMatcapEnabled}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span>Habilitar Matcap</span>
+            </label>
+            <div class="slider-row">
+              <span class="label">Intensidade</span>
+              <input
+                type="range"
+                min="0.0"
+                max="2.0"
+                step="0.05"
+                bind:value={mtoonMatcapIntensity}
+                disabled={!mtoonMatcapEnabled}
+                oninput={() => updateMaterial(true, true)}
+                onchange={() => updateMaterial(true, false)}
+              />
+              <span class="val-tag">{mtoonMatcapIntensity.toFixed(2)}x</span>
+            </div>
+            <div class="slider-row" style="grid-template-columns: 1fr auto;">
+              <span class="label">Modo</span>
+              <div class="btn-grid">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  class:selected={mtoonMatcapMode === 0}
+                  onclick={() => { mtoonMatcapMode = 0; updateMaterial(true, false); }}
+                >
+                  Mult
+                </button>
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  class:selected={mtoonMatcapMode === 1}
+                  onclick={() => { mtoonMatcapMode = 1; updateMaterial(true, false); }}
+                >
+                  Add
+                </button>
               </div>
             </div>
           </div>
@@ -3389,6 +3803,9 @@
             bind:hueShift
             bind:shadowSaturation
             bind:ambientIntensity
+            bind:faceShadowOffset
+            bind:faceShadowSmoothness
+            bind:faceSdfEnabled
             projectionMode={cameraProjection}
             onProjectionChange={(mode) => {
               cameraProjection = viewportRef?.setProjectionMode(mode) ?? mode;
@@ -3403,6 +3820,14 @@
               if (params.shadowSaturation !== undefined) shadowSaturation = params.shadowSaturation;
               if (params.ambientIntensity !== undefined) ambientIntensity = params.ambientIntensity;
               updateLighting(!params.isContinuous, params.isContinuous);
+              updateMaterial(!params.isContinuous, params.isContinuous);
+            }}
+            onFaceShadowUpdate={(params) => {
+              faceShadowOffset = params.offset;
+              faceShadowSmoothness = params.smoothness;
+              faceSdfEnabled = params.enabled;
+              // Fase 2 (#17): parâmetros de material — o bloco do history
+              // captura o snapshot antes de updateMaterial (igual ao UI toon).
               updateMaterial(!params.isContinuous, params.isContinuous);
             }}
           />
@@ -3804,14 +4229,98 @@
             <div class="group-title">LENTE & CÂMERA DE CENA</div>
             <div class="slider-row">
               <span class="label">Campo de Visão (FOV)</span>
-              <input type="range" min="25" max="90" step="1" bind:value={cameraFov} />
+              <input
+                type="range"
+                min="25"
+                max="90"
+                step="1"
+                bind:value={cameraFov}
+                onchange={() => applyManualFov(cameraFov)}
+              />
               <span class="val-tag">{cameraFov}°</span>
             </div>
 
+            <!-- Fase 2 (#53): presets cinematográficos (sensor full-frame 24 mm) -->
+            <div class="group-title">LENTES CINEMATOGRÁFICAS</div>
             <div class="btn-grid">
-              <button class="btn-secondary" class:selected={focalLength === 24} onclick={() => focalLength = 24}>24mm Grande Angular</button>
-              <button class="btn-secondary" class:selected={focalLength === 50} onclick={() => focalLength = 50}>50mm Retrato Anime</button>
-              <button class="btn-secondary" class:selected={focalLength === 85} onclick={() => focalLength = 85}>85mm Telefoto</button>
+              {#each LENS_PRESETS as preset (preset.id)}
+                <button
+                  class="btn-secondary"
+                  class:selected={lensFocalMm === preset.focalMm}
+                  onclick={() => applyLensPreset(preset.focalMm, preset.name)}
+                  title="fov_y {Math.round((lensFovY(preset.focalMm) * 180) / Math.PI)}° — reframa o orbitador sem salta"
+                >
+                  {preset.focalMm} mm · {preset.name}
+                </button>
+              {/each}
+            </div>
+
+            <!-- Fase 2 (#53): Anime Bokeh DoF (CoC + bokeh circular/hex) -->
+            <div class="group-title">PROFUNDIDADE DE CAMPO (BOKEH)</div>
+            <div class="toggle-row">
+              <span class="label">Desfocar fundo (DoF)</span>
+              <input type="checkbox" bind:checked={dofEnabled} onchange={handleDofToggle} />
+            </div>
+            <div class="slider-row">
+              <span class="label">Plano de Foco</span>
+              <input
+                type="range"
+                min="0.5"
+                max="10"
+                step="0.1"
+                bind:value={dofFocus}
+                onchange={applyCinematicState}
+              />
+              <span class="val-tag">{dofFocus.toFixed(1)} m</span>
+            </div>
+            <div class="slider-row">
+              <span class="label">Abertura (número f)</span>
+              <input
+                type="range"
+                min="1.2"
+                max="16"
+                step="0.1"
+                bind:value={dofFNumber}
+                onchange={applyCinematicState}
+              />
+              <span class="val-tag">f/{dofFNumber.toFixed(1)}</span>
+            </div>
+            <div class="btn-grid">
+              <button
+                class="btn-secondary"
+                class:selected={dofBokehShape === 0}
+                onclick={() => { dofBokehShape = 0; handleDofToggle(); }}
+              >
+                Bokeh Circular
+              </button>
+              <button
+                class="btn-secondary"
+                class:selected={dofBokehShape === 1}
+                onclick={() => { dofBokehShape = 1; handleDofToggle(); }}
+              >
+                Bokeh Hexagonal
+              </button>
+            </div>
+
+            <!-- Fase 2 (#53): tracking de alvo (câmera em movimento) -->
+            <div class="group-title">TRACKING DO ALVO</div>
+            <div class="btn-grid">
+              <button class="btn-secondary" class:selected={trackingMode === "off"} onclick={() => { trackingMode = "off"; handleTrackingChange(); }}>Livre</button>
+              <button class="btn-secondary" class:selected={trackingMode === "head"} onclick={() => { trackingMode = "head"; handleTrackingChange(); }}>Cabeça</button>
+              <button class="btn-secondary" class:selected={trackingMode === "hips"} onclick={() => { trackingMode = "hips"; handleTrackingChange(); }}>Centro (Hips)</button>
+              <button class="btn-secondary" class:selected={trackingMode === "poi"} onclick={() => { trackingMode = "poi"; handleTrackingChange(); }}>Ponto de Interesse</button>
+            </div>
+            <div class="slider-row">
+              <span class="label">Amortecimento</span>
+              <input
+                type="range"
+                min="1"
+                max="15"
+                step="0.5"
+                bind:value={trackingDamping}
+                onchange={handleTrackingChange}
+              />
+              <span class="val-tag">{trackingDamping.toFixed(1)}</span>
             </div>
           </div>
 
@@ -4621,6 +5130,22 @@
     background: #392453;
     border-color: #c084fc;
     color: #ffffff;
+  }
+
+  /* Fase 2 (#18): toggle de flag MToon */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.74rem;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 2px 0;
+  }
+
+  .toggle-row input[type="checkbox"] {
+    accent-color: #c084fc;
+    cursor: pointer;
   }
 
   .btn-secondary:disabled,

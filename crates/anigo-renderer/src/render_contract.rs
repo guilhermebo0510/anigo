@@ -34,12 +34,15 @@ pub const CONTRACT_VERSION: u64 = 1;
 pub const CEL_SHADING_WGSL: &str = include_str!("../shaders/cel_shading.wgsl");
 pub const INVERTED_HULL_WGSL: &str = include_str!("../shaders/inverted_hull.wgsl");
 pub const MORPH_SPARSE_COMPUTE_WGSL: &str = include_str!("../shaders/morph_sparse_compute.wgsl");
+/// Fase 2 (#53): Anime Bokeh DoF (passe de pós-processamento).
+pub const POSTPROCESS_DOF_WGSL: &str = include_str!("../shaders/postprocess_dof.wgsl");
 
 /// (nome no contrato, bytes) dos shaders de produção usados pelo headless.
-pub const PRODUCTION_SHADERS: [(&str, &str); 3] = [
+pub const PRODUCTION_SHADERS: [(&str, &str); 4] = [
     ("cel_shading", CEL_SHADING_WGSL),
     ("inverted_hull", INVERTED_HULL_WGSL),
     ("morph_sparse_compute", MORPH_SPARSE_COMPUTE_WGSL),
+    ("postprocess_dof", POSTPROCESS_DOF_WGSL),
 ];
 
 /// FNV-1a de 64 bits — mesma função do gerador de fixtures e do viewport.
@@ -881,7 +884,7 @@ mod tests {
 
     #[test]
     fn every_production_shader_matches_its_frozen_hash() {
-        assert_eq!(shaders_with_role("production").len(), 3);
+        assert_eq!(shaders_with_role("production").len(), 4);
         for (name, source) in PRODUCTION_SHADERS {
             let normalized = source.replace("\r\n", "\n");
             let actual = fnv1a64(normalized.as_bytes());
@@ -902,13 +905,16 @@ mod tests {
 
     #[test]
     fn uniform_blocks_match_the_frozen_layout() {
-        use crate::uniforms::{CameraUniform, LightUniform, MaterialUniform, OutlineUniform};
+        use crate::uniforms::{CameraUniform, DofUniform, LightUniform, MaterialUniform, OutlineUniform};
 
         assert_eq!(uniform_size("camera") as usize, std::mem::size_of::<CameraUniform>());
         assert_eq!(uniform_size("light") as usize, std::mem::size_of::<LightUniform>());
         assert_eq!(uniform_size("material") as usize, std::mem::size_of::<MaterialUniform>());
         assert_eq!(uniform_size("outline") as usize, std::mem::size_of::<OutlineUniform>());
+        // Fase 2 (#53): DoF cinematográfico (48 B / 12 floats)
+        assert_eq!(uniform_size("dof") as usize, std::mem::size_of::<DofUniform>());
         assert_eq!(uniform_address_space("camera"), "uniform");
+        assert_eq!(uniform_address_space("dof"), "uniform");
 
         // camera: view_proj @0, camera_pos @64, model @80, normal_mat @144
         assert_eq!(uniform_offset("camera", "view_proj"), 0);
@@ -993,7 +999,9 @@ mod tests {
 
     #[test]
     fn pass_graph_is_shared_with_the_viewport() {
-        assert_eq!(render_pass_order(), vec!["outline", "cel"]);
+        // Fase 2 (#53): o passe de pós DoF completa o grafo canônico (roda só
+        // quando dof_enabled — only_when no contrato).
+        assert_eq!(render_pass_order(), vec!["outline", "cel", "dof_post"]);
 
         let outline = render_pass("outline");
         assert_eq!(outline.shader, "inverted_hull");
@@ -1016,7 +1024,8 @@ mod tests {
         assert_eq!(morph.compute_entry, Some("cs_accumulate_morphs"));
 
         // P1-04 acrescentou o palette de ossos ao grupo 0: `bones` é o binding 5
-        // do cel e o 2 do contorno (é o que o WGSL declara e o contrato congela).
+        // do cel e o 2 do contorno. Fase 2 acrescentou os slots de textura do
+        // material anime (6-15, MToon) e o mapa SDF da sombra facial (16-17).
         assert_eq!(
             bind_group_entries("cel"),
             vec![
@@ -1026,11 +1035,31 @@ mod tests {
                 (3, "texture_2d<f32>"),
                 (4, "sampler"),
                 (5, "uniform"),
+                (6, "texture_2d<f32>"),
+                (7, "sampler"),
+                (8, "texture_2d<f32>"),
+                (9, "sampler"),
+                (10, "texture_2d<f32>"),
+                (11, "sampler"),
+                (12, "texture_2d<f32>"),
+                (13, "sampler"),
+                (14, "texture_2d<f32>"),
+                (15, "sampler"),
+                (16, "texture_2d<f32>"),
+                (17, "sampler"),
             ]
         );
+        // Fase 2 (#18): o mapa de espessura do contorno (MToon outlineWidth) é
+        // o binding 3, com sampler dedicado no 4.
         assert_eq!(
             bind_group_entries("outline"),
-            vec![(0, "uniform"), (1, "uniform"), (2, "uniform")]
+            vec![
+                (0, "uniform"),
+                (1, "uniform"),
+                (2, "uniform"),
+                (3, "texture_2d<f32>"),
+                (4, "sampler"),
+            ]
         );
         assert_eq!(bind_group_entries("sparse_morph").len(), 5);
     }

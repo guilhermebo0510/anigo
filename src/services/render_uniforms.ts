@@ -80,9 +80,32 @@ export interface MaterialUniformInput {
   specularOffset: number;
   specularSize: number;
   aoIntensity: number;
+  // Fase 2 (#18): material anime VRoid/MToon — opcionais com o default do
+  // `StylizedMaterial`: slots off, sem emissão/matcap, shade_toony = true.
+  mtoonEmissionColor?: [number, number, number, number];
+  mtoonEmissionIntensity?: number;
+  mtoonSecondShadeShift?: number;
+  mtoonSecondShadeSoftness?: number;
+  mtoonMatcapIntensity?: number;
+  mtoonMainTextureEnabled?: boolean;
+  mtoonShadeTextureEnabled?: boolean;
+  mtoonSecondShadeTextureEnabled?: boolean;
+  mtoonEmissionTextureEnabled?: boolean;
+  mtoonMatcapEnabled?: boolean;
+  /** 0 = normal (mult), 1 = additive. */
+  mtoonMatcapMode?: number;
+  mtoonShadeToony?: boolean;
+  // Fase 2 (#17): sombra facial SDF (default = off, smoothness 0.05)
+  faceShadowOffset?: number;
+  faceShadowSmoothness?: number;
+  faceSdfEnabled?: boolean;
+  // Fase 2 (#43): olho anime (default = off)
+  eyeDepthScale?: number;
+  eyeHighlightIntensity?: number;
+  eyeEnabled?: boolean;
 }
 
-/** Bloco `material` (112 B = 28 f32). */
+/** Bloco `material` (208 B = 52 f32). */
 export function materialUniformFloats(input: MaterialUniformInput): Float32Array {
   const data = new Float32Array(uniformFloats("material"));
   writeVec(data, "material", "base_color", input.baseColor);
@@ -107,6 +130,40 @@ export function materialUniformFloats(input: MaterialUniformInput): Float32Array
     input.specularSize,
     input.aoIntensity,
   ]);
+  // Fase 2 (#18): MToon — emission, segundo shade, matcap e flags de textura.
+  writeVec(data, "material", "emission_color", input.mtoonEmissionColor ?? [0.0, 0.0, 0.0, 0.0]);
+  writeVec(data, "material", "params4", [
+    input.mtoonEmissionIntensity ?? 0.0,
+    input.mtoonSecondShadeShift ?? 0.0,
+    input.mtoonSecondShadeSoftness ?? 0.05,
+    input.mtoonMatcapIntensity ?? 0.0,
+  ]);
+  writeVec(data, "material", "params5", [
+    (input.mtoonMainTextureEnabled ?? false) ? 1.0 : 0.0,
+    (input.mtoonShadeTextureEnabled ?? false) ? 1.0 : 0.0,
+    (input.mtoonSecondShadeTextureEnabled ?? false) ? 1.0 : 0.0,
+    (input.mtoonEmissionTextureEnabled ?? false) ? 1.0 : 0.0,
+  ]);
+  writeVec(data, "material", "params6", [
+    (input.mtoonMatcapEnabled ?? false) ? 1.0 : 0.0,
+    input.mtoonMatcapMode ?? 0,
+    (input.mtoonShadeToony ?? true) ? 1.0 : 0.0,
+    0.0,
+  ]);
+  // Fase 2 (#17): SDF facial — off por padrão (mapa ancorado no neutro 1x1)
+  writeVec(data, "material", "params7", [
+    input.faceShadowOffset ?? 0.0,
+    input.faceShadowSmoothness ?? 0.05,
+    (input.faceSdfEnabled ?? false) ? 1.0 : 0.0,
+    0.0,
+  ]);
+  // Fase 2 (#43): olho anime — off por padrão (eye_uv = in.uv, highlight 0)
+  writeVec(data, "material", "params8", [
+    input.eyeDepthScale ?? 0.0,
+    input.eyeHighlightIntensity ?? 0.0,
+    (input.eyeEnabled ?? false) ? 1.0 : 0.0,
+    0.0,
+  ]);
   return data;
 }
 
@@ -126,6 +183,49 @@ export function outlineUniformFloats(input: OutlineUniformInput): Float32Array {
   writeVec(data, "outline", "color", input.color);
   writeVec(data, "outline", "params", [input.width, input.aspect, input.depthBias, input.opacity]);
   writeVec(data, "outline", "params2", [input.smoothness, 0.0, 0.0, 0.0]);
+  return data;
+}
+
+// ─── Fase 2 (#53): Depth of Field cinematográfico (Anime Bokeh DoF) ────────
+
+/**
+ * Inputs do buffer `DofUniform` (48 B / 12 floats — bloco `dof` do contrato):
+ * params = [focus_distance (m), f_number, bokeh_shape (0 círculo/1 hex),
+ * focal_m (m)]; resolution = [width_px, height_px, z_near (m), z_far (m)];
+ * limits = [max_radius_px, sensor_height_m (0.024), reserved, reserved].
+ *
+ * O MESMO empacotamento roda no headless Rust (`headless.rs`) — o golden do
+ * contrato (cinematography) garante a paridade byte a byte.
+ */
+export interface DofUniformInput {
+  /** Distância de foco (m) — o plano milimetricamente nítido. */
+  focusDistance: number;
+  /** Número f (abertura) — menor = mais bokeh. */
+  fNumber: number;
+  /** 0 = bokeh circular, 1 = hexagonal. */
+  bokehShape: number;
+  /** Distância focal ativa em mm (vira metros no buffer). */
+  focalMm: number;
+  /** Raio máximo do bokeh em px (teto de custo). */
+  maxRadiusPx: number;
+  /** Dimensões do alvo em px. */
+  widthPx: number;
+  heightPx: number;
+  /** Plano próximo/longe (m) para linearizar a profundidade. */
+  zNear: number;
+  zFar: number;
+}
+
+export function dofUniformFloats(input: DofUniformInput): Float32Array {
+  const data = new Float32Array(uniformFloats("dof"));
+  writeVec(data, "dof", "params", [
+    input.focusDistance,
+    input.fNumber,
+    input.bokehShape,
+    input.focalMm / 1000.0,
+  ]);
+  writeVec(data, "dof", "resolution", [input.widthPx, input.heightPx, input.zNear, input.zFar]);
+  writeVec(data, "dof", "limits", [input.maxRadiusPx, 0.024, 0.0, 0.0]);
   return data;
 }
 

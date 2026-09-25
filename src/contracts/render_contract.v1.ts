@@ -92,6 +92,8 @@ export interface PassSpecV1 {
   write_mask?: string;
   workgroup_size?: number;
   only_when?: string;
+  /** Fase 2 (#53): passe de pós com fullscreen triangle (sem vertex buffer). */
+  fullscreen_triangle?: boolean;
 }
 
 export interface ToonRampRowV1 {
@@ -127,6 +129,123 @@ export interface SkinningSpecV1 {
   unskinned_fallback: string;
   index_clamp: string;
   block_markers: string[];
+}
+
+/** Fase 2 (#17): sombra facial SDF — definição compartilhada + números dourados. */
+export interface FaceSdfSpecV1 {
+  note: string;
+  sdf_channel: string;
+  sdf_semantics: string;
+  neutral_when_disabled: string;
+  darkening: number;
+  block_markers: string[];
+  shared_by: string[];
+  entry_functions: string[];
+  golden: Array<{
+    azimuth_degrees: number;
+    theta: number;
+    light_front: number;
+    threshold: number;
+    factor_sdf_half: number;
+  }>;
+  golden_note: string;
+}
+
+/** Fase 2 (#43): olho anime — parallax da íris + highlights + solver de olhar. */
+export interface AnimeEyeSpecV1 {
+  note: string;
+  parallax_formula: string;
+  v_tangent_basis: string;
+  highlight: {
+    main_center: [number, number];
+    main_falloff: [number, number];
+    main_ellipse_y_scale: number;
+    second_center: [number, number];
+    second_falloff: [number, number];
+    second_intensity: number;
+    decoupled_from_lighting: boolean;
+  };
+  block_markers: string[];
+  shared_by: string[];
+  entry_functions: string[];
+  golden: Array<
+    | { name: string; uv: [number, number]; v_tangent: [number, number]; depth_scale: number; expected_uv: [number, number] }
+    | { name: string; uv: [number, number]; expected_mask: number }
+  >;
+  golden_note: string;
+  gaze: {
+    eye_offsets_head_local: { left: [number, number, number]; right: [number, number, number] };
+    max_yaw_degrees: number;
+    max_pitch_degrees: number;
+    saccade_amplitude_degrees_default: number;
+    saccade_amplitude_range: [number, number];
+    damping_default: number;
+    note: string;
+    golden: Array<{ name: string; target: [number, number, number]; yaw: number; pitch: number; note: string }>;
+    saccades: Array<{ t: number; yaw: number; pitch: number }>;
+    saccades_note: string;
+    damping: {
+      from: [number, number];
+      to: [number, number];
+      damping_per_second: number;
+      frames_60fps: number;
+      expected: [number, number];
+      note: string;
+    };
+  };
+}
+
+/** Fase 2 (#53): câmera cinematográfica — lentes, DoF (CoC/bokeh) e tracking. */
+export interface CinematographySpecV1 {
+  note: string;
+  lens: {
+    sensor_height_mm: number;
+    fov_formula: string;
+    presets: Array<{ id: string; focal_mm: number; name: string; fov_y_degrees: number }>;
+    reframe: {
+      formula: string;
+      golden: { from_mm: number; to_mm: number; radius: number; expected_radius: number; note: string };
+    };
+  };
+  dof: {
+    coc_formula: string;
+    coc_variables: string;
+    coc_to_pixels: string;
+    bokeh_shapes: Record<number, string>;
+    samples: { disc_points: number; center_always_included: boolean; note: string };
+    defaults: { focus_distance_m: number; f_number: number; focal_mm: number; max_radius_px: number; bokeh_shape: number };
+    golden: Array<{
+      name: string;
+      frag_dist: number;
+      focus_dist: number;
+      focal_m: number;
+      f_number: number;
+      expected_coc: number;
+      note?: string;
+    }>;
+    bokeh_px_golden: {
+      image_height_px: number;
+      sensor_height_m: number;
+      values: Array<{ name: string; coc: number; max_radius_px?: number; expected_radius_px: number; note?: string }>;
+    };
+  };
+  tracking: {
+    modes: string[];
+    target_positions: { head: [number, number, number]; hips: [number, number, number]; note: string };
+    damping: {
+      formula: string;
+      default_damping_per_second: number;
+      golden: {
+        from: [number, number, number];
+        to: [number, number, number];
+        damping_per_second: number;
+        frames_60fps: number;
+        expected: [number, number, number];
+        note: string;
+      };
+    };
+    note: string;
+  };
 }
 
 /** Issue #14: semântica de execução de um nó do DAG canônico. */
@@ -169,6 +288,12 @@ export interface RenderContractV1 {
   diagnostics?: { note: string; codes: DiagnosticCodeSpecV1[] };
   /** P1-04: skinning (paleta de ossos + atributos de vértice). */
   skinning?: SkinningSpecV1;
+  /** Fase 2 (#17): sombra facial SDF — bloco compartilhado + golden angular. */
+  face_sdf?: FaceSdfSpecV1;
+  /** Fase 2 (#43): olho anime — parallax/highlights + solver de olhar. */
+  anime_eye?: AnimeEyeSpecV1;
+  /** Fase 2 (#53): câmera cinematográfica — lentes, Anime Bokeh DoF, tracking. */
+  cinematography?: CinematographySpecV1;
   /** P1-03: códigos de validação de malha antes de criar buffers. */
   mesh_validation?: {
     note: string;

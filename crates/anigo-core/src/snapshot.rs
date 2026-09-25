@@ -270,6 +270,12 @@ impl LightSnapshot {
     }
 }
 
+fn default_material_snapshot_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
+fn default_material_snapshot_shade_toony() -> bool { true }
+fn default_material_snapshot_face_smoothness() -> f32 { 0.05 }
+fn default_material_snapshot_saccade_amplitude() -> f32 { 2.5 }
+fn default_material_snapshot_gaze_damping() -> f32 { 6.0 }
+
 /// Material state handed to the renderer (canonical NPR parameters only).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaterialSnapshot {
@@ -296,6 +302,52 @@ pub struct MaterialSnapshot {
     pub hue_shift: f32,
     pub toon_steps: f32,
     pub ao_intensity: f32,
+    // Fase 2 (#18): parâmetros MToon (VRMC_materials_mtoon) — com defaults
+    // para snapshots antigos continuam abrindo intactos.
+    #[serde(default = "default_material_snapshot_emission_color")]
+    pub mtoon_emission_color: [f32; 4],
+    #[serde(default)]
+    pub mtoon_emission_intensity: f32,
+    #[serde(default)]
+    pub mtoon_second_shade_shift: f32,
+    #[serde(default)]
+    pub mtoon_second_shade_softness: f32,
+    #[serde(default)]
+    pub mtoon_matcap_intensity: f32,
+    #[serde(default)]
+    pub mtoon_main_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_second_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_emission_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_matcap_enabled: bool,
+    #[serde(default)]
+    pub mtoon_matcap_mode: u8,
+    #[serde(default = "default_material_snapshot_shade_toony")]
+    pub mtoon_shade_toony: bool,
+    // Fase 2 (#17): sombra facial SDF — defaults para snapshots antigos.
+    #[serde(default)]
+    pub face_shadow_offset: f32,
+    #[serde(default = "default_material_snapshot_face_smoothness")]
+    pub face_shadow_smoothness: f32,
+    #[serde(default)]
+    pub face_sdf_enabled: bool,
+    // Fase 2 (#43): olho anime + solver de olhar — defaults para antigos.
+    #[serde(default)]
+    pub eye_depth_scale: f32,
+    #[serde(default)]
+    pub eye_highlight_intensity: f32,
+    #[serde(default)]
+    pub eye_enabled: bool,
+    #[serde(default)]
+    pub gaze_tracking_enabled: bool,
+    #[serde(default = "default_material_snapshot_saccade_amplitude")]
+    pub gaze_saccade_amplitude: f32,
+    #[serde(default = "default_material_snapshot_gaze_damping")]
+    pub gaze_damping: f32,
 }
 
 impl MaterialSnapshot {
@@ -329,6 +381,29 @@ impl MaterialSnapshot {
             hue_shift: material.hue_shift,
             toon_steps: material.toon_steps,
             ao_intensity: material.ao_intensity,
+            mtoon_emission_color: material.mtoon_emission_color,
+            mtoon_emission_intensity: material.mtoon_emission_intensity,
+            mtoon_second_shade_shift: material.mtoon_second_shade_shift,
+            mtoon_second_shade_softness: material.mtoon_second_shade_softness,
+            mtoon_matcap_intensity: material.mtoon_matcap_intensity,
+            mtoon_main_texture_enabled: material.mtoon_main_texture_enabled,
+            mtoon_shade_texture_enabled: material.mtoon_shade_texture_enabled,
+            mtoon_second_shade_texture_enabled: material.mtoon_second_shade_texture_enabled,
+            mtoon_emission_texture_enabled: material.mtoon_emission_texture_enabled,
+            mtoon_matcap_enabled: material.mtoon_matcap_enabled,
+            mtoon_matcap_mode: material.mtoon_matcap_mode,
+            mtoon_shade_toony: material.mtoon_shade_toony,
+            // Fase 2 (#17): sombra facial SDF
+            face_shadow_offset: material.face_shadow_offset,
+            face_shadow_smoothness: material.face_shadow_smoothness,
+            face_sdf_enabled: material.face_sdf_enabled,
+            // Fase 2 (#43): olho anime + solver de olhar
+            eye_depth_scale: material.eye_depth_scale,
+            eye_highlight_intensity: material.eye_highlight_intensity,
+            eye_enabled: material.eye_enabled,
+            gaze_tracking_enabled: material.gaze_tracking_enabled,
+            gaze_saccade_amplitude: material.gaze_saccade_amplitude,
+            gaze_damping: material.gaze_damping,
         }
     }
 }

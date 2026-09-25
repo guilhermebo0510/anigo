@@ -581,12 +581,15 @@ mod tests {
 
     #[test]
     fn contract_plan_matches_today_execution_order() {
-        // Sem overrides, o plano é a ordem do contrato (outline → cel): o
+        // Sem overrides, o plano é a ordem do contrato (outline → cel → dof_post): o
         // grafo não muda um pixel do comportamento atual.
         let plan = RenderGraph::from_contract()
             .build(&GraphOverrides::default())
             .expect("plano do contrato");
-        assert_eq!(plan.order, vec!["outline".to_string(), "cel".to_string()]);
+        assert_eq!(
+            plan.order,
+            vec!["outline".to_string(), "cel".to_string(), "dof_post".to_string()]
+        );
         assert!(!plan.contains(GraphOverrides::DEPTH_PREPASS));
         // Cor e profundidade convivem no mesmo passo: slots distintos.
         assert_ne!(
@@ -611,7 +614,8 @@ mod tests {
             vec![
                 "depth_prepass".to_string(),
                 "outline".to_string(),
-                "cel".to_string()
+                "cel".to_string(),
+                "dof_post".to_string(),
             ]
         );
         assert!(plan.position("depth_prepass") < plan.position("cel"));
@@ -637,7 +641,10 @@ mod tests {
                 ..GraphOverrides::default()
             })
             .expect("ordem do snapshot");
-        assert_eq!(plan.order, vec!["cel".to_string(), "outline".to_string()]);
+        assert_eq!(
+            plan.order,
+            vec!["cel".to_string(), "outline".to_string(), "dof_post".to_string()]
+        );
 
         let plan = RenderGraph::from_contract()
             .build(&GraphOverrides {
@@ -645,12 +652,19 @@ mod tests {
                 ..GraphOverrides::default()
             })
             .expect("só o cel");
-        assert_eq!(plan.order, vec!["cel".to_string()]);
+        assert_eq!(
+            plan.order,
+            vec!["cel".to_string(), "dof_post".to_string()]
+        );
 
         // Tudo desligado não é plano — é erro (o chamador cai no contrato).
         let error = RenderGraph::from_contract()
             .build(&GraphOverrides {
-                disabled: vec!["outline".to_string(), "cel".to_string()],
+                disabled: vec![
+                    "outline".to_string(),
+                    "cel".to_string(),
+                    "dof_post".to_string(),
+                ],
                 ..GraphOverrides::default()
             })
             .expect_err("plano vazio");

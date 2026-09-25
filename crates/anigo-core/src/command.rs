@@ -148,6 +148,30 @@ pub struct MaterialPatch {
     pub outline_depth_bias: Option<f32>,
     pub specular_size: Option<f32>,
     pub ao_intensity: Option<f32>,
+    // Fase 2 (#18): material anime VRoid/MToon
+    pub mtoon_emission_color: Option<[f32; 4]>,
+    pub mtoon_emission_intensity: Option<f32>,
+    pub mtoon_second_shade_shift: Option<f32>,
+    pub mtoon_second_shade_softness: Option<f32>,
+    pub mtoon_matcap_intensity: Option<f32>,
+    pub mtoon_main_texture_enabled: Option<bool>,
+    pub mtoon_shade_texture_enabled: Option<bool>,
+    pub mtoon_second_shade_texture_enabled: Option<bool>,
+    pub mtoon_emission_texture_enabled: Option<bool>,
+    pub mtoon_matcap_enabled: Option<bool>,
+    pub mtoon_matcap_mode: Option<u8>,
+    pub mtoon_shade_toony: Option<bool>,
+    // Fase 2 (#17): sombra facial SDF
+    pub face_shadow_offset: Option<f32>,
+    pub face_shadow_smoothness: Option<f32>,
+    pub face_sdf_enabled: Option<bool>,
+    // Fase 2 (#43): olho anime + solver de olhar
+    pub eye_depth_scale: Option<f32>,
+    pub eye_highlight_intensity: Option<f32>,
+    pub eye_enabled: Option<bool>,
+    pub gaze_tracking_enabled: Option<bool>,
+    pub gaze_saccade_amplitude: Option<f32>,
+    pub gaze_damping: Option<f32>,
 }
 
 impl MaterialPatch {
@@ -216,6 +240,72 @@ impl MaterialPatch {
         if let Some(value) = self.ao_intensity {
             material.ao_intensity = value;
         }
+        // Fase 2 (#18): parâmetros MToon
+        if let Some(value) = self.mtoon_emission_color {
+            material.mtoon_emission_color = value;
+        }
+        if let Some(value) = self.mtoon_emission_intensity {
+            material.mtoon_emission_intensity = value;
+        }
+        if let Some(value) = self.mtoon_second_shade_shift {
+            material.mtoon_second_shade_shift = value;
+        }
+        if let Some(value) = self.mtoon_second_shade_softness {
+            material.mtoon_second_shade_softness = value;
+        }
+        if let Some(value) = self.mtoon_matcap_intensity {
+            material.mtoon_matcap_intensity = value;
+        }
+        if let Some(value) = self.mtoon_main_texture_enabled {
+            material.mtoon_main_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_shade_texture_enabled {
+            material.mtoon_shade_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_second_shade_texture_enabled {
+            material.mtoon_second_shade_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_emission_texture_enabled {
+            material.mtoon_emission_texture_enabled = value;
+        }
+        if let Some(value) = self.mtoon_matcap_enabled {
+            material.mtoon_matcap_enabled = value;
+        }
+        if let Some(value) = self.mtoon_matcap_mode {
+            material.mtoon_matcap_mode = value;
+        }
+        if let Some(value) = self.mtoon_shade_toony {
+            material.mtoon_shade_toony = value;
+        }
+        // Fase 2 (#17): sombra facial SDF
+        if let Some(value) = self.face_shadow_offset {
+            material.face_shadow_offset = value;
+        }
+        if let Some(value) = self.face_shadow_smoothness {
+            material.face_shadow_smoothness = value;
+        }
+        if let Some(value) = self.face_sdf_enabled {
+            material.face_sdf_enabled = value;
+        }
+        // Fase 2 (#43): olho anime + solver de olhar
+        if let Some(value) = self.eye_depth_scale {
+            material.eye_depth_scale = value;
+        }
+        if let Some(value) = self.eye_highlight_intensity {
+            material.eye_highlight_intensity = value;
+        }
+        if let Some(value) = self.eye_enabled {
+            material.eye_enabled = value;
+        }
+        if let Some(value) = self.gaze_tracking_enabled {
+            material.gaze_tracking_enabled = value;
+        }
+        if let Some(value) = self.gaze_saccade_amplitude {
+            material.gaze_saccade_amplitude = value;
+        }
+        if let Some(value) = self.gaze_damping {
+            material.gaze_damping = value;
+        }
     }
 
     /// Builds the inverse patch from the current material values.
@@ -242,6 +332,56 @@ impl MaterialPatch {
             outline_depth_bias: self.outline_depth_bias.map(|_| material.outline_depth_bias),
             specular_size: self.specular_size.map(|_| material.specular_size),
             ao_intensity: self.ao_intensity.map(|_| material.ao_intensity),
+            // Fase 2 (#18): parâmetros MToon
+            mtoon_emission_color: self.mtoon_emission_color.map(|_| material.mtoon_emission_color),
+            mtoon_emission_intensity: self
+                .mtoon_emission_intensity
+                .map(|_| material.mtoon_emission_intensity),
+            mtoon_second_shade_shift: self
+                .mtoon_second_shade_shift
+                .map(|_| material.mtoon_second_shade_shift),
+            mtoon_second_shade_softness: self
+                .mtoon_second_shade_softness
+                .map(|_| material.mtoon_second_shade_softness),
+            mtoon_matcap_intensity: self
+                .mtoon_matcap_intensity
+                .map(|_| material.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: self
+                .mtoon_main_texture_enabled
+                .map(|_| material.mtoon_main_texture_enabled),
+            mtoon_shade_texture_enabled: self
+                .mtoon_shade_texture_enabled
+                .map(|_| material.mtoon_shade_texture_enabled),
+            mtoon_second_shade_texture_enabled: self.mtoon_second_shade_texture_enabled
+                .map(|_| material.mtoon_second_shade_texture_enabled),
+            mtoon_emission_texture_enabled: self.mtoon_emission_texture_enabled
+                .map(|_| material.mtoon_emission_texture_enabled),
+            mtoon_matcap_enabled: self
+                .mtoon_matcap_enabled
+                .map(|_| material.mtoon_matcap_enabled),
+            mtoon_matcap_mode: self.mtoon_matcap_mode.map(|_| material.mtoon_matcap_mode),
+            mtoon_shade_toony: self.mtoon_shade_toony.map(|_| material.mtoon_shade_toony),
+            // Fase 2 (#17): sombra facial SDF
+            face_shadow_offset: self
+                .face_shadow_offset
+                .map(|_| material.face_shadow_offset),
+            face_shadow_smoothness: self
+                .face_shadow_smoothness
+                .map(|_| material.face_shadow_smoothness),
+            face_sdf_enabled: self.face_sdf_enabled.map(|_| material.face_sdf_enabled),
+            // Fase 2 (#43): olho anime + solver de olhar
+            eye_depth_scale: self.eye_depth_scale.map(|_| material.eye_depth_scale),
+            eye_highlight_intensity: self
+                .eye_highlight_intensity
+                .map(|_| material.eye_highlight_intensity),
+            eye_enabled: self.eye_enabled.map(|_| material.eye_enabled),
+            gaze_tracking_enabled: self
+                .gaze_tracking_enabled
+                .map(|_| material.gaze_tracking_enabled),
+            gaze_saccade_amplitude: self
+                .gaze_saccade_amplitude
+                .map(|_| material.gaze_saccade_amplitude),
+            gaze_damping: self.gaze_damping.map(|_| material.gaze_damping),
         }
     }
 

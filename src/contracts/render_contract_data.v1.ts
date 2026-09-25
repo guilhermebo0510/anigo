@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 334,
-      "fnv1a64": "66244d2a7dfead0e"
+      "lines": 525,
+      "fnv1a64": "12f7db9edf750e49"
     },
     {
       "name": "inverted_hull",
@@ -31,8 +31,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 120,
-      "fnv1a64": "bb9cbf1546c9e7f7"
+      "lines": 129,
+      "fnv1a64": "6b4afd0b47b50740"
     },
     {
       "name": "morph_sparse_compute",
@@ -52,10 +52,37 @@ export const RENDER_CONTRACT_DATA = {
       "language": "wgsl",
       "role": "library",
       "entry_points": {
-        "sample": "sample_face_shadow"
+        "theta": "face_sdf_theta",
+        "threshold": "face_sdf_threshold",
+        "factor": "face_sdf_factor"
       },
-      "lines": 19,
-      "fnv1a64": "24256bd0e7ab0990"
+      "lines": 41,
+      "fnv1a64": "bda7e76d52a49c35"
+    },
+    {
+      "name": "anime_eye",
+      "path": "crates/anigo-renderer/shaders/anime_eye.wgsl",
+      "language": "wgsl",
+      "role": "library",
+      "entry_points": {
+        "parallax": "eye_parallax_uv",
+        "highlight_mask": "eye_highlight_mask",
+        "highlight_rgb": "eye_highlight_rgb"
+      },
+      "lines": 51,
+      "fnv1a64": "9c2baec2b6f6fcfa"
+    },
+    {
+      "name": "postprocess_dof",
+      "path": "crates/anigo-renderer/shaders/postprocess_dof.wgsl",
+      "language": "wgsl",
+      "role": "production",
+      "entry_points": {
+        "vertex": "vs_dof",
+        "fragment": "fs_dof"
+      },
+      "lines": 135,
+      "fnv1a64": "a2c654437fb0d329"
     },
     {
       "name": "webgl2_fallback/cel_vertex",
@@ -219,7 +246,7 @@ export const RENDER_CONTRACT_DATA = {
     "material": {
       "struct": "MaterialUniform",
       "address_space": "uniform",
-      "size": 112,
+      "size": 208,
       "fields": [
         {
           "name": "base_color",
@@ -265,6 +292,48 @@ export const RENDER_CONTRACT_DATA = {
           "offset": 96,
           "size": 16,
           "meaning": "specular_softness, specular_offset, specular_size, ao_intensity"
+        },
+        {
+          "name": "emission_color",
+          "kind": "vec4",
+          "offset": 112,
+          "size": 16,
+          "meaning": "MToon subEmission (rgb sRGB, w alpha)"
+        },
+        {
+          "name": "params4",
+          "kind": "vec4",
+          "offset": 128,
+          "size": 16,
+          "meaning": "emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity"
+        },
+        {
+          "name": "params5",
+          "kind": "vec4",
+          "offset": 144,
+          "size": 16,
+          "meaning": "main_tex_enabled, shade_tex_enabled, second_shade_enabled, emission_enabled"
+        },
+        {
+          "name": "params6",
+          "kind": "vec4",
+          "offset": 160,
+          "size": 16,
+          "meaning": "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved"
+        },
+        {
+          "name": "params7",
+          "kind": "vec4",
+          "offset": 176,
+          "size": 16,
+          "meaning": "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved"
+        },
+        {
+          "name": "params8",
+          "kind": "vec4",
+          "offset": 192,
+          "size": 16,
+          "meaning": "eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved"
         }
       ]
     },
@@ -291,7 +360,7 @@ export const RENDER_CONTRACT_DATA = {
           "kind": "vec4",
           "offset": 32,
           "size": 16,
-          "meaning": "smoothness"
+          "meaning": "smoothness, width_tex_enabled (Fase 2 #18)"
         }
       ]
     },
@@ -427,6 +496,35 @@ export const RENDER_CONTRACT_DATA = {
         }
       ]
     },
+    "dof": {
+      "struct": "DofUniform",
+      "address_space": "uniform",
+      "size": 48,
+      "note": "params = focus_distance(m), f_number, bokeh_shape (0 círculo/1 hex), focal_m; resolution = w, h, z_near, z_far (px/m); limits = max_radius_px, sensor_height_m",
+      "fields": [
+        {
+          "name": "params",
+          "kind": "vec4",
+          "offset": 0,
+          "size": 16,
+          "meaning": "focus_distance (m), f_number, bokeh_shape, focal_m (m)"
+        },
+        {
+          "name": "resolution",
+          "kind": "vec4",
+          "offset": 16,
+          "size": 16,
+          "meaning": "width_px, height_px, z_near (m), z_far (m)"
+        },
+        {
+          "name": "limits",
+          "kind": "vec4",
+          "offset": 32,
+          "size": 16,
+          "meaning": "max_radius_px, sensor_height_m (0.024), reserved, reserved"
+        }
+      ]
+    },
     "vertex_raw": {
       "struct": "VertexRaw",
       "address_space": "vertex_and_storage_read",
@@ -525,6 +623,102 @@ export const RENDER_CONTRACT_DATA = {
             "vertex"
           ],
           "declaration": "var<uniform> bones: BonePalette"
+        },
+        {
+          "binding": 6,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var main_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 7,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var main_sampler: sampler"
+        },
+        {
+          "binding": 8,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var shade_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 9,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var shade_sampler: sampler"
+        },
+        {
+          "binding": 10,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var second_shade_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 11,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var second_shade_sampler: sampler"
+        },
+        {
+          "binding": 12,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var emission_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 13,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var emission_sampler: sampler"
+        },
+        {
+          "binding": 14,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var sphere_add_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 15,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var sphere_add_sampler: sampler"
+        },
+        {
+          "binding": 16,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var face_sdf_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 17,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var face_sdf_sampler: sampler"
         }
       ]
     },
@@ -556,6 +750,22 @@ export const RENDER_CONTRACT_DATA = {
             "vertex"
           ],
           "declaration": "var<uniform> bones: BonePalette"
+        },
+        {
+          "binding": 3,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "vertex"
+          ],
+          "declaration": "var outline_width_tex: texture_2d<f32>"
+        },
+        {
+          "binding": 4,
+          "kind": "sampler",
+          "stages": [
+            "vertex"
+          ],
+          "declaration": "var outline_width_sampler: sampler"
         }
       ]
     },
@@ -604,6 +814,44 @@ export const RENDER_CONTRACT_DATA = {
           "declaration": "var<storage, read_write> out_vertices: array<VertexRaw>"
         }
       ]
+    },
+    {
+      "name": "dof",
+      "group": 0,
+      "entries": [
+        {
+          "binding": 0,
+          "kind": "uniform",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var<uniform> dof: DofUniform"
+        },
+        {
+          "binding": 1,
+          "kind": "texture_2d<f32>",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var scene_color: texture_2d<f32>"
+        },
+        {
+          "binding": 2,
+          "kind": "texture_depth_2d",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var scene_depth: texture_depth_2d"
+        },
+        {
+          "binding": 3,
+          "kind": "sampler",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var dof_sampler: sampler"
+        }
+      ]
     }
   ],
   "passes": [
@@ -644,6 +892,22 @@ export const RENDER_CONTRACT_DATA = {
       },
       "blend": "none",
       "write_mask": "all"
+    },
+    {
+      "order": 2,
+      "name": "dof_post",
+      "kind": "render",
+      "shader": "postprocess_dof",
+      "vertex_entry": "vs_dof",
+      "fragment_entry": "fs_dof",
+      "bind_group": "dof",
+      "cull_mode": "back",
+      "depth_write": false,
+      "depth_compare": "always",
+      "blend": "none",
+      "write_mask": "all",
+      "only_when": "dof_enabled",
+      "fullscreen_triangle": true
     },
     {
       "order": -1,
@@ -859,6 +1123,10 @@ export const RENDER_CONTRACT_DATA = {
         "severity": "error"
       },
       {
+        "code": "dof_unavailable",
+        "severity": "warning"
+      },
+      {
         "code": "render_plan_fallback",
         "severity": "warning"
       }
@@ -906,6 +1174,417 @@ export const RENDER_CONTRACT_DATA = {
       "// ANIGO-SKINNING-BEGIN",
       "// ANIGO-SKINNING-END"
     ]
+  },
+  "face_sdf": {
+    "note": "Sombra facial por SDF com projeção angular: theta = atan2(dot(L, eixoX_local), dot(L, eixoZ_local)); threshold = 0.5 + (1 - (cos(theta)*0.5+0.5)) * 0.25 + face_shadow_offset; fator = 1 - smoothstep(threshold ∓ smoothness, sdf). Canal R do SDF: 0 = centro da sombra, 1 = fora.",
+    "sdf_channel": "r",
+    "sdf_semantics": "0 = centro da região de sombra (nasal/olhos/queixo), 1 = fora da região",
+    "neutral_when_disabled": "neutro 1x1 branco (R=1) → fator 0 → imagem inalterada",
+    "darkening": 0.72,
+    "block_markers": [
+      "// ANIGO-FACE-SDF-BEGIN",
+      "// ANIGO-FACE-SDF-END"
+    ],
+    "shared_by": [
+      "face_sdf",
+      "cel_shading"
+    ],
+    "entry_functions": [
+      "face_sdf_theta",
+      "face_sdf_threshold",
+      "face_sdf_factor"
+    ],
+    "golden": [
+      {
+        "azimuth_degrees": 0,
+        "theta": 0,
+        "light_front": 1,
+        "threshold": 0.5,
+        "factor_sdf_half": 0.5
+      },
+      {
+        "azimuth_degrees": 45,
+        "theta": 0.78539819,
+        "light_front": 0.8535534,
+        "threshold": 0.53661167,
+        "factor_sdf_half": 0.9510253
+      },
+      {
+        "azimuth_degrees": 90,
+        "theta": 1.5707964,
+        "light_front": 0.5,
+        "threshold": 0.625,
+        "factor_sdf_half": 1
+      },
+      {
+        "azimuth_degrees": 135,
+        "theta": 2.3561945,
+        "light_front": 0.14644662,
+        "threshold": 0.71338832,
+        "factor_sdf_half": 1
+      }
+    ],
+    "golden_note": "sdf = 0.5, face_shadow_smoothness = 0.05, face_shadow_offset = 0, modelo identidade"
+  },
+  "anime_eye": {
+    "note": "Íris com parallax mapping (profundidade convexa sem cavidade geométrica) e highlights desenhados à mão desacoplados da iluminação. Slot main recebe a textura de olho (Fase 2 #26) amostrada com o UV parallaxado; com eye off ou depth_scale 0, eye_uv = in.uv e o highlight some — frame congelado intacto.",
+    "parallax_formula": "UV_iris = UV + V_tangent.xy * depth_scale (clamp 0..1)",
+    "v_tangent_basis": "T = normalize(cross(N, up)), B = cross(N, T); V_tangent = (dot(V,T), dot(V,B))",
+    "highlight": {
+      "main_center": [
+   0.38, 0.62
+  ],
+      "main_falloff": [
+   0.075, 0.125
+  ],
+      "main_ellipse_y_scale": 0.72,
+      "second_center": [
+   0.68, 0.34
+  ],
+      "second_falloff": [
+   0.028, 0.055
+  ],
+      "second_intensity": 0.85,
+      "decoupled_from_lighting": true
+    },
+    "block_markers": [
+      "// ANIGO-ANIME-EYE-BEGIN",
+      "// ANIGO-ANIME-EYE-END"
+    ],
+    "shared_by": [
+      "anime_eye",
+      "cel_shading"
+    ],
+    "entry_functions": [
+      "eye_parallax_uv",
+      "eye_highlight_mask",
+      "eye_highlight_rgb"
+    ],
+    "golden": [
+      {
+        "name": "parallax_central",
+        "uv": [
+   0.5, 0.5
+  ],
+        "v_tangent": [
+   0.2, -0.1
+  ],
+        "depth_scale": 0.15,
+        "expected_uv": [
+   0.53, 0.485
+  ]
+      },
+      {
+        "name": "parallax_clamp",
+        "uv": [
+   0.02, 0.98
+  ],
+        "v_tangent": [
+   0.5, 0.5
+  ],
+        "depth_scale": 0.2,
+        "expected_uv": [
+   0.12, 1
+  ]
+      },
+      {
+        "name": "mask_principal",
+        "uv": [
+   0.38, 0.62
+  ],
+        "expected_mask": 1
+      },
+      {
+        "name": "mask_secundario",
+        "uv": [
+   0.68, 0.34
+  ],
+        "expected_mask": 0.85
+      },
+      {
+        "name": "mask_entre_brilhos",
+        "uv": [
+   0.5, 0.5
+  ],
+        "expected_mask": 0
+      }
+    ],
+    "golden_note": "formulas em ponto flutuante duplo, congeladas em f32",
+    "gaze": {
+      "eye_offsets_head_local": {
+        "left": [
+   0.035, -0.01, 0.09
+  ],
+        "right": [
+   -0.035, -0.01, 0.09
+  ]
+      },
+      "max_yaw_degrees": 45,
+      "max_pitch_degrees": 35,
+      "saccade_amplitude_degrees_default": 2.5,
+      "saccade_amplitude_range": [
+   2, 5
+  ],
+      "damping_default": 6,
+      "note": "yaw = atan2(v.x, v.z), pitch = atan2(v.y, hypot(v.x, v.z)) no espaço local da cabeça, v = alvo − olho; clamps físicos impedem rotação além do cômodo. Micro-sacadas: soma de 3 senoides incomensuráveis × amplitude (suave, determinística em (t, seed)).",
+      "golden": [
+        {
+          "name": "frontal",
+          "target": [
+   0, -0.01, 0.4
+  ],
+          "yaw": -0.11242713,
+          "pitch": 0,
+          "note": "convergência natural do olho esquerdo para o centro (−6.44°)"
+        },
+        {
+          "name": "azimut_30",
+          "target": [
+   0.5, 0, 0.8660254
+  ],
+          "yaw": 0.53983635,
+          "pitch": 0.01105322,
+          "note": "alvo a 30° de azimut"
+        },
+        {
+          "name": "elevacao_20",
+          "target": [
+   0, 0.1819852, 0.5
+  ],
+          "yaw": -0.08515939,
+          "pitch": 0.43653914,
+          "note": "alvo a 20° de elevação (visto do olho: 25°)"
+        },
+        {
+          "name": "clamp_esquerda_90",
+          "target": [
+   10, 0, 0.1
+  ],
+          "yaw": 0.78539819,
+          "pitch": 0.00100351,
+          "note": "yaw clampado no limite físico de 45°"
+        },
+        {
+          "name": "clamp_acima",
+          "target": [
+   0.035, 5, 1
+  ],
+          "yaw": 0,
+          "pitch": 0.61086524,
+          "note": "pitch clampado no limite físico de 35°"
+        }
+      ],
+      "saccades": [
+        {
+          "t": 0,
+          "yaw": 0.01888627,
+          "pitch": 0.0121564
+        },
+        {
+          "t": 1,
+          "yaw": 0.01128491,
+          "pitch": 0.00615212
+        },
+        {
+          "t": 2,
+          "yaw": 0.00091829,
+          "pitch": -0.01229176
+        },
+        {
+          "t": 3,
+          "yaw": -0.01041111,
+          "pitch": -0.00766383
+        }
+      ],
+      "saccades_note": "seed 1.23, amplitude 2.5° (radianos); |sacada| ≤ amplitude sempre",
+      "damping": {
+        "from": [
+   0, 0
+  ],
+        "to": [
+   0.1, -0.05
+  ],
+        "damping_per_second": 6,
+        "frames_60fps": 30,
+        "expected": [
+   0.09502129, -0.04751065
+  ],
+        "note": "suavização exponencial 1 − e^(−damping×dt) por frame"
+      }
+    }
+  },
+  "cinematography": {
+    "note": "Presets de lente (24/35/50/85/135 mm em sensor full-frame 24 mm de altura), DoF por Circle of Confusion (passo de pós com bokeh circular/hexagonal) e tracking de alvo com amortecimento exponencial. Desligado (dof.enabled=false) o passo de pós não existe — frame congelado intacto.",
+    "lens": {
+      "sensor_height_mm": 24,
+      "fov_formula": "fov_y = 2 * atan(sensor_height_mm / 2 / focal_mm)",
+      "presets": [
+        {
+          "id": "24",
+          "focal_mm": 24,
+          "name": "Ação Panorâmica",
+          "fov_y_degrees": 53.130102
+        },
+        {
+          "id": "35",
+          "focal_mm": 35,
+          "name": "Corpo Inteiro",
+          "fov_y_degrees": 37.849289
+        },
+        {
+          "id": "50",
+          "focal_mm": 50,
+          "name": "Visão Humana Neutra",
+          "fov_y_degrees": 26.991467
+        },
+        {
+          "id": "85",
+          "focal_mm": 85,
+          "name": "Retrato Anime",
+          "fov_y_degrees": 16.071421
+        },
+        {
+          "id": "135",
+          "focal_mm": 135,
+          "name": "Close-up Dramático",
+          "fov_y_degrees": 10.159216
+        }
+      ],
+      "reframe": {
+        "formula": "r' = r * tan(fov_from/2) / tan(fov_to/2)",
+        "golden": {
+          "from_mm": 50,
+          "to_mm": 85,
+          "radius": 3,
+          "expected_radius": 5.1,
+          "note": "trocar 50→85 mm afasta o orbitador para o sujeito manter o tamanho em tela (aceite 2)"
+        }
+      }
+    },
+    "dof": {
+      "coc_formula": "CoC = |(D - F_dist) / D| * F^2 / (N * (F_dist - F))",
+      "coc_variables": "D = distância do fragmento (m), F_dist = distância de foco (m), F = focal (m), N = número f",
+      "coc_to_pixels": "radius_px = min(CoC / sensor_height_m * image_height_px, max_radius_px)",
+      "bokeh_shapes": {
+        "0": "circle",
+        "1": "hexagon"
+      },
+      "samples": {
+        "disc_points": 16,
+        "center_always_included": true,
+        "note": "amostra central com peso 1 impede halo/serrilha no contorno em foco (aceite 1)"
+      },
+      "defaults": {
+        "focus_distance_m": 2,
+        "f_number": 2,
+        "focal_mm": 50,
+        "max_radius_px": 16,
+        "bokeh_shape": 0
+      },
+      "golden": [
+        {
+          "name": "em_foco",
+          "frag_dist": 2,
+          "focus_dist": 2,
+          "focal_m": 0.05,
+          "f_number": 2,
+          "expected_coc": 0,
+          "note": "plano de foco → CoC zero (rosto nítido)"
+        },
+        {
+          "name": "50mm_f2_frente",
+          "frag_dist": 1,
+          "focus_dist": 2,
+          "focal_m": 0.05,
+          "f_number": 2,
+          "expected_coc": 0.00064103
+        },
+        {
+          "name": "50mm_f2_atras",
+          "frag_dist": 3,
+          "focus_dist": 2,
+          "focal_m": 0.05,
+          "f_number": 2,
+          "expected_coc": 0.00021368,
+          "note": "atras do plano o CoC e menor (fisica do fino-lente)"
+        },
+        {
+          "name": "85mm_f2_atras",
+          "frag_dist": 3,
+          "focus_dist": 1.5,
+          "focal_m": 0.085,
+          "f_number": 2,
+          "expected_coc": 0.0012765
+        },
+        {
+          "name": "135mm_f18_closeup",
+          "frag_dist": 0.5,
+          "focus_dist": 1,
+          "focal_m": 0.135,
+          "f_number": 1.8,
+          "expected_coc": 0.0117052,
+          "note": "close-up dramatico: bokeh enorme"
+        }
+      ],
+      "bokeh_px_golden": {
+        "image_height_px": 1080,
+        "sensor_height_m": 0.024,
+        "values": [
+          {
+            "name": "50mm_f2_frente",
+            "coc": 0.00064103,
+            "expected_radius_px": 28.8462,
+            "note": "acima do teto → clamp"
+          },
+          {
+            "name": "50mm_f2_frente_clampado",
+            "max_radius_px": 16,
+            "expected_radius_px": 16
+          },
+          {
+            "name": "50mm_f4_atras",
+            "coc": 0.00010684,
+            "expected_radius_px": 4.8078
+          }
+        ]
+      }
+    },
+    "tracking": {
+      "modes": [
+        "off",
+        "head",
+        "hips",
+        "poi"
+      ],
+      "target_positions": {
+        "head": [
+   0, 1.49, 0
+  ],
+        "hips": [
+   0, 0.85, 0
+  ],
+        "note": "pontos canônicos do esqueleto humanoide (cabeça e centro de massa); poi = ponto arbitrário do usuário"
+      },
+      "damping": {
+        "formula": "target += (desejado - target) * (1 - e^(-damping * dt))",
+        "default_damping_per_second": 6,
+        "golden": {
+          "from": [
+   0, 0, 0
+  ],
+          "to": [
+   1, 0.5, 0
+  ],
+          "damping_per_second": 6,
+          "frames_60fps": 30,
+          "expected": [
+   0.95021296, 0.47510648, 0
+  ],
+          "note": "amortecimento exponencial por componente; nunca ultrapassa o alvo"
+        }
+      },
+      "note": "o tracking move target e eye juntos (mesmo delta amortecido) — o enquadramento é mantido enquanto o personagem se move (aceite 3); roda no viewport (CPU) a cada frame"
+    }
   },
   "targets": {
     "offscreen_color_format": "rgba8unorm",
@@ -1085,6 +1764,29 @@ export const RENDER_CONTRACT_DATA = {
       "specular_offset": 0.01,
       "specular_size": 0.4,
       "ao_intensity": 0.8,
+      "emission_color": [
+   0, 0, 0, 0
+  ],
+      "emission_intensity": 0,
+      "second_shade_shift": 0,
+      "second_shade_softness": 0.05,
+      "matcap_intensity": 0,
+      "main_texture_enabled": false,
+      "shade_texture_enabled": false,
+      "second_shade_texture_enabled": false,
+      "emission_texture_enabled": false,
+      "matcap_enabled": false,
+      "matcap_mode": 0,
+      "shade_toony": true,
+      "face_shadow_offset": 0,
+      "face_shadow_smoothness": 0.05,
+      "face_sdf_enabled": false,
+      "eye_depth_scale": 0,
+      "eye_highlight_intensity": 0,
+      "eye_enabled": false,
+      "gaze_tracking_enabled": false,
+      "gaze_saccade_amplitude": 2.5,
+      "gaze_damping": 6,
       "outline_color": [
    0.25, 0.15, 0.2, 1
   ],
@@ -1120,7 +1822,8 @@ export const RENDER_CONTRACT_DATA = {
       "material_uniform": [
    0.980000019, 0.920000017, 0.850000024, 1, 0.819999993, 0.730000019, 0.779999971, 1, 1, 1, 1, 1,
    0.575999975, 0.773000002, 0.991999984, 1, 0.579999983, 0.029999999, 0.550000012, 24, 0.699999988,
-   0.449999988, -0.383972436, 2, 0.059999999, 0.01, 0.400000006, 0.800000012
+   0.449999988, -0.383972436, 2, 0.059999999, 0.01, 0.400000006, 0.800000012, 0, 0, 0, 0, 0, 0,
+   0.050000001, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0.050000001, 0, 0, 0, 0, 0, 0
   ],
       "outline_uniform": [
    0.25, 0.150000006, 0.200000003, 1, 0.004, 1.777777791, 0.02, 0.899999976, 0.01, 0, 0, 0

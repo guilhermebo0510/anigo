@@ -11,7 +11,7 @@ struct CameraUniform {
 struct OutlineUniform {
     color: vec4<f32>,
     params: vec4<f32>,  // x: line_width, y: aspect_ratio, z: depth_bias, w: opacity
-    params2: vec4<f32>, // x: smoothness, yzw: unused (P0-09)
+    params2: vec4<f32>, // x: smoothness, y: width_tex_enabled (Fase 2 #18), z: reserved
 };
 
 @group(0) @binding(0)
@@ -19,6 +19,15 @@ var<uniform> camera: CameraUniform;
 
 @group(0) @binding(1)
 var<uniform> outline: OutlineUniform;
+
+// Fase 2 (#18): mapa de espessura do contorno (MToon outlineWidth). O canal R
+// modula a largura uniforme por UV; sem textura o slot é desativado por
+// params2.y e o renderer ancora um neutro branco 1x1 (modulação 1.0).
+@group(0) @binding(3)
+var outline_width_tex: texture_2d<f32>;
+
+@group(0) @binding(4)
+var outline_width_sampler: sampler;
 
 struct BonePalette {
     matrices: array<mat4x4<f32>, 24>,

@@ -149,8 +149,10 @@ test("renderer usa o canal de diagnostico em vez de falha silenciosa", () => {
   assert.doesNotMatch(renderer, /console\.error\("\[ANIGO\]\[GPU\] uncaptured error/);
   // `catch (_) {}` só pode sobrar em limpeza de recursos (destroy/dispose).
   const silentCatches = renderer.match(/catch \(_\) \{\}/g) ?? [];
+  // 26 = 20 do baseline + 2 destroys do neutro 1x1 MToon (Fase 2 #18)
+  //      + 4 destroys dos intermediários do DoF (resize + dispose, Fase 2 #53)
   assert.ok(
-    silentCatches.length <= 20,
+    silentCatches.length <= 26,
     `catch silencioso voltou ao caminho crítico (${silentCatches.length} ocorrências)`
   );
 });

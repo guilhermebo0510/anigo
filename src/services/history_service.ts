@@ -53,6 +53,34 @@ export interface HistoryStateSnapshot {
   specColorHex?: string;
   rimColor?: string;
   lightColor?: [number, number, number];
+  // Fase 2 (#18): MToon (VRoid) — parâmetros VRMC_materials_mtoon
+  mtoonEmissionColorHex?: string;
+  mtoonEmissionIntensity?: number;
+  mtoonSecondShadeShift?: number;
+  mtoonSecondShadeSoftness?: number;
+  mtoonMatcapIntensity?: number;
+  mtoonMatcapEnabled?: boolean;
+  mtoonMatcapMode?: number;
+  mtoonShadeToony?: boolean;
+  // Fase 2 (#17): sombra facial SDF
+  faceShadowOffset?: number;
+  faceShadowSmoothness?: number;
+  faceSdfEnabled?: boolean;
+  // Fase 2 (#43): olho anime + solver de olhar
+  eyeDepthScale?: number;
+  eyeHighlightIntensity?: number;
+  eyeEnabled?: boolean;
+  gazeTrackingEnabled?: boolean;
+  gazeSaccadeAmplitude?: number;
+  gazeDamping?: number;
+  // Fase 2 (#53): câmera cinematográfica (lente, DoF, tracking)
+  lensFocalMm?: number;
+  dofEnabled?: boolean;
+  dofFocus?: number;
+  dofFNumber?: number;
+  dofBokehShape?: 0 | 1;
+  trackingMode?: "off" | "head" | "hips" | "poi";
+  trackingDamping?: number;
 }
 
 export interface HistoryEntry {

@@ -375,9 +375,205 @@ impl Skeleton {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fase 2 (#43): Look-At Solver com Micro-Sacadas (motor de olhos/íris)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// O olhar é resolvido no espaço LOCAL DA CABEÇA (eixo Z local = frente do
+// rosto), então a rotação dos olhos acompanha a cabeça de graça — o mesmo
+// modelo matemático da projeção angular da face SDF (issue #17). Os olhos
+// são nós (`LeftEye`/`RightEye`) do grafo de cena, não ossos da paleta de
+// skinning (que permanece congelada em 24 ossos): o solver devolve o giro
+// yaw/pitch e o integrador aplica à matriz de mundo do nó.
+//
+// Convenção de eixo: o olhar é o eixo +Z local do olho.
+//   yaw   = rotação em volta do Y local (positivo = olhar para o +X)
+//   pitch = rotação em volta do X local (positivo = olhar para cima)
+
+/// Direção de olhar no espaço local da cabeça (radianos).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GazeYawPitch {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl GazeYawPitch {
+    pub const ZERO: GazeYawPitch = GazeYawPitch {
+        yaw: 0.0,
+        pitch: 0.0,
+    };
+
+    /// Ângulo total do olhar em graus (módulo — telemetria/clamps).
+    pub fn angle_degrees(self) -> f32 {
+        (self.yaw * self.yaw + self.pitch * self.pitch).sqrt().to_degrees()
+    }
+
+    /// Quat que rotaciona o olho (olhar = +Z local): yaw em Y, depois pitch
+    /// em X (com sinal invertido — olhar para cima é pitch positivo).
+    pub fn to_quaternion(self) -> Quat {
+        let yaw_q = Quat::from_axis_angle(Vec3::Y, self.yaw);
+        let pitch_q = Quat::from_axis_angle(Vec3::X, -self.pitch);
+        yaw_q * pitch_q
+    }
+}
+
+/// Solver de rastreamento de olhar com clamps físicos e micro-sacadas
+/// (ruído sutil de 2–5° que elimina o "olhar vidrado congelado" do issue).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LookAtSolver {
+    /// Limite físico do olhar (radianos) — padrão 45°.
+    pub max_yaw: f32,
+    /// Limite físico do olhar (radianos) — padrão 35°.
+    pub max_pitch: f32,
+    /// Amplitude das micro-sacadas (radianos) — faixa 2–5° (padrão 2.5°).
+    pub saccade_amplitude: f32,
+    /// Semente determinística do ruído de sacadas.
+    pub saccade_seed: f32,
+}
+
+impl Default for LookAtSolver {
+    fn default() -> Self {
+        Self {
+            max_yaw: 45.0_f32.to_radians(),
+            max_pitch: 35.0_f32.to_radians(),
+            saccade_amplitude: 2.5_f32.to_radians(),
+            saccade_seed: 1.23,
+        }
+    }
+}
+
+impl LookAtSolver {
+    /// Resolve o olhar do `eye_local` (posição do olho no espaço local da
+    /// cabeça — ver `EYE_OFFSET_LEFT/RIGHT`) até `target_local` (alvo no
+    /// mesmo espaço), aplicando os clamps físicos dos olhos.
+    pub fn solve(&self, eye_local: Vec3, target_local: Vec3) -> GazeYawPitch {
+        let v = target_local - eye_local;
+        let yaw = v.x.atan2(v.z);
+        let horizontal = v.x.hypot(v.z);
+        let pitch = v.y.atan2(horizontal);
+        GazeYawPitch {
+            yaw: yaw.clamp(-self.max_yaw, self.max_yaw),
+            pitch: pitch.clamp(-self.max_pitch, self.max_pitch),
+        }
+    }
+
+    /// Micro-sacadas: ruído temporariamente coerente (soma de 3 senoides de
+    /// frequências incomensuráveis, amplitude máx = 1.0 × saccade_amplitude),
+    /// determinístico em (t, seed) — suave o bastante para 60 fps, sem
+    /// repetição perceptível em minutos.
+    pub fn saccades(&self, time_seconds: f32) -> GazeYawPitch {
+        let t = time_seconds;
+        let s = self.saccade_seed;
+        let ny = 0.5 * (t * 0.9 + s).sin() + 0.3 * (t * 1.7 + 2.1 * s).sin() + 0.2 * (t * 2.3 + 3.7 * s).sin();
+        let np = 0.5 * (t * 1.1 + 1.3 * s).sin() + 0.3 * (t * 1.9 + 2.7 * s).sin() + 0.2 * (t * 2.9 + 4.3 * s).sin();
+        GazeYawPitch {
+            yaw: ny * self.saccade_amplitude,
+            pitch: np * self.saccade_amplitude,
+        }
+    }
+
+    /// Giro total do frame: mira + sacadas, re-clampado para o ruído nunca
+    /// ultrapassar o cômodo físico dos olhos.
+    pub fn frame_gaze(&self, eye_local: Vec3, target_local: Vec3, time_seconds: f32) -> GazeYawPitch {
+        let aim = self.solve(eye_local, target_local);
+        let sac = self.saccades(time_seconds);
+        GazeYawPitch {
+            yaw: (aim.yaw + sac.yaw).clamp(-self.max_yaw, self.max_yaw),
+            pitch: (aim.pitch + sac.pitch).clamp(-self.max_pitch, self.max_pitch),
+        }
+    }
+}
+
+/// Offset do olho em relação ao osso da cabeça (espaço local; Z = frente do
+/// rosto). Esquerdo = +X (lado esquerdo do personagem, que olha para +Z).
+pub const EYE_OFFSET_LEFT: Vec3 = Vec3::new(0.035, -0.01, 0.09);
+pub const EYE_OFFSET_RIGHT: Vec3 = Vec3::new(-0.035, -0.01, 0.09);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_gaze_solver_front_and_clamps() {
+        let solver = LookAtSolver::default();
+        // Olho esquerdo mirando no centro do rosto (alvo em frente): convergência natural (−6.44° = -0.1124 rad).
+        let front = solver.solve(EYE_OFFSET_LEFT, Vec3::new(0.0, -0.01, 0.4));
+        assert!((front.yaw - (-0.11242713)).abs() < 1e-4, "convergência natural: esperado ~ -0.1124, veio {}", front.yaw);
+        assert!(front.pitch.abs() < 1e-3, "olhar frontal não pode ter pitch");
+
+        // Olho esquerdo mirando reto em frente (alvo alinhado ao olho em x=0.035) → yaw e pitch zero.
+        let straight = solver.solve(EYE_OFFSET_LEFT, Vec3::new(0.035, -0.01, 0.4));
+        assert!(straight.yaw.abs() < 1e-4, "olhar perfeitamente frontal ao olho deve ter yaw zero");
+        assert!(straight.pitch.abs() < 1e-4, "olhar perfeitamente frontal ao olho deve ter pitch zero");
+
+        // Alvo muito à esquerda: yaw é clamped no limite físico (45°).
+        let far_left = solver.solve(EYE_OFFSET_LEFT, Vec3::new(10.0, 0.0, 0.1));
+        assert!((far_left.yaw - solver.max_yaw).abs() < 1e-3, "yaw precisa clampar em +max");
+        // Alvo muito acima: pitch é clamped no limite físico (35°).
+        let far_up = solver.solve(EYE_OFFSET_LEFT, Vec3::new(0.035, 10.0, 0.09));
+        assert!((far_up.pitch - solver.max_pitch).abs() < 1e-3, "pitch precisa clampar em +max");
+    }
+
+    #[test]
+    fn test_gaze_saccades_within_amplitude_and_smooth() {
+        let solver = LookAtSolver::default();
+        let amplitude_deg = solver.saccade_amplitude.to_degrees();
+        // Amplitude padrão dentro da faixa 2–5° do issue.
+        assert!((amplitude_deg - 2.5).abs() < 1e-3);
+
+        // |sacada| ≤ amplitude em uma varredura de 10 s a 60 fps.
+        let mut previous: Option<GazeYawPitch> = None;
+        for step in 0..600 {
+            let t = (step as f32) / 60.0;
+            let sac = solver.saccades(t);
+            assert!(
+                sac.yaw.abs() <= solver.saccade_amplitude + 1e-6,
+                "sacada de yaw fora da amplitude em t={}",
+                t
+            );
+            assert!(
+                sac.pitch.abs() <= solver.saccade_amplitude + 1e-6,
+                "sacada de pitch fora da amplitude em t={}",
+                t
+            );
+            if let Some(prev) = previous {
+                let delta = (sac.yaw - prev.yaw).abs().max((sac.pitch - prev.pitch).abs());
+                assert!(
+                    delta < 0.05,
+                    "sacada não é suave entre frames (delta={}) em t={}",
+                    delta,
+                    t
+                );
+            }
+            previous = Some(sac);
+        }
+    }
+
+    #[test]
+    fn test_gaze_frame_reclamps_and_quaternion_points_at_target() {
+        let solver = LookAtSolver::default();
+        // frame_gaze nunca ultrapassa o cômodo físico, nem com sacadas.
+        for step in 0..120 {
+            let t = (step as f32) / 60.0;
+            let gaze = solver.frame_gaze(EYE_OFFSET_LEFT, Vec3::new(5.0, 5.0, 0.1), t);
+            assert!(gaze.yaw.abs() <= solver.max_yaw + 1e-6);
+            assert!(gaze.pitch.abs() <= solver.max_pitch + 1e-6);
+        }
+
+        // O quat devolve o olhar (+Z local) apontando para o alvo:
+        // q * (0,0,1) ≈ normalize(alvo - olho).
+        let eye = EYE_OFFSET_LEFT;
+        let target = Vec3::new(0.30, 0.10, 0.80);
+        let gaze = solver.solve(eye, target);
+        let quat = gaze.to_quaternion();
+        let forward = quat * Vec3::Z;
+        let expected = (target - eye).normalize();
+        assert!(
+            forward.dot(expected) > 1.0 - 1e-5,
+            "quat do olhar não aponta para o alvo (dot={})",
+            forward.dot(expected)
+        );
+    }
 
     #[test]
     fn test_canonical_vrm_humanoid_structure() {

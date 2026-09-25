@@ -172,9 +172,9 @@ describe("Render graph — o planejador aplica os overrides do snapshot", () => 
   const contractOrder = renderPassOrder();
 
   it("sem overrides, o plano é a ordem do contrato", () => {
-    assert.deepEqual(contractOrder, ["outline", "cel"]);
+    assert.deepEqual(contractOrder, ["outline", "cel", "dof_post"]);
     const plan = planRenderGraphPasses(contractOrder, NO_OVERRIDES);
-    assert.deepEqual(plan.passes, ["outline", "cel"]);
+    assert.deepEqual(plan.passes, ["outline", "cel", "dof_post"]);
     assert.equal(plan.fellBack, false);
   });
 
@@ -183,7 +183,7 @@ describe("Render graph — o planejador aplica os overrides do snapshot", () => 
       ...NO_OVERRIDES,
       depthPrepass: true,
     });
-    assert.deepEqual(plan.passes, [DEPTH_PREPASS_PASS, "outline", "cel"]);
+    assert.deepEqual(plan.passes, [DEPTH_PREPASS_PASS, "outline", "cel", "dof_post"]);
     assert.equal(plan.fellBack, false);
   });
 
@@ -193,7 +193,7 @@ describe("Render graph — o planejador aplica os overrides do snapshot", () => 
       disabled: [DEPTH_PREPASS_PASS],
       depthPrepass: true,
     });
-    assert.deepEqual(plan.passes, ["outline", "cel"]);
+    assert.deepEqual(plan.passes, ["outline", "cel", "dof_post"]);
   });
 
   it("ordem e ativação vêm do snapshot", () => {
@@ -202,16 +202,16 @@ describe("Render graph — o planejador aplica os overrides do snapshot", () => 
         ...NO_OVERRIDES,
         order: ["cel", "outline"],
       }).passes,
-      ["cel", "outline"]
+      ["cel", "outline", "dof_post"]
     );
     assert.deepEqual(
       planRenderGraphPasses(contractOrder, { ...NO_OVERRIDES, disabled: ["outline"] }).passes,
-      ["cel"]
+      ["cel", "dof_post"]
     );
     // Dica parcial: listados primeiro, o resto mantém o contrato.
     assert.deepEqual(
       planRenderGraphPasses(contractOrder, { ...NO_OVERRIDES, order: ["cel"] }).passes,
-      ["cel", "outline"]
+      ["cel", "outline", "dof_post"]
     );
   });
 
@@ -221,16 +221,16 @@ describe("Render graph — o planejador aplica os overrides do snapshot", () => 
       { ...NO_OVERRIDES, disabled: ["bloom"] },
     ]) {
       const plan = planRenderGraphPasses(contractOrder, overrides);
-      assert.deepEqual(plan.passes, ["outline", "cel"]);
+      assert.deepEqual(plan.passes, ["outline", "cel", "dof_post"]);
       assert.equal(plan.fellBack, true);
       assert.equal(plan.unknownPass, "bloom");
     }
     // Tudo desligado também cai no contrato (plano vazio não desenha).
     const empty = planRenderGraphPasses(contractOrder, {
       ...NO_OVERRIDES,
-      disabled: ["outline", "cel"],
+      disabled: ["outline", "cel", "dof_post"],
     });
-    assert.deepEqual(empty.passes, ["outline", "cel"]);
+    assert.deepEqual(empty.passes, ["outline", "cel", "dof_post"]);
     assert.equal(empty.fellBack, true);
   });
 });

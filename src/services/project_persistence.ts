@@ -81,6 +81,15 @@ export interface SceneDomainSnapshot {
   nodes: SceneNodeSnapshot[];
   materials: SceneMaterialSnapshot[];
   assets: SceneAssetSnapshot[];
+  /** Fase 2 (#53): Anime Bokeh DoF (Scene.dof) — off por padrão. */
+  dof: {
+    enabled: boolean;
+    focus_distance: number;
+    f_number: number;
+    focal_mm: number;
+    bokeh_shape: number;
+    max_radius_px: number;
+  };
 }
 
 export interface SceneNodeSnapshot {
@@ -106,6 +115,31 @@ export interface SceneMaterialSnapshot {
   base_color: [number, number, number, number];
   shade_color: [number, number, number, number];
   outline_color: [number, number, number, number];
+  // Fase 2 (#18): material anime VRoid/MToon (default = slot off / off)
+  mtoon_emission_color: [number, number, number, number];
+  mtoon_emission_intensity: number;
+  mtoon_second_shade_shift: number;
+  mtoon_second_shade_softness: number;
+  mtoon_matcap_intensity: number;
+  mtoon_main_texture_enabled: boolean;
+  mtoon_shade_texture_enabled: boolean;
+  mtoon_second_shade_texture_enabled: boolean;
+  mtoon_emission_texture_enabled: boolean;
+  mtoon_matcap_enabled: boolean;
+  /** 0 = normal (mult), 1 = additive. */
+  mtoon_matcap_mode: number;
+  mtoon_shade_toony: boolean;
+  // Fase 2 (#17): sombra facial SDF (default = off)
+  face_shadow_offset: number;
+  face_shadow_smoothness: number;
+  face_sdf_enabled: boolean;
+  // Fase 2 (#43): olho anime + solver de olhar (default = off)
+  eye_depth_scale: number;
+  eye_highlight_intensity: number;
+  eye_enabled: boolean;
+  gaze_tracking_enabled: boolean;
+  gaze_saccade_amplitude: number;
+  gaze_damping: number;
 }
 
 export interface SceneAssetSnapshot {
@@ -190,6 +224,15 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
       working_space: "linear_srgb",
       display_space: "srgb",
     },
+    // Fase 2 (#53): DoF cinematográfico off (os mesmos defaults de Scene.dof)
+    dof: {
+      enabled: false,
+      focus_distance: 2.0,
+      f_number: 2.0,
+      focal_mm: 50.0,
+      bokeh_shape: 0,
+      max_radius_px: 16.0,
+    },
     nodes: [
       {
         node_id: CANONICAL_IDS.characterNodeId,
@@ -209,6 +252,30 @@ export function defaultSceneDomain(): SceneDomainSnapshot {
         base_color: [0.98, 0.92, 0.85, 1.0],
         shade_color: [0.82, 0.73, 0.78, 1.0],
         outline_color: [0.25, 0.15, 0.2, 1.0],
+        // Fase 2 (#18): MToon off por padrão (slots de textura desabilitados)
+        mtoon_emission_color: [0.0, 0.0, 0.0, 0.0],
+        mtoon_emission_intensity: 0.0,
+        mtoon_second_shade_shift: 0.0,
+        mtoon_second_shade_softness: 0.05,
+        mtoon_matcap_intensity: 0.0,
+        mtoon_main_texture_enabled: false,
+        mtoon_shade_texture_enabled: false,
+        mtoon_second_shade_texture_enabled: false,
+        mtoon_emission_texture_enabled: false,
+        mtoon_matcap_enabled: false,
+        mtoon_matcap_mode: 0,
+        mtoon_shade_toony: true,
+        // Fase 2 (#17): SDF facial off por padrão
+        face_shadow_offset: 0.0,
+        face_shadow_smoothness: 0.05,
+        face_sdf_enabled: false,
+        // Fase 2 (#43): olho anime off por padrão
+        eye_depth_scale: 0.0,
+        eye_highlight_intensity: 0.0,
+        eye_enabled: false,
+        gaze_tracking_enabled: false,
+        gaze_saccade_amplitude: 2.5,
+        gaze_damping: 6.0,
       },
     ],
     assets: [
@@ -366,6 +433,52 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
             base_color: vec4(material["base_color"], template.base_color),
             shade_color: vec4(material["shade_color"], template.shade_color),
             outline_color: vec4(material["outline_color"], template.outline_color),
+            // Fase 2 (#18): MToon — tolerante a blocos antigos (sem os campos)
+            mtoon_emission_color: vec4(
+              material["mtoon_emission_color"],
+              template.mtoon_emission_color
+            ),
+            mtoon_emission_intensity: num(
+              material["mtoon_emission_intensity"],
+              template.mtoon_emission_intensity
+            ),
+            mtoon_second_shade_shift: num(
+              material["mtoon_second_shade_shift"],
+              template.mtoon_second_shade_shift
+            ),
+            mtoon_second_shade_softness: num(
+              material["mtoon_second_shade_softness"],
+              template.mtoon_second_shade_softness
+            ),
+            mtoon_matcap_intensity: num(material["mtoon_matcap_intensity"], template.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: material["mtoon_main_texture_enabled"] === true,
+            mtoon_shade_texture_enabled: material["mtoon_shade_texture_enabled"] === true,
+            mtoon_second_shade_texture_enabled: material["mtoon_second_shade_texture_enabled"] === true,
+            mtoon_emission_texture_enabled: material["mtoon_emission_texture_enabled"] === true,
+            mtoon_matcap_enabled: material["mtoon_matcap_enabled"] === true,
+            mtoon_matcap_mode:
+              num(material["mtoon_matcap_mode"], template.mtoon_matcap_mode) === 1 ? 1 : 0,
+            mtoon_shade_toony: material["mtoon_shade_toony"] !== false,
+            // Fase 2 (#17): SDF facial — tolerante a blocos antigos
+            face_shadow_offset: num(material["face_shadow_offset"], template.face_shadow_offset),
+            face_shadow_smoothness: num(
+              material["face_shadow_smoothness"],
+              template.face_shadow_smoothness
+            ),
+            face_sdf_enabled: material["face_sdf_enabled"] === true,
+            // Fase 2 (#43): olho anime — tolerante a blocos antigos
+            eye_depth_scale: num(material["eye_depth_scale"], template.eye_depth_scale),
+            eye_highlight_intensity: num(
+              material["eye_highlight_intensity"],
+              template.eye_highlight_intensity
+            ),
+            eye_enabled: material["eye_enabled"] === true,
+            gaze_tracking_enabled: material["gaze_tracking_enabled"] === true,
+            gaze_saccade_amplitude: num(
+              material["gaze_saccade_amplitude"],
+              template.gaze_saccade_amplitude
+            ),
+            gaze_damping: num(material["gaze_damping"], template.gaze_damping),
           },
         ];
       })
@@ -408,6 +521,25 @@ export function parseSceneDomain(value: unknown): SceneDomainSnapshot {
     nodes: nodes.length > 0 ? nodes : defaults.nodes,
     materials: materials.length > 0 ? materials : defaults.materials,
     assets,
+    // Fase 2 (#53): DoF — tolerante a blocos antigos (sem campo → default off)
+    dof: parseDofSettings(source["dof"], defaults.dof),
+  };
+}
+
+/** Fase 2 (#53): parser tolerante do bloco `dof` (arquivos antigos não têm). */
+function parseDofSettings(
+  value: unknown,
+  defaults: SceneDomainSnapshot["dof"]
+): SceneDomainSnapshot["dof"] {
+  if (typeof value !== "object" || value === null) return { ...defaults };
+  const source = value as Record<string, unknown>;
+  return {
+    enabled: source["enabled"] === true,
+    focus_distance: num(source["focus_distance"], defaults.focus_distance),
+    f_number: num(source["f_number"], defaults.f_number),
+    focal_mm: num(source["focal_mm"], defaults.focal_mm),
+    bokeh_shape: num(source["bokeh_shape"], defaults.bokeh_shape) === 1 ? 1 : 0,
+    max_radius_px: num(source["max_radius_px"], defaults.max_radius_px),
   };
 }
 

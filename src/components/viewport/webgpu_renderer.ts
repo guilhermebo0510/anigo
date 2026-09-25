@@ -58,6 +58,9 @@ import celShaderSource from "../../../crates/anigo-renderer/shaders/cel_shading.
 import outlineShaderSource from "../../../crates/anigo-renderer/shaders/inverted_hull.wgsl?raw";
 // @ts-ignore - Vite ?raw import
 import morphComputeSource from "../../../crates/anigo-renderer/shaders/morph_sparse_compute.wgsl?raw";
+// Fase 2 (#53): passe de pós Depth of Field (Anime Bokeh DoF)
+// @ts-ignore - Vite ?raw import
+import dofShaderSource from "../../../crates/anigo-renderer/shaders/postprocess_dof.wgsl?raw";
 // P0 renderer: the WebGL2 fallback is *not* production — its sources live in
 // `webgl2_fallback/` and are listed as `role: "fallback_webgl2"` in the contract.
 // @ts-ignore - Vite ?raw import
@@ -100,11 +103,14 @@ import {
 } from "../../services/render_graph_plan";
 import {
   cameraUniformFloats,
+  dofUniformFloats,
   lightUniformFloats,
   materialUniformFloats,
   outlineUniformFloats,
   IDENTITY_MAT4,
 } from "../../services/render_uniforms";
+// Fase 2 (#53): câmera cinematográfica — tracking de alvo (CPU, por frame)
+import { stepTracking, type TrackingMode, TRACKING_DAMPING_DEFAULT } from "../../services/camera_cinematic";
 
 export interface ViewportMetrics {
   fps: number;
@@ -228,6 +234,57 @@ export class WebGpuViewportRenderer {
   private shadowMapTexture: GPUTexture | null = null; // P1-05 placeholder for shadow map/SDF
   // P1-04 ramp is now an asset (src/assets/toon_ramp.png) — loaded via fetch+createTexture; fallback procedural kept
   private toonRampSampler: GPUSampler | null = null;
+
+  // Fase 2 (#18): neutro 1x1 branco ancorado nos slots de textura MToon
+  // (cel 6–15) e no mapa de espessura do contorno (outline 3–4) enquanto o
+  // material não tem textura real. O shader só amostra o slot habilitado
+  // (material.params5/params6), então o frame com slots off não muda.
+  private mtoonNeutralTexture: GPUTexture | null = null;
+  private mtoonNeutralSampler: GPUSampler | null = null;
+
+  // Fase 2 (#18): parâmetros MToon do material (default = tudo off)
+  private mtoonEmissionColor: [number, number, number, number] = [0.0, 0.0, 0.0, 0.0];
+  private mtoonEmissionIntensity = 0.0;
+  private mtoonSecondShadeShift = 0.0;
+  private mtoonSecondShadeSoftness = 0.05;
+  private mtoonMatcapIntensity = 0.0;
+  private mtoonMatcapEnabled = false;
+  private mtoonMatcapMode = 0;
+  private mtoonShadeToony = true;
+
+  // Fase 2 (#17): sombra facial SDF (default = off)
+  private faceShadowOffset = 0.0;
+  private faceShadowSmoothness = 0.05;
+  private faceSdfEnabled = false;
+
+  // Fase 2 (#43): olho anime (default = off; settings do solver são CPU)
+  private eyeDepthScale = 0.0;
+  private eyeHighlightIntensity = 0.0;
+  private eyeEnabled = false;
+
+  // Fase 2 (#53): Anime Bokeh DoF (default = off → passe de pós não existe,
+  // imagem idêntica ao frame congelado) + tracking de alvo (CPU, por frame).
+  private dofEnabled = false;
+  private dofFocusDistance = 2.0;
+  private dofFNumber = 2.0;
+  private dofFocalMm = 50.0;
+  private dofBokehShape = 0; // 0 = círculo, 1 = hexágono
+  private dofMaxRadiusPx = 16.0;
+  private trackingMode: TrackingMode = "off";
+  private trackingDamping = TRACKING_DAMPING_DEFAULT;
+  private trackingPoi: [number, number, number] = [0.0, 0.0, 0.0];
+  private lastRenderTime = 0;
+
+  // Pipeline/buffers do passe de DoF (criados em buildShadersAndPipelines;
+  // as texturas intermediárias acompanham o resize).
+  private dofPipeline: GPURenderPipeline | null = null;
+  private dofUniformBuffer: GPUBuffer | null = null;
+  private dofBindGroup: GPUBindGroup | null = null;
+  private dofNearestSampler: GPUSampler | null = null;
+  private dofColorTexture: GPUTexture | null = null;
+  private dofColorView: GPUTextureView | null = null;
+  private dofDepthTexture: GPUTexture | null = null;
+  private dofDepthView: GPUTextureView | null = null;
 
   // WebGPU Sparse Morph Compute Pipeline
   private morphPipeline: GPUComputePipeline | null = null;
@@ -483,6 +540,8 @@ export class WebGpuViewportRenderer {
     assertShaderSource("cel_shading", celShaderSource);
     assertShaderSource("inverted_hull", outlineShaderSource);
     assertShaderSource("morph_sparse_compute", morphComputeSource);
+    // Fase 2 (#53): DoF — mesmo byte-for-byte que o headless (include_str!)
+    assertShaderSource("postprocess_dof", dofShaderSource);
     assertShaderSource("webgl2_fallback/cel_vertex", vsCel);
     assertShaderSource("webgl2_fallback/cel_fragment", fsCel);
     assertShaderSource("webgl2_fallback/outline_vertex", vsOutline);
@@ -571,6 +630,47 @@ export class WebGpuViewportRenderer {
       multisample: { count: msaaSampleCount() },
     });
 
+    // Fase 2 (#53): passe de DoF — fullscreen triangle (sem vertex buffer),
+    // sem profundidade, resolve direto no alvo de apresentação (swapchain no
+    // viewport; textura final no headless). O MESMO pipeline/shader roda nos
+    // dois backends com os mesmos bytes de uniform.
+    const dofPass = passSpec("dof_post");
+    if (dofPass) {
+      const dofModule = this.device.createShaderModule({ code: dofShaderSource });
+      this.dofPipeline = this.device.createRenderPipeline({
+        layout: "auto",
+        vertex: {
+          module: dofModule,
+          entryPoint: dofPass.vertex_entry ?? "vs_dof",
+          buffers: [],
+        },
+        fragment: {
+          module: dofModule,
+          entryPoint: dofPass.fragment_entry ?? "fs_dof",
+          // `as`: o `blendStateOf` devolve strings literais genéricas; o lib
+          // antigo do TS não as enxerga como GPUBlendFactor (mesmo problema
+          // que cel/outline, já dentro do orçamento do baseline).
+          targets: [{ format: this.format, blend: blendStateOf(dofPass) as GPUBlendState | undefined }],
+        },
+        primitive: {
+          topology: "triangle-list",
+          cullMode: (dofPass.cull_mode ?? "back") as any,
+        },
+        multisample: { count: 1 },
+      });
+      // Textura de profundidade só é amostrável com sampler sem filtragem.
+      this.dofNearestSampler = this.device.createSampler({
+        magFilter: "nearest",
+        minFilter: "nearest",
+        addressModeU: "clamp-to-edge",
+        addressModeV: "clamp-to-edge",
+      });
+      this.dofUniformBuffer = this.device.createBuffer({
+        label: "DofUniform",
+        size: uniformSize("dof"),
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
     // Issue #14: pré-passe de profundidade — mesmo vértice do cel (`vs_main`),
     // mesmo bind group (layout explícito do cel, não `auto`), sem fragmento:
     // só escreve o z-buffer para o Early-Z do passe principal.
@@ -1539,6 +1639,23 @@ export class WebGpuViewportRenderer {
     shadowSaturation?: number;
     specularSize?: number; // P2-07
     aoIntensity?: number; // P2-05
+    // Fase 2 (#18): material anime VRoid/MToon
+    mtoonEmissionColor?: [number, number, number, number];
+    mtoonEmissionIntensity?: number;
+    mtoonSecondShadeShift?: number;
+    mtoonSecondShadeSoftness?: number;
+    mtoonMatcapIntensity?: number;
+    mtoonMatcapEnabled?: boolean;
+    mtoonMatcapMode?: number;
+    mtoonShadeToony?: boolean;
+    // Fase 2 (#17): sombra facial SDF
+    faceShadowOffset?: number;
+    faceShadowSmoothness?: number;
+    faceSdfEnabled?: boolean;
+    // Fase 2 (#43): olho anime
+    eyeDepthScale?: number;
+    eyeHighlightIntensity?: number;
+    eyeEnabled?: boolean;
   }) {
     if (params.baseColor) this.baseColor = params.baseColor;
     if (params.shadeColor) this.shadeColor = params.shadeColor;
@@ -1562,6 +1679,59 @@ export class WebGpuViewportRenderer {
     if (params.shadowSaturation !== undefined) this.shadowSaturation = params.shadowSaturation;
     if (params.specularSize !== undefined) this.specularSize = params.specularSize;
     if (params.aoIntensity !== undefined) this.aoIntensity = params.aoIntensity;
+    // Fase 2 (#18): parâmetros MToon
+    if (params.mtoonEmissionColor) this.mtoonEmissionColor = params.mtoonEmissionColor;
+    if (params.mtoonEmissionIntensity !== undefined) this.mtoonEmissionIntensity = params.mtoonEmissionIntensity;
+    if (params.mtoonSecondShadeShift !== undefined) this.mtoonSecondShadeShift = params.mtoonSecondShadeShift;
+    if (params.mtoonSecondShadeSoftness !== undefined) this.mtoonSecondShadeSoftness = params.mtoonSecondShadeSoftness;
+    if (params.mtoonMatcapIntensity !== undefined) this.mtoonMatcapIntensity = params.mtoonMatcapIntensity;
+    if (params.mtoonMatcapEnabled !== undefined) this.mtoonMatcapEnabled = params.mtoonMatcapEnabled;
+    if (params.mtoonMatcapMode !== undefined) this.mtoonMatcapMode = params.mtoonMatcapMode === 1 ? 1 : 0;
+    if (params.mtoonShadeToony !== undefined) this.mtoonShadeToony = params.mtoonShadeToony;
+    // Fase 2 (#17): parâmetros do SDF facial
+    if (params.faceShadowOffset !== undefined) this.faceShadowOffset = params.faceShadowOffset;
+    if (params.faceShadowSmoothness !== undefined) this.faceShadowSmoothness = params.faceShadowSmoothness;
+    if (params.faceSdfEnabled !== undefined) this.faceSdfEnabled = params.faceSdfEnabled;
+    // Fase 2 (#43): parâmetros do olho anime
+    if (params.eyeDepthScale !== undefined) this.eyeDepthScale = params.eyeDepthScale;
+    if (params.eyeHighlightIntensity !== undefined) this.eyeHighlightIntensity = params.eyeHighlightIntensity;
+    if (params.eyeEnabled !== undefined) this.eyeEnabled = params.eyeEnabled;
+  }
+
+  /**
+   * Fase 2 (#53): Anime Bokeh DoF — settings do passe de pós-processamento.
+   * `enabled: false` (default) remove o passe: imagem idêntica ao frame
+   * congelado. Os mesmos valores chegam ao headless (Scene.dof).
+   */
+  public setDofSettings(settings: {
+    enabled?: boolean;
+    focusDistance?: number;
+    fNumber?: number;
+    focalMm?: number;
+    bokehShape?: 0 | 1;
+    maxRadiusPx?: number;
+  }): void {
+    if (settings.enabled !== undefined) this.dofEnabled = settings.enabled;
+    if (settings.focusDistance !== undefined) this.dofFocusDistance = settings.focusDistance;
+    if (settings.fNumber !== undefined) this.dofFNumber = settings.fNumber;
+    if (settings.focalMm !== undefined) this.dofFocalMm = settings.focalMm;
+    if (settings.bokehShape !== undefined) this.dofBokehShape = settings.bokehShape === 1 ? 1 : 0;
+    if (settings.maxRadiusPx !== undefined) this.dofMaxRadiusPx = settings.maxRadiusPx;
+  }
+
+  /**
+   * Fase 2 (#53): tracking de alvo — trava o foco suavemente na cabeça,
+   * no centro de massa (Hips) ou num ponto de interesse arbitrário, com
+   * amortecimento exponencial (1/s). Modo "off" desliga o passo por frame.
+   */
+  public setTrackingSettings(settings: {
+    mode?: TrackingMode;
+    dampingPerSecond?: number;
+    poi?: [number, number, number];
+  }): void {
+    if (settings.mode !== undefined) this.trackingMode = settings.mode;
+    if (settings.dampingPerSecond !== undefined) this.trackingDamping = settings.dampingPerSecond;
+    if (settings.poi !== undefined) this.trackingPoi = settings.poi;
   }
 
   private buildGeometryBuffers() {
@@ -1963,10 +2133,41 @@ export class WebGpuViewportRenderer {
       addressModeV: addressMode(rampSpec.address_mode),
     });
 
+    // Fase 2 (#18): neutro 1x1 branco para os slots de textura MToon — uma
+    // vez por renderer, ancorado em todo bind group (mesma estratégia do
+    // headless Rust: sem textura real, o slot é ignorado pelo shader).
+    if (this.mtoonNeutralTexture) {
+      try { this.mtoonNeutralTexture.destroy(); } catch (_) {}
+    }
+    this.mtoonNeutralTexture = this.device.createTexture({
+      size: [1, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: this.mtoonNeutralTexture },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
+      [1, 1]
+    );
+    // GPUSampler não tem destroy() (spec) — o sampler antigo é liberado com o
+    // device; recriar apenas descarta a referência.
+    this.mtoonNeutralSampler = this.device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
+    });
+
     // P1-04: o binding da paleta vem do contrato (5 no cel, 2 no outline) —
     // nunca um literal solto no renderer.
     const celSkinBinding = skinningBinding("cel");
     const outlineSkinBinding = skinningBinding("outline");
+
+    // Fase 2 (#18): slots MToon — main/shade/second_shade/emission/sphere_add
+    // ancoram o neutro 1x1 branco; o shader só amostra o slot habilitado.
+    const mtoonNeutralView = this.mtoonNeutralTexture.createView();
+    const mtoonNeutralSampler = this.mtoonNeutralSampler;
 
     this.celBindGroup = this.device.createBindGroup({
       layout: this.celPipeline.getBindGroupLayout(0),
@@ -1977,6 +2178,19 @@ export class WebGpuViewportRenderer {
         { binding: 3, resource: this.toonRampTexture.createView() },
         { binding: 4, resource: this.toonRampSampler },
         { binding: celSkinBinding, resource: { buffer: this.bonesBuffer } },
+        { binding: 6, resource: mtoonNeutralView },
+        { binding: 7, resource: mtoonNeutralSampler },
+        { binding: 8, resource: mtoonNeutralView },
+        { binding: 9, resource: mtoonNeutralSampler },
+        { binding: 10, resource: mtoonNeutralView },
+        { binding: 11, resource: mtoonNeutralSampler },
+        { binding: 12, resource: mtoonNeutralView },
+        { binding: 13, resource: mtoonNeutralSampler },
+        { binding: 14, resource: mtoonNeutralView },
+        { binding: 15, resource: mtoonNeutralSampler },
+        // Fase 2 (#17): SDF facial — neutro 1x1 (R=1 → fator de sombra 0)
+        { binding: 16, resource: mtoonNeutralView },
+        { binding: 17, resource: mtoonNeutralSampler },
       ],
     });
 
@@ -1986,6 +2200,9 @@ export class WebGpuViewportRenderer {
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: { buffer: this.outlineBuffer } },
         { binding: outlineSkinBinding, resource: { buffer: this.bonesBuffer } },
+        // Fase 2 (#18): mapa de espessura do contorno (neutro 1x1).
+        { binding: 3, resource: mtoonNeutralView },
+        { binding: 4, resource: mtoonNeutralSampler },
       ],
     });
   }
@@ -2027,6 +2244,25 @@ export class WebGpuViewportRenderer {
           usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
         this.msaaColorView = this.msaaColorTexture.createView();
+        // Fase 2 (#53): intermediários do DoF (resolve da cor + profundidade
+        // 1× amostrável). Sem MSAA: o passe de pós lê um pixel por pixel.
+        if (this.dofColorTexture) { try { this.dofColorTexture.destroy(); } catch (_) {} }
+        if (this.dofDepthTexture) { try { this.dofDepthTexture.destroy(); } catch (_) {} }
+        this.dofColorTexture = this.device.createTexture({
+          size: [realWidth, realHeight],
+          format: this.format,
+          sampleCount: 1,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.dofColorView = this.dofColorTexture.createView();
+        this.dofDepthTexture = this.device.createTexture({
+          size: [realWidth, realHeight],
+          format: depthFormat() as any,
+          sampleCount: 1,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.dofDepthView = this.dofDepthTexture.createView();
+        this.dofBindGroup = null; // views novas → bind group será remontado
       } else if (this.backend === "webgl2" && this.gl) {
         this.gl.viewport(0, 0, realWidth, realHeight);
       }
@@ -2390,6 +2626,26 @@ export class WebGpuViewportRenderer {
       this.updateRecenterAnimation();
       const startTime = performance.now();
 
+      // Fase 2 (#53): tracking de alvo — o rig (target + eye) persegue a
+      // cabeça/hips/ponto de interesse com amortecimento; o orbitador livre
+      // continua funcionando por cima (mesmo delta nos dois).
+      if (this.trackingMode !== "off") {
+        const dt = this.lastRenderTime > 0 ? (startTime - this.lastRenderTime) / 1000 : 1 / 60;
+        const stepped = stepTracking(
+          this.target,
+          this.eye,
+          this.trackingMode,
+          this.trackingDamping,
+          this.trackingPoi,
+          dt
+        );
+        if (stepped.moved) {
+          this.target = stepped.target;
+          this.eye = stepped.eye;
+        }
+      }
+      this.lastRenderTime = startTime;
+
       if (this.backend === "webgpu") {
         this.renderWebGPU(startTime);
       } else if (this.backend === "webgl2") {
@@ -2462,6 +2718,28 @@ export class WebGpuViewportRenderer {
       specularOffset: this.specOffset,
       specularSize: this.specularSize,
       aoIntensity: this.aoIntensity,
+      // Fase 2 (#18): MToon — slots de textura ancoram o neutro 1x1; o shader
+      // só amostra o slot quando os flags (params5/params6) o habilitam.
+      mtoonEmissionColor: this.mtoonEmissionColor,
+      mtoonEmissionIntensity: this.mtoonEmissionIntensity,
+      mtoonSecondShadeShift: this.mtoonSecondShadeShift,
+      mtoonSecondShadeSoftness: this.mtoonSecondShadeSoftness,
+      mtoonMatcapIntensity: this.mtoonMatcapIntensity,
+      mtoonMainTextureEnabled: false,
+      mtoonShadeTextureEnabled: false,
+      mtoonSecondShadeTextureEnabled: false,
+      mtoonEmissionTextureEnabled: false,
+      mtoonMatcapEnabled: this.mtoonMatcapEnabled,
+      mtoonMatcapMode: this.mtoonMatcapMode,
+      mtoonShadeToony: this.mtoonShadeToony,
+      // Fase 2 (#17): SDF facial — o slot ancora o neutro 1x1 (R=1 → fator 0)
+      faceShadowOffset: this.faceShadowOffset,
+      faceShadowSmoothness: this.faceShadowSmoothness,
+      faceSdfEnabled: this.faceSdfEnabled,
+      // Fase 2 (#43): olho anime — off → eye_uv = in.uv, highlight 0
+      eyeDepthScale: this.eyeDepthScale,
+      eyeHighlightIntensity: this.eyeHighlightIntensity,
+      eyeEnabled: this.eyeEnabled,
     });
     this.device.queue.writeBuffer(this.materialBuffer!, 0, matData);
 
@@ -2552,12 +2830,24 @@ export class WebGpuViewportRenderer {
     }
 
     // P0-07: MSAA resolve (msaa view → swapchain)
+    // Fase 2 (#53): com DoF ativo o resolve vai para a textura intermediária
+    // (cor + profundidade 1×) e o passe de pós escreve no swapchain.
+    const dofActive =
+      this.dofEnabled &&
+      !!this.dofPipeline &&
+      !!this.dofColorView &&
+      !!this.dofDepthView;
     const colorView = this.msaaColorView ?? textureView;
-    const resolveTarget = this.msaaColorView ? textureView : undefined;
+    const resolveTarget = this.msaaColorView
+      ? dofActive && this.dofColorView
+        ? this.dofColorView
+        : textureView
+      : undefined;
     const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [
         {
-          view: colorView,
+          // `as`: `msaaColorView` é `| null`; o lib antigo não aceita null aqui.
+          view: colorView as GPUTextureView,
           resolveTarget,
           clearValue: {
             r: this.clearColor[0],
@@ -2569,12 +2859,15 @@ export class WebGpuViewportRenderer {
           storeOp: "store",
         },
       ],
+      // `as any`: `depthResolveAttachment` (resolve do MSAA depth → textura
+      // 1× amostrável, Fase 2 #53) não existe no lib.dom antigo do TS.
       depthStencilAttachment: {
         view: this.depthView,
+        depthResolveAttachment: dofActive ? this.dofDepthView : undefined,
         depthClearValue: 1.0,
         depthLoadOp: prepass ? "load" : "clear",
         depthStoreOp: "store",
-      },
+      } as any,
     });
 
     passEncoder.setVertexBuffer(0, activeVbo);
@@ -2601,6 +2894,47 @@ export class WebGpuViewportRenderer {
     }
 
     passEncoder.end();
+
+    // Fase 2 (#53): Anime Bokeh DoF — mesmo shader/uniforms do headless.
+    if (dofActive && this.dofUniformBuffer && this.dofNearestSampler) {
+      this.device.queue.writeBuffer(
+        this.dofUniformBuffer,
+        0,
+        dofUniformFloats({
+          focusDistance: this.dofFocusDistance,
+          fNumber: this.dofFNumber,
+          bokehShape: this.dofBokehShape,
+          focalMm: this.dofFocalMm,
+          maxRadiusPx: this.dofMaxRadiusPx,
+          widthPx: this.canvas.width,
+          heightPx: this.canvas.height,
+          zNear: DEFAULT_CAMERA_NEAR,
+          zFar: DEFAULT_CAMERA_FAR,
+        })
+      );
+      if (!this.dofBindGroup) {
+        this.dofBindGroup = this.device.createBindGroup({
+          layout: this.dofPipeline!.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.dofUniformBuffer } },
+            { binding: 1, resource: this.dofColorView! },
+            { binding: 2, resource: this.dofDepthView! },
+            { binding: 3, resource: this.dofNearestSampler },
+          ],
+        });
+      }
+      const dofPassEncoder = commandEncoder.beginRenderPass({
+        colorAttachments: [
+          { view: textureView, loadOp: "load", storeOp: "store" },
+        ],
+      });
+      dofPassEncoder.setPipeline(this.dofPipeline!);
+      dofPassEncoder.setBindGroup(0, this.dofBindGroup);
+      // Fullscreen triangle: 3 vértices, sem buffer (vs_dof deriva da index).
+      dofPassEncoder.draw(3);
+      dofPassEncoder.end();
+    }
+
     this.device.queue.submit([commandEncoder.finish()]);
 
     this.recordMetrics(startTime, "WebGPU Hardware", mainPassDraws + (prepass ? 1 : 0));
@@ -2861,7 +3195,16 @@ export class WebGpuViewportRenderer {
     if (this.outlineBuffer) { try { this.outlineBuffer.destroy(); } catch (_) {} this.outlineBuffer = null; }
     if (this.depthTexture) { try { this.depthTexture.destroy(); } catch (_) {} this.depthTexture = null; this.depthView = null; }
     if (this.msaaColorTexture) { try { this.msaaColorTexture.destroy(); } catch (_) {} this.msaaColorTexture = null; this.msaaColorView = null; }
+    // Fase 2 (#53): intermediários/buffer do passe de DoF
+    if (this.dofColorTexture) { try { this.dofColorTexture.destroy(); } catch (_) {} this.dofColorTexture = null; this.dofColorView = null; }
+    if (this.dofDepthTexture) { try { this.dofDepthTexture.destroy(); } catch (_) {} this.dofDepthTexture = null; this.dofDepthView = null; }
+    if (this.dofUniformBuffer) { this.dofUniformBuffer.destroy(); this.dofUniformBuffer = null; }
+    this.dofBindGroup = null;
+    this.dofPipeline = null;
+    this.dofNearestSampler = null;
     if (this.toonRampTexture) { try { this.toonRampTexture.destroy(); } catch (_) {} this.toonRampTexture = null; }
+    // Fase 2 (#18): neutro 1x1 dos slots MToon
+    if (this.mtoonNeutralTexture) { try { this.mtoonNeutralTexture.destroy(); } catch (_) {} this.mtoonNeutralTexture = null; }
     // compute pipeline resources
     if (this.morphHeaderBuffer) { try { this.morphHeaderBuffer.destroy(); } catch (_) {} this.morphHeaderBuffer = null; }
     if (this.morphBaseBuffer) { try { this.morphBaseBuffer.destroy(); } catch (_) {} this.morphBaseBuffer = null; }
@@ -2893,5 +3236,6 @@ export class WebGpuViewportRenderer {
     this.celPipeline = null; this.outlinePipeline = null; this.depthPrepassPipeline = null;
     this.celBindGroup = null; this.outlineBindGroup = null;
     this.toonRampSampler = null;
+    this.mtoonNeutralSampler = null;
   }
 }

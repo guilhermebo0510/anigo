@@ -374,7 +374,7 @@ test("serviço: o frame de exportação traz o bloco de render do contrato", asy
     color_format: "Rgba8Unorm",
     depth_format: "Depth24Plus",
     msaa_samples: 4,
-    render_passes: ["outline", "cel"],
+    render_passes: ["outline", "cel", "dof_post"],
     clear_source: "scene.background_color",
     clear_color: [0.08, 0.09, 0.13, 1],
     adapter_name: "test-adapter",
@@ -399,7 +399,7 @@ test("serviço: o frame de exportação traz o bloco de render do contrato", asy
 
   // A ordem dos passes que o núcleo grava no manifesto é a mesma que o viewport
   // desenha (fonte única: o render contract).
-  assert.deepEqual(renderPassOrder(), ["outline", "cel"]);
+  assert.deepEqual(renderPassOrder(), ["outline", "cel", "dof_post"]);
   assert.deepEqual(render.render_passes, renderPassOrder());
 
   const result = await exportCanonicalFrame({
@@ -411,7 +411,7 @@ test("serviço: o frame de exportação traz o bloco de render do contrato", asy
     staticRevision: manifestFixture.project.static_revision,
   });
   assert.equal(result.imagePath, "/tmp/frame.png");
-  assert.deepEqual(result.render.render_passes, ["outline", "cel"]);
+  assert.deepEqual(result.render.render_passes, ["outline", "cel", "dof_post"]);
   assert.equal(result.render.msaa_samples, 4);
   assert.ok(result.parity.ok, describeParity(result.parity));
 

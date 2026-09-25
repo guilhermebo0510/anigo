@@ -51,6 +51,16 @@ impl Default for StylizedLight {
     }
 }
 
+fn default_face_shadow_smoothness() -> f32 { 0.05 }
+fn default_gaze_saccade_amplitude() -> f32 { 2.5 } // graus (Faixa 2–5 do issue #43)
+fn default_gaze_damping() -> f32 { 6.0 }
+fn default_mtoon_emission_color() -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
+fn default_mtoon_emission_intensity() -> f32 { 0.0 }
+fn default_mtoon_second_shade_shift() -> f32 { 0.0 }
+fn default_mtoon_second_shade_softness() -> f32 { 0.05 }
+fn default_mtoon_matcap_intensity() -> f32 { 0.0 }
+fn default_mtoon_matcap_mode() -> u8 { 0 } // 0 = normal (mult), 1 = additive
+fn default_mtoon_shade_toony() -> bool { true }
 fn default_spec_color() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
 fn default_spec_softness() -> f32 { 0.05 }
 fn default_spec_offset() -> f32 { 0.0 }
@@ -102,6 +112,63 @@ pub struct StylizedMaterial {
     // P2-05 AO intensity (was hardcoded 0.85 mix)
     #[serde(default = "default_ao_intensity")]
     pub ao_intensity: f32,
+    // Fase 2 (#18): material anime VRoid/MToon — slots de textura e
+    // parâmetros VRMC_materials_mtoon. Todos off por padrão: um material
+    // sem texturas renderiza exatamente como antes (frame congelado).
+    #[serde(default = "default_mtoon_emission_color")]
+    pub mtoon_emission_color: [f32; 4],
+    #[serde(default = "default_mtoon_emission_intensity")]
+    pub mtoon_emission_intensity: f32,
+    #[serde(default = "default_mtoon_second_shade_shift")]
+    pub mtoon_second_shade_shift: f32,
+    #[serde(default = "default_mtoon_second_shade_softness")]
+    pub mtoon_second_shade_softness: f32,
+    #[serde(default = "default_mtoon_matcap_intensity")]
+    pub mtoon_matcap_intensity: f32,
+    #[serde(default)]
+    pub mtoon_main_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_second_shade_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_emission_texture_enabled: bool,
+    #[serde(default)]
+    pub mtoon_matcap_enabled: bool,
+    #[serde(default = "default_mtoon_matcap_mode")]
+    pub mtoon_matcap_mode: u8,
+    #[serde(default = "default_mtoon_shade_toony")]
+    pub mtoon_shade_toony: bool,
+    // Fase 2 (#17): sombra facial SDF (Genshin style) — off por padrão.
+    /// Deslocamento manual do threshold do SDF facial (-0.25 a 0.25).
+    #[serde(default)]
+    pub face_shadow_offset: f32,
+    /// Suavidade da penumbra da sombra facial.
+    #[serde(default = "default_face_shadow_smoothness")]
+    pub face_shadow_smoothness: f32,
+    /// Ativa a sombra facial (mapa SDF ancorado no renderer).
+    #[serde(default)]
+    pub face_sdf_enabled: bool,
+    // Fase 2 (#43): olho anime (parallax + highlights) — off por padrão.
+    /// "Recalada" da íris: profundidade do parallax (UV + V_tangent × scale).
+    #[serde(default)]
+    pub eye_depth_scale: f32,
+    /// Intensidade dos highlights desenhados à mão (desacoplados da luz).
+    #[serde(default)]
+    pub eye_highlight_intensity: f32,
+    /// Ativa o shader do olho anime (parallax + highlights).
+    #[serde(default)]
+    pub eye_enabled: bool,
+    // Fase 2 (#43): solver de olhar (CPU — anigo-ik / eye_tracking.ts, não GPU).
+    /// Rastreamento do olhar para a câmera/alvo (micro-sacadas incluídas).
+    #[serde(default)]
+    pub gaze_tracking_enabled: bool,
+    /// Amplitude das micro-sacadas em graus (faixa 2–5 do issue).
+    #[serde(default = "default_gaze_saccade_amplitude")]
+    pub gaze_saccade_amplitude: f32,
+    /// Damping do tracking (exponencial, 1/s) — quanto maior, mais rígido.
+    #[serde(default = "default_gaze_damping")]
+    pub gaze_damping: f32,
 }
 
 impl Default for StylizedMaterial {
@@ -129,6 +196,27 @@ impl Default for StylizedMaterial {
             outline_depth_bias: default_outline_depth_bias(),
             specular_size: default_spec_size(),
             ao_intensity: default_ao_intensity(),
+            mtoon_emission_color: default_mtoon_emission_color(),
+            mtoon_emission_intensity: default_mtoon_emission_intensity(),
+            mtoon_second_shade_shift: default_mtoon_second_shade_shift(),
+            mtoon_second_shade_softness: default_mtoon_second_shade_softness(),
+            mtoon_matcap_intensity: default_mtoon_matcap_intensity(),
+            mtoon_main_texture_enabled: false,
+            mtoon_shade_texture_enabled: false,
+            mtoon_second_shade_texture_enabled: false,
+            mtoon_emission_texture_enabled: false,
+            mtoon_matcap_enabled: false,
+            mtoon_matcap_mode: default_mtoon_matcap_mode(),
+            mtoon_shade_toony: default_mtoon_shade_toony(),
+            face_shadow_offset: 0.0,
+            face_shadow_smoothness: default_face_shadow_smoothness(),
+            face_sdf_enabled: false,
+            eye_depth_scale: 0.0,
+            eye_highlight_intensity: 0.0,
+            eye_enabled: false,
+            gaze_tracking_enabled: false,
+            gaze_saccade_amplitude: default_gaze_saccade_amplitude(),
+            gaze_damping: default_gaze_damping(),
         }
     }
 }
@@ -192,6 +280,59 @@ impl SceneNode {
     }
 }
 
+/// Fase 2 (#53): Depth of Field cinematográfico (Anime Bokeh DoF).
+///
+/// Vem no JSON da cena (default = desligado — o passe de pós é pulado e a
+/// imagem é idêntica ao frame congelado). Os mesmos valores chegam ao shader
+/// `postprocess_dof.wgsl` (uniform `DofUniform`) no viewport e no headless.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DofSettings {
+    /// Ativa o passe de DoF pós-projeto.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Distância de foco (m) — o plano milimetricamente nítido (olhos/rosto).
+    #[serde(default = "default_dof_focus_distance")]
+    pub focus_distance: f32,
+    /// Número f (abertura) — menor = mais bokeh.
+    #[serde(default = "default_dof_f_number")]
+    pub f_number: f32,
+    /// Distância focal em mm (lente ativa) — entra na fórmula do CoC.
+    #[serde(default = "default_dof_focal_mm")]
+    pub focal_mm: f32,
+    /// Formato da abertura: 0 = bokeh circular, 1 = hexagonal clássico de anime.
+    #[serde(default)]
+    pub bokeh_shape: u32,
+    /// Raio máximo do bokeh em pixels (teto para não custar além do necessário).
+    #[serde(default = "default_dof_max_radius_px")]
+    pub max_radius_px: f32,
+}
+
+impl Default for DofSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            focus_distance: default_dof_focus_distance(),
+            f_number: default_dof_f_number(),
+            focal_mm: default_dof_focal_mm(),
+            bokeh_shape: 0,
+            max_radius_px: default_dof_max_radius_px(),
+        }
+    }
+}
+
+fn default_dof_focus_distance() -> f32 {
+    2.0
+}
+fn default_dof_f_number() -> f32 {
+    2.0
+}
+fn default_dof_focal_mm() -> f32 {
+    50.0
+}
+fn default_dof_max_radius_px() -> f32 {
+    16.0
+}
+
 /// Complete Scene representation containing nodes, camera, lighting, and global parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
@@ -205,6 +346,9 @@ pub struct Scene {
     /// proporções são assadas na malha base).
     #[serde(default = "SkinPayload::canonical_base")]
     pub skin: SkinPayload,
+    /// Fase 2 (#53): DoF cinematográfico — default off (sem campo, sem passe).
+    #[serde(default)]
+    pub dof: DofSettings,
 }
 
 impl Default for Scene {
@@ -219,6 +363,7 @@ impl Default for Scene {
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0], // P0-04: unified with viewport clearColor (was 0.12,0.13,0.16)
             skin: SkinPayload::canonical_base(),
+            dof: DofSettings::default(),
         }
     }
 }
@@ -231,6 +376,7 @@ impl Scene {
             light: StylizedLight::default(),
             background_color: [0.08, 0.09, 0.13, 1.0],
             skin: SkinPayload::canonical_base(),
+            dof: DofSettings::default(),
         }
     }
 

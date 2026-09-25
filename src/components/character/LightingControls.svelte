@@ -10,6 +10,10 @@
     hueShift: number;
     shadowSaturation?: number;
     ambientIntensity?: number;
+    // Fase 2 (#17): sombra facial SDF (Genshin style)
+    faceShadowOffset?: number;
+    faceShadowSmoothness?: number;
+    faceSdfEnabled?: boolean;
     /** Issue #13: modo de projeção da câmera (`perspective`/`orthographic`). */
     projectionMode?: "perspective" | "orthographic";
     onProjectionChange?: (mode: "perspective" | "orthographic") => void;
@@ -24,6 +28,12 @@
       ambientIntensity?: number;
       isContinuous?: boolean;
     }) => void;
+    onFaceShadowUpdate?: (params: {
+      offset: number;
+      smoothness: number;
+      enabled: boolean;
+      isContinuous: boolean;
+    }) => void;
   }
 
   let {
@@ -36,9 +46,13 @@
     hueShift = $bindable(-15),
     shadowSaturation = $bindable(1.15),
     ambientIntensity = $bindable(0.35),
+    faceShadowOffset = $bindable(0),
+    faceShadowSmoothness = $bindable(0.05),
+    faceSdfEnabled = $bindable(false),
     projectionMode = "perspective",
     onProjectionChange = undefined,
     onUpdate = undefined,
+    onFaceShadowUpdate = undefined,
   }: Props = $props();
 
   // Anime Solar Atmosphere Presets
@@ -67,6 +81,16 @@
       hueShift,
       shadowSaturation,
       ambientIntensity,
+      isContinuous,
+    });
+  }
+
+  // Fase 2 (#17): parâmetros da sombra facial SDF (material, não luz).
+  function notifyFaceShadow(isContinuous = true) {
+    onFaceShadowUpdate?.({
+      offset: faceShadowOffset,
+      smoothness: faceShadowSmoothness,
+      enabled: faceSdfEnabled,
       isContinuous,
     });
   }
@@ -230,7 +254,56 @@
           <span class="preset-dot" style="background-color: {preset.hex};"></span>
           <span>{preset.name}</span>
         </button>
-      {/each}
+        {/each}
+    </div>
+  </div>
+
+  <!-- Fase 2 (#17): Sombra Facial SDF (Genshin style) -->
+  <div class="control-group">
+    <div class="group-title">SOMBRA FACIAL (SDF)</div>
+
+    <div class="toggle-row">
+      <span class="label">Sombra Facial</span>
+      <input
+        type="checkbox"
+        bind:checked={faceSdfEnabled}
+        oninput={() => notifyFaceShadow(true)}
+        onchange={() => notifyFaceShadow(false)}
+      />
+    </div>
+
+    <div class="slider-row">
+      <span class="label">Offset da Sombra</span>
+      <input
+        type="range"
+        min="-0.25"
+        max="0.25"
+        step="0.005"
+        bind:value={faceShadowOffset}
+        oninput={() => notifyFaceShadow(true)}
+        onchange={() => notifyFaceShadow(false)}
+      />
+      <span class="val-tag">{faceShadowOffset.toFixed(2)}</span>
+    </div>
+
+    <div class="slider-row">
+      <span class="label">Suavidade</span>
+      <input
+        type="range"
+        min="0.005"
+        max="0.30"
+        step="0.005"
+        bind:value={faceShadowSmoothness}
+        oninput={() => notifyFaceShadow(true)}
+        onchange={() => notifyFaceShadow(false)}
+      />
+      <span class="val-tag">{(faceShadowSmoothness * 100).toFixed(0)}%</span>
+    </div>
+
+    <div class="hint-text">
+      SDF angular: a sombra do nariz, bochechas e queixo desliza com o azimut da
+      luz, sem ruído das normais poligonais. Sem textura de SDF ancorada o efeito
+      é nulo (neutro 1×1 branco).
     </div>
   </div>
   {/if}
@@ -445,5 +518,29 @@
     border-radius: 50%;
     border: 1px solid rgba(255, 255, 255, 0.3);
     flex-shrink: 0;
+  }
+
+  /* Fase 2 (#17): Sombra Facial SDF */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: 0.85rem;
+    color: #cbd5e1;
+  }
+
+  .toggle-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #38bdf8;
+    cursor: pointer;
+  }
+
+  .hint-text {
+    font-size: 0.72rem;
+    line-height: 1.45;
+    color: #94a3b8;
+    margin-top: 4px;
   }
 </style>
