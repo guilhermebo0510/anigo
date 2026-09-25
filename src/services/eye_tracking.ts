@@ -64,7 +64,7 @@ export function solveGaze(
   const vz = targetLocal[2] - eyeLocal[2];
   const yawUnclamped = Math.atan2(vx, vz);
   const horizontal = Math.hypot(vx, vz);
-  const pitchUnclamped = horizontal < 1e-6 ? 0 : Math.atan2(vy, horizontal);
+  const pitchUnclamped = Math.atan2(vy, horizontal);
   return {
     yaw: Math.min(Math.max(yawUnclamped, -maxYawDegrees * DEG2RAD), maxYawDegrees * DEG2RAD),
     pitch: Math.min(

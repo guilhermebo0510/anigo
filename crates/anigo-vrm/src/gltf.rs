@@ -175,9 +175,13 @@ fn accessor_field_count(accessor: &Value) -> u64 {
 }
 
 fn in_range(idx: Option<&Value>, len: usize, where_: &str) -> Result<(), GltfError> {
-    match idx.and_then(Value::as_u64) {
-        Some(v) if (v as usize) < len => Ok(()),
-        _ => Err(fail(GltfErrorCode::UnknownError, format!("{where_} aponta para índice inválido"))),
+    match idx {
+        None => Ok(()),
+        Some(Value::Null) => Ok(()),
+        Some(v) => match v.as_u64() {
+            Some(n) if (n as usize) < len => Ok(()),
+            _ => Err(fail(GltfErrorCode::UnknownError, format!("{where_} aponta para índice inválido"))),
+        },
     }
 }
 

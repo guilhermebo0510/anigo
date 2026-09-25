@@ -106,7 +106,7 @@ fn aperture_mask(p: vec2<f32>, shape: f32) -> f32 {
 }
 
 @fragment
-fn fs_dof(@builtin(position) pos: vec4<f32>) -> @builtin(color) vec4<f32> {
+fn fs_dof(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = pos.xy / dof.resolution.xy;
     let frag_dist = linearize_depth(textureSampleLevel(scene_depth, dof_sampler, uv, 0));
 
@@ -123,7 +123,7 @@ fn fs_dof(@builtin(position) pos: vec4<f32>) -> @builtin(color) vec4<f32> {
     var acc = textureSample(scene_color, dof_sampler, uv).rgba;
     var wsum = 1.0;
     let r = radius_px / dof.resolution.y; // fração de tela vertical
-    for (var i = 0u; i < u32(arrayLength(&DOF_DISC)); i++) {
+    for (var i = 0u; i < 16u; i++) {
         let p = DOF_DISC[i];
         let w = aperture_mask(p, dof.params.z);
         if (w > 0.5) {

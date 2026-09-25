@@ -506,7 +506,9 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         }
         let mut humanoid_bones = Map::new();
         for (bone, node) in &vrm.humanoid_bones {
-            humanoid_bones.insert(bone.clone(), Value::from(node.map(Value::from).unwrap_or(Value::Null)));
+            let mut bone_obj = Map::new();
+            bone_obj.insert("node".into(), Value::from(node.map(Value::from).unwrap_or(Value::Null)));
+            humanoid_bones.insert(bone.clone(), Value::Object(bone_obj));
         }
         let mut meta = Map::new();
         meta.insert("title".into(), Value::from(vrm.meta.title.clone()));

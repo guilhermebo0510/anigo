@@ -106,7 +106,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     // Fase 2 (#18): modulação por mapa de espessura (R do slot outlineWidth)
     var width_mod: f32;
     if (outline.params2.y > 0.5) {
-        width_mod = textureSample(outline_width_tex, outline_width_sampler, in.uv).r;
+        width_mod = textureSampleLevel(outline_width_tex, outline_width_sampler, in.uv, 0.0).r;
     } else {
         width_mod = 1.0;
     }

@@ -313,6 +313,7 @@ fn as_vec4(value: Option<&Value>, fallback: [f32; 4], where_: &str) -> Result<[f
     }
 }
 
+#[allow(dead_code)]
 fn as_node(value: Option<&Value>, where_: &str) -> Result<Option<u64>, Vrm1Error> {
     match value {
         None => Ok(None),

@@ -450,11 +450,7 @@ impl LookAtSolver {
         let v = target_local - eye_local;
         let yaw = v.x.atan2(v.z);
         let horizontal = v.x.hypot(v.z);
-        let pitch = if horizontal < 1e-6 {
-            0.0
-        } else {
-            v.y.atan2(horizontal)
-        };
+        let pitch = v.y.atan2(horizontal);
         GazeYawPitch {
             yaw: yaw.clamp(-self.max_yaw, self.max_yaw),
             pitch: pitch.clamp(-self.max_pitch, self.max_pitch),
@@ -500,10 +496,15 @@ mod tests {
     #[test]
     fn test_gaze_solver_front_and_clamps() {
         let solver = LookAtSolver::default();
-        // Olho esquerdo mirando no centro do rosto (alvo em frente) → olhar frontal.
+        // Olho esquerdo mirando no centro do rosto (alvo em frente): convergência natural (−6.44° = -0.1124 rad).
         let front = solver.solve(EYE_OFFSET_LEFT, Vec3::new(0.0, -0.01, 0.4));
-        assert!(front.yaw.abs() < 1e-3, "olhar frontal não pode ter yaw");
+        assert!((front.yaw - (-0.11242713)).abs() < 1e-4, "convergência natural: esperado ~ -0.1124, veio {}", front.yaw);
         assert!(front.pitch.abs() < 1e-3, "olhar frontal não pode ter pitch");
+
+        // Olho esquerdo mirando reto em frente (alvo alinhado ao olho em x=0.035) → yaw e pitch zero.
+        let straight = solver.solve(EYE_OFFSET_LEFT, Vec3::new(0.035, -0.01, 0.4));
+        assert!(straight.yaw.abs() < 1e-4, "olhar perfeitamente frontal ao olho deve ter yaw zero");
+        assert!(straight.pitch.abs() < 1e-4, "olhar perfeitamente frontal ao olho deve ter pitch zero");
 
         // Alvo muito à esquerda: yaw é clamped no limite físico (45°).
         let far_left = solver.solve(EYE_OFFSET_LEFT, Vec3::new(10.0, 0.0, 0.1));

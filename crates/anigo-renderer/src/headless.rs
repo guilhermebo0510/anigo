@@ -728,10 +728,9 @@ impl HeadlessRenderer {
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        // scene_depth: texture_depth_2d + textureSampleLevel(0) —
-                        // a classe depth no wgpu é Float não filtrável.
+                        // scene_depth: texture_depth_2d — no wgpu é Depth.
                         "texture_depth_2d" => wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            sample_type: wgpu::TextureSampleType::Depth,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },

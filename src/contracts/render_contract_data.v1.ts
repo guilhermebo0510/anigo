@@ -32,7 +32,7 @@ export const RENDER_CONTRACT_DATA = {
         "fragment": "fs_main"
       },
       "lines": 136,
-      "fnv1a64": "d0c5f653e26cc4f7"
+      "fnv1a64": "33d65d5d852b46d5"
     },
     {
       "name": "morph_sparse_compute",
@@ -82,7 +82,7 @@ export const RENDER_CONTRACT_DATA = {
         "fragment": "fs_dof"
       },
       "lines": 135,
-      "fnv1a64": "bc62be0801b4c5d1"
+      "fnv1a64": "1b332cedea2fd7fa"
     },
     {
       "name": "webgl2_fallback/cel_vertex",
