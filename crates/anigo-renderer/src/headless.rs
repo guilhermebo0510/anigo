@@ -69,7 +69,7 @@ pub struct HeadlessRenderer {
     pub mtoon_neutral_sampler: wgpu::Sampler,
     /// Fase 2 (#53): Anime Bokeh DoF — passe de pós-processamento (o MESMO
     /// shader/uniforms do viewport). Só roda quando `Scene.dof.enabled`.
-    dof_pipeline: wgpu::RenderPipeline,
+    dof_pipeline: Option<wgpu::RenderPipeline>,
     dof_bind_group_layout: wgpu::BindGroupLayout,
     /// Textura de profundidade só é amostrável com sampler sem filtragem.
     dof_nearest_sampler: wgpu::Sampler,
@@ -748,39 +748,45 @@ impl HeadlessRenderer {
             bind_group_layouts: &[&dof_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let dof_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Anime Bokeh DoF Pipeline"),
-            layout: Some(&dof_pipeline_layout),
-            cache: None,
-            vertex: wgpu::VertexState {
-                module: &dof_shader,
-                entry_point: Some(dof_pass_spec.vertex_entry.unwrap_or("vs_dof")),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &dof_shader,
-                entry_point: Some(dof_pass_spec.fragment_entry.unwrap_or("fs_dof")),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: contract::offscreen_color_format(),
-                    blend: dof_pass_spec.blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: dof_pass_spec.cull_mode,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
+        let dof_pipeline = if adapter_info.backend == wgpu::Backend::Gl {
+            // Naga GLSL backend não suporta leitura de texture_depth_2d em GLSL.
+            // Em backends GLES/OpenGL emulados (ex: Mesa llvmpipe no CI), o pipeline DoF não é criado.
+            None
+        } else {
+            Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Anime Bokeh DoF Pipeline"),
+                layout: Some(&dof_pipeline_layout),
+                cache: None,
+                vertex: wgpu::VertexState {
+                    module: &dof_shader,
+                    entry_point: Some(dof_pass_spec.vertex_entry.unwrap_or("vs_dof")),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &dof_shader,
+                    entry_point: Some(dof_pass_spec.fragment_entry.unwrap_or("fs_dof")),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: contract::offscreen_color_format(),
+                        blend: dof_pass_spec.blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: dof_pass_spec.cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }))
+        };
         let dof_nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("DoF Depth Sampler (nearest)"),
             mag_filter: wgpu::FilterMode::Nearest,
@@ -1503,11 +1509,18 @@ impl HeadlessRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            dof_pass.set_pipeline(&self.dof_pipeline);
-            dof_pass.set_bind_group(0, &dof_bind_group, &[]);
-            // Fullscreen triangle: 3 vértices, sem buffer (vs_dof deriva da index).
-            dof_pass.draw(0..3, 0..1);
-            draw_calls += 1;
+            if let Some(ref pipeline) = self.dof_pipeline {
+                dof_pass.set_pipeline(pipeline);
+                dof_pass.set_bind_group(0, &dof_bind_group, &[]);
+                // Fullscreen triangle: 3 vértices, sem buffer (vs_dof deriva da index).
+                dof_pass.draw(0..3, 0..1);
+                draw_calls += 1;
+            } else {
+                diagnostics::report(
+                    "dof_unavailable",
+                    "DoF desabilitado: backend gráfico não suporta leitura de textura de profundidade",
+                );
+            }
             } else {
                 diagnostics::report(
                     "dof_unavailable",
@@ -2191,10 +2204,17 @@ impl HeadlessRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            dof_pass.set_pipeline(&self.dof_pipeline);
-            dof_pass.set_bind_group(0, &dof_bind_group, &[]);
-            dof_pass.draw(0..3, 0..1);
-            draw_calls += 1;
+            if let Some(ref pipeline) = self.dof_pipeline {
+                dof_pass.set_pipeline(pipeline);
+                dof_pass.set_bind_group(0, &dof_bind_group, &[]);
+                dof_pass.draw(0..3, 0..1);
+                draw_calls += 1;
+            } else {
+                diagnostics::report(
+                    "dof_unavailable",
+                    "DoF desabilitado: backend gráfico não suporta leitura de textura de profundidade",
+                );
+            }
             } else {
                 diagnostics::report(
                     "dof_unavailable",
