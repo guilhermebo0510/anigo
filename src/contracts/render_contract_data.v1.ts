@@ -31,8 +31,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 136,
-      "fnv1a64": "33d65d5d852b46d5"
+      "lines": 129,
+      "fnv1a64": "6b4afd0b47b50740"
     },
     {
       "name": "morph_sparse_compute",

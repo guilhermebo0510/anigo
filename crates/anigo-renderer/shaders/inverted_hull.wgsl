@@ -103,14 +103,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let len = length(normal_vec4.xy);
     let normal_clip = select(vec2<f32>(0.0, 0.0), normal_vec4.xy / len, len > 1e-5);
 
-    // Fase 2 (#18): modulação por mapa de espessura (R do slot outlineWidth)
-    var width_mod: f32;
-    if (outline.params2.y > 0.5) {
-        width_mod = textureSampleLevel(outline_width_tex, outline_width_sampler, in.uv, 0.0).r;
-    } else {
-        width_mod = 1.0;
-    }
-    let thickness = outline.params.x * in.color.b * width_mod;
+    let thickness = outline.params.x * in.color.b;
     let aspect = max(outline.params.y, 0.001);
     let depth_bias = outline.params.z;
 
