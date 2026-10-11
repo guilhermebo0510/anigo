@@ -206,6 +206,13 @@ impl StudioApp {
             self.modeling.delete_active_object();
         }
         self.inspector_modifiers(ui);
+        if self.modeling.active_object().is_some() {
+            section(ui, "Biblioteca", |ui| {
+                if ui.button(format!("{}  Exportar para a Biblioteca (GLB)", icons::EXPORT)).clicked() {
+                    self.export_active_to_library();
+                }
+            });
+        }
         self.inspector_snap(ui);
     }
 

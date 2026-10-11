@@ -70,3 +70,23 @@ Validação: **A** automática (CI) · **B** render em software (lavapipe/Xvfb, 
 | T-4.1 | `VALIDACAO_LOCAL.md` com checklist para o chat local | ✅ |
 | T-4.2 | Perfil dev otimizado p/ deps (wgpu/naga/image) e medição de tempo de build no Windows | ⬜ |
 | T-4.3 | Spike `dx serve --hotpatch` (Subsecond) no `anigo-studio` | ⬜ (precisa do seu PC) |
+
+## Trilha 5 — Biblioteca de ativos de alto nível (pedido do usuário)
+Meta: dezenas de milhares de assets bem geridos, com miniaturas, inspirada no Content Browser/Fab (Unreal), Quixel Bridge/Megascans,
+Blender Asset Browser e DAMs (Eagle/Billfish/Bridge). Formato interno próprio (modelagem ANIGO) **mais** importação de GLB/glTF
+(e FBX/OBJ/VRM), com padrão de materiais interoperável (Blender/Unreal/Unity) escolhido para **anime** (ver pesquisa T-5.1).
+| ID | Tarefa | Estado | Val. |
+|---|---|---|---|
+| T-5.0 | Biblioteca nativa básica: grade, busca, categorias, medidas reais dos .glb, "Editar na Modelagem", exportar objeto autoral p/ GLB | ✅ (MVP, não escala) | B |
+| T-5.1 | Pesquisa dos líderes (UE Asset Registry/DDC, Megascans/Bridge/Fab, Blender Asset Libraries, DAMs) + formatos de material (glTF PBR, VRM/MToon, MaterialX, OpenPBR, UsdPreviewSurface) → `docs/native/pesquisa/biblioteca_assets.md` | em andamento | — |
+| T-5.2 | Crate `anigo-assets`: registry SQLite (WAL + FTS5, migrações versionadas), modelo de dados (asset, versão, tag hierárquica, coleção manual/inteligente, localização, dependências) | ⬜ | A |
+| T-5.3 | Gestão de **locais**: biblioteca gerenciada (cópia interna) vs ligada (referência), múltiplas raízes, mover/relink de ausentes, scan incremental (mtime+tamanho+hash), watcher | ⬜ | A |
+| T-5.4 | Pipeline de **import** em background (progresso/cancelar/retomar): GLB/glTF completo (cenas, hierarquia, skin, animações, materiais, KHR_*), FBX (ufbx), OBJ, VRM; dedup por hash de conteúdo (blake3); limites de segurança | ⬜ | A |
+| T-5.5 | **Material canônico ANIGO** (toon-first, compatível com glTF PBR + VRMC_materials_mtoon) + conversores de import/export | ⬜ | A+B |
+| T-5.6 | **Miniaturas**: geração em lote com o renderer cel offscreen (3D) e `image` (texturas), tamanhos 64/128/256/512, cache em disco por hash + LRU, invalidação | ⬜ | A+B |
+| T-5.7 | UI **grade virtualizada** (10⁴–10⁵ itens): grade/lista, zoom de cards, busca FTS com operadores, filtros facetados, tags, coleções, favoritos/rating, painel de metadados, preview 3D, multi-seleção, arrastar p/ cena | ⬜ | B+H |
+| T-5.8 | **Gestão**: renomear/mover/duplicar, excluir com lixeira (restaurar/purge), visualizador de referências/dependências, duplicados, ausentes, verificação de integridade, uso de disco, limpeza de cache | ⬜ | A+B |
+| T-5.9 | Pacotes `.anigopack` (zip: asset + texturas + metadata + thumbnails) e exportação GLB/VRM | ⬜ | A |
+| T-5.10 | Benchmark de escala: 50 k assets (índice, busca < 50 ms, scroll 60 FPS, memória) | ⬜ | A+H |
+| T-5.11 | C/C++ onde compensar: KTX2/BasisU (basis_universal), LODs de preview (meshopt já em `anigo-native`) | ⬜ | A |
+| T-5.12 | Interface `AssetSource` para fontes remotas (estilo Fab/Sketchfab) — só o contrato | ⬜ | A |

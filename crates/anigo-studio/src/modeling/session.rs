@@ -283,6 +283,27 @@ impl ModelingSession {
         idx
     }
 
+    /// Adiciona um objeto a partir de uma malha existente (importação).
+    pub fn add_object_from_mesh(&mut self, name: &str, mesh: EditMesh, at: Vec3) -> usize {
+        self.checkpoint(&format!("Importar {name}"));
+        self.doc.next_id += 1;
+        let id = self.doc.next_id;
+        let mut mesh = mesh;
+        mesh.name = name.to_string();
+        self.doc.objects.push(ModelObject {
+            id,
+            name: name.to_string(),
+            mesh,
+            transform: Transform::from_translation(at),
+            visible: true,
+            modifiers: Default::default(),
+        });
+        self.doc.active = Some(self.doc.objects.len() - 1);
+        self.selection.clear();
+        self.revision += 1;
+        self.doc.objects.len() - 1
+    }
+
     pub fn delete_active_object(&mut self) -> bool {
         let Some(i) = self.doc.active else {
             return false;

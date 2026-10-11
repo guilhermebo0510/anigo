@@ -88,6 +88,61 @@ pub fn scan_glb_dir(dir: &Path) -> Vec<AssetRecord> {
         .collect()
 }
 
+/// Diretório de ativos do usuário (`Documents/ANIGO/Assets`, mesmo do app Tauri legado).
+/// `ANIGO_ASSETS_DIR` sobrescreve (testes/portabilidade).
+pub fn studio_assets_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("ANIGO_ASSETS_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
+    home.join("Documents").join("ANIGO").join("Assets")
+}
+
+fn sanitize_file_stem(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() {
+        "objeto".into()
+    } else {
+        s
+    }
+}
+
+/// Exporta um objeto de modelagem (malha avaliada, com modificadores) como GLB na pasta de ativos.
+pub fn export_object_glb(
+    obj: &crate::modeling::ModelObject,
+    dir: &Path,
+) -> Result<PathBuf, String> {
+    use anigo_modeling::convert::{to_core_mesh, ToCoreOptions};
+    let evaluated = match obj.evaluated(crate::modeling::EvalMode::Render) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => return Err(format!("modificadores: {e}")),
+        None => obj.mesh.clone(),
+    };
+    let mut core = to_core_mesh(&evaluated, &ToCoreOptions::default()).map_err(|e| e.to_string())?;
+    if core.indices.is_empty() {
+        return Err("a malha está vazia".into());
+    }
+    core.name = obj.name.clone();
+    std::fs::create_dir_all(dir).map_err(|e| format!("criar {}: {e}", dir.display()))?;
+    let path = dir.join(format!("{}.glb", sanitize_file_stem(&obj.name)));
+    core.to_glb_file(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Importa um GLB como malha editável (n-gons recuperados por quadify; normais preservadas).
+pub fn import_glb_mesh(path: &Path) -> Result<anigo_modeling::EditMesh, String> {
+    use anigo_modeling::convert::{from_core_mesh, FromCoreOptions};
+    let core = Mesh::from_glb_file(path).map_err(|e| e.to_string())?;
+    let mut em = from_core_mesh(&core, &FromCoreOptions::default()).map_err(|e| e.to_string())?;
+    anigo_modeling::convert::quadify(&mut em, 5f32.to_radians());
+    em.name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("importado").to_string();
+    Ok(em)
+}
+
 pub fn authored_record(name: &str, mesh: &anigo_modeling::EditMesh) -> AssetRecord {
     AssetRecord {
         id: format!("authored:{name}"),
@@ -118,6 +173,32 @@ mod tests {
         assert_eq!(female.category, "Personagens");
         assert!(female.tris.unwrap() > 1000, "contagem deve vir do arquivo");
         assert!(female.verts.unwrap() > 500);
+    }
+
+    #[test]
+    fn export_then_scan_then_import_roundtrip() {
+        use crate::modeling::{ModelingSession, PrimitiveKind};
+        let dir = std::env::temp_dir().join(format!("anigo_assets_{}", std::process::id()));
+        let mut s = ModelingSession::new();
+        s.add_primitive(PrimitiveKind::QuadSphere, glam::Vec3::ZERO);
+        let obj = s.active_object().unwrap().clone();
+        let path = export_object_glb(&obj, &dir).unwrap();
+        assert!(path.exists());
+        let found = scan_glb_dir(&dir);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tris, Some(obj.mesh.triangle_count()));
+        let back = import_glb_mesh(&path).unwrap();
+        assert!(back.face_count() > 0);
+        // a esfera tem 216 quads → 432 tris; o quadify recupera a maioria dos quads
+        assert!(back.faces.iter().filter(|f| f.len() == 4).count() > 150);
+        back.validate().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_stem_is_sanitized() {
+        assert_eq!(sanitize_file_stem("Esfera Quad.002"), "Esfera_Quad_002");
+        assert_eq!(sanitize_file_stem("///"), "objeto");
     }
 
     #[test]

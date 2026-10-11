@@ -144,7 +144,7 @@ impl StudioApp {
         let shader_watcher = dev_shader_path().and_then(|p| ShaderWatcher::new(p).ok());
 
         let mut library = LibraryState::default();
-        library.assets = library::scan_glb_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models"));
+        library.assets = library_scan();
 
         Self {
             cli,
@@ -429,6 +429,7 @@ impl StudioApp {
             let card_w = 190.0;
             let cols = ((ui.available_width() / (card_w + 10.0)).floor() as usize).max(1);
             let mut toast = None;
+            let mut edit_request: Option<AssetRecord> = None;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("asset_grid").spacing([10.0, 10.0]).show(ui, |ui| {
                     for (i, a) in all.iter().enumerate() {
@@ -451,9 +452,12 @@ impl StudioApp {
                                         _ => a.format.to_string(),
                                     };
                                     ui.label(RichText::new(meta).size(11.0).color(theme::TEXT_DIM));
-                                    ui.horizontal(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
                                         if ui.small_button(tr("lib.use_in_scene")).clicked() {
                                             toast = Some(format!("\"{}\": a colocação em cena entra com o workspace Cenário nativo", a.name));
+                                        }
+                                        if ui.small_button("Editar na Modelagem").clicked() {
+                                            edit_request = Some((*a).clone());
                                         }
                                         if ui.small_button(tr("lib.inspect")).clicked() {
                                             self.library.selected = Some(i);
@@ -468,7 +472,9 @@ impl StudioApp {
                     }
                 });
             });
-            if let Some(t) = toast {
+            if let Some(a) = edit_request {
+                self.edit_library_asset(&a);
+            } else if let Some(t) = toast {
                 self.library.toast = Some(t);
             }
             if let Some(t) = &self.library.toast {
@@ -476,6 +482,46 @@ impl StudioApp {
                 ui.label(RichText::new(t).color(theme::TEXT_DIM).size(12.0));
             }
         });
+    }
+
+    /// "Editar na Modelagem": importa o GLB (ou ativa o objeto autoral) e muda de workspace.
+    fn edit_library_asset(&mut self, a: &AssetRecord) {
+        if a.authored {
+            let name = a.name.clone();
+            if let Some(i) = self.modeling.doc.objects.iter().position(|o| o.name == name) {
+                self.modeling.set_active(i);
+            }
+            self.switch_workspace(WorkspaceId::Modelagem);
+            return;
+        }
+        let Some(path) = a.path.clone() else {
+            return;
+        };
+        match library::import_glb_mesh(&path) {
+            Ok(mesh) => {
+                let name = mesh.name.clone();
+                self.modeling.add_object_from_mesh(&name, mesh, glam::Vec3::ZERO);
+                self.modeling.status = format!("Importado: {name}");
+                self.switch_workspace(WorkspaceId::Modelagem);
+                self.frame_selected_or_all();
+            }
+            Err(e) => self.library.toast = Some(format!("Falha ao importar {}: {e}", path.display())),
+        }
+    }
+
+    /// Exporta o objeto ativo como GLB na pasta de ativos e atualiza o catálogo.
+    pub(crate) fn export_active_to_library(&mut self) {
+        let Some(obj) = self.modeling.active_object().cloned() else {
+            self.modeling.status = "Nenhum objeto ativo".into();
+            return;
+        };
+        match library::export_object_glb(&obj, &library::studio_assets_dir()) {
+            Ok(path) => {
+                self.modeling.status = format!("Exportado para a Biblioteca: {}", path.display());
+                self.library.assets = library_scan();
+            }
+            Err(e) => self.modeling.status = format!("Exportar: {e}"),
+        }
     }
 
     fn placeholder_ui(&mut self, ui: &mut egui::Ui) {
@@ -517,6 +563,13 @@ impl StudioApp {
         }
         ctx.request_repaint();
     }
+}
+
+/// Bases canônicas do repositório + ativos do usuário (`Documents/ANIGO/Assets`).
+pub(crate) fn library_scan() -> Vec<AssetRecord> {
+    let mut v = library::scan_glb_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models"));
+    v.extend(library::scan_glb_dir(&library::studio_assets_dir()));
+    v
 }
 
 fn category_icon(cat: &str) -> &'static str {
