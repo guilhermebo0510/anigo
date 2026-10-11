@@ -8,7 +8,7 @@ use glam::{Vec2, Vec3};
 
 pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
-    "sphere-wire", "scene-many", "dense-sphere",
+    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit",
 ];
 
 impl StudioApp {
@@ -81,6 +81,39 @@ impl StudioApp {
                 }
                 self.camera.distance = 16.0;
                 self.camera.pitch = 0.6;
+            }
+            "cel-preview" => {
+                m.delete_active_object();
+                m.add_primitive(PrimitiveKind::QuadSphere, Vec3::new(0.0, 1.0, 0.0));
+                m.add_primitive(PrimitiveKind::Torus, Vec3::new(2.4, 1.0, 0.0));
+                m.add_primitive(PrimitiveKind::Cone, Vec3::new(-2.4, 1.0, 0.0));
+                self.view_shading = crate::app::ViewShading::Cel;
+                self.camera.distance = 9.0;
+                if let Some(c) = self.gpu.as_mut().and_then(|g| g.cel.as_mut()) {
+                    c.light.direction = glam::Vec3::new(-0.45, 0.6, 0.65).normalize().to_array();
+                }
+            }
+            "cel-preview-inactive" => {
+                m.delete_active_object();
+                m.add_primitive(PrimitiveKind::QuadSphere, Vec3::new(0.0, 1.0, 0.0));
+                m.add_primitive(PrimitiveKind::Torus, Vec3::new(2.4, 1.0, 0.0));
+                m.add_primitive(PrimitiveKind::Cone, Vec3::new(-2.4, 1.0, 0.0));
+                m.doc.active = None;
+                self.view_shading = crate::app::ViewShading::Cel;
+                self.camera.distance = 9.0;
+                if let Some(c) = self.gpu.as_mut().and_then(|g| g.cel.as_mut()) {
+                    c.light.direction = glam::Vec3::new(-0.45, 0.6, 0.65).normalize().to_array();
+                }
+            }
+            "cel-edit" => {
+                m.delete_active_object();
+                m.add_primitive(PrimitiveKind::Capsule, Vec3::new(0.0, 1.0, 0.0));
+                m.set_mode(Mode::Edit);
+                m.set_select_mode(SelectMode::Face);
+                let mesh = &m.active_object().expect("objeto").mesh;
+                let sel = Selection::from_faces(mesh, (0..30u32).collect::<Vec<_>>());
+                m.set_selection(sel, None);
+                self.view_shading = crate::app::ViewShading::Cel;
             }
             "dense-sphere" => {
                 m.add_primitive(PrimitiveKind::UvSphere, Vec3::new(0.0, 1.0, 0.0));

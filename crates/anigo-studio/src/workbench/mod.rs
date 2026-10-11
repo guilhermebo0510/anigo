@@ -68,6 +68,9 @@ pub enum ShadingMode {
     #[default]
     Solid,
     Wireframe,
+    /// Só overlays (grid, arestas, pontos) sobre fundo transparente + profundidade do sólido:
+    /// usado por cima do preview cel-shaded do `anigo-renderer`.
+    OverlayOnly,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +119,7 @@ struct Targets {
 struct Pipelines {
     bg: wgpu::RenderPipeline,
     solid: wgpu::RenderPipeline,
+    solid_depth: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     point: wgpu::RenderPipeline,
     grid: wgpu::RenderPipeline,
@@ -227,6 +231,11 @@ impl Workbench {
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         };
+        let depth_only = wgpu::ColorTargetState {
+            format: COLOR_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::empty(),
+        };
         let depth = |write: bool, compare: wgpu::CompareFunction, bias: wgpu::DepthBiasState| {
             Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
@@ -312,6 +321,14 @@ impl Workbench {
                 "fs_solid",
                 &solid_buffers,
                 &opaque,
+                depth(true, wgpu::CompareFunction::Less, solid_bias),
+            ),
+            solid_depth: make(
+                "wb solid depth",
+                "vs_solid",
+                "fs_solid",
+                &solid_buffers,
+                &depth_only,
                 depth(true, wgpu::CompareFunction::Less, solid_bias),
             ),
             line: make(
@@ -487,7 +504,7 @@ impl Workbench {
                     depth_slice: None,
                     resolve_target: Some(&targets.resolve_view),
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Discard,
                     },
                 })],
@@ -506,14 +523,20 @@ impl Workbench {
             pass.set_bind_group(0, &self.globals_bind, &[]);
 
             // fundo — usa o bind group do primeiro objeto só para satisfazer o layout
-            if let Some(first) = items.first() {
-                pass.set_bind_group(1, &first.mesh.object_bind, &[]);
-                pass.set_pipeline(&self.pipelines.bg);
-                pass.draw(0..3, 0..1);
+            if settings.shading != ShadingMode::OverlayOnly {
+                if let Some(first) = items.first() {
+                    pass.set_bind_group(1, &first.mesh.object_bind, &[]);
+                    pass.set_pipeline(&self.pipelines.bg);
+                    pass.draw(0..3, 0..1);
+                }
             }
 
-            if settings.shading == ShadingMode::Solid {
-                pass.set_pipeline(&self.pipelines.solid);
+            if matches!(settings.shading, ShadingMode::Solid | ShadingMode::OverlayOnly) {
+                pass.set_pipeline(if settings.shading == ShadingMode::OverlayOnly {
+                    &self.pipelines.solid_depth
+                } else {
+                    &self.pipelines.solid
+                });
                 for item in items {
                     if let Some(buf) = &item.mesh.solid {
                         pass.set_bind_group(1, &item.mesh.object_bind, &[]);
@@ -735,5 +758,49 @@ mod tests {
         assert!(!wb.render((64, 64), &cam, &[DrawItem { mesh: &gpu }], &ViewSettings::default()));
         assert!(wb.render((96, 64), &cam, &[DrawItem { mesh: &gpu }], &ViewSettings::default()));
         assert_eq!(wb.output_size(), Some((96, 64)));
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use anigo_modeling::primitives;
+    use glam::Vec3;
+
+    fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        pollster_block(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    }
+
+    /// No modo OverlayOnly o interior de um sólido destacado deve ficar TRANSPARENTE (alpha 0):
+    /// só linhas/pontos/grid aparecem; o sólido existe só como profundidade.
+    #[test]
+    fn overlay_only_keeps_solid_interior_transparent() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let mut wb = Workbench::new(device, queue).unwrap();
+        let mesh = primitives::cone(1.0, 0.0, 2.0, 24, true);
+        let data = build_draw_data(&mesh, &BuildOptions { highlight_object: true, ..Default::default() });
+        let gpu = wb.upload(&data, Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)), [1.0; 4]);
+        let cam = OrbitCamera { distance: 6.0, ..Default::default() };
+        let settings = ViewSettings {
+            shading: ShadingMode::OverlayOnly,
+            show_grid: false,
+            ..Default::default()
+        };
+        wb.render((200, 200), &cam, &[DrawItem { mesh: &gpu }], &settings);
+        let (w, h, px) = wb.read_rgba().unwrap();
+        if let Ok(dir) = std::env::var("ANIGO_TEST_OUT") {
+            let _ = image::save_buffer(format!("{dir}/overlay_cone.png"), &px, w, h, image::ColorType::Rgba8);
+        }
+        let (center, _) = cam.project(Vec3::new(0.0, 0.8, 0.3), glam::Vec2::new(200.0, 200.0)).unwrap();
+        let i = ((center.y as u32 * w + center.x as u32) * 4) as usize;
+        eprintln!("pixel central do cone: {:?}", &px[i..i + 4]);
+        let opaque = px.chunks(4).filter(|p| p[3] > 200).count();
+        let any = px.chunks(4).filter(|p| p[3] > 0).count();
+        eprintln!("alpha>200: {opaque}, alpha>0: {any}");
+        assert!(opaque < 2500, "o sólido não pode virar opaco no modo overlay ({opaque} px opacos)");
     }
 }

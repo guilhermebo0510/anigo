@@ -10,7 +10,8 @@ use crate::modeling::{Mode, ModelingSession};
 use crate::session::{SessionState, SESSION_VERSION};
 use crate::theme;
 use crate::viewport::OrbitCamera;
-use crate::workbench::{GpuMesh, ShadingMode, ViewSettings, Workbench};
+use crate::celview::CelPreview;
+use crate::workbench::{GpuMesh, ViewSettings, Workbench};
 use crate::workspace::WorkspaceId;
 use egui::{Color32, RichText, Vec2 as EVec2};
 use std::collections::HashMap;
@@ -28,9 +29,20 @@ pub(crate) struct CachedObject {
     pub mesh: GpuMesh,
 }
 
+/// Modo de sombreamento do viewport (UI). `Cel` usa o renderer canônico; os overlays seguem no Workbench.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewShading {
+    #[default]
+    Solid,
+    Wireframe,
+    Cel,
+}
+
 pub(crate) struct Gpu {
     pub wb: Workbench,
     pub tex: Option<egui::TextureId>,
+    pub cel: Option<CelPreview>,
+    pub cel_tex: Option<egui::TextureId>,
     pub cache: Vec<CachedObject>,
     pub adapter_name: String,
     pub backend: String,
@@ -52,6 +64,7 @@ pub struct StudioApp {
     pub(crate) modeling: ModelingSession,
     pub(crate) camera: OrbitCamera,
     pub(crate) settings: ViewSettings,
+    pub(crate) view_shading: ViewShading,
     pub(crate) gpu: Option<Gpu>,
     pub(crate) shader_watcher: Option<ShaderWatcher>,
     pub(crate) shader_error: Option<String>,
@@ -131,6 +144,7 @@ impl StudioApp {
             modeling,
             camera,
             settings: ViewSettings::default(),
+            view_shading: ViewShading::default(),
             gpu: None,
             shader_watcher,
             shader_error: None,
@@ -170,9 +184,14 @@ impl StudioApp {
         match Workbench::new(rs.device.clone(), rs.queue.clone()) {
             Ok(wb) => {
                 let info = rs.adapter.get_info();
+                let cel = CelPreview::new(rs.device.clone(), rs.queue.clone(), &info)
+                    .map_err(|e| tracing::warn!("preview cel indisponível: {e}"))
+                    .ok();
                 self.gpu = Some(Gpu {
                     wb,
                     tex: None,
+                    cel,
+                    cel_tex: None,
                     cache: Vec::new(),
                     adapter_name: info.name,
                     backend: format!("{:?}", info.backend),
@@ -275,6 +294,16 @@ impl StudioApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
                     if let Some(g) = &self.gpu {
+                        if let Some(m) = g.cel.as_ref().and_then(|c| c.metrics.as_ref()) {
+                            if self.view_shading == ViewShading::Cel {
+                                ui.label(
+                                    RichText::new(format!("cel: {} draws · {} descartados · {} tris", m.draw_calls, m.culled_draw_calls, m.triangle_count))
+                                        .color(theme::TEXT_DIM)
+                                        .size(11.5),
+                                );
+                                ui.separator();
+                            }
+                        }
                         ui.label(RichText::new(format!("{} · {}", g.adapter_name, g.backend)).color(theme::TEXT_DIM).size(11.5));
                     }
                     if self.ws == WorkspaceId::Modelagem {
@@ -551,9 +580,10 @@ pub(crate) fn mode_label(m: Mode) -> &'static str {
     }
 }
 
-pub(crate) fn shading_label(s: ShadingMode) -> &'static str {
+pub(crate) fn shading_label(s: ViewShading) -> &'static str {
     match s {
-        ShadingMode::Solid => tr("viewport.solid"),
-        ShadingMode::Wireframe => tr("viewport.wireframe"),
+        ViewShading::Solid => tr("viewport.solid"),
+        ViewShading::Wireframe => tr("viewport.wireframe"),
+        ViewShading::Cel => tr("viewport.cel"),
     }
 }

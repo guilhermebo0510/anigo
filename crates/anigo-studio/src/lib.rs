@@ -10,6 +10,7 @@
 //! * [`app`] — `eframe::App` que costura tudo.
 
 pub mod app;
+pub mod celview;
 pub mod cli;
 pub mod hot;
 pub mod i18n;

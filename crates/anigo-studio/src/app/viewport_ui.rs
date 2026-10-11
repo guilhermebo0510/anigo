@@ -2,7 +2,7 @@
 //! G/R/S modal, gizmo) e overlays em egui.
 
 use super::gizmo;
-use super::{mode_label, shading_label, CachedObject, StudioApp};
+use super::{mode_label, shading_label, CachedObject, StudioApp, ViewShading};
 use crate::i18n::tr;
 use crate::icons;
 use crate::modeling::{Axis, ModalContext, Mode, TransformKind};
@@ -41,15 +41,15 @@ impl StudioApp {
                 let ppp = ui.ctx().pixels_per_point();
                 self.render_into(frame, rect, ppp);
 
+                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                ui.painter().rect_filled(rect, 0.0, theme::BG_DEEP);
+                if self.view_shading == ViewShading::Cel {
+                    if let Some(tex) = self.gpu.as_ref().and_then(|g| g.cel_tex) {
+                        ui.painter().image(tex, rect, uv, Color32::WHITE);
+                    }
+                }
                 if let Some(tex) = self.gpu.as_ref().and_then(|g| g.tex) {
-                    ui.painter().image(
-                        tex,
-                        rect,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                } else {
-                    ui.painter().rect_filled(rect, 0.0, theme::BG_DEEP);
+                    ui.painter().image(tex, rect, uv, Color32::WHITE);
                 }
 
                 let size = Vec2::new(rect.width(), rect.height());
@@ -110,7 +110,7 @@ impl StudioApp {
                         selection: is_edit.then_some(&session.selection),
                         active_vert: session.active_vert,
                         object_wire: hover_wire,
-                        highlight_object: is_active && !is_edit,
+                        highlight_object: is_active && !is_edit && std::env::var("ANIGO_NOHL").is_err(),
                         ..Default::default()
                     },
                 );
@@ -124,8 +124,25 @@ impl StudioApp {
         let items: Vec<DrawItem> = gpu.cache.iter().map(|c| DrawItem { mesh: &c.mesh }).collect();
         let mut settings = self.settings;
         settings.xray = self.modeling.xray;
+        settings.shading = match self.view_shading {
+            ViewShading::Solid => ShadingMode::Solid,
+            ViewShading::Wireframe => ShadingMode::Wireframe,
+            ViewShading::Cel => ShadingMode::OverlayOnly,
+        };
         let recreated = gpu.wb.render(size_px, &self.camera, &items, &settings);
         drop(items);
+
+        // preview cel-shaded (renderer canônico) por baixo dos overlays
+        let mut cel_recreated = false;
+        if self.view_shading == ViewShading::Cel {
+            if let Some(cel) = gpu.cel.as_mut() {
+                cel.sync_scene(&self.modeling.doc, &self.camera, size_px.0 as f32 / size_px.1.max(1) as f32);
+                cel_recreated = cel.render(size_px);
+                if let Some(e) = &cel.last_error {
+                    self.shader_error = Some(format!("cel: {e}"));
+                }
+            }
+        }
 
         if let Some(rs) = frame.wgpu_render_state() {
             if recreated || gpu.tex.is_none() {
@@ -135,6 +152,15 @@ impl StudioApp {
                 }
                 if let Some(view) = gpu.wb.output_view() {
                     gpu.tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
+                }
+            }
+            if self.view_shading == ViewShading::Cel && (cel_recreated || gpu.cel_tex.is_none()) {
+                let mut renderer = rs.renderer.write();
+                if let Some(old) = gpu.cel_tex.take() {
+                    renderer.free_texture(&old);
+                }
+                if let Some(view) = gpu.cel.as_ref().and_then(|c| c.view()) {
+                    gpu.cel_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
                 }
             }
         }
@@ -337,9 +363,9 @@ impl StudioApp {
             self.modeling.xray = !self.modeling.xray;
         }
         if consume(ui, Modifiers::SHIFT, Key::Z) {
-            self.settings.shading = match self.settings.shading {
-                ShadingMode::Solid => ShadingMode::Wireframe,
-                ShadingMode::Wireframe => ShadingMode::Solid,
+            self.view_shading = match self.view_shading {
+                ViewShading::Solid => ViewShading::Wireframe,
+                _ => ViewShading::Solid,
             };
         }
         if consume(ui, Modifiers::NONE, Key::Period) || consume(ui, Modifiers::NONE, Key::Home) {
@@ -645,15 +671,16 @@ impl StudioApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // espaço para o widget de eixos
                             ui.add_space(0.0);
-                            let mut shading = self.settings.shading;
+                            let mut shading = self.view_shading;
                             egui::ComboBox::from_id_salt("shading")
                                 .selected_text(shading_label(shading))
-                                .width(100.0)
+                                .width(110.0)
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut shading, ShadingMode::Solid, shading_label(ShadingMode::Solid));
-                                    ui.selectable_value(&mut shading, ShadingMode::Wireframe, shading_label(ShadingMode::Wireframe));
+                                    for m in [ViewShading::Solid, ViewShading::Wireframe, ViewShading::Cel] {
+                                        ui.selectable_value(&mut shading, m, shading_label(m));
+                                    }
                                 });
-                            self.settings.shading = shading;
+                            self.view_shading = shading;
                             ui.toggle_value(&mut self.modeling.xray, RichText::new(icons::CUBE_TRANSPARENT).size(15.0))
                                 .on_hover_text(tr("viewport.xray"));
                             ui.toggle_value(&mut self.settings.show_grid, RichText::new(icons::GRID_NINE).size(15.0))
