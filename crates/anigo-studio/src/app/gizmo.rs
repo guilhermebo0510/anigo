@@ -124,7 +124,8 @@ mod tests {
         let c = cam();
         let s = world_size(&c, Vec3::ZERO, VP.y);
         // anel Z fica no plano XY, de frente para a câmera frontal
-        let p = Vec3::new(s * 0.9, 0.0, 0.0);
+        let d = s * 0.9 * std::f32::consts::FRAC_1_SQRT_2;
+        let p = Vec3::new(d, d, 0.0); // (r,0,0) pertence aos anéis Y e Z; 45° é exclusivo do Z
         let (px, _) = c.project(p, VP).unwrap();
         assert_eq!(hit_test(TransformKind::Rotate, &c, VP, Vec3::ZERO, px), Some(Axis::Z));
     }
