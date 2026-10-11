@@ -215,7 +215,9 @@ pub fn compute_atlas(mesh: &EditMesh, opts: &AtlasOptions) -> NativeResult<Atlas
 fn compute_atlas_inner(mesh: &EditMesh, opts: &AtlasOptions) -> NativeResult<AtlasResult> {
     opts.validate()?;
     if mesh.verts.is_empty() || mesh.faces.is_empty() {
-        return Err(NativeError::EmptyInput("EditMesh sem vértices ou sem faces"));
+        return Err(NativeError::EmptyInput(
+            "EditMesh sem vértices ou sem faces",
+        ));
     }
     mesh.validate()?;
 
@@ -227,7 +229,11 @@ fn compute_atlas_inner(mesh: &EditMesh, opts: &AtlasOptions) -> NativeResult<Atl
             max: MAX_CORNERS as u64,
         });
     }
-    if let Some(f) = mesh.faces.iter().find(|f| f.corners.len() > u8::MAX as usize) {
+    if let Some(f) = mesh
+        .faces
+        .iter()
+        .find(|f| f.corners.len() > u8::MAX as usize)
+    {
         return Err(NativeError::LimitExceeded {
             what: "corners por face",
             got: f.corners.len() as u64,
@@ -256,8 +262,15 @@ fn compute_atlas_inner(mesh: &EditMesh, opts: &AtlasOptions) -> NativeResult<Atl
         for local in anigo_modeling::convert::triangulate_polygon(&pts) {
             indices.extend(local.iter().map(|&k| f.corners[k].vert));
             ignore.push(skip as u8);
-            material.push(if opts.split_by_material { f.material as u32 } else { 0 });
-            tris.push(Tri { face: fi as u32, local });
+            material.push(if opts.split_by_material {
+                f.material as u32
+            } else {
+                0
+            });
+            tris.push(Tri {
+                face: fi as u32,
+                local,
+            });
         }
     }
     if tris.is_empty() || face_ignored.iter().all(|&b| b) {
@@ -266,8 +279,14 @@ fn compute_atlas_inner(mesh: &EditMesh, opts: &AtlasOptions) -> NativeResult<Atl
         ));
     }
 
-    let out = ffi::generate(&positions, &indices, Some(&ignore), Some(&material), &opts.to_ffi())
-        .map_err(|message| NativeError::Backend { lib: LIB, message })?;
+    let out = ffi::generate(
+        &positions,
+        &indices,
+        Some(&ignore),
+        Some(&material),
+        &opts.to_ffi(),
+    )
+    .map_err(|message| NativeError::Backend { lib: LIB, message })?;
 
     if out.atlas_count != 1 {
         return Err(NativeError::Backend {
@@ -348,7 +367,9 @@ fn compute_atlas_inner(mesh: &EditMesh, opts: &AtlasOptions) -> NativeResult<Atl
         let complete = chart_of_corner[fi].iter().all(Option::is_some);
         if !mapped[fi] || !complete {
             unmapped_faces.push(fi as u32);
-            uvs_per_corner[fi].iter_mut().for_each(|uv| *uv = Vec2::ZERO);
+            uvs_per_corner[fi]
+                .iter_mut()
+                .for_each(|uv| *uv = Vec2::ZERO);
         } else if split[fi] {
             split_faces.push(fi as u32);
         }
@@ -445,16 +466,21 @@ mod tests {
                 let min = a.min(b).min(c);
                 let max = a.max(b).max(c);
                 let x0 = ((min.x * res as f32).floor() as isize).max(0) as usize;
-                let x1 = ((max.x * res as f32).ceil() as isize).min(res as isize - 1).max(0) as usize;
+                let x1 = ((max.x * res as f32).ceil() as isize)
+                    .min(res as isize - 1)
+                    .max(0) as usize;
                 let y0 = ((min.y * res as f32).floor() as isize).max(0) as usize;
-                let y1 = ((max.y * res as f32).ceil() as isize).min(res as isize - 1).max(0) as usize;
+                let y1 = ((max.y * res as f32).ceil() as isize)
+                    .min(res as isize - 1)
+                    .max(0) as usize;
                 let area = (b - a).perp_dot(c - a);
                 if area.abs() < 1e-12 {
                     continue;
                 }
                 for y in y0..=y1 {
                     for x in x0..=x1 {
-                        let p = Vec2::new((x as f32 + 0.5) / res as f32, (y as f32 + 0.5) / res as f32);
+                        let p =
+                            Vec2::new((x as f32 + 0.5) / res as f32, (y as f32 + 0.5) / res as f32);
                         let w0 = (b - p).perp_dot(c - p) / area;
                         let w1 = (c - p).perp_dot(a - p) / area;
                         let w2 = (a - p).perp_dot(b - p) / area;
@@ -496,9 +522,17 @@ mod tests {
         let cube = primitives::cube(1.0);
         let r = compute_atlas(&cube, &AtlasOptions::default()).expect("atlas do cubo");
         assert!(r.fully_mapped(), "faces sem UV: {:?}", r.unmapped_faces);
-        assert!(r.split_faces.is_empty(), "quads não deveriam ser divididos: {:?}", r.split_faces);
+        assert!(
+            r.split_faces.is_empty(),
+            "quads não deveriam ser divididos: {:?}",
+            r.split_faces
+        );
         assert_eq!(r.uvs_per_corner.len(), 6);
-        assert!(r.chart_count >= 1 && r.chart_count <= 6, "charts: {}", r.chart_count);
+        assert!(
+            r.chart_count >= 1 && r.chart_count <= 6,
+            "charts: {}",
+            r.chart_count
+        );
         // `resolution` com texels_per_unit = 0 é aproximado: o xatlas estima a densidade
         // e o atlas final fica perto (não exatamente) do lado pedido.
         assert!(
@@ -523,7 +557,10 @@ mod tests {
         // todos os corners têm UV escrito (o cubo original tem tudo em (0,0))
         for f in &unwrapped.faces {
             let first = f.corners[0].uv;
-            assert!(f.corners.iter().any(|c| c.uv != first), "face com UV colapsado");
+            assert!(
+                f.corners.iter().any(|c| c.uv != first),
+                "face com UV colapsado"
+            );
         }
         let (covered, overlapped) = overlap_stats(&unwrapped, 1024);
         assert!(covered > 1000, "cobertura baixa: {covered}");
@@ -580,7 +617,10 @@ mod tests {
             texels_per_unit: 128.0,
             ..AtlasOptions::default()
         };
-        assert!(matches!(compute_atlas(&cube, &tiny), Err(NativeError::Backend { .. })));
+        assert!(matches!(
+            compute_atlas(&cube, &tiny),
+            Err(NativeError::Backend { .. })
+        ));
     }
 
     #[test]
@@ -615,21 +655,39 @@ mod tests {
         // todas ocultas
         let mut hidden = primitives::cube(1.0);
         hidden.faces.iter_mut().for_each(|f| f.hidden = true);
-        assert!(matches!(compute_atlas(&hidden, &opts), Err(NativeError::Degenerate(_))));
+        assert!(matches!(
+            compute_atlas(&hidden, &opts),
+            Err(NativeError::Degenerate(_))
+        ));
         // triângulo de área zero (colinear)
         let mut flat = EditMesh::new("flat");
         let a = flat.add_vert(Vec3::new(0.0, 0.0, 0.0));
         let b = flat.add_vert(Vec3::new(1.0, 0.0, 0.0));
         let c = flat.add_vert(Vec3::new(2.0, 0.0, 0.0));
         flat.add_face(&[a, b, c]).expect("face");
-        assert!(matches!(compute_atlas(&flat, &opts), Err(NativeError::Degenerate(_))));
+        assert!(matches!(
+            compute_atlas(&flat, &opts),
+            Err(NativeError::Degenerate(_))
+        ));
         // opções inválidas
         let cube = primitives::cube(1.0);
         for bad in [
-            AtlasOptions { texels_per_unit: -1.0, ..AtlasOptions::default() },
-            AtlasOptions { max_chart_area: f32::NAN, ..AtlasOptions::default() },
-            AtlasOptions { resolution: 1_000_000, ..AtlasOptions::default() },
-            AtlasOptions { padding: 10_000, ..AtlasOptions::default() },
+            AtlasOptions {
+                texels_per_unit: -1.0,
+                ..AtlasOptions::default()
+            },
+            AtlasOptions {
+                max_chart_area: f32::NAN,
+                ..AtlasOptions::default()
+            },
+            AtlasOptions {
+                resolution: 1_000_000,
+                ..AtlasOptions::default()
+            },
+            AtlasOptions {
+                padding: 10_000,
+                ..AtlasOptions::default()
+            },
         ] {
             assert!(compute_atlas(&cube, &bad).is_err());
         }
@@ -657,6 +715,9 @@ mod tests {
         let out = auto_unwrap(&sphere, &AtlasOptions::default()).expect("auto_unwrap");
         let (covered, overlapped) = overlap_stats(&out, 1024);
         assert!(covered > 10_000);
-        assert!((overlapped as f32) <= covered as f32 * 0.01, "{overlapped}/{covered}");
+        assert!(
+            (overlapped as f32) <= covered as f32 * 0.01,
+            "{overlapped}/{covered}"
+        );
     }
 }

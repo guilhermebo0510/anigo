@@ -22,6 +22,8 @@
 //!   isolado e documentado. Sem a feature `xatlas` a crate usa
 //!   `#![forbid(unsafe_code)]`.
 
+// `%` em vez de `is_multiple_of` para não elevar o MSRV do workspace.
+#![allow(clippy::manual_is_multiple_of)]
 #![cfg_attr(not(feature = "xatlas"), forbid(unsafe_code))]
 #![cfg_attr(feature = "xatlas", deny(unsafe_code))]
 
@@ -158,7 +160,10 @@ mod tests {
         assert_eq!(c.meshopt, cfg!(feature = "meshopt"));
         assert_eq!(c.ufbx, cfg!(feature = "ufbx"));
         assert_eq!(c.xatlas, cfg!(feature = "xatlas"));
-        assert_eq!(c.versions.len(), [c.meshopt, c.ufbx, c.xatlas].iter().filter(|b| **b).count());
+        assert_eq!(
+            c.versions.len(),
+            [c.meshopt, c.ufbx, c.xatlas].iter().filter(|b| **b).count()
+        );
         let json = serde_json::to_string(&c).expect("serializa");
         let back: Capabilities = serde_json::from_str(&json).expect("desserializa");
         assert_eq!(back, c);

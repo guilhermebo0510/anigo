@@ -72,7 +72,11 @@ impl AttributeWeights {
     };
 
     fn validate(&self) -> NativeResult<()> {
-        for (name, w) in [("normal", self.normal), ("uv", self.uv), ("color", self.color)] {
+        for (name, w) in [
+            ("normal", self.normal),
+            ("uv", self.uv),
+            ("color", self.color),
+        ] {
             if !w.is_finite() || w < 0.0 {
                 return Err(NativeError::InvalidInput(format!(
                     "peso de atributo '{name}' deve ser finito e >= 0 (veio {w})"
@@ -302,7 +306,11 @@ fn uv_seam_locks(mesh: &Mesh) -> Vec<bool> {
     let norm = |f: f32| (f + 0.0).to_bits(); // -0.0 -> +0.0
     let mut groups: HashMap<[u32; 3], Group> = HashMap::new();
     for (i, v) in mesh.vertices.iter().enumerate() {
-        let key = [norm(v.position[0]), norm(v.position[1]), norm(v.position[2])];
+        let key = [
+            norm(v.position[0]),
+            norm(v.position[1]),
+            norm(v.position[2]),
+        ];
         let uv = [norm(v.uv[0]), norm(v.uv[1])];
         let g = groups.entry(key).or_insert_with(|| Group {
             uv,
@@ -602,7 +610,11 @@ fn dedupe(mesh: &Mesh) -> NativeResult<Mesh> {
             canonical[i] = *seen.entry(key_of(i)).or_insert(i as u32);
         }
     }
-    let indices: Vec<u32> = mesh.indices.iter().map(|&i| canonical[i as usize]).collect();
+    let indices: Vec<u32> = mesh
+        .indices
+        .iter()
+        .map(|&i| canonical[i as usize])
+        .collect();
     reorder_by_first_use(mesh, &indices)
 }
 
@@ -829,10 +841,19 @@ mod tests {
         assert_eq!(src_bad, 0);
 
         let tolerance = 0.02;
-        let r = simplify_mesh(&src, 0.25, tolerance, &SimplifyOptions::default()).expect("simplifica");
-        assert!(r.error <= tolerance, "erro {} > tolerância {}", r.error, tolerance);
+        let r =
+            simplify_mesh(&src, 0.25, tolerance, &SimplifyOptions::default()).expect("simplifica");
+        assert!(
+            r.error <= tolerance,
+            "erro {} > tolerância {}",
+            r.error,
+            tolerance
+        );
         assert!(r.error_absolute >= 0.0 && r.error_absolute <= tolerance * 2.01 + 1e-6);
-        assert!(r.reached_target, "esfera lisa deve alcançar 25 % com 2 % de erro");
+        assert!(
+            r.reached_target,
+            "esfera lisa deve alcançar 25 % com 2 % de erro"
+        );
         assert!(
             (0.20..=0.30).contains(&r.ratio),
             "razão alcançada fora de 25 % ± 5: {}",
@@ -843,8 +864,18 @@ mod tests {
         // bounding box mantida (±2 % do raio)
         let (lo, hi) = bounds(&r.mesh);
         for k in 0..3 {
-            assert!((lo[k] - src_lo[k]).abs() < 0.02, "bbox min eixo {k}: {} vs {}", lo[k], src_lo[k]);
-            assert!((hi[k] - src_hi[k]).abs() < 0.02, "bbox max eixo {k}: {} vs {}", hi[k], src_hi[k]);
+            assert!(
+                (lo[k] - src_lo[k]).abs() < 0.02,
+                "bbox min eixo {k}: {} vs {}",
+                lo[k],
+                src_lo[k]
+            );
+            assert!(
+                (hi[k] - src_hi[k]).abs() < 0.02,
+                "bbox max eixo {k}: {} vs {}",
+                hi[k],
+                src_hi[k]
+            );
         }
 
         // fechamento: Euler = 2 e toda aresta com exatamente 2 triângulos
@@ -859,21 +890,32 @@ mod tests {
             .map(|v| bytemuck::bytes_of(v).to_vec())
             .collect();
         for v in &r.mesh.vertices {
-            assert!(originals.contains(bytemuck::bytes_of(v)), "vértice sintetizado");
+            assert!(
+                originals.contains(bytemuck::bytes_of(v)),
+                "vértice sintetizado"
+            );
         }
 
         // normais continuam radiais e UVs continuam em [0,1]
         for v in &r.mesh.vertices {
             let p = glam::Vec3::from_array(v.position);
             let n = glam::Vec3::from_array(v.normal);
-            assert!(p.normalize().dot(n) > 0.99, "normal fugiu da radial: {}", p.normalize().dot(n));
+            assert!(
+                p.normalize().dot(n) > 0.99,
+                "normal fugiu da radial: {}",
+                p.normalize().dot(n)
+            );
             assert!((0.0..=1.0).contains(&v.uv[0]) && (0.0..=1.0).contains(&v.uv[1]));
         }
 
         // costura de UV intacta: nenhum triângulo atravessa a volta inteira de U
         for t in r.mesh.indices.chunks_exact(3) {
-            let us: Vec<f32> = t.iter().map(|&i| r.mesh.vertices[i as usize].uv[0]).collect();
-            let span = us.iter().cloned().fold(f32::MIN, f32::max) - us.iter().cloned().fold(f32::MAX, f32::min);
+            let us: Vec<f32> = t
+                .iter()
+                .map(|&i| r.mesh.vertices[i as usize].uv[0])
+                .collect();
+            let span = us.iter().cloned().fold(f32::MIN, f32::max)
+                - us.iter().cloned().fold(f32::MAX, f32::min);
             assert!(span < 0.5, "triângulo cruza a costura de UV (span {span})");
         }
     }
@@ -895,7 +937,11 @@ mod tests {
         let r = simplify_mesh(&src, 0.01, 1e-5, &SimplifyOptions::default()).expect("simplifica");
         assert!(r.error <= 1e-5);
         assert!(!r.reached_target);
-        assert!(r.ratio > 0.5, "com erro quase zero a malha mal reduz (ratio {})", r.ratio);
+        assert!(
+            r.ratio > 0.5,
+            "com erro quase zero a malha mal reduz (ratio {})",
+            r.ratio
+        );
     }
 
     #[test]
@@ -975,7 +1021,10 @@ mod tests {
         }
         dup.vertices.push(extra); // órfão
         let opt = optimize_mesh(&dup).expect("otimiza");
-        assert!(opt.vertices.len() <= src.vertices.len(), "dedupe + descarte de órfãos");
+        assert!(
+            opt.vertices.len() <= src.vertices.len(),
+            "dedupe + descarte de órfãos"
+        );
         assert_eq!(opt.indices.len(), dup.indices.len());
         assert_eq!(triangle_multiset(&opt), triangle_multiset(&src));
         assert_eq!(euler_by_edges(&opt), (2, 0));
@@ -1009,21 +1058,44 @@ mod tests {
             .vertices
             .iter()
             .enumerate()
-            .map(|(i, v)| ([v.position[0].to_bits(), v.position[1].to_bits(), v.position[2].to_bits()], i))
+            .map(|(i, v)| {
+                (
+                    [
+                        v.position[0].to_bits(),
+                        v.position[1].to_bits(),
+                        v.position[2].to_bits(),
+                    ],
+                    i,
+                )
+            })
             .collect();
         for (i, v) in opt.vertices.iter().enumerate() {
-            let key = [v.position[0].to_bits(), v.position[1].to_bits(), v.position[2].to_bits()];
+            let key = [
+                v.position[0].to_bits(),
+                v.position[1].to_bits(),
+                v.position[2].to_bits(),
+            ];
             let orig = by_pos[&key];
-            let got = f32::from_le_bytes([attr.data[i * 4], attr.data[i * 4 + 1], attr.data[i * 4 + 2], attr.data[i * 4 + 3]]);
+            let got = f32::from_le_bytes([
+                attr.data[i * 4],
+                attr.data[i * 4 + 1],
+                attr.data[i * 4 + 2],
+                attr.data[i * 4 + 3],
+            ]);
             // vértices duplicados na mesma posição (costura) compartilham posição mas
             // não valor: aceita qualquer vértice original naquela posição
             let ok = src
                 .vertices
                 .iter()
                 .enumerate()
-                .filter(|(_, sv)| sv.position == v.position && sv.uv == v.uv && sv.normal == v.normal)
+                .filter(|(_, sv)| {
+                    sv.position == v.position && sv.uv == v.uv && sv.normal == v.normal
+                })
                 .any(|(si, _)| si as f32 == got);
-            assert!(ok, "atributo customizado desalinhado no vértice {i} (orig~{orig})");
+            assert!(
+                ok,
+                "atributo customizado desalinhado no vértice {i} (orig~{orig})"
+            );
         }
     }
 
@@ -1031,8 +1103,14 @@ mod tests {
     fn empty_and_degenerate_inputs_return_err_not_panic() {
         let opts = SimplifyOptions::default();
         let empty = Mesh::new("vazia", vec![], vec![]);
-        assert!(matches!(simplify_mesh(&empty, 0.5, 0.01, &opts), Err(NativeError::EmptyInput(_))));
-        assert!(matches!(optimize_mesh(&empty), Err(NativeError::EmptyInput(_))));
+        assert!(matches!(
+            simplify_mesh(&empty, 0.5, 0.01, &opts),
+            Err(NativeError::EmptyInput(_))
+        ));
+        assert!(matches!(
+            optimize_mesh(&empty),
+            Err(NativeError::EmptyInput(_))
+        ));
         assert!(generate_lods(&empty, &[0.5]).is_err());
 
         let v = |x: f32, y: f32, z: f32| Vertex::new([x, y, z], [0.0, 0.0, 1.0], [0.0, 0.0]);
@@ -1040,47 +1118,93 @@ mod tests {
         let no_idx = Mesh::new("sem índices", vec![v(0.0, 0.0, 0.0)], vec![]);
         assert!(simplify_mesh(&no_idx, 0.5, 0.01, &opts).is_err());
         // índices não múltiplos de 3
-        let odd = Mesh::new("ímpar", vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)], vec![0, 1]);
-        assert!(matches!(simplify_mesh(&odd, 0.5, 0.01, &opts), Err(NativeError::InvalidInput(_))));
+        let odd = Mesh::new(
+            "ímpar",
+            vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)],
+            vec![0, 1],
+        );
+        assert!(matches!(
+            simplify_mesh(&odd, 0.5, 0.01, &opts),
+            Err(NativeError::InvalidInput(_))
+        ));
         // índice fora de faixa
-        let oob = Mesh::new("oob", vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)], vec![0, 1, 7]);
-        assert!(matches!(simplify_mesh(&oob, 0.5, 0.01, &opts), Err(NativeError::InvalidInput(_))));
+        let oob = Mesh::new(
+            "oob",
+            vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)],
+            vec![0, 1, 7],
+        );
+        assert!(matches!(
+            simplify_mesh(&oob, 0.5, 0.01, &opts),
+            Err(NativeError::InvalidInput(_))
+        ));
         assert!(optimize_mesh(&oob).is_err());
         // triângulo de índices repetidos e triângulo de área zero
-        let dup_idx = Mesh::new("dup", vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0)], vec![0, 0, 1]);
-        assert!(matches!(simplify_mesh(&dup_idx, 0.5, 0.01, &opts), Err(NativeError::Degenerate(_))));
+        let dup_idx = Mesh::new(
+            "dup",
+            vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0)],
+            vec![0, 0, 1],
+        );
+        assert!(matches!(
+            simplify_mesh(&dup_idx, 0.5, 0.01, &opts),
+            Err(NativeError::Degenerate(_))
+        ));
         let collinear = Mesh::new(
             "colinear",
             vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(2.0, 0.0, 0.0)],
             vec![0, 1, 2],
         );
-        assert!(matches!(simplify_mesh(&collinear, 0.5, 0.01, &opts), Err(NativeError::Degenerate(_))));
+        assert!(matches!(
+            simplify_mesh(&collinear, 0.5, 0.01, &opts),
+            Err(NativeError::Degenerate(_))
+        ));
         // posição NaN
         let nan = Mesh::new(
             "nan",
             vec![v(0.0, 0.0, 0.0), v(f32::NAN, 0.0, 0.0), v(0.0, 1.0, 0.0)],
             vec![0, 1, 2],
         );
-        assert!(matches!(simplify_mesh(&nan, 0.5, 0.01, &opts), Err(NativeError::InvalidInput(_))));
+        assert!(matches!(
+            simplify_mesh(&nan, 0.5, 0.01, &opts),
+            Err(NativeError::InvalidInput(_))
+        ));
         // parâmetros ruins
-        let tri = Mesh::new("tri", vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)], vec![0, 1, 2]);
+        let tri = Mesh::new(
+            "tri",
+            vec![v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)],
+            vec![0, 1, 2],
+        );
         for ratio in [0.0, -1.0, 1.5, f32::NAN, f32::INFINITY] {
-            assert!(simplify_mesh(&tri, ratio, 0.01, &opts).is_err(), "ratio {ratio}");
+            assert!(
+                simplify_mesh(&tri, ratio, 0.01, &opts).is_err(),
+                "ratio {ratio}"
+            );
         }
         for err in [-0.1, 2.0, f32::NAN] {
             assert!(simplify_mesh(&tri, 0.5, err, &opts).is_err(), "erro {err}");
         }
-        let bad_lock = SimplifyOptions { locked_vertices: vec![true], ..SimplifyOptions::default() };
+        let bad_lock = SimplifyOptions {
+            locked_vertices: vec![true],
+            ..SimplifyOptions::default()
+        };
         assert!(simplify_mesh(&tri, 0.5, 0.01, &bad_lock).is_err());
         let bad_w = SimplifyOptions {
-            attribute_weights: AttributeWeights { normal: -1.0, ..AttributeWeights::default() },
+            attribute_weights: AttributeWeights {
+                normal: -1.0,
+                ..AttributeWeights::default()
+            },
             ..SimplifyOptions::default()
         };
         assert!(simplify_mesh(&tri, 0.5, 0.01, &bad_w).is_err());
         // atributo customizado que não é por-vértice
         let bad_attr = tri.clone().with_custom_attribute(
             "x",
-            CustomAttribute { name: "x".into(), component_type: 5126, attribute_type: "SCALAR".into(), count: 2, data: vec![0; 8] },
+            CustomAttribute {
+                name: "x".into(),
+                component_type: 5126,
+                attribute_type: "SCALAR".into(),
+                count: 2,
+                data: vec![0; 8],
+            },
         );
         assert!(simplify_mesh(&bad_attr, 0.5, 0.01, &opts).is_err());
     }
@@ -1088,7 +1212,11 @@ mod tests {
     #[test]
     fn single_triangle_is_returned_intact() {
         let v = |x: f32, y: f32| Vertex::new([x, y, 0.0], [0.0, 0.0, 1.0], [x, y]);
-        let tri = Mesh::new("tri", vec![v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0)], vec![0, 1, 2]);
+        let tri = Mesh::new(
+            "tri",
+            vec![v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0)],
+            vec![0, 1, 2],
+        );
         let r = simplify_mesh(&tri, 0.1, 0.5, &SimplifyOptions::default()).expect("simplifica");
         assert_eq!(r.result_triangles, 1);
         assert_eq!(triangle_multiset(&r.mesh), triangle_multiset(&tri));
