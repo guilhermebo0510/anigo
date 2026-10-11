@@ -205,6 +205,7 @@ impl StudioApp {
         if want_delete {
             self.modeling.delete_active_object();
         }
+        self.inspector_modifiers(ui);
         self.inspector_snap(ui);
     }
 
@@ -261,6 +262,7 @@ impl StudioApp {
             );
         });
         self.inspector_edit_operators(ui);
+        self.inspector_modifiers(ui);
         self.inspector_normals(ui);
         self.inspector_uv(ui);
         self.inspector_snap(ui);

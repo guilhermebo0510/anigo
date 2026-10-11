@@ -20,6 +20,8 @@ pub struct CelPreview {
     pub metrics: Option<RenderMetrics>,
     pub last_error: Option<String>,
     pub light: StylizedLight,
+    /// A luz acompanha a câmera (padrão do editor); desligue para fixar a direção em `light`.
+    pub light_follows_camera: bool,
 }
 
 impl CelPreview {
@@ -38,6 +40,7 @@ impl CelPreview {
             metrics: None,
             last_error: None,
             light: StylizedLight::default(),
+            light_follows_camera: true,
         })
     }
 
@@ -47,13 +50,22 @@ impl CelPreview {
             .objects
             .iter()
             .filter(|o| o.visible)
-            .map(|o| (o.id, o.mesh.content_hash()))
+            .map(|o| (o.id, o.mesh.content_hash() ^ o.modifiers_hash().rotate_left(17)))
             .collect();
         if wanted != self.node_keys {
             self.scene.nodes.clear();
             for o in doc.objects.iter().filter(|o| o.visible) {
                 let mut node = SceneNode::new(format!("obj{}", o.id), o.name.clone());
-                match to_core_mesh(&o.mesh, &ToCoreOptions::default()) {
+                let eval = o.evaluated(crate::modeling::EvalMode::Viewport);
+                let source = match &eval {
+                    Some(Ok(m)) => m,
+                    Some(Err(e)) => {
+                        self.last_error = Some(format!("{}: {e}", o.name));
+                        &o.mesh
+                    }
+                    None => &o.mesh,
+                };
+                match to_core_mesh(source, &ToCoreOptions::default()) {
                     Ok(m) => node.mesh = Some(m),
                     Err(e) => self.last_error = Some(format!("{}: {e}", o.name)),
                 }
@@ -74,7 +86,14 @@ impl CelPreview {
             z_far: camera.far,
             orthographic: None,
         };
-        self.scene.light = self.light.clone();
+        let mut light = self.light.clone();
+        if self.light_follows_camera {
+            // luz de estúdio presa à câmera: esquerda/acima/frente (mesma ideia do Workbench)
+            let back = -camera.forward();
+            let dir = (-camera.right() * 0.45 + camera.up() * 0.6 + back * 0.65).normalize_or_zero();
+            light.direction = dir.to_array();
+        }
+        self.scene.light = light;
     }
 
     /// Renderiza na textura interna (recriada se o tamanho mudar). `true` se foi recriada.

@@ -8,7 +8,7 @@ use glam::{Vec2, Vec3};
 
 pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
-    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel",
+    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel", "modifiers",
 ];
 
 impl StudioApp {
@@ -128,6 +128,25 @@ impl StudioApp {
                     }
                 }
                 self.camera.distance = 8.5;
+            }
+            "modifiers" => {
+                use anigo_modeling::modifiers::{mirror::MirrorParams, stack::{Modifier, ModifierEntry, SubsurfSettings}};
+                use crate::app::operators::{apply_kind, OpKind, OpParams};
+                // meia caixa com chanfro → Mirror X → Subsurf: cabeça de "capsule" low poly
+                m.set_mode(Mode::Edit);
+                m.set_select_mode(SelectMode::Edge);
+                m.select_all();
+                let params = OpParams { width: 0.25, segments: 2, ..OpParams::default() };
+                let _ = m.edit_op("Chanfro", |mesh, sel| apply_kind(OpKind::Bevel, &params, mesh, sel));
+                m.select_none();
+                m.set_mode(Mode::Object);
+                if let Some(o) = m.active_object_mut() {
+                    o.mesh.transform_positions(|p| p * glam::Vec3::new(1.0, 1.0, 1.0));
+                    o.modifiers.push(ModifierEntry::new(Modifier::Subsurf(SubsurfSettings { levels_viewport: 2, ..Default::default() })));
+                    o.modifiers.push(ModifierEntry::new(Modifier::Mirror(MirrorParams { axes: [false, false, true], ..Default::default() })));
+                }
+                m.revision += 1;
+                self.view_shading = crate::app::ViewShading::Cel;
             }
             "ops-bevel" => {
                 use crate::app::operators::{apply_kind, OpKind, OpParams};

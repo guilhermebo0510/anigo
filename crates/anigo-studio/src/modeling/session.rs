@@ -79,11 +79,29 @@ pub struct ModelObject {
     pub mesh: EditMesh,
     pub transform: Transform,
     pub visible: bool,
+    /// Pilha de modificadores não destrutivos (Subsurf, Mirror, Solidify…).
+    #[serde(default)]
+    pub modifiers: anigo_modeling::modifiers::stack::ModifierStack,
 }
 
 impl ModelObject {
     pub fn model_matrix(&self) -> Mat4 {
         self.transform.to_matrix()
+    }
+
+    /// Malha após a pilha de modificadores (modo viewport). Sem modificadores devolve `None`
+    /// (use `mesh` direto). Em erro devolve a mensagem e o chamador cai na malha base.
+    pub fn evaluated(&self, mode: anigo_modeling::modifiers::stack::EvalMode) -> Option<Result<EditMesh, String>> {
+        if self.modifiers.modifiers.iter().all(|m| !m.enabled_in(mode)) {
+            return None;
+        }
+        Some(self.modifiers.evaluate(&self.mesh, mode).map_err(|e| e.to_string()))
+    }
+
+    /// Hash do estado da pilha (para chaves de cache de GPU).
+    pub fn modifiers_hash(&self) -> u64 {
+        let json = serde_json::to_string(&self.modifiers).unwrap_or_default();
+        anigo_core::ids::fnv1a64(&json)
     }
 }
 
@@ -249,6 +267,7 @@ impl ModelingSession {
             mesh,
             transform: Transform::from_translation(at),
             visible: true,
+            modifiers: Default::default(),
         };
         obj.mesh.name = obj.name.clone();
         self.doc.objects.push(obj);
@@ -577,6 +596,22 @@ impl ModelingSession {
     }
 
     /// Estado completo atual (para o painel "ajustar última operação").
+    /// Aplica a pilha de modificadores à malha base (destrutivo, com undo) e a esvazia.
+    pub fn apply_modifier_stack(&mut self) -> Result<(), String> {
+        let idx = self.doc.active.ok_or("sem objeto ativo")?;
+        let evaluated = match self.doc.objects[idx].evaluated(anigo_modeling::modifiers::stack::EvalMode::Viewport) {
+            Some(r) => r?,
+            None => return Err("nenhum modificador ativo".into()),
+        };
+        self.checkpoint("Aplicar modificadores");
+        let obj = &mut self.doc.objects[idx];
+        obj.mesh = evaluated;
+        obj.modifiers.modifiers.clear();
+        self.selection.clear();
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn capture(&self) -> SnapshotPub {
         self.snapshot()
     }

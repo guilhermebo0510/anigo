@@ -21,6 +21,7 @@ mod automation;
 mod gizmo;
 mod inspector;
 pub mod operators;
+mod modifiers_ui;
 mod normals_ui;
 mod sculpt_ui;
 mod uv_ui;

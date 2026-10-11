@@ -87,6 +87,21 @@ fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     ]
 }
 
+/// Como [`build_draw_data`], mas o SÓLIDO vem da malha avaliada (pilha de modificadores) e as
+/// arestas/pontos de edição ficam na malha base (a "cage"), como no Blender.
+pub fn build_draw_data_eval(base: &EditMesh, evaluated: &EditMesh, opts: &BuildOptions) -> MeshDrawData {
+    let mut out = build_draw_data(base, opts);
+    let solid_only = BuildOptions {
+        edit_mode: false,
+        selection: None,
+        object_wire: false,
+        highlight_object: false,
+        ..opts.clone()
+    };
+    out.solid = build_draw_data(evaluated, &solid_only).solid;
+    out
+}
+
 pub fn build_draw_data(mesh: &EditMesh, opts: &BuildOptions) -> MeshDrawData {
     let mut out = MeshDrawData::default();
     let default_sel = Selection::default();

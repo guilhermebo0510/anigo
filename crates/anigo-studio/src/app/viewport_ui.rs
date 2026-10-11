@@ -9,7 +9,7 @@ use crate::modeling::{Axis, ModalContext, Mode, TransformKind};
 use crate::theme;
 use crate::viewport::camera::ViewPreset;
 use crate::viewport::picking::{self, ClickHit, PickContext};
-use crate::workbench::{build_draw_data, BuildOptions, DrawItem, ShadingMode};
+use crate::workbench::{build_draw_data, build_draw_data_eval, BuildOptions, DrawItem, ShadingMode};
 use anigo_modeling::{SelectMode, Selection, Topology};
 use eframe::wgpu;
 use egui::{Color32, Key, Modifiers, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
@@ -88,6 +88,7 @@ impl StudioApp {
             let hover_wire = self.overlay_wire;
             let key = hash_u64(&[
                 obj.mesh.content_hash(),
+                obj.modifiers_hash(),
                 if is_edit { session.revision } else { 0 },
                 is_edit as u64,
                 (is_active && !is_edit) as u64,
@@ -102,9 +103,7 @@ impl StudioApp {
                 gpu.wb.set_object_transform(&c.mesh, model, tint);
                 new_cache.push(c);
             } else {
-                let data = build_draw_data(
-                    &obj.mesh,
-                    &BuildOptions {
+                let opts = BuildOptions {
                         edit_mode: is_edit,
                         select_mode: session.select_mode,
                         selection: is_edit.then_some(&session.selection),
@@ -112,8 +111,15 @@ impl StudioApp {
                         object_wire: hover_wire,
                         highlight_object: is_active && !is_edit && std::env::var("ANIGO_NOHL").is_err(),
                         ..Default::default()
-                    },
-                );
+                };
+                let data = match obj.evaluated(crate::modeling::EvalMode::Viewport) {
+                    Some(Ok(eval)) => build_draw_data_eval(&obj.mesh, &eval, &opts),
+                    Some(Err(e)) => {
+                        self.shader_error = Some(format!("modificador: {e}"));
+                        build_draw_data(&obj.mesh, &opts)
+                    }
+                    None => build_draw_data(&obj.mesh, &opts),
+                };
                 let mesh = gpu.wb.upload(&data, model, tint);
                 new_cache.push(CachedObject { id: obj.id, key, mesh });
             }
