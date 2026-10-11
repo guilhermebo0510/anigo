@@ -261,6 +261,8 @@ impl StudioApp {
             );
         });
         self.inspector_edit_operators(ui);
+        self.inspector_normals(ui);
+        self.inspector_uv(ui);
         self.inspector_snap(ui);
         section(ui, "Overlays", |ui| {
             ui.checkbox(&mut self.settings.show_grid, "Grid");
@@ -269,12 +271,6 @@ impl StudioApp {
     }
 
     fn inspector_sculpt(&mut self, ui: &mut egui::Ui) {
-        section(ui, tr("mode.sculpt"), |ui| {
-            ui.label(
-                RichText::new("O motor de escultura (pincéis, simetria, máscaras) está pronto em anigo-modeling; a interação no viewport é ligada na fase 3 do roadmap.")
-                    .color(theme::TEXT_DIM)
-                    .size(12.0),
-            );
-        });
+        self.inspector_sculpt_panel(ui);
     }
 }

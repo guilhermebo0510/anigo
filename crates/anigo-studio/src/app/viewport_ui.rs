@@ -179,6 +179,7 @@ impl StudioApp {
         }
 
         let (shift, ctrl, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.command, i.modifiers.alt));
+        let sculpt_consumed = self.modeling.mode == Mode::Sculpt && self.sculpt_input(ui, resp, rect, size);
 
         // ---- câmera
         if resp.hovered() {
@@ -191,7 +192,7 @@ impl StudioApp {
         }
         let delta = ui.input(|i| i.pointer.delta());
         let mid = resp.dragged_by(PointerButton::Middle);
-        let alt_orbit = alt && resp.dragged_by(PointerButton::Primary);
+        let alt_orbit = alt && !sculpt_consumed && resp.dragged_by(PointerButton::Primary);
         if mid || alt_orbit {
             if shift {
                 self.camera.pan(delta.x, delta.y, size.y);
@@ -202,6 +203,9 @@ impl StudioApp {
             }
         }
 
+        if sculpt_consumed {
+            return;
+        }
         // ---- gizmo / seleção
         let pivot = self.gizmo_pivot();
         let tool_kind = self.current_transform_tool();
@@ -539,6 +543,9 @@ impl StudioApp {
             painter.galley(bg.center() - galley.size() * 0.5, galley, Color32::WHITE);
         }
 
+        if self.modeling.mode == Mode::Sculpt {
+            self.sculpt_overlay(ui, rect, size);
+        }
         self.draw_axis_widget(ui, rect);
         self.draw_header(ui, rect);
     }
@@ -667,6 +674,10 @@ impl StudioApp {
                                     self.modeling.set_select_mode(m);
                                 }
                             }
+                        }
+                        if self.modeling.mode == Mode::Edit {
+                            ui.separator();
+                            ui.toggle_value(&mut self.show_uv_editor, "UV").on_hover_text("Editor de UV");
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // espaço para o widget de eixos

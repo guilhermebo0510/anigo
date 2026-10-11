@@ -3,7 +3,6 @@
 //! volta ao estado anterior e refaz a operação.
 
 use super::StudioApp;
-use crate::i18n::tr;
 use crate::icons;
 use crate::modeling::{Constraint, Mode, SnapshotPub, TransformKind};
 use crate::theme;
@@ -402,6 +401,5 @@ mod tests {
     fn tool_mapping() {
         assert_eq!(tool_to_op("bevel"), Some(OpKind::Bevel));
         assert_eq!(tool_to_op("move"), None);
-        let _ = tr("tool.bevel");
     }
 }

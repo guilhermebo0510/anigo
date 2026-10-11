@@ -21,6 +21,9 @@ mod automation;
 mod gizmo;
 mod inspector;
 pub mod operators;
+mod normals_ui;
+mod sculpt_ui;
+mod uv_ui;
 mod viewport_ui;
 
 pub(crate) struct CachedObject {
@@ -79,6 +82,8 @@ pub struct StudioApp {
     pub(crate) op_params: operators::OpParams,
     pub(crate) last_op: Option<operators::LastOp>,
     pub(crate) frame_pending: bool,
+    /// Editor 2D de UV visível (Modo Edição).
+    pub(crate) show_uv_editor: bool,
     pub(crate) box_start: Option<glam::Vec2>,
 }
 
@@ -162,6 +167,7 @@ impl StudioApp {
             op_params: operators::OpParams::default(),
             last_op: None,
             frame_pending: false,
+            show_uv_editor: false,
             box_start: None,
         }
     }
@@ -539,6 +545,12 @@ impl eframe::App for StudioApp {
         }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
+            if self.show_uv_editor && self.modeling.mode == Mode::Edit {
+                egui::Panel::bottom("uv_editor")
+                    .default_size(300.0)
+                    .size_range(160.0..=700.0)
+                    .show(ui, |ui| self.uv_editor_panel(ui));
+            }
         }
 
         if self.ws.has_viewport() {
