@@ -1,0 +1,12 @@
+[package]
+name = "anigo-modeling"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO organic modeling engine: edit-mesh, operators, modifiers, sculpt, custom normals, UV (pure Rust, GPU-free, fully testable)"
+
+[dependencies]
+anigo-core = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
