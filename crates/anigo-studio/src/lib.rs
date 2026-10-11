@@ -10,8 +10,11 @@
 //! * [`app`] — `eframe::App` que costura tudo.
 
 pub mod app;
+pub mod cli;
+pub mod hot;
 pub mod i18n;
 pub mod icons;
+pub mod library;
 pub mod modeling;
 pub mod session;
 pub mod theme;
