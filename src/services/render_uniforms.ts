@@ -177,12 +177,14 @@ export interface OutlineUniformInput {
   smoothness: number;
 }
 
-/** Bloco `outline` (48 B = 12 f32). */
+/** Bloco `outline` (64 B = 16 f32; `params3` = taper/piso do motor cel, 0 no viewport TS). */
 export function outlineUniformFloats(input: OutlineUniformInput): Float32Array {
   const data = new Float32Array(uniformFloats("outline"));
   writeVec(data, "outline", "color", input.color);
   writeVec(data, "outline", "params", [input.width, input.aspect, input.depthBias, input.opacity]);
   writeVec(data, "outline", "params2", [input.smoothness, 0.0, 0.0, 0.0]);
+  // Motor cel (Fase 1): sem falloff/taper no viewport TS (padrão = motor anterior).
+  writeVec(data, "outline", "params3", [0.0, 0.0, 0.0, 0.0]);
   return data;
 }
 

@@ -96,6 +96,7 @@ import {
   expectedToonRampFingerprint,
   uniformSize,
   vertexBufferLayout,
+  outlineStreamViewportLayout,
 } from "../../contracts/render_contract.v1";
 import {
   DEPTH_PREPASS_PASS,
@@ -604,7 +605,9 @@ export class WebGpuViewportRenderer {
       vertex: {
         module: outlineModule,
         entryPoint: outlinePass.vertex_entry ?? "vs_main",
-        buffers: [contractVertexLayout],
+        // Motor cel: o contorno lê a normal de extrusão de um 2º stream; aqui é o
+        // próprio VBO (a normal da malha), então o viewport segue sem suavização.
+        buffers: [contractVertexLayout, outlineStreamViewportLayout() as unknown as GPUVertexBufferLayout],
       },
       fragment: {
         module: outlineModule,
@@ -2871,6 +2874,7 @@ export class WebGpuViewportRenderer {
     });
 
     passEncoder.setVertexBuffer(0, activeVbo);
+    passEncoder.setVertexBuffer(1, activeVbo); // normal de extrusão do contorno (stream 2)
     passEncoder.setIndexBuffer(this.indexBuffer!, "uint32");
 
     // A ordem dos passes vem do plano (contrato + overrides do snapshot),

@@ -10,6 +10,7 @@ use anigo_core::{MorphChannel, Scene, SparseMorphDelta, SparseMorphHeader, Verte
 use crate::diagnostics;
 use crate::device_recovery::{DeviceRecreationReport, PresentationMode, UncapturedErrorBus};
 use crate::mesh_validation;
+use crate::outline_normals::OutlineNormalCache;
 use crate::render_contract as contract;
 use crate::render_graph::{ExecutionPlan, GraphOverrides, RenderGraph};
 use crate::render_targets::{RenderTarget, RenderTargetCache, TargetViews};
@@ -124,6 +125,8 @@ pub struct HeadlessRenderer {
     /// Alvos intermediários (MSAA/profundidade/DoF) reutilizados entre quadros;
     /// atrás de `Mutex` porque `encode_scene` recebe `&self`.
     target_cache: Mutex<RenderTargetCache>,
+    /// Motor cel (Fase 1): normais suavizadas do contorno por geometria.
+    outline_normal_cache: Mutex<OutlineNormalCache>,
 }
 
 /// Vértices já morfados pelo compute (GPU): substituem o VBO estático dos nós
@@ -141,6 +144,8 @@ struct PreparedPassInputs {
     cel_bind_group: wgpu::BindGroup,
     outline_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
+    /// Motor cel: 2º stream do contorno (normal de extrusão, 12 B/vértice).
+    outline_normal_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
 }
@@ -602,6 +607,22 @@ impl HeadlessRenderer {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &vertex_attributes,
         };
+        // Motor cel (Fase 1): SEGUNDO stream do contorno (normal de extrusão
+        // suavizada), declarado em `vertex_layout.outline_stream`. O vértice de
+        // 72 B e o do cel não mudam.
+        let outline_stream_attributes: Vec<wgpu::VertexAttribute> = contract::outline_stream_attributes()
+            .into_iter()
+            .map(|(shader_location, offset, format)| wgpu::VertexAttribute {
+                offset,
+                shader_location,
+                format,
+            })
+            .collect();
+        let outline_stream_layout = wgpu::VertexBufferLayout {
+            array_stride: contract::outline_stream_stride(),
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &outline_stream_attributes,
+        };
 
         // Cel Shading Pipeline
         let cel_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -666,7 +687,7 @@ impl HeadlessRenderer {
                 module: &outline_shader,
                 entry_point: Some(outline_pass_spec.vertex_entry.unwrap_or("vs_main")),
                 compilation_options: Default::default(),
-                buffers: &[Some(vertex_layout.clone())],
+                buffers: &[Some(vertex_layout.clone()), Some(outline_stream_layout.clone())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &outline_shader,
@@ -1023,6 +1044,7 @@ impl HeadlessRenderer {
             dof_bind_group_layout: resources.dof_bind_group_layout,
             dof_nearest_sampler: resources.dof_nearest_sampler,
             target_cache: Mutex::new(RenderTargetCache::new()),
+            outline_normal_cache: Mutex::new(OutlineNormalCache::default()),
         })
     }
 
@@ -1325,6 +1347,7 @@ impl HeadlessRenderer {
         camera_view_proj: [f32; 16],
         camera_pos: [f32; 4],
         aspect: f32,
+        fov_y: Option<f32>,
         light_buffer: &wgpu::Buffer,
         bones_buffer: &wgpu::Buffer,
         vertex_buffer: wgpu::Buffer,
@@ -1353,11 +1376,9 @@ impl HeadlessRenderer {
         });
 
         // P0-04/09: outline uniform parity with viewport (depthBias/opacity/smoothness, was 0.0/0.0)
-        let outline_uniform = OutlineUniform {
-            color: mat.outline_color,
-            params: [mat.outline_width, aspect, mat.outline_depth_bias, mat.outline_opacity],
-            params2: [mat.outline_smoothness, 0.0, 0.0, 0.0],
-        };
+        // Motor cel (Fase 1): largura por distância/FOV, taper e tinta por
+        // material saem de `NprParams` (padrão = uniform de antes, byte a byte).
+        let outline_uniform = OutlineUniform::for_material(&mat, aspect, fov_y);
         let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Outline Uniform Buffer"),
             contents: cast_slice(&[outline_uniform]),
@@ -1480,10 +1501,24 @@ impl HeadlessRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // 2º stream do contorno: normais da malha (suavização desligada) ou
+        // suavizadas (soldadas por posição, ponderadas por ângulo).
+        let outline_normals = self
+            .outline_normal_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .outline_normals(mesh, mat.npr.sanitized().outline_smooth_normals);
+        let outline_normal_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Outline Normal Stream (2nd vertex buffer)"),
+            contents: cast_slice(&outline_normals),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         PreparedPassInputs {
             cel_bind_group,
             outline_bind_group,
             vertex_buffer,
+            outline_normal_buffer,
             index_buffer,
             index_count: mesh.indices.len() as u32,
         }
@@ -1930,6 +1965,13 @@ impl HeadlessRenderer {
         // desenho preparados uma vez — o pré-passe e o passe principal
         // desenham os mesmos buffers, sem upload duplicado.
         let aspect = width as f32 / height.max(1) as f32;
+        // Motor cel: a largura do contorno por distância só existe em
+        // perspectiva (em ortográfica o falloff é forçado a 0 no uniform).
+        let outline_fov_y = if camera_copy.orthographic.is_some() {
+            None
+        } else {
+            Some(camera_copy.fov_y)
+        };
         let mut prepared: Vec<PreparedPassInputs> = Vec::new();
         for node in &scene.nodes {
             if !node.visible {
@@ -1991,6 +2033,7 @@ impl HeadlessRenderer {
                     camera_view_proj,
                     camera_pos,
                     aspect,
+                    outline_fov_y,
                     &light_buffer,
                     &bones_buffer,
                     vertex_buffer,
@@ -2068,6 +2111,8 @@ impl HeadlessRenderer {
 
             for inputs in &prepared {
                 render_pass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                // 2º stream: só o pipeline de contorno o declara/lê.
+                render_pass.set_vertex_buffer(1, inputs.outline_normal_buffer.slice(..));
                 render_pass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 // Issue #14: a ordem dos passes vem do plano (contrato +
                 // overrides do snapshot), a mesma do viewport.

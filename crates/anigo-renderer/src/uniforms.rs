@@ -161,8 +161,12 @@ pub struct OutlineUniform {
     pub color: [f32; 4],
     pub params: [f32; 4],  // x: width, y: aspect, z: depth_bias, w: opacity
     // x: smoothness, y: width_tex_enabled (Fase 2 #18 — mapa de espessura MToon),
-    // z/w: reserved (P0-09 dead control fix)
+    // z: distance_falloff (motor cel; 0 = espessura constante em pixels),
+    // w: ref_distance_effective (m, já com a compensação de FOV)
     pub params2: [f32; 4],
+    // Motor cel (Fase 1): x: taper (0..1), y: min_width_scale (piso do falloff),
+    // z/w: reservados
+    pub params3: [f32; 4],
 }
 
 impl Default for OutlineUniform {
@@ -171,6 +175,34 @@ impl Default for OutlineUniform {
             color: [0.25, 0.15, 0.20, 1.0],
             params: [0.0035, 1.0, 0.0, 1.0],
             params2: [0.0, 0.0, 0.0, 0.0],
+            params3: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+impl OutlineUniform {
+    /// Monta o uniform de contorno de um material para o quadro atual.
+    ///
+    /// - `aspect`: largura/altura do quadro.
+    /// - `fov_y`: FOV vertical da câmera; `None` em ortográfica (a espessura por
+    ///   distância não faz sentido sem perspectiva: o falloff é forçado a 0).
+    ///
+    /// Com `NprParams` no padrão o resultado é, byte a byte, o uniform de antes
+    /// (`color`, `params`, `smoothness`; o resto zero).
+    pub fn for_material(m: &anigo_core::StylizedMaterial, aspect: f32, fov_y: Option<f32>) -> Self {
+        let npr = m.npr.sanitized();
+        let (falloff, ref_eff) = match fov_y {
+            Some(fov) if npr.outline_distance_falloff > 0.0 => (
+                npr.outline_distance_falloff,
+                anigo_core::npr::outline_ref_distance_effective(npr.outline_ref_distance, fov),
+            ),
+            _ => (0.0, 0.0),
+        };
+        Self {
+            color: anigo_core::npr::outline_color_for_material(m.outline_color, m.base_color, &npr),
+            params: [m.outline_width, aspect, m.outline_depth_bias, m.outline_opacity],
+            params2: [m.outline_smoothness, 0.0, falloff, ref_eff],
+            params3: [npr.outline_taper, npr.outline_min_width_scale, 0.0, 0.0],
         }
     }
 }
@@ -298,7 +330,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<MaterialUniform>(), 208);
         assert_eq!(std::mem::size_of::<MaterialUniform>() % 16, 0);
 
-        assert_eq!(std::mem::size_of::<OutlineUniform>(), 48);
+        // Outline 64 B (motor cel Fase 1: +params3 com taper e piso da largura)
+        assert_eq!(std::mem::size_of::<OutlineUniform>(), 64);
         assert_eq!(std::mem::size_of::<OutlineUniform>() % 16, 0);
     }
 
@@ -336,5 +369,35 @@ mod tests {
         assert_eq!(u.params[0], 0.58);
         assert_eq!(u.params[2], 0.75);
         assert!((u.params2[2] - (-30.0f32.to_radians())).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::*;
+
+    #[test]
+    fn default_material_outline_uniform_is_the_legacy_one() {
+        let m = anigo_core::StylizedMaterial::default();
+        let u = OutlineUniform::for_material(&m, 1.5, Some(45.0f32.to_radians()));
+        assert_eq!(u.color, m.outline_color);
+        assert_eq!(u.params, [m.outline_width, 1.5, m.outline_depth_bias, m.outline_opacity]);
+        assert_eq!(u.params2, [m.outline_smoothness, 0.0, 0.0, 0.0]);
+        assert_eq!(u.params3, [0.0; 4]);
+    }
+
+    #[test]
+    fn falloff_is_forced_off_in_orthographic_and_uses_the_fov_otherwise() {
+        let mut m = anigo_core::StylizedMaterial::default();
+        m.npr.outline_distance_falloff = 1.0;
+        m.npr.outline_ref_distance = 4.0;
+        let ortho = OutlineUniform::for_material(&m, 1.0, None);
+        assert_eq!(ortho.params2[2], 0.0);
+        let at_ref_fov = OutlineUniform::for_material(&m, 1.0, Some(anigo_core::npr::OUTLINE_REF_FOV_Y));
+        assert_eq!(at_ref_fov.params2[2], 1.0);
+        assert!((at_ref_fov.params2[3] - 4.0).abs() < 1e-5);
+        // FOV mais estreito → distância efetiva maior (linha acompanha o zoom)
+        let tele = OutlineUniform::for_material(&m, 1.0, Some(20.0f32.to_radians()));
+        assert!(tele.params2[3] > 4.0);
     }
 }

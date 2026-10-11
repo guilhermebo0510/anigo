@@ -58,6 +58,39 @@ fn ramp_scene(blend: f32, row: f32, steps: f32) -> Scene {
     })
 }
 
+/// Fundo claro para a linha de contorno aparecer (o padrão do contrato é escuro).
+const LIGHT_BG: [f32; 4] = [0.86, 0.88, 0.93, 1.0];
+
+/// Cubo girado, câmera fechada, contorno largo: a fresta nos cantos do hull só
+/// aparece com normais da malha (arestas duras).
+fn cube_hull_scene(smooth: f32) -> Scene {
+    let mut scene = Scene::new_empty();
+    let mut node = SceneNode::new("cube", "Cube").with_mesh(Mesh::create_cube(1.0));
+    node.transform.rotation = glam::Quat::from_euler(glam::EulerRot::YXZ, 0.55, 0.45, 0.0);
+    let mut material = StylizedMaterial::default();
+    material.outline_width = 0.02;
+    material.npr.outline_smooth_normals = smooth;
+    node.material = Some(material);
+    scene.add_node(node);
+    scene.camera.eye = Vec3::new(0.0, 0.0, 3.2);
+    scene.camera.target = Vec3::ZERO;
+    scene.background_color = LIGHT_BG;
+    scene
+}
+
+/// Base feminina a `distance` m da câmera, linha nominal 0.008 (~2 px em 512).
+fn base_at_distance(distance: f32, tweak: impl Fn(&mut StylizedMaterial)) -> Scene {
+    let mut scene = female_base();
+    let mut material = StylizedMaterial::default();
+    material.outline_width = 0.008;
+    tweak(&mut material);
+    scene.nodes[0].material = Some(material);
+    scene.camera.eye = Vec3::new(0.0, 1.0, distance);
+    scene.camera.target = Vec3::new(0.0, 0.9, 0.0);
+    scene.background_color = LIGHT_BG;
+    scene
+}
+
 fn build(name: &str) -> Option<(Scene, u32)> {
     Some(match name {
         "female_base" => (female_base(), 512),
@@ -71,8 +104,33 @@ fn build(name: &str) -> Option<(Scene, u32)> {
         "ramp_r3" => (ramp_scene(1.0, 3.0, 1.0), 256),
         "ramp_r1_5" => (ramp_scene(1.0, 1.5, 1.0), 256),
         "ramp_half" => (ramp_scene(0.5, 2.0, 1.0), 256),
+        "cube_hull_mesh" => (cube_hull_scene(0.0), 384),
+        "cube_hull_smooth" => (cube_hull_scene(1.0), 384),
+        "dist2_const" => (base_at_distance(2.5, |_| {}), 512),
+        "dist5_const" => (base_at_distance(5.0, |_| {}), 512),
+        "dist10_const" => (base_at_distance(10.0, |_| {}), 512),
+        "dist2_falloff" => (base_at_distance(2.5, falloff_on), 512),
+        "dist5_falloff" => (base_at_distance(5.0, falloff_on), 512),
+        "dist10_falloff" => (base_at_distance(10.0, falloff_on), 512),
+        "taper0" => (base_at_distance(2.5, |m| m.npr.outline_smooth_normals = 1.0), 512),
+        "taper1" => (base_at_distance(2.5, |m| {
+            m.npr.outline_smooth_normals = 1.0;
+            m.npr.outline_taper = 1.0;
+        }), 512),
+        "ink0" => (base_at_distance(2.5, |m| m.npr.outline_smooth_normals = 1.0), 512),
+        "ink1" => (base_at_distance(2.5, |m| {
+            m.npr.outline_smooth_normals = 1.0;
+            m.npr.outline_ink_blend = 1.0;
+        }), 512),
         _ => return None,
     })
+}
+
+fn falloff_on(m: &mut StylizedMaterial) {
+    m.npr.outline_smooth_normals = 1.0;
+    m.npr.outline_distance_falloff = 1.0;
+    m.npr.outline_ref_distance = 5.0;
+    m.npr.outline_min_width_scale = 0.2;
 }
 
 const ALL: &[&str] = &["female_base", "dof_off", "dof_focus_char", "dof_focus_fg"];

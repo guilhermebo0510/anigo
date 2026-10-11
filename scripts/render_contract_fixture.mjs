@@ -131,6 +131,21 @@ export function renderContractFixture() {
         { shader_location: 4, offset: 48, format: "uint16x4", name: "joints" },
         { shader_location: 5, offset: 56, format: "float32x4", name: "weights" },
       ],
+      // Motor cel (Fase 1): SEGUNDO stream de vértices, só do pipeline `outline`.
+      // Carrega a normal de extrusão do contorno (suavizada: soldada por posição
+      // e ponderada por ângulo — sem frestas em arestas duras). O vertex de 72 B
+      // e o do cel NÃO mudam. O renderer nativo sobe um buffer dedicado de
+      // 12 B/vértice; o viewport TS pode reaproveitar o VBO principal lendo a
+      // própria normal (stride 72, offset 12) — mesmo shader, contorno sem
+      // suavização.
+      outline_stream: {
+        stride: 12,
+        step_mode: "vertex",
+        attributes: [
+          { shader_location: 6, offset: 0, format: "float32x3", name: "outline_normal" },
+        ],
+        viewport_fallback: { stride: 72, offset: 12, source: "main_vbo.normal" },
+      },
     },
     uniforms: {
       camera: {
@@ -182,11 +197,13 @@ export function renderContractFixture() {
       outline: {
         struct: "OutlineUniform",
         address_space: "uniform",
-        size: 48,
+        size: 64,
         fields: [
           { name: "color", kind: "vec4", offset: 0, size: 16 },
           { name: "params", kind: "vec4", offset: 16, size: 16, meaning: "width, aspect, depth_bias, opacity" },
-          { name: "params2", kind: "vec4", offset: 32, size: 16, meaning: "smoothness, width_tex_enabled (Fase 2 #18)" },
+          { name: "params2", kind: "vec4", offset: 32, size: 16, meaning: "smoothness, width_tex_enabled (Fase 2 #18), distance_falloff (motor cel: 0 = espessura constante em px), ref_distance_effective (m, já com a compensação de FOV)" },
+          // Motor cel (Fase 1): taper e piso da largura por distância.
+          { name: "params3", kind: "vec4", offset: 48, size: 16, meaning: "taper (0..1), min_width_scale (piso do falloff), reserved, reserved" },
         ],
       },
       sparse_morph_header: {
@@ -824,6 +841,46 @@ export function renderContractFixture() {
           uniform: "material.params7.w", shader: "cel_shading",
           effect: "Linha da rampa 2D (0 contínua, 1 um degrau, 2 dois, 3 três; fração interpola). Só vale com ramp_blend > 0. Coluna = half-lambert deslocado pelo limiar de sombra; coordenadas: v = (row + 0.5) / 4, u = clamp(half_lambert - shadow_threshold + 0.5, 0.002, 0.998).",
         },
+        {
+          name: "outline_smooth_normals", range: [0, 1], default: 0,
+          uniform: "(segundo stream de vértices, location 6, só do pipeline outline)", shader: "inverted_hull",
+          effect: "0 = o hull extruda pela normal da malha (frestas em arestas duras). 1 = normal SUAVIZADA de contorno: vértices soldados por posição, média das normais de face ponderada pelo ângulo interno. Fração mistura e renormaliza. Calculada no lado Rust (anigo-core::npr::smooth_outline_normals).",
+        },
+        {
+          name: "outline_distance_falloff", range: [0, 1], default: 0,
+          uniform: "outline.params2.z", shader: "inverted_hull",
+          effect: "0 = espessura constante em pixels (motor anterior). 1 = proporcional ao tamanho projetado: escala = clamp((ref_eff / profundidade)^falloff, piso, 4). Fração = expoente. Forçado a 0 em câmera ortográfica.",
+        },
+        {
+          name: "outline_ref_distance", range: [0.05, 1000], default: 4.0,
+          uniform: "outline.params2.w (efetiva: ref · tan(22.5°) / tan(fov/2))", shader: "inverted_hull",
+          effect: "Distância (m) em que a largura é a nominal outline_width, com o FOV de referência de 45°. A compensação de FOV é feita no host (a linha acompanha o zoom da lente).",
+        },
+        {
+          name: "outline_min_width_scale", range: [0, 1], default: 0,
+          uniform: "outline.params3.y", shader: "inverted_hull",
+          effect: "Piso do fator de escala por distância (a linha nunca fica mais fina que piso × largura nominal). 0 = sem piso.",
+        },
+        {
+          name: "outline_taper", range: [0, 1], default: 0,
+          uniform: "outline.params3.x", shader: "inverted_hull",
+          effect: "Peso de traço por orientação: largura × (1 − taper · 0.75 · |N·V|). 0 = uniforme; 1 = a linha afina até 25% onde a superfície encara a câmera e fica cheia na silhueta rasante.",
+        },
+        {
+          name: "outline_ink_blend", range: [0, 1], default: 0,
+          uniform: "outline.color (calculado no host)", shader: "inverted_hull",
+          effect: "0 = cor outline_color do material. 1 = tinta derivada da cor base (HSV: satura e escurece). Fração mistura no RGB; alfa é o de outline_color.",
+        },
+        {
+          name: "outline_ink_darken", range: [0, 1], default: 0.7,
+          uniform: "outline.color (host)", shader: "inverted_hull",
+          effect: "Quanto a tinta escurece a base: V × (1 − darken) em HSV (sRGB). Só vale com outline_ink_blend > 0.",
+        },
+        {
+          name: "outline_ink_saturation", range: [0, 3], default: 2.5,
+          uniform: "outline.color (host)", shader: "inverted_hull",
+          effect: "Multiplicador de saturação (HSV) da tinta (1 = igual à base; ~2.5 transforma pele clara em marrom-avermelhado). Só vale com outline_ink_blend > 0.",
+        },
       ],
     },
     reference_frame: {
@@ -953,6 +1010,8 @@ export function renderContractFixture() {
         outline_uniform: [
           0.25, 0.150000006, 0.200000003, 1.0, 0.004, 1.777777791, 0.02, 0.899999976,
           0.01, 0.0, 0.0, 0.0,
+          // params3 (motor cel): taper 0, piso 0 — frame congelado com o motor no padrão.
+          0.0, 0.0, 0.0, 0.0,
         ],
       },
     },

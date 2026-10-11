@@ -3,6 +3,7 @@ pub mod device_recovery;
 pub mod diagnostics;
 pub mod headless;
 pub mod mesh_validation;
+pub mod outline_normals;
 pub mod render_contract;
 pub mod render_graph;
 pub mod render_targets;
