@@ -448,7 +448,7 @@ test("nome do artefato é determinístico (sem timestamp)", () => {
 
 test("Rust: a exportação é do núcleo e usa o snapshot como fonte", () => {
   const exportRs = readRepoFile("crates/anigo-core/src/export.rs");
-  const sessionRs = readRepoFile("src-tauri/src/core_session.rs");
+  const sessionRs = readRepoFile("crates/anigo-session/src/core_session.rs");
   const mainRs = readRepoFile("src-tauri/src/main.rs");
   const libRs = readRepoFile("crates/anigo-core/src/lib.rs");
 

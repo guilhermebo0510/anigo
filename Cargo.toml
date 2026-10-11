@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/anigo-core",
+    "crates/anigo-session",
     "crates/anigo-modeling",
     "crates/anigo-studio",
     "crates/anigo-native",

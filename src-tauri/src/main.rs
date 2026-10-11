@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
-mod core_session;
+use anigo_session::core_session;
 
 use std::io::Write;
 use std::sync::Arc;
