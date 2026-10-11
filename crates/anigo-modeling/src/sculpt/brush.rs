@@ -2388,6 +2388,29 @@ mod tests {
         assert!(moved > 0);
     }
 
+    #[test]
+    fn locked_face_sets_keep_their_interior_fixed() {
+        let mut m = primitives::grid(20, 20, 2.0, 2.0);
+        for f in 0..m.face_count() as u32 {
+            if m.face_center(f).x > 0.0 {
+                m.faces[f as usize].face_set = 2;
+            }
+        }
+        let mut rig = Rig::new(m);
+        let mut b = brush(BrushKind::Draw, 3.0, 0.1);
+        b.automask.exclude_face_sets = vec![2];
+        let orig = rig.mesh.clone();
+        let d = Dab::from_brush(&b, Vec3::ZERO, Vec3::Y);
+        rig.dab(&d, &b);
+        let moved_free = rig.mesh.verts.iter().zip(&orig.verts).filter(|(a, b)| a.co != b.co && a.co.x < -0.01).count();
+        assert!(moved_free > 10);
+        for (a, o) in rig.mesh.verts.iter().zip(&orig.verts) {
+            if o.co.x > 0.01 {
+                assert_eq!(a.co, o.co, "interior do face set travado não se move");
+            }
+        }
+    }
+
     // ---------------------------------------------------- erros e invariantes
 
     #[test]

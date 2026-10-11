@@ -4,7 +4,8 @@
 //! Fatores disponíveis (multiplicam-se):
 //! * máscara de escultura (`EVert::mask`, 1 = protegido);
 //! * limite de normal (ângulo entre a normal do vértice e a do início do traço);
-//! * face set (do face set informado ou o da face sob o início do traço);
+//! * face set (do face set informado ou o da face sob o início do traço) e
+//!   face sets protegidos (`exclude_face_sets`);
 //! * cavidade (curvatura por laplaciano normalizado);
 //! * topologia (conectado ao vértice inicial; opcionalmente até uma distância
 //!   geodésica sobre as arestas);
@@ -55,6 +56,10 @@ pub struct AutoMask {
     pub face_set: Option<i32>,
     /// Usa o face set da face sob o início do traço (ignorado se `face_set` é `Some`).
     pub face_set_from_stroke: bool,
+    /// Face sets protegidos: um vértice cujas faces pertencem **todas** a
+    /// estes conjuntos não é afetado (o interior de uma região travada fica
+    /// fixo; a fronteira com conjuntos livres continua editável).
+    pub exclude_face_sets: Vec<i32>,
     pub cavity: Option<CavityParams>,
     /// Restringe ao componente conectado do vértice inicial.
     pub topology_connected: bool,
@@ -73,6 +78,7 @@ impl Default for AutoMask {
             normal_falloff: 0.0,
             face_set: None,
             face_set_from_stroke: false,
+            exclude_face_sets: Vec::new(),
             cavity: None,
             topology_connected: false,
             topology_distance: None,
@@ -125,6 +131,7 @@ impl AutoMask {
         self.normal_limit.is_none()
             && self.face_set.is_none()
             && !self.face_set_from_stroke
+            && self.exclude_face_sets.is_empty()
             && self.cavity.is_none()
             && !self.topology_connected
             && !self.boundary
@@ -193,6 +200,16 @@ impl AutoMask {
                 if self.normal_falloff > 0.0 {
                     f *= smoothstep((limit - angle) / self.normal_falloff);
                 }
+            }
+        }
+        if !self.exclude_face_sets.is_empty() {
+            let faces = &ctx.topo.vert_faces[vi];
+            if !faces.is_empty()
+                && faces
+                    .iter()
+                    .all(|&fi| self.exclude_face_sets.contains(&mesh.faces[fi as usize].face_set))
+            {
+                return 0.0;
             }
         }
         if let Some(id) = ctx.stroke.start_face_set {
@@ -439,6 +456,46 @@ mod tests {
         // face inválida => sem restrição de face set (ignora)
         b.begin_stroke(&m, &mut ctx, None, Vec3::Y, Some(99999));
         assert_eq!(b.eval_vertex(&m, &ctx, hi_vert), 1.0);
+    }
+
+    #[test]
+    fn excluded_face_sets_protect_region_interiors_only() {
+        let mut m = primitives::quad_sphere(1.0, 6);
+        for f in 0..m.face_count() as u32 {
+            if m.face_center(f).y > 0.0 {
+                m.faces[f as usize].face_set = 4; // hemisfério superior travado
+            }
+        }
+        let ctx = SculptContext::new(&m).unwrap();
+        let a = AutoMask {
+            exclude_face_sets: vec![4],
+            ..Default::default()
+        };
+        assert!(!a.is_trivial());
+        let topo = &ctx.topo;
+        let (mut locked, mut free, mut border) = (0, 0, 0);
+        for v in 0..m.vert_count() as u32 {
+            let sets: Vec<i32> = topo.vert_faces[v as usize].iter().map(|&f| m.faces[f as usize].face_set).collect();
+            let f = a.eval_vertex(&m, &ctx, v);
+            if sets.iter().all(|&s| s == 4) {
+                assert_eq!(f, 0.0);
+                locked += 1;
+            } else {
+                assert_eq!(f, 1.0);
+                if sets.iter().any(|&s| s == 4) {
+                    border += 1;
+                } else {
+                    free += 1;
+                }
+            }
+        }
+        assert!(locked > 0 && free > 0 && border > 0);
+        // conjunto inexistente não protege nada
+        let none = AutoMask {
+            exclude_face_sets: vec![99],
+            ..Default::default()
+        };
+        assert!((0..m.vert_count() as u32).all(|v| none.eval_vertex(&m, &ctx, v) == 1.0));
     }
 
     #[test]

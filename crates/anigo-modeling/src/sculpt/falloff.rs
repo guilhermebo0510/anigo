@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 pub const CURVE_TABLE_SIZE: usize = 256;
 
 /// Perfil de falloff do pincel.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum Falloff {
     /// `3p² − 2p³` com `p = 1 − t` (padrão do Blender).
+    #[default]
     Smooth,
     /// `6p⁵ − 15p⁴ + 10p³`: derivada zero nas duas pontas.
     Smoother,
@@ -33,12 +34,6 @@ pub enum Falloff {
     /// Curva amostrada em `t ∈ [0, 1]` (interpolação linear entre amostras).
     /// Use [`CurveProfile::to_falloff`] para gerar a partir do editor.
     Custom(Vec<f32>),
-}
-
-impl Default for Falloff {
-    fn default() -> Self {
-        Falloff::Smooth
-    }
 }
 
 impl Falloff {
