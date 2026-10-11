@@ -143,9 +143,9 @@ impl HeadlessRenderer {
         wgpu::AdapterInfo,
     )> {
         let instance = match std::panic::catch_unwind(|| {
-            wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::all(),
-                ..Default::default()
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
             })
         }) {
             Ok(instance) => instance,
@@ -158,7 +158,7 @@ impl HeadlessRenderer {
             }
         };
 
-        // P1-01/P1-02: além do caminho `None`, o wgpu 24 aborta com um pânico
+        // P1-01/P1-02: além do caminho `None`, o wgpu aborta com um pânico
         // **cru** (sem mensagem) quando o runner não tem backend utilizável.
         // O guarda converte o pânico no mesmo `device_unavailable`.
         let requested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -166,11 +166,12 @@ impl HeadlessRenderer {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             }))
         }));
         let adapter = match requested {
-            Ok(Some(adapter)) => adapter,
-            Ok(None) | Err(_) => {
+            Ok(Ok(adapter)) => adapter,
+            Ok(Err(_)) | Err(_) => {
                 diagnostics::report(
                     "device_unavailable",
                     "nenhum adaptador wgpu compatível encontrado (headless não pode renderizar)",
@@ -182,15 +183,14 @@ impl HeadlessRenderer {
         let adapter_info = adapter.get_info();
 
         let (device, queue) = match adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("ANIGO Headless Device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("ANIGO Headless Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
             .await
         {
             Ok(pair) => pair,
@@ -590,8 +590,8 @@ impl HeadlessRenderer {
         // Cel Shading Pipeline
         let cel_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cel Pipeline Layout"),
-            bind_group_layouts: &[&cel_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&cel_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let cel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -601,7 +601,7 @@ impl HeadlessRenderer {
                 module: &cel_shader,
                 entry_point: Some(cel_pass_spec.vertex_entry.unwrap_or("vs_main")),
                 compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_layout),
+                buffers: &[Some(vertex_layout.clone())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &cel_shader,
@@ -624,8 +624,8 @@ impl HeadlessRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: contract::depth_format(),
-                depth_write_enabled: cel_pass_spec.depth_write,
-                depth_compare: cel_pass_spec.depth_compare,
+                depth_write_enabled: Some(cel_pass_spec.depth_write),
+                depth_compare: Some(cel_pass_spec.depth_compare),
                 stencil: wgpu::StencilState::default(),
                 bias: cel_pass_spec.depth_bias,
             }),
@@ -633,14 +633,14 @@ impl HeadlessRenderer {
                 count: contract::msaa_sample_count(),
                 ..Default::default()
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         // Inverted Hull Pipeline (Culls front faces to show backfaces extruded as outline)
         let outline_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Outline Pipeline Layout"),
-            bind_group_layouts: &[&outline_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&outline_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -650,7 +650,7 @@ impl HeadlessRenderer {
                 module: &outline_shader,
                 entry_point: Some(outline_pass_spec.vertex_entry.unwrap_or("vs_main")),
                 compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_layout),
+                buffers: &[Some(vertex_layout.clone())],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &outline_shader,
@@ -673,8 +673,8 @@ impl HeadlessRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: contract::depth_format(),
-                depth_write_enabled: outline_pass_spec.depth_write,
-                depth_compare: outline_pass_spec.depth_compare,
+                depth_write_enabled: Some(outline_pass_spec.depth_write),
+                depth_compare: Some(outline_pass_spec.depth_compare),
                 stencil: wgpu::StencilState::default(),
                 bias: outline_pass_spec.depth_bias,
             }),
@@ -682,7 +682,7 @@ impl HeadlessRenderer {
                 count: contract::msaa_sample_count(),
                 ..Default::default()
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -694,8 +694,8 @@ impl HeadlessRenderer {
         let depth_prepass_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Depth Prepass Pipeline Layout"),
-                bind_group_layouts: &[&cel_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&cel_bind_group_layout)],
+                immediate_size: 0,
             });
         let depth_prepass_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -705,7 +705,7 @@ impl HeadlessRenderer {
                     module: &cel_shader,
                     entry_point: Some(cel_pass_spec.vertex_entry.unwrap_or("vs_main")),
                     compilation_options: Default::default(),
-                    buffers: std::slice::from_ref(&vertex_layout),
+                    buffers: &[Some(vertex_layout.clone())],
                 },
                 fragment: None,
                 primitive: wgpu::PrimitiveState {
@@ -719,8 +719,8 @@ impl HeadlessRenderer {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: contract::depth_format(),
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: cel_pass_spec.depth_bias,
                 }),
@@ -728,7 +728,7 @@ impl HeadlessRenderer {
                     count: contract::msaa_sample_count(),
                     ..Default::default()
                 },
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
         // Sparse Morph Target Compute Pipeline
@@ -797,8 +797,8 @@ impl HeadlessRenderer {
 
         let morph_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sparse Morph Pipeline Layout"),
-            bind_group_layouts: &[&morph_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&morph_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let morph_compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -856,8 +856,8 @@ impl HeadlessRenderer {
         });
         let dof_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("DoF Pipeline Layout"),
-            bind_group_layouts: &[&dof_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&dof_bind_group_layout)],
+            immediate_size: 0,
         });
         let dof_pipeline = if adapter_info.backend == wgpu::Backend::Gl {
             // Naga GLSL backend não suporta leitura de texture_depth_2d em GLSL.
@@ -895,7 +895,7 @@ impl HeadlessRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
             }))
         };
         let dof_nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1136,7 +1136,7 @@ impl HeadlessRenderer {
         compute_pass.set_bind_group(0, &bind_group, &[]);
         let workgroups = vertex_count.div_ceil(64);
         compute_pass.dispatch_workgroups(workgroups, 1, 1);
-        // wgpu 24 encerra o passe no drop (não existe mais `end()`); o drop
+        // wgpu encerra o passe no drop (não existe mais `end()`); o drop
         // explícito garante que o encoder ficou livre para novos comandos.
         drop(compute_pass);
     }
@@ -1222,7 +1222,7 @@ impl HeadlessRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = tx.send(res);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
 
         rx.recv()
             .context("Channel receive failed while waiting for GPU morph buffer mapping")
@@ -1240,7 +1240,9 @@ impl HeadlessRenderer {
                 error
             })?;
 
-        let mapped = buffer_slice.get_mapped_range();
+        let mapped = buffer_slice
+            .get_mapped_range()
+            .context("Failed to access mapped morph buffer")?;
         let result_vertices: Vec<Vertex> = bytemuck::cast_slice(&mapped).to_vec();
         drop(mapped);
 
@@ -1731,6 +1733,7 @@ impl HeadlessRenderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             for inputs in &prepared {
                 prepass.set_pipeline(&self.depth_prepass_pipeline);
@@ -1748,6 +1751,7 @@ impl HeadlessRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: attachment_view,
                     resolve_target,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: scene.background_color[0] as f64,
@@ -1777,6 +1781,7 @@ impl HeadlessRenderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             for inputs in &prepared {
@@ -1892,6 +1897,7 @@ impl HeadlessRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -1900,6 +1906,7 @@ impl HeadlessRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if let Some(ref pipeline) = self.dof_pipeline {
                 dof_pass.set_pipeline(pipeline);
@@ -1952,7 +1959,7 @@ impl HeadlessRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = tx.send(res);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
 
         rx.recv()
             .context("Channel receive failed while waiting for GPU buffer mapping")
@@ -1966,7 +1973,9 @@ impl HeadlessRenderer {
                 error
             })?;
 
-        let padded_data = buffer_slice.get_mapped_range();
+        let padded_data = buffer_slice
+            .get_mapped_range()
+            .context("Failed to access mapped image buffer")?;
         let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
 
         for row in 0..height {
@@ -2358,6 +2367,7 @@ impl HeadlessRenderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             for inputs in &prepared {
                 prepass.set_pipeline(&self.depth_prepass_pipeline);
@@ -2375,6 +2385,7 @@ impl HeadlessRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: attachment_view,
                     resolve_target,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: scene.background_color[0] as f64,
@@ -2404,6 +2415,7 @@ impl HeadlessRenderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             for inputs in &prepared {
@@ -2517,6 +2529,7 @@ impl HeadlessRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -2525,6 +2538,7 @@ impl HeadlessRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if let Some(ref pipeline) = self.dof_pipeline {
                 dof_pass.set_pipeline(pipeline);
@@ -2576,7 +2590,7 @@ impl HeadlessRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = tx.send(res);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
 
         rx.recv()
             .context("Channel receive failed while waiting for GPU buffer mapping")
@@ -2590,7 +2604,9 @@ impl HeadlessRenderer {
                 error
             })?;
 
-        let padded_data = buffer_slice.get_mapped_range();
+        let padded_data = buffer_slice
+            .get_mapped_range()
+            .context("Failed to access mapped image buffer")?;
         let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
 
         for row in 0..height {
