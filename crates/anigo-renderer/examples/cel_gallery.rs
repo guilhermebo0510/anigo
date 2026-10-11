@@ -5,7 +5,7 @@
 //! Sem nomes de cena, renderiza todas. Veja `build` para o catálogo.
 
 use anigo_core::mesh::{BaseGender, Mesh};
-use anigo_core::scene::{Scene, SceneNode};
+use anigo_core::scene::{Scene, SceneNode, StylizedMaterial};
 use anigo_renderer::HeadlessRenderer;
 use glam::Vec3;
 
@@ -36,12 +36,41 @@ fn dof_depth_scene(enabled: bool, focus: f32) -> Scene {
     scene
 }
 
+/// Esfera de sonda de iluminação (câmera fechada, luz oblíqua).
+fn probe_sphere(tweak: impl Fn(&mut StylizedMaterial)) -> Scene {
+    let mut scene = Scene::new_empty();
+    let mut node = SceneNode::new("probe", "Probe").with_mesh(Mesh::create_uv_sphere(0.5, 48, 64));
+    let mut material = StylizedMaterial::default();
+    tweak(&mut material);
+    node.material = Some(material);
+    scene.add_node(node);
+    scene.camera.eye = Vec3::new(0.0, 0.0, 2.2);
+    scene.camera.target = Vec3::ZERO;
+    scene.light.direction = Vec3::new(0.65, 0.45, 0.62).normalize().to_array();
+    scene
+}
+
+fn ramp_scene(blend: f32, row: f32, steps: f32) -> Scene {
+    probe_sphere(|m| {
+        m.toon_steps = steps;
+        m.npr.ramp_blend = blend;
+        m.npr.ramp_row = row;
+    })
+}
+
 fn build(name: &str) -> Option<(Scene, u32)> {
     Some(match name {
         "female_base" => (female_base(), 512),
         "dof_off" => (dof_depth_scene(false, 4.0), 512),
         "dof_focus_char" => (dof_depth_scene(true, 4.0), 512),
         "dof_focus_fg" => (dof_depth_scene(true, 2.0), 512),
+        "ramp_off" => (ramp_scene(0.0, 1.0, 1.0), 256),
+        "ramp_r0" => (ramp_scene(1.0, 0.0, 1.0), 256),
+        "ramp_r1" => (ramp_scene(1.0, 1.0, 1.0), 256),
+        "ramp_r2" => (ramp_scene(1.0, 2.0, 1.0), 256),
+        "ramp_r3" => (ramp_scene(1.0, 3.0, 1.0), 256),
+        "ramp_r1_5" => (ramp_scene(1.0, 1.5, 1.0), 256),
+        "ramp_half" => (ramp_scene(0.5, 2.0, 1.0), 256),
         _ => return None,
     })
 }

@@ -8,6 +8,7 @@ pub mod math;
 pub mod mesh;
 pub mod morph;
 pub mod morph_catalog;
+pub mod npr;
 pub mod project;
 pub mod scene;
 pub mod skinning;
@@ -44,6 +45,7 @@ pub use math::{
     ProjectionMode, Transform,
 };
 pub use mesh::{BaseGender, Mesh, Vertex};
+pub use npr::NprParams;
 pub use morph::{MorphChannel, MorphTarget, SparseMorphDelta, SparseMorphHeader, SparseMorphSet};
 pub use morph_catalog::{
     ALL_MORPH_SLIDERS, AnatomicalZone, GenderDimorphism, MeshIntegrityReport, MorphCatalog,

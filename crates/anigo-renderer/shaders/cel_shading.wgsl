@@ -36,11 +36,11 @@ struct MaterialUniform {
     emission_color: vec4<f32>,  // MToon subEmission (cor, HDR via intensity)
     params4: vec4<f32>,         // x: emission_intensity, y: second_shade_shift, z: second_shade_softness, w: matcap_intensity
     params5: vec4<f32>,         // x: main_tex_enabled, y: shade_tex_enabled, z: second_shade_enabled, w: emission_enabled
-    params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: reserved
+    params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: ramp_blend (0 = rampa 2D off)
     // ── Fase 2 (#17) — sombra facial SDF ──────────────────────────────────
-    params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: reserved
+    params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: ramp_row (0..3)
     // ── Fase 2 (#43) — olho anime (parallax + highlights) ─────────────────
-    params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: reserved
+    params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: face_sdf_mirror_center (0 = off)
 };
 
 @group(0) @binding(0)
@@ -338,16 +338,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let threshold = material.params.x + shadow_shift;
     let smoothness = max(material.params.y, 0.001);
 
-    // 3. Toon Ramp 1D/2D Texture Sampling with Analytical Fallback
+    // 3. Analytical toon factor (default) — the 2D ramp is an optional override (3b)
     let toon_steps = material.params2.w;
-    let ramp_v = select(
-        select(0.125, 0.375, toon_steps >= 0.5),
-        select(0.625, 0.875, toon_steps >= 2.5),
-        toon_steps >= 1.5
-    );
-    let u_coord = clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
-    let ramp_sample = textureSample(toon_ramp_tex, toon_ramp_sampler, vec2<f32>(u_coord, ramp_v));
-
     var analytical_toon: f32;
     if (toon_steps < 0.5) {
         // Continuous / Smooth anime gradient
@@ -369,7 +361,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // P1-03: single analytical model (smoothness controls penumbra only, not model switch)
-    let toon_factor = analytical_toon; // ramp_sample kept for validation but not mixed
+    var toon_factor = analytical_toon;
+
+    // 3b. Rampa 2D opcional por material (UTS / Genshin / Star Rail): linha da
+    // rampa = material (params7.w, 0..3; fração interpola entre linhas), coluna
+    // = half-lambert deslocado pelo limiar de sombra (o degrau cai em 0.5 quando
+    // half_lambert == threshold). `ramp_blend` (params6.w) = 0 → nem amostra:
+    // fator 100% analítico, byte a byte igual ao motor anterior (frame
+    // congelado). Matemática espelhada em anigo-core::npr (ramp_v/ramp_u/
+    // blend_toon_factor). `material` é um uniform → o desvio é uniforme e o
+    // textureSample é legal aqui.
+    let ramp_blend = clamp(material.params6.w, 0.0, 1.0);
+    if (ramp_blend > 0.0) {
+        let ramp_v = (clamp(material.params7.w, 0.0, 3.0) + 0.5) * 0.25;
+        let ramp_u = clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
+        let ramp_value = textureSample(toon_ramp_tex, toon_ramp_sampler, vec2<f32>(ramp_u, ramp_v)).r;
+        toon_factor = mix(analytical_toon, ramp_value, ramp_blend);
+    }
 
     // 4. Stylized Ambient Occlusion (R channel) — P2-05 applied to diffuse/ambient only
     let ao_raw = clamp(in.anime_attr.r, 0.0, 1.0);

@@ -58,14 +58,14 @@ pub struct MaterialUniform {
     pub emission_color: [f32; 4],
     pub params4: [f32; 4], // emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity
     pub params5: [f32; 4], // main_tex, shade_tex, second_shade, emission (0/1)
-    pub params6: [f32; 4], // matcap_enabled, matcap_mode (0 mult/1 add), shade_toony, reserved
+    pub params6: [f32; 4], // matcap_enabled, matcap_mode (0 mult/1 add), shade_toony, ramp_blend
     // Fase 2 (#17): sombra facial SDF — offset do threshold, suavidade,
     // ativação (o mapa SDF é o binding 16 do cel, ancorado no neutro 1x1).
-    pub params7: [f32; 4], // face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved
+    pub params7: [f32; 4], // face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, ramp_row
     // Fase 2 (#43): olho anime — recalada do parallax da íris, intensidade
     // dos highlights desenhados à mão (desacoplados da luz) e ativação.
     // (Os settings do solver de olhar são CPU — anigo-ik/eye_tracking.ts.)
-    pub params8: [f32; 4], // eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved
+    pub params8: [f32; 4], // eye_depth_scale, eye_highlight_intensity, eye_enabled, face_sdf_mirror_center
 }
 
 impl Default for MaterialUniform {
@@ -94,6 +94,7 @@ impl Default for MaterialUniform {
 
 impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
     fn from(m: &anigo_core::StylizedMaterial) -> Self {
+        let npr = m.npr.sanitized();
         Self {
             base_color: m.base_color,
             shade_color: m.shade_color,
@@ -131,21 +132,24 @@ impl From<&anigo_core::StylizedMaterial> for MaterialUniform {
                 (m.mtoon_matcap_enabled as u32) as f32,
                 m.mtoon_matcap_mode as f32,
                 (m.mtoon_shade_toony as u32) as f32,
-                0.0,
+                // Motor cel: ramp_blend (0 = rampa 2D desligada, padrão).
+                npr.ramp_blend,
             ],
             // Fase 2 (#17): sombra facial SDF
             params7: [
                 m.face_shadow_offset,
                 m.face_shadow_smoothness,
                 (m.face_sdf_enabled as u32) as f32,
-                0.0,
+                // Motor cel: ramp_row (linha da rampa 2D, vale com ramp_blend > 0).
+                npr.ramp_row,
             ],
             // Fase 2 (#43): olho anime (parallax + highlights)
             params8: [
                 m.eye_depth_scale,
                 m.eye_highlight_intensity,
                 (m.eye_enabled as u32) as f32,
-                0.0,
+                // Motor cel: face_sdf_mirror_center (0 = sem espelhamento, padrão).
+                npr.face_sdf_mirror_center,
             ],
         }
     }

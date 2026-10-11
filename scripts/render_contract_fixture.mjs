@@ -172,11 +172,11 @@ export function renderContractFixture() {
           { name: "emission_color", kind: "vec4", offset: 112, size: 16, meaning: "MToon subEmission (rgb sRGB, w alpha)" },
           { name: "params4", kind: "vec4", offset: 128, size: 16, meaning: "emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity" },
           { name: "params5", kind: "vec4", offset: 144, size: 16, meaning: "main_tex_enabled, shade_tex_enabled, second_shade_enabled, emission_enabled" },
-          { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved" },
+          { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, ramp_blend (motor cel: 0 = rampa 2D desligada, 0..1 mistura o fator analítico com a rampa)" },
           // Fase 2 (#17): sombra facial SDF
-          { name: "params7", kind: "vec4", offset: 176, size: 16, meaning: "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved" },
+          { name: "params7", kind: "vec4", offset: 176, size: 16, meaning: "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, ramp_row (motor cel: linha da rampa 2D, 0..3; só vale com ramp_blend > 0)" },
           // Fase 2 (#43): olho anime (parallax + highlights desacoplados)
-          { name: "params8", kind: "vec4", offset: 192, size: 16, meaning: "eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved" },
+          { name: "params8", kind: "vec4", offset: 192, size: 16, meaning: "eye_depth_scale, eye_highlight_intensity, eye_enabled, face_sdf_mirror_center (motor cel: 0 = sem espelhamento; > 0 = u do eixo de simetria do rosto no mapa SDF)" },
         ],
       },
       outline: {
@@ -803,6 +803,27 @@ export function renderContractFixture() {
         { name: "one_step", kind: "steps", steps: [{ threshold: 0.5, value: 1.0 }], base: 0.0 },
         { name: "two_step", kind: "steps", steps: [{ threshold: 0.35, value: 0.5 }, { threshold: 0.65, value: 1.0 }], base: 0.0 },
         { name: "three_step", kind: "steps", steps: [{ threshold: 0.25, value: 0.35 }, { threshold: 0.5, value: 0.7 }, { threshold: 0.75, value: 1.0 }], base: 0.0 },
+      ],
+    },
+    // -----------------------------------------------------------------------
+    // Motor cel NPR (Fase 0/1) — parâmetros OPCIONAIS por material. Cada um
+    // tem padrão que reproduz o motor anterior byte a byte (o frame congelado
+    // abaixo e os goldens do headless não mudam). Fonte Rust:
+    // `anigo-core::npr::NprParams` (matemática pura espelhada no WGSL).
+    // -----------------------------------------------------------------------
+    npr: {
+      version: 1,
+      params: [
+        {
+          name: "ramp_blend", range: [0, 1], default: 0,
+          uniform: "material.params6.w", shader: "cel_shading",
+          effect: "0 = rampa 2D desligada (fator de luz 100% analítico, nem amostra a textura). 1 = a rampa 2D (binding 3) decide o fator de luz; fração mistura linear.",
+        },
+        {
+          name: "ramp_row", range: [0, 3], default: 1,
+          uniform: "material.params7.w", shader: "cel_shading",
+          effect: "Linha da rampa 2D (0 contínua, 1 um degrau, 2 dois, 3 três; fração interpola). Só vale com ramp_blend > 0. Coluna = half-lambert deslocado pelo limiar de sombra; coordenadas: v = (row + 0.5) / 4, u = clamp(half_lambert - shadow_threshold + 0.5, 0.002, 0.998).",
+        },
       ],
     },
     reference_frame: {

@@ -185,8 +185,9 @@ describe("Command v1 — payload shapes", () => {
       `MaterialPatchWire drifted: ${diff(rustFields, tsFields)}`
     );
     // The patch is the material vocabulary: keep it complete.
-    // 42 = 21 baseline + 12 MToon (#18) + 3 SDF facial (#17) + 6 olho anime (#43).
-    assert.equal(tsFields.length, 42);
+    // 43 = 21 baseline + 12 MToon (#18) + 3 SDF facial (#17) + 6 olho anime (#43)
+    // + 1 grupo `npr` do motor cel (Fase 0/1).
+    assert.equal(tsFields.length, 43);
     // Every field is optional in Rust (`Option<T>`) and the container itself is
     // `#[serde(default)]`, which is what makes the TS `?` fields safe to omit.
     assert.match(RUST_COMMAND, /#\[serde\(default\)\]\s*pub struct MaterialPatch/);
