@@ -249,8 +249,8 @@ fn mirror_axis(mesh: &EditMesh, axis: usize, p: &MirrorParams) -> EditMesh {
         }
     };
     let mut twin: Vec<u32> = Vec::with_capacity(n);
-    for i in 0..n {
-        if merged[i] {
+    for (i, &is_merged) in merged.iter().enumerate() {
+        if is_merged {
             twin.push(i as u32);
         } else {
             let mut v = mesh.verts[i].clone();

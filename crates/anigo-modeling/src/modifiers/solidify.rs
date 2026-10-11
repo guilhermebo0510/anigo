@@ -21,7 +21,6 @@ use crate::error::{ModelError, ModelResult};
 use crate::mesh::{Corner, EditMesh, Face};
 use crate::normals::compute_vertex_normals;
 use crate::topology::Topology;
-use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 /// Fator máximo da espessura uniforme (evita picos em ângulos muito agudos).
@@ -197,9 +196,7 @@ pub fn solidify(mesh: &EditMesh, params: &SolidifyParams) -> ModelResult<EditMes
 
     // vértices isolados: a camada B só existe para vértices usados
     let mut keep = vec![true; 2 * n];
-    for v in 0..n {
-        keep[n + v] = used[v];
-    }
+    keep[n..].copy_from_slice(&used);
     out.compact_verts(&keep);
     Ok(out)
 }
@@ -208,6 +205,7 @@ pub fn solidify(mesh: &EditMesh, params: &SolidifyParams) -> ModelResult<EditMes
 mod tests {
     use super::*;
     use crate::primitives::{self, assert_outward};
+    use glam::Vec3;
 
     fn volume(m: &EditMesh) -> f64 {
         let mut vol = 0.0f64;

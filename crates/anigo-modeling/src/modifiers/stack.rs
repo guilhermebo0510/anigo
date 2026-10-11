@@ -111,6 +111,7 @@ pub fn triangulate(mesh: &EditMesh, params: &TriangulateParams) -> ModelResult<E
 }
 
 /// Um modificador da pilha.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Modifier {
     Subsurf(SubsurfSettings),

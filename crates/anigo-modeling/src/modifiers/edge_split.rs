@@ -135,7 +135,7 @@ pub fn edge_split(mesh: &EditMesh, angle: Option<f32>, use_sharp: bool) -> Model
         }
         // grupos em ordem do menor uso; o primeiro mantém o índice original
         let mut group_vert: BTreeMap<usize, u32> = BTreeMap::new();
-        for ui in 0..uses.len() {
+        for (ui, &(f, ci)) in uses.iter().enumerate() {
             let root = find(&mut parent, ui);
             let vid = match group_vert.get(&root) {
                 Some(&id) => id,
@@ -150,7 +150,6 @@ pub fn edge_split(mesh: &EditMesh, angle: Option<f32>, use_sharp: bool) -> Model
                     id
                 }
             };
-            let (f, ci) = uses[ui];
             new_vert[f as usize][ci] = vid;
         }
     }
