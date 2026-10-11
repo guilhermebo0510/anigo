@@ -124,3 +124,47 @@ jobs:
             exit 1
           fi
           tail -5 /tmp/cargo-test-mcp.log
+
+  # Trilha nativa (docs/native): motor de modelagem, bindings C/C++ e app egui sob Xvfb +
+  # Vulkan por software (lavapipe). Gera screenshots dos cenários como artefato para revisão visual.
+  native:
+    runs-on: ubuntu-latest
+    env:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+      XDG_RUNTIME_DIR: /tmp
+      WGPU_BACKEND: vulkan
+      ANIGO_TEST_OUT: ${{ github.workspace }}/native-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-${{ github.ref_name }}
+      - name: dependências de sistema (Vulkan por software, Xvfb, X11/Wayland, fontes)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth \
+            libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libfontconfig1-dev fonts-dejavu-core
+      - name: testes (modelagem, sessão, nativo C/C++, studio)
+        run: cargo test -p anigo-modeling -p anigo-session -p anigo-native -p anigo-studio
+      - name: testes do renderer (golden frames + render_to_texture + naga)
+        run: cargo test -p anigo-renderer
+      - name: screenshots dos cenários do studio (Xvfb)
+        run: |
+          mkdir -p native-artifacts
+          cargo build -p anigo-studio
+          for sc in edit-faces grab-modal tool-move cel-preview cel-edit; do
+            xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace modelagem --scenario "$sc" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_$sc.png"
+          done
+          xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+            --no-session --workspace biblioteca --frames 14 --size 1440x900 \
+            --screenshot native-artifacts/studio_biblioteca.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-screenshots
+          path: native-artifacts/
