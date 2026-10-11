@@ -14,8 +14,8 @@
 use crate::error::{ModelError, ModelResult};
 use crate::mesh::{edge_key, Corner, EdgeKey, EditMesh, Face, Remap};
 use crate::ops::delete::{
-    face_edge_set, prune_vanished_edge_attrs, remove_unused_candidates, unique_edges,
-    unique_faces, unique_verts,
+    face_edge_set, prune_vanished_edge_attrs, remove_unused_candidates, unique_edges, unique_faces,
+    unique_verts,
 };
 use crate::ops::OpOutput;
 use crate::select::Selection;
@@ -206,7 +206,8 @@ fn dissolve_pair_verts(mesh: &mut EditMesh, candidates: &[u32], rule: PairRule) 
                 &topo.edges[topo.vert_edges[vi][0] as usize],
                 &topo.edges[topo.vert_edges[vi][1] as usize],
             );
-            let other = |e: &crate::topology::EdgeInfo| if e.verts.0 == v { e.verts.1 } else { e.verts.0 };
+            let other =
+                |e: &crate::topology::EdgeInfo| if e.verts.0 == v { e.verts.1 } else { e.verts.0 };
             let (a, b) = (other(e1), other(e2));
             if a == b || is_dead[a as usize] || is_dead[b as usize] {
                 continue;
@@ -238,7 +239,9 @@ fn dissolve_pair_verts(mesh: &mut EditMesh, candidates: &[u32], rule: PairRule) 
                 continue;
             }
             let (aa, ab) = (mesh.edge_attr(a, v), mesh.edge_attr(v, b));
-            if (rule.delimit_seams && aa.seam != ab.seam) || (rule.delimit_sharp && aa.sharp != ab.sharp) {
+            if (rule.delimit_seams && aa.seam != ab.seam)
+                || (rule.delimit_sharp && aa.sharp != ab.sharp)
+            {
                 continue;
             }
             if topo.edge(a, b).is_some() {
@@ -380,9 +383,8 @@ fn dissolve_verts_impl(
         if g.len() < 2 {
             continue;
         }
-        let corners = merge_face_region(work, &g).map_err(|e| {
-            ModelError::UnsupportedTopology(format!("dissolve de vértices: {e}"))
-        })?;
+        let corners = merge_face_region(work, &g)
+            .map_err(|e| ModelError::UnsupportedTopology(format!("dissolve de vértices: {e}")))?;
         merged.push((g, corners));
     }
     let candidates: Vec<u32> = involved
@@ -452,7 +454,11 @@ fn dissolve_verts_impl(
 /// Erros: seleção vazia, aresta inexistente, nada dissolvível
 /// (`EmptySelection("arestas dissolvíveis")`) ou união que não é um disco simples
 /// (`UnsupportedTopology`). Seleção devolvida: faces resultantes.
-pub fn dissolve_edges(mesh: &mut EditMesh, edges: &[EdgeKey], use_verts: bool) -> ModelResult<OpOutput> {
+pub fn dissolve_edges(
+    mesh: &mut EditMesh,
+    edges: &[EdgeKey],
+    use_verts: bool,
+) -> ModelResult<OpOutput> {
     let topo = Topology::build(mesh);
     let edges = unique_edges(&topo, edges, "arestas")?;
     let mut work = mesh.clone();
@@ -560,7 +566,12 @@ pub fn dissolve_faces(mesh: &mut EditMesh, faces: &[u32]) -> ModelResult<OpOutpu
     let in_sel: BTreeSet<u32> = sel.iter().copied().collect();
     let mut joins: Vec<(u32, u32)> = Vec::new();
     for e in &topo.edges {
-        let fs: Vec<u32> = e.faces.iter().copied().filter(|f| in_sel.contains(f)).collect();
+        let fs: Vec<u32> = e
+            .faces
+            .iter()
+            .copied()
+            .filter(|f| in_sel.contains(f))
+            .collect();
         for w in fs.windows(2) {
             if w[0] != w[1] {
                 joins.push((w[0], w[1]));
@@ -586,7 +597,10 @@ pub fn dissolve_faces(mesh: &mut EditMesh, faces: &[u32]) -> ModelResult<OpOutpu
     let old_face_edges = face_edge_set(mesh);
     let cleanup: Vec<u32> = merged
         .iter()
-        .flat_map(|(g, _)| g.iter().flat_map(|&f| mesh.faces[f as usize].verts().collect::<Vec<_>>()))
+        .flat_map(|(g, _)| {
+            g.iter()
+                .flat_map(|&f| mesh.faces[f as usize].verts().collect::<Vec<_>>())
+        })
         .collect();
     let (face_map, created) = replace_groups(mesh, &merged);
     prune_vanished_edge_attrs(mesh, &old_face_edges);
@@ -706,7 +720,8 @@ fn limited_dissolve_impl(
         if (delimit.seams && attr.seam) || (delimit.sharp && attr.sharp) {
             continue;
         }
-        if delimit.materials && work.faces[f0 as usize].material != work.faces[f1 as usize].material {
+        if delimit.materials && work.faces[f0 as usize].material != work.faces[f1 as usize].material
+        {
             continue;
         }
         if delimit.uv && !uv_continuous(work, f0, f1, e.verts.0, e.verts.1) {
@@ -732,7 +747,10 @@ fn limited_dissolve_impl(
         if r0 == r1 {
             continue;
         }
-        let (s0, s1) = (nsum[r0 as usize].normalize_or_zero(), nsum[r1 as usize].normalize_or_zero());
+        let (s0, s1) = (
+            nsum[r0 as usize].normalize_or_zero(),
+            nsum[r1 as usize].normalize_or_zero(),
+        );
         if s0.dot(s1) < cos_limit {
             continue;
         }
@@ -756,7 +774,10 @@ fn limited_dissolve_impl(
     }
     let mut cleanup: Vec<u32> = merged
         .iter()
-        .flat_map(|(g, _)| g.iter().flat_map(|&f| work.faces[f as usize].verts().collect::<Vec<_>>()))
+        .flat_map(|(g, _)| {
+            g.iter()
+                .flat_map(|&f| work.faces[f as usize].verts().collect::<Vec<_>>())
+        })
         .collect();
     let (face_map, created) = replace_groups(work, &merged);
     prune_vanished_edge_attrs(work, &old_face_edges);
@@ -771,7 +792,11 @@ fn limited_dissolve_impl(
         &line_cands,
         PairRule {
             max_angle_2face: angle_limit,
-            max_angle_1face: if use_dissolve_boundaries { angle_limit } else { -1.0 },
+            max_angle_1face: if use_dissolve_boundaries {
+                angle_limit
+            } else {
+                -1.0
+            },
             delimit_seams: delimit.seams,
             delimit_sharp: delimit.sharp,
         },
@@ -802,11 +827,17 @@ mod tests {
 
     fn interior_edges(m: &EditMesh) -> Vec<EdgeKey> {
         let t = Topology::build(m);
-        t.edges.iter().filter(|e| e.faces.len() == 2).map(|e| e.verts).collect()
+        t.edges
+            .iter()
+            .filter(|e| e.faces.len() == 2)
+            .map(|e| e.verts)
+            .collect()
     }
 
     fn center_vert(m: &EditMesh) -> u32 {
-        (0..m.vert_count() as u32).min_by(|&a, &b| m.co(a).length().total_cmp(&m.co(b).length())).unwrap()
+        (0..m.vert_count() as u32)
+            .min_by(|&a, &b| m.co(a).length().total_cmp(&m.co(b).length()))
+            .unwrap()
     }
 
     #[test]
@@ -827,7 +858,11 @@ mod tests {
             let t = Topology::build(&m);
             assert_eq!(t.euler_characteristic(&m), 1);
             assert!(m.edge_attrs.is_empty());
-            assert_eq!(m.vert_count(), 2 * (nx + nz) as usize, "vértices interiores removidos");
+            assert_eq!(
+                m.vert_count(),
+                2 * (nx + nz) as usize,
+                "vértices interiores removidos"
+            );
         }
     }
 
@@ -870,7 +905,12 @@ mod tests {
     fn dissolve_edges_ignores_boundary_and_errors_when_nothing_dissolvable() {
         let mut m = primitives::grid(2, 2, 2.0, 2.0);
         let t = Topology::build(&m);
-        let boundary: Vec<EdgeKey> = t.edges.iter().filter(|e| e.faces.len() == 1).map(|e| e.verts).collect();
+        let boundary: Vec<EdgeKey> = t
+            .edges
+            .iter()
+            .filter(|e| e.faces.len() == 1)
+            .map(|e| e.verts)
+            .collect();
         let h = m.content_hash();
         assert!(matches!(
             dissolve_edges(&mut m, &boundary, false),
@@ -888,8 +928,14 @@ mod tests {
     fn dissolve_edges_errors_leave_mesh_intact() {
         let mut m = primitives::cube(1.0);
         let h = m.content_hash();
-        assert!(matches!(dissolve_edges(&mut m, &[], false), Err(ModelError::EmptySelection(_))));
-        assert!(matches!(dissolve_edges(&mut m, &[(0, 6)], false), Err(ModelError::MissingEdge(0, 6))));
+        assert!(matches!(
+            dissolve_edges(&mut m, &[], false),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            dissolve_edges(&mut m, &[(0, 6)], false),
+            Err(ModelError::MissingEdge(0, 6))
+        ));
         // todas as arestas de um cubo: união fechada, sem fronteira
         let all: Vec<EdgeKey> = Topology::build(&m).edges.iter().map(|e| e.verts).collect();
         assert!(matches!(
@@ -931,7 +977,11 @@ mod tests {
         assert_eq!(m.faces[0].material, 7);
         assert!(!m.faces[0].smooth);
         // UVs cobrem 0..1 e todos os cantos têm UV distinto
-        let us: BTreeSet<u32> = m.faces[0].corners.iter().map(|c| (c.uv.x * 100.0) as u32).collect();
+        let us: BTreeSet<u32> = m.faces[0]
+            .corners
+            .iter()
+            .map(|c| (c.uv.x * 100.0) as u32)
+            .collect();
         assert!(us.contains(&0) && us.contains(&100) && us.contains(&50));
     }
 
@@ -1044,9 +1094,10 @@ mod tests {
 
     #[test]
     fn dissolve_ring_around_vertex_removes_enclosed_vertex() {
-        // seleciona os 8 vizinhos do centro de um grid 4x4: o centro fica inteiramente
-        // interior à região e some junto, mas a região vira anel (buracos): erro limpo
+        // os 8 vizinhos do centro de um grid 4x4: a união das faces ao redor deles cobre o grid
+        // inteiro e o centro (não selecionado) fica enterrado na região: some junto
         let mut m = primitives::grid(4, 4, 4.0, 4.0);
+        let area = total_area(&m);
         let c = center_vert(&m);
         let t = Topology::build(&m);
         let mut ring: Vec<u32> = Vec::new();
@@ -1055,18 +1106,13 @@ mod tests {
         }
         ring.sort_unstable();
         ring.dedup();
-        let h = m.content_hash();
-        let r = dissolve_verts(&mut m, &ring, false, false);
-        // união de todas as faces ao redor dos 8 vizinhos = tudo menos cantos: disco simples
-        // (o centro vira vértice interior sem uso); aceitamos sucesso ou erro, nunca corrupção
-        match r {
-            Ok(_) => {
-                m.validate().unwrap();
-                assert!(!(0..m.vert_count()).any(|v| m.co(v as u32).length() < 1e-6));
-            }
-            Err(ModelError::UnsupportedTopology(_)) => assert_eq!(m.content_hash(), h),
-            Err(e) => panic!("erro inesperado {e:?}"),
-        }
+        assert_eq!(ring.len(), 8);
+        dissolve_verts(&mut m, &ring, false, false).unwrap();
+        m.validate().unwrap();
+        assert_eq!(m.face_count(), 1);
+        assert_eq!(m.vert_count(), 16);
+        assert!((total_area(&m) - area).abs() < 1e-4);
+        assert!(!(0..m.vert_count() as u32).any(|v| m.co(v).length() < 1e-6));
     }
 
     #[test]
@@ -1075,22 +1121,33 @@ mod tests {
         let a = m.add_vert(Vec3::ZERO);
         let b = m.add_vert(Vec3::X);
         let c = m.add_vert(Vec3::new(2.0, 0.0, 0.0));
-        m.edge_attrs.insert(edge_key(a, b), crate::mesh::EdgeAttr { sharp: true, ..Default::default() });
+        m.edge_attrs.insert(
+            edge_key(a, b),
+            crate::mesh::EdgeAttr {
+                sharp: true,
+                ..Default::default()
+            },
+        );
         m.edge_attrs.insert(edge_key(b, c), Default::default());
         dissolve_verts(&mut m, &[b], false, false).unwrap();
         assert_eq!(m.vert_count(), 2);
         assert_eq!(m.edge_attrs.len(), 1);
         assert!(m.edge_attrs.values().next().unwrap().sharp);
         let h = m.content_hash();
-        assert!(matches!(dissolve_verts(&mut m, &[], false, false), Err(ModelError::EmptySelection(_))));
-        assert!(matches!(dissolve_verts(&mut m, &[9], false, false), Err(ModelError::VertexOutOfRange(9, 2))));
+        assert!(matches!(
+            dissolve_verts(&mut m, &[], false, false),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            dissolve_verts(&mut m, &[9], false, false),
+            Err(ModelError::VertexOutOfRange(9, 2))
+        ));
         assert_eq!(m.content_hash(), h);
     }
 
     #[test]
     fn dissolve_verts_on_pinch_fails_cleanly() {
-        // duas faces compartilhando só um vértice: pinch → dissolver o vértice comum
-        // une as duas faces numa região que toca a si mesma
+        // duas faces que só compartilham um vértice (gravata-borboleta): a união toca a si mesma
         let mut m = EditMesh::new("bow");
         let o = m.add_vert(Vec3::ZERO);
         let a = m.add_vert(Vec3::new(1.0, 0.0, 0.0));
@@ -1100,11 +1157,15 @@ mod tests {
         m.add_face(&[o, b, a]).unwrap();
         m.add_face(&[o, d, c]).unwrap();
         let h = m.content_hash();
-        // as duas faces são vizinhas por vértice, mas não por aresta: grupos separados
-        // (cada um com 1 face) e o vértice sai de cada triângulo => ambas somem
-        let r = dissolve_verts(&mut m, &[o], false, false);
-        assert!(r.is_ok() || m.content_hash() == h);
-        m.validate().unwrap();
+        assert!(matches!(
+            dissolve_verts(&mut m, &[o], false, false),
+            Err(ModelError::UnsupportedTopology(_))
+        ));
+        assert_eq!(m.content_hash(), h);
+        // com tear nada é fundido: cada triângulo perde o canto e desaparece
+        let mut t = m.clone();
+        dissolve_verts(&mut t, &[o], false, true).unwrap();
+        assert_eq!(t.face_count(), 0);
     }
 
     #[test]
@@ -1144,8 +1205,14 @@ mod tests {
             dissolve_faces(&mut m, &[0, 1, 2, 3, 4, 5]),
             Err(ModelError::UnsupportedTopology(_))
         ));
-        assert!(matches!(dissolve_faces(&mut m, &[]), Err(ModelError::EmptySelection(_))));
-        assert!(matches!(dissolve_faces(&mut m, &[9]), Err(ModelError::FaceOutOfRange(9, 6))));
+        assert!(matches!(
+            dissolve_faces(&mut m, &[]),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            dissolve_faces(&mut m, &[9]),
+            Err(ModelError::FaceOutOfRange(9, 6))
+        ));
         assert_eq!(m.content_hash(), h);
         // 5 faces de 6: tampa aberta — disco simples
         dissolve_faces(&mut m, &[0, 1, 2, 3, 4]).unwrap();
@@ -1173,7 +1240,11 @@ mod tests {
         limited_dissolve(&mut m, 0.0, false, Delimit::default()).unwrap();
         m.validate().unwrap();
         assert_eq!(m.face_count(), 1);
-        assert_eq!(m.faces[0].len(), 16, "vértices de borda permanecem sem use_dissolve_boundaries");
+        assert_eq!(
+            m.faces[0].len(),
+            16,
+            "vértices de borda permanecem sem use_dissolve_boundaries"
+        );
         let mut m2 = primitives::grid(4, 4, 4.0, 4.0);
         limited_dissolve(&mut m2, 0.0, true, Delimit::default()).unwrap();
         assert_eq!(m2.face_count(), 1);
@@ -1217,7 +1288,16 @@ mod tests {
             m.faces[f].material = 1;
         }
         let mut a = m.clone();
-        limited_dissolve(&mut a, 0.0, true, Delimit { materials: true, ..Default::default() }).unwrap();
+        limited_dissolve(
+            &mut a,
+            0.0,
+            true,
+            Delimit {
+                materials: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(a.face_count(), 2);
         let mut b = m.clone();
         limited_dissolve(&mut b, 0.0, true, Delimit::default()).unwrap();
@@ -1226,18 +1306,45 @@ mod tests {
         let e = interior_edges(&m)[1];
         let mut s = m.clone();
         s.set_seam(e.0, e.1, true);
-        limited_dissolve(&mut s, 0.0, true, Delimit { seams: true, ..Default::default() }).unwrap();
+        limited_dissolve(
+            &mut s,
+            0.0,
+            true,
+            Delimit {
+                seams: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(s.face_count(), 2);
         let mut h = m.clone();
         h.set_sharp(e.0, e.1, true);
-        limited_dissolve(&mut h, 0.0, true, Delimit { sharp: true, ..Default::default() }).unwrap();
+        limited_dissolve(
+            &mut h,
+            0.0,
+            true,
+            Delimit {
+                sharp: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(h.face_count(), 2);
         // uv
         let mut u = m.clone();
         for c in &mut u.faces[3].corners {
             c.uv += glam::Vec2::new(5.0, 0.0);
         }
-        limited_dissolve(&mut u, 0.0, true, Delimit { uv: true, ..Default::default() }).unwrap();
+        limited_dissolve(
+            &mut u,
+            0.0,
+            true,
+            Delimit {
+                uv: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(u.face_count(), 2);
     }
 
@@ -1307,7 +1414,10 @@ mod tests {
         for _ in 0..30 {
             let mut m = primitives::grid(6, 6, 6.0, 6.0);
             let area = total_area(&m);
-            let edges: Vec<EdgeKey> = interior_edges(&m).into_iter().filter(|_| rnd() % 3 == 0).collect();
+            let edges: Vec<EdgeKey> = interior_edges(&m)
+                .into_iter()
+                .filter(|_| rnd() % 3 == 0)
+                .collect();
             if edges.is_empty() {
                 continue;
             }
@@ -1329,8 +1439,8 @@ mod tests {
         let t = Topology::build(&m);
         let edges: Vec<EdgeKey> = t.edges.iter().step_by(5).map(|e| e.verts).collect();
         let t0 = std::time::Instant::now();
-        // regiões grandes podem formar buracos; o resultado válido (Ok ou Err) é aceito
-        let _ = dissolve_edges(&mut m, &edges, false);
+        let rr = dissolve_edges(&mut m, &edges, false).map(|_| ());
+        assert!(rr.is_ok(), "{rr:?}");
         m.validate().unwrap();
         let mut big = primitives::quad_sphere(1.0, 64);
         limited_dissolve(&mut big, 0.0, true, Delimit::default()).unwrap();

@@ -110,7 +110,11 @@ fn build_stencil(topo: &Topology, sel: &[u32], lock_boundary: bool) -> Stencil {
             if boundary && info.faces.len() == 2 {
                 continue; // fronteira só desliza ao longo da fronteira
             }
-            let other = if info.verts.0 == v { info.verts.1 } else { info.verts.0 };
+            let other = if info.verts.0 == v {
+                info.verts.1
+            } else {
+                info.verts.0
+            };
             nb.push((other, e));
         }
         if !nb.is_empty() {
@@ -122,7 +126,11 @@ fn build_stencil(topo: &Topology, sel: &[u32], lock_boundary: bool) -> Stencil {
 }
 
 fn axis_mask(axes: [bool; 3]) -> Vec3 {
-    Vec3::new(axes[0] as u8 as f32, axes[1] as u8 as f32, axes[2] as u8 as f32)
+    Vec3::new(
+        axes[0] as u8 as f32,
+        axes[1] as u8 as f32,
+        axes[2] as u8 as f32,
+    )
 }
 
 // ------------------------------------------------------------------- smooth_verts
@@ -143,7 +151,11 @@ pub enum SmoothWeights {
 fn cotangent_edge_weights(mesh: &EditMesh, topo: &Topology) -> Vec<f32> {
     let mut w = vec![0.0f32; topo.edges.len()];
     for face in &mesh.faces {
-        let pts: Vec<Vec3> = face.corners.iter().map(|c| mesh.verts[c.vert as usize].co).collect();
+        let pts: Vec<Vec3> = face
+            .corners
+            .iter()
+            .map(|c| mesh.verts[c.vert as usize].co)
+            .collect();
         let tris = if pts.len() == 3 {
             vec![[0, 1, 2]]
         } else {
@@ -235,7 +247,9 @@ pub fn smooth_verts(
     check_unit("factor", factor)?;
     check_iterations(iterations)?;
     if !axes.iter().any(|&a| a) {
-        return Err(ModelError::InvalidParameter("nenhum eixo habilitado".into()));
+        return Err(ModelError::InvalidParameter(
+            "nenhum eixo habilitado".into(),
+        ));
     }
     let topo = Topology::build(mesh);
     let stencil = build_stencil(&topo, &sel, lock_boundary);
@@ -332,7 +346,8 @@ pub fn relax_verts(
                         if adj[i].is_empty() {
                             p[i]
                         } else {
-                            adj[i].iter().map(|&j| p[j as usize]).sum::<Vec3>() / adj[i].len() as f32
+                            adj[i].iter().map(|&j| p[j as usize]).sum::<Vec3>()
+                                / adj[i].len() as f32
                         }
                     })
                     .collect();
@@ -342,7 +357,8 @@ pub fn relax_verts(
                 let mut updates: Vec<(u32, Vec3)> = Vec::with_capacity(stencil.rows.len());
                 for (v, nb) in &stencil.rows {
                     let i = *v as usize;
-                    let avg_b = nb.iter().map(|&(o, _)| b[o as usize]).sum::<Vec3>() / nb.len() as f32;
+                    let avg_b =
+                        nb.iter().map(|&(o, _)| b[o as usize]).sum::<Vec3>() / nb.len() as f32;
                     let target = q[i] - (b[i] * beta + avg_b * (1.0 - beta));
                     updates.push((*v, p[i] + (target - p[i]) * factor));
                 }
@@ -392,7 +408,11 @@ pub fn shrink_fatten(mesh: &mut EditMesh, verts: &[u32], distance: f32) -> Model
 
 /// [`shrink_fatten`] sobre os vértices das faces dadas (seleção em modo face).
 /// Seleção devolvida: as faces.
-pub fn shrink_fatten_faces(mesh: &mut EditMesh, faces: &[u32], distance: f32) -> ModelResult<OpOutput> {
+pub fn shrink_fatten_faces(
+    mesh: &mut EditMesh,
+    faces: &[u32],
+    distance: f32,
+) -> ModelResult<OpOutput> {
     let faces = unique_faces(mesh, faces, "faces")?;
     let mut verts: Vec<u32> = faces
         .iter()
@@ -429,9 +449,8 @@ pub fn to_sphere(
             return Err(ModelError::InvalidParameter("centro não finito".into()));
         }
     }
-    let c = center.unwrap_or_else(|| {
-        sel.iter().map(|&v| mesh.co(v)).sum::<Vec3>() / sel.len() as f32
-    });
+    let c =
+        center.unwrap_or_else(|| sel.iter().map(|&v| mesh.co(v)).sum::<Vec3>() / sel.len() as f32);
     let radius = sel.iter().map(|&v| (mesh.co(v) - c).length()).sum::<f32>() / sel.len() as f32;
     if radius < 1e-12 {
         return Err(ModelError::InvalidParameter(
@@ -463,6 +482,7 @@ pub struct Plane {
 
 /// Autovetores de uma matriz simétrica 3×3 pelo método de Jacobi. Devolve
 /// `(autovalores, autovetores como colunas)` sem ordenação.
+#[allow(clippy::needless_range_loop)]
 fn jacobi_eigen(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..64 {
@@ -575,7 +595,9 @@ pub fn flatten(
                 ModelError::InvalidParameter("normal do plano nula ou não finita".into())
             })?;
             if !p.point.is_finite() {
-                return Err(ModelError::InvalidParameter("ponto do plano não finito".into()));
+                return Err(ModelError::InvalidParameter(
+                    "ponto do plano não finito".into(),
+                ));
             }
             Plane {
                 point: p.point,
@@ -609,7 +631,12 @@ pub fn flatten(
 /// resultado não depende da ordem em que os vértices são passados. `amount = 0` não
 /// altera nada. Seleção devolvida: `verts`. Erros: seleção vazia/inválida, `amount`
 /// negativo ou não finito.
-pub fn randomize(mesh: &mut EditMesh, verts: &[u32], amount: f32, seed: u64) -> ModelResult<OpOutput> {
+pub fn randomize(
+    mesh: &mut EditMesh,
+    verts: &[u32],
+    amount: f32,
+    seed: u64,
+) -> ModelResult<OpOutput> {
     let sel = unique_verts(mesh, verts, "vértices")?;
     if !amount.is_finite() || amount < 0.0 {
         return Err(ModelError::InvalidParameter(format!(
@@ -669,24 +696,35 @@ mod tests {
         }
         assert!((sum / 10_000.0 - 0.5).abs() < 0.02);
         assert_ne!(XorShift64::new(1).next_u64(), XorShift64::new(2).next_u64());
-        assert_ne!(XorShift64::for_index(1, 0).next_u64(), XorShift64::for_index(1, 1).next_u64());
+        assert_ne!(
+            XorShift64::for_index(1, 0).next_u64(),
+            XorShift64::for_index(1, 1).next_u64()
+        );
     }
 
     #[test]
     fn smooth_reduces_a_bump_and_locks_boundary() {
         let mut m = primitives::grid(6, 6, 6.0, 6.0);
-        let center = (0..m.vert_count() as u32).find(|&v| m.co(v).length() < 1e-5).unwrap();
+        let center = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).length() < 1e-5)
+            .unwrap();
         m.verts[center as usize].co.y = 1.0;
         let verts = all_verts(&m);
         let boundary_before: Vec<Vec3> = {
             let t = Topology::build(&m);
-            (0..m.vert_count() as u32).filter(|&v| t.is_boundary_vert(v)).map(|v| m.co(v)).collect()
+            (0..m.vert_count() as u32)
+                .filter(|&v| t.is_boundary_vert(v))
+                .map(|v| m.co(v))
+                .collect()
         };
         smooth_verts(&mut m, &verts, 0.5, 5, true, ALL, SmoothWeights::Uniform).unwrap();
         assert!(m.co(center).y < 0.5);
         assert!(m.co(center).y > 0.0);
         let t = Topology::build(&m);
-        let boundary_after: Vec<Vec3> = (0..m.vert_count() as u32).filter(|&v| t.is_boundary_vert(v)).map(|v| m.co(v)).collect();
+        let boundary_after: Vec<Vec3> = (0..m.vert_count() as u32)
+            .filter(|&v| t.is_boundary_vert(v))
+            .map(|v| m.co(v))
+            .collect();
         assert_eq!(boundary_before, boundary_after);
         m.validate().unwrap();
     }
@@ -694,11 +732,22 @@ mod tests {
     #[test]
     fn smooth_axes_and_unlocked_boundary() {
         let mut m = primitives::grid(4, 4, 4.0, 4.0);
-        let center = (0..m.vert_count() as u32).find(|&v| m.co(v).length() < 1e-5).unwrap();
+        let center = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).length() < 1e-5)
+            .unwrap();
         m.verts[center as usize].co += Vec3::new(0.3, 1.0, 0.3);
         let verts = all_verts(&m);
         let mut only_y = m.clone();
-        smooth_verts(&mut only_y, &verts, 1.0, 1, true, [false, true, false], SmoothWeights::Uniform).unwrap();
+        smooth_verts(
+            &mut only_y,
+            &verts,
+            1.0,
+            1,
+            true,
+            [false, true, false],
+            SmoothWeights::Uniform,
+        )
+        .unwrap();
         assert_eq!(only_y.co(center).x, m.co(center).x);
         assert_eq!(only_y.co(center).z, m.co(center).z);
         assert!(only_y.co(center).y < m.co(center).y);
@@ -706,7 +755,16 @@ mod tests {
         let mut free = primitives::grid(4, 4, 4.0, 4.0);
         let verts = all_verts(&free);
         let before = free.bounds().unwrap();
-        smooth_verts(&mut free, &verts, 0.5, 3, false, ALL, SmoothWeights::Uniform).unwrap();
+        smooth_verts(
+            &mut free,
+            &verts,
+            0.5,
+            3,
+            false,
+            ALL,
+            SmoothWeights::Uniform,
+        )
+        .unwrap();
         let after = free.bounds().unwrap();
         // a fronteira desliza só ao longo da fronteira: bounding não encolhe nos lados retos,
         // mas os cantos (vizinhos só ao longo da borda) podem recuar
@@ -722,9 +780,15 @@ mod tests {
             let mut m = primitives::grid(6, 6, 6.0, 6.0);
             let h = m.content_hash();
             let t = Topology::build(&m);
-            let interior: Vec<u32> = (0..m.vert_count() as u32).filter(|&v| !t.is_boundary_vert(v)).collect();
+            let interior: Vec<u32> = (0..m.vert_count() as u32)
+                .filter(|&v| !t.is_boundary_vert(v))
+                .collect();
             smooth_verts(&mut m, &interior, 1.0, 3, true, ALL, w).unwrap();
-            for (a, b) in m.verts.iter().zip(primitives::grid(6, 6, 6.0, 6.0).verts.iter()) {
+            for (a, b) in m
+                .verts
+                .iter()
+                .zip(primitives::grid(6, 6, 6.0, 6.0).verts.iter())
+            {
                 assert!((a.co - b.co).length() < 1e-4, "{w:?}");
             }
             let _ = h;
@@ -741,17 +805,43 @@ mod tests {
             }
         }
         let t = Topology::build(&base);
-        let interior: Vec<u32> = (0..base.vert_count() as u32).filter(|&v| !t.is_boundary_vert(v)).collect();
+        let interior: Vec<u32> = (0..base.vert_count() as u32)
+            .filter(|&v| !t.is_boundary_vert(v))
+            .collect();
         let mut u = base.clone();
         let mut c = base.clone();
         smooth_verts(&mut u, &interior, 0.5, 4, true, ALL, SmoothWeights::Uniform).unwrap();
-        smooth_verts(&mut c, &interior, 0.5, 4, true, ALL, SmoothWeights::Cotangent).unwrap();
+        smooth_verts(
+            &mut c,
+            &interior,
+            0.5,
+            4,
+            true,
+            ALL,
+            SmoothWeights::Cotangent,
+        )
+        .unwrap();
         assert_ne!(u.content_hash(), c.content_hash());
         // ambos mantêm a malha plana
-        assert!(u.verts.iter().chain(c.verts.iter()).all(|v| v.co.y.abs() < 1e-5));
+        assert!(u
+            .verts
+            .iter()
+            .chain(c.verts.iter())
+            .all(|v| v.co.y.abs() < 1e-5));
         // a cotangente muda menos os pontos de uma malha já "bem espaçada" geometricamente
-        let drift = |m: &EditMesh| -> f32 { m.verts.iter().zip(base.verts.iter()).map(|(a, b)| (a.co - b.co).length()).sum() };
-        assert!(drift(&c) <= drift(&u) * 1.01, "cot {} uni {}", drift(&c), drift(&u));
+        let drift = |m: &EditMesh| -> f32 {
+            m.verts
+                .iter()
+                .zip(base.verts.iter())
+                .map(|(a, b)| (a.co - b.co).length())
+                .sum()
+        };
+        assert!(
+            drift(&c) <= drift(&u) * 1.01,
+            "cot {} uni {}",
+            drift(&c),
+            drift(&u)
+        );
     }
 
     #[test]
@@ -791,7 +881,16 @@ mod tests {
     fn smooth_isolated_and_loose_vertices_are_ignored() {
         let mut m = primitives::cube(1.0);
         let loose = m.add_vert(Vec3::splat(9.0));
-        smooth_verts(&mut m, &[loose], 1.0, 3, false, ALL, SmoothWeights::Cotangent).unwrap();
+        smooth_verts(
+            &mut m,
+            &[loose],
+            1.0,
+            3,
+            false,
+            ALL,
+            SmoothWeights::Cotangent,
+        )
+        .unwrap();
         assert_eq!(m.co(loose), Vec3::splat(9.0));
     }
 
@@ -801,17 +900,51 @@ mod tests {
         let v0 = volume(&orig);
         let verts = all_verts(&orig);
         let mut smooth = orig.clone();
-        smooth_verts(&mut smooth, &verts, 0.5, 20, false, ALL, SmoothWeights::Uniform).unwrap();
+        smooth_verts(
+            &mut smooth,
+            &verts,
+            0.5,
+            20,
+            false,
+            ALL,
+            SmoothWeights::Uniform,
+        )
+        .unwrap();
         let loss_smooth = (v0 - volume(&smooth)) / v0;
         let mut taubin = orig.clone();
-        relax_verts(&mut taubin, &verts, 0.5, 20, RelaxMethod::Taubin { pass_band: 0.1 }, false).unwrap();
+        relax_verts(
+            &mut taubin,
+            &verts,
+            0.5,
+            20,
+            RelaxMethod::Taubin { pass_band: 0.1 },
+            false,
+        )
+        .unwrap();
         let loss_taubin = (v0 - volume(&taubin)) / v0;
         let mut hc = orig.clone();
-        relax_verts(&mut hc, &verts, 0.5, 20, RelaxMethod::Hc { alpha: 0.0, beta: 0.5 }, false).unwrap();
+        relax_verts(
+            &mut hc,
+            &verts,
+            0.5,
+            20,
+            RelaxMethod::Hc {
+                alpha: 0.0,
+                beta: 0.5,
+            },
+            false,
+        )
+        .unwrap();
         let loss_hc = (v0 - volume(&hc)) / v0;
         assert!(loss_smooth > 0.1, "{loss_smooth}");
-        assert!(loss_taubin < loss_smooth * 0.2, "taubin {loss_taubin} vs smooth {loss_smooth}");
-        assert!(loss_hc < loss_smooth * 0.6, "hc {loss_hc} vs smooth {loss_smooth}");
+        assert!(
+            loss_taubin < loss_smooth * 0.2,
+            "taubin {loss_taubin} vs smooth {loss_smooth}"
+        );
+        assert!(
+            loss_hc < loss_smooth * 0.6,
+            "hc {loss_hc} vs smooth {loss_smooth}"
+        );
         taubin.validate().unwrap();
         hc.validate().unwrap();
     }
@@ -821,12 +954,20 @@ mod tests {
         let clean = primitives::grid(10, 10, 10.0, 10.0);
         let mut noisy = clean.clone();
         let t = Topology::build(&noisy);
-        let interior: Vec<u32> = (0..noisy.vert_count() as u32).filter(|&v| !t.is_boundary_vert(v)).collect();
+        let interior: Vec<u32> = (0..noisy.vert_count() as u32)
+            .filter(|&v| !t.is_boundary_vert(v))
+            .collect();
         randomize(&mut noisy, &interior, 0.2, 5).unwrap();
         let err = |m: &EditMesh| -> f32 { m.verts.iter().map(|v| v.co.y.abs()).sum() };
         let before = err(&noisy);
         let verts = all_verts(&noisy);
-        for method in [RelaxMethod::default(), RelaxMethod::Hc { alpha: 0.0, beta: 0.5 }] {
+        for method in [
+            RelaxMethod::default(),
+            RelaxMethod::Hc {
+                alpha: 0.0,
+                beta: 0.5,
+            },
+        ] {
             let mut r = noisy.clone();
             relax_verts(&mut r, &verts, 0.7, 6, method, true).unwrap();
             assert!(err(&r) < before * 0.5, "{method:?}");
@@ -847,10 +988,48 @@ mod tests {
         assert!(relax_verts(&mut m, &[0], 0.0, 1, d, true).is_err());
         assert!(relax_verts(&mut m, &[0], 1.1, 1, d, true).is_err());
         assert!(relax_verts(&mut m, &[0], 0.5, 0, d, true).is_err());
-        assert!(relax_verts(&mut m, &[0], 0.5, 1, RelaxMethod::Taubin { pass_band: 0.0 }, true).is_err());
-        assert!(relax_verts(&mut m, &[0], 0.5, 1, RelaxMethod::Taubin { pass_band: 1.0 }, true).is_err());
-        assert!(relax_verts(&mut m, &[0], 0.5, 1, RelaxMethod::Hc { alpha: -1.0, beta: 0.5 }, true).is_err());
-        assert!(relax_verts(&mut m, &[0], 0.5, 1, RelaxMethod::Hc { alpha: 0.0, beta: 2.0 }, true).is_err());
+        assert!(relax_verts(
+            &mut m,
+            &[0],
+            0.5,
+            1,
+            RelaxMethod::Taubin { pass_band: 0.0 },
+            true
+        )
+        .is_err());
+        assert!(relax_verts(
+            &mut m,
+            &[0],
+            0.5,
+            1,
+            RelaxMethod::Taubin { pass_band: 1.0 },
+            true
+        )
+        .is_err());
+        assert!(relax_verts(
+            &mut m,
+            &[0],
+            0.5,
+            1,
+            RelaxMethod::Hc {
+                alpha: -1.0,
+                beta: 0.5
+            },
+            true
+        )
+        .is_err());
+        assert!(relax_verts(
+            &mut m,
+            &[0],
+            0.5,
+            1,
+            RelaxMethod::Hc {
+                alpha: 0.0,
+                beta: 2.0
+            },
+            true
+        )
+        .is_err());
         assert_eq!(m.content_hash(), h);
     }
 
@@ -860,7 +1039,11 @@ mod tests {
         let v = all_verts(&m);
         shrink_fatten(&mut m, &v, 0.25).unwrap();
         for vert in &m.verts {
-            assert!((vert.co.length() - 1.25).abs() < 0.02, "{}", vert.co.length());
+            assert!(
+                (vert.co.length() - 1.25).abs() < 0.02,
+                "{}",
+                vert.co.length()
+            );
         }
         shrink_fatten(&mut m, &v, -0.5).unwrap();
         for vert in &m.verts {
@@ -916,7 +1099,10 @@ mod tests {
         let ids = all_verts(&c);
         to_sphere(&mut c, &ids, 1.0, Some(center)).unwrap();
         let r = (c.verts[0].co - center).length();
-        assert!(c.verts.iter().all(|x| ((x.co - center).length() - r).abs() < 1e-4));
+        assert!(c
+            .verts
+            .iter()
+            .all(|x| ((x.co - center).length() - r).abs() < 1e-4));
     }
 
     #[test]
@@ -953,11 +1139,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn jacobi_eigen_diagonalizes() {
         let (vals, vecs) = jacobi_eigen([[2.0, 1.0, 0.0], [1.0, 2.0, 0.0], [0.0, 0.0, 5.0]]);
         let mut v = vals;
         v.sort_by(|a, b| a.total_cmp(b));
-        assert!((v[0] - 1.0).abs() < 1e-9 && (v[1] - 3.0).abs() < 1e-9 && (v[2] - 5.0).abs() < 1e-9);
+        assert!(
+            (v[0] - 1.0).abs() < 1e-9 && (v[1] - 3.0).abs() < 1e-9 && (v[2] - 5.0).abs() < 1e-9
+        );
         // vetores ortonormais
         for i in 0..3 {
             let col = DVec3::new(vecs[0][i], vecs[1][i], vecs[2][i]);
@@ -992,7 +1181,16 @@ mod tests {
         // plano explícito
         let mut e = primitives::cube(1.0);
         let ids = all_verts(&e);
-        flatten(&mut e, &ids, Some(Plane { point: Vec3::ZERO, normal: Vec3::new(0.0, 5.0, 0.0) }), 1.0).unwrap();
+        flatten(
+            &mut e,
+            &ids,
+            Some(Plane {
+                point: Vec3::ZERO,
+                normal: Vec3::new(0.0, 5.0, 0.0),
+            }),
+            1.0,
+        )
+        .unwrap();
         assert!(e.verts.iter().all(|v| v.co.y.abs() < 1e-6));
     }
 
@@ -1003,8 +1201,26 @@ mod tests {
         assert!(flatten(&mut m, &[], None, 1.0).is_err());
         assert!(flatten(&mut m, &[0, 1], None, 1.0).is_err());
         assert!(flatten(&mut m, &[0, 1, 2], None, 2.0).is_err());
-        assert!(flatten(&mut m, &[0], Some(Plane { point: Vec3::ZERO, normal: Vec3::ZERO }), 1.0).is_err());
-        assert!(flatten(&mut m, &[0], Some(Plane { point: Vec3::NAN, normal: Vec3::Y }), 1.0).is_err());
+        assert!(flatten(
+            &mut m,
+            &[0],
+            Some(Plane {
+                point: Vec3::ZERO,
+                normal: Vec3::ZERO
+            }),
+            1.0
+        )
+        .is_err());
+        assert!(flatten(
+            &mut m,
+            &[0],
+            Some(Plane {
+                point: Vec3::NAN,
+                normal: Vec3::Y
+            }),
+            1.0
+        )
+        .is_err());
         assert_eq!(m.content_hash(), h);
     }
 
@@ -1045,8 +1261,13 @@ mod tests {
         for op in 0..4 {
             let mut m = orig.clone();
             match op {
-                0 => drop(smooth_verts(&mut m, &sel, 1.0, 2, false, ALL, SmoothWeights::Cotangent).unwrap()),
-                1 => drop(relax_verts(&mut m, &sel, 1.0, 2, RelaxMethod::default(), false).unwrap()),
+                0 => drop(
+                    smooth_verts(&mut m, &sel, 1.0, 2, false, ALL, SmoothWeights::Cotangent)
+                        .unwrap(),
+                ),
+                1 => {
+                    drop(relax_verts(&mut m, &sel, 1.0, 2, RelaxMethod::default(), false).unwrap())
+                }
                 2 => drop(shrink_fatten(&mut m, &sel, 0.1).unwrap()),
                 _ => drop(randomize(&mut m, &sel, 0.1, 3).unwrap()),
             }
@@ -1065,7 +1286,18 @@ mod tests {
         let v = all_verts(&m);
         let t0 = std::time::Instant::now();
         smooth_verts(&mut m, &v, 0.5, 3, false, ALL, SmoothWeights::Cotangent).unwrap();
-        relax_verts(&mut m, &v, 0.5, 3, RelaxMethod::Hc { alpha: 0.0, beta: 0.5 }, false).unwrap();
+        relax_verts(
+            &mut m,
+            &v,
+            0.5,
+            3,
+            RelaxMethod::Hc {
+                alpha: 0.0,
+                beta: 0.5,
+            },
+            false,
+        )
+        .unwrap();
         relax_verts(&mut m, &v, 0.5, 3, RelaxMethod::default(), false).unwrap();
         assert!(t0.elapsed().as_secs() < 60, "{:?}", t0.elapsed());
         m.validate().unwrap();

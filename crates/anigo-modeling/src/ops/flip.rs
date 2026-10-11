@@ -57,9 +57,15 @@ fn propagate(mesh: &crate::mesh::EditMesh, topo: &Topology) -> Orientation {
                 if info.faces.len() != 2 || info.faces[0] == info.faces[1] {
                     continue;
                 }
-                let g = if info.faces[0] == f { info.faces[1] } else { info.faces[0] };
-                let (Some(df), Some(dg)) = (edge_forward(mesh, topo, f, e), edge_forward(mesh, topo, g, e))
-                else {
+                let g = if info.faces[0] == f {
+                    info.faces[1]
+                } else {
+                    info.faces[0]
+                };
+                let (Some(df), Some(dg)) = (
+                    edge_forward(mesh, topo, f, e),
+                    edge_forward(mesh, topo, g, e),
+                ) else {
                     continue;
                 };
                 // após os flips as direções precisam ser opostas
@@ -173,7 +179,11 @@ pub fn recalc_normals_outside(
         let mut area_sum = 0.0f64;
         for &f in faces {
             let sign = if o.flip[f as usize] { -1.0 } else { 1.0 };
-            let pts: Vec<DVec3> = mesh.face_positions(f).iter().map(|p| p.as_dvec3() - center).collect();
+            let pts: Vec<DVec3> = mesh
+                .face_positions(f)
+                .iter()
+                .map(|p| p.as_dvec3() - center)
+                .collect();
             for i in 1..pts.len().saturating_sub(1) {
                 volume += sign * pts[0].dot(pts[i].cross(pts[i + 1])) / 6.0;
             }
@@ -265,7 +275,8 @@ mod tests {
         assert!((m.face_normal(0) + n0).length() < 1e-6);
         // uv do corner acompanha o vértice
         let mut p = primitives::plane(1.0);
-        let before: Vec<(u32, glam::Vec2)> = p.faces[0].corners.iter().map(|c| (c.vert, c.uv)).collect();
+        let before: Vec<(u32, glam::Vec2)> =
+            p.faces[0].corners.iter().map(|c| (c.vert, c.uv)).collect();
         flip_faces(&mut p, &[0]).unwrap();
         for c in &p.faces[0].corners {
             assert!(before.contains(&(c.vert, c.uv)));
@@ -295,7 +306,11 @@ mod tests {
                 let mut m = orig.clone();
                 let n = corrupt(&mut m, 30, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
                 let out = recalc_normals_outside(&mut m, false).unwrap();
-                assert_eq!(m.content_hash(), orig.content_hash(), "{name} seed {seed} ({n} invertidas)");
+                assert_eq!(
+                    m.content_hash(),
+                    orig.content_hash(),
+                    "{name} seed {seed} ({n} invertidas)"
+                );
                 m.validate().unwrap();
                 if name != "torus" {
                     assert_outward(&m);
@@ -352,7 +367,9 @@ mod tests {
     #[test]
     fn recalc_outside_open_hemisphere_uses_centroid_rule() {
         let mut m = primitives::uv_sphere(1.0, 8, 12);
-        let low: Vec<u32> = (0..m.face_count() as u32).filter(|&f| m.face_center(f).y < -0.05).collect();
+        let low: Vec<u32> = (0..m.face_count() as u32)
+            .filter(|&f| m.face_center(f).y < -0.05)
+            .collect();
         m.delete_faces(&low).unwrap();
         let orig = m.clone();
         corrupt(&mut m, 50, 77);
@@ -440,7 +457,10 @@ mod tests {
     fn empty_mesh_is_a_noop() {
         let mut m = EditMesh::new("empty");
         assert!(make_consistent(&mut m).unwrap().selection.is_empty());
-        assert!(recalc_normals_outside(&mut m, false).unwrap().selection.is_empty());
+        assert!(recalc_normals_outside(&mut m, false)
+            .unwrap()
+            .selection
+            .is_empty());
         assert!(flip_faces(&mut m, &[0]).is_err());
     }
 

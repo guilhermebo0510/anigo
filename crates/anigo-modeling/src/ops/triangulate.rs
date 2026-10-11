@@ -57,12 +57,13 @@ fn min_angle(a: Vec3, b: Vec3, c: Vec3) -> f32 {
 /// triângulos adjacentes e mantém ambos com a orientação do polígono. `tris` são
 /// índices em `pts`; o resultado permanece uma triangulação válida do mesmo
 /// polígono. Determinístico (arestas visitadas em ordem de chave).
-pub(crate) fn beautify_triangles(pts: &[Vec3], tris: &mut Vec<[usize; 3]>) {
+pub(crate) fn beautify_triangles(pts: &[Vec3], tris: &mut [[usize; 3]]) {
     let normal = newell_normal(pts);
     if normal == Vec3::ZERO || tris.len() < 2 {
         return;
     }
-    let orient = |a: usize, b: usize, c: usize| (pts[b] - pts[a]).cross(pts[c] - pts[a]).dot(normal);
+    let orient =
+        |a: usize, b: usize, c: usize| (pts[b] - pts[a]).cross(pts[c] - pts[a]).dot(normal);
     let quality = |t: &[usize; 3]| min_angle(pts[t[0]], pts[t[1]], pts[t[2]]);
     for _ in 0..(tris.len() * 8 + 8) {
         // aresta (min,max) -> [(triângulo, índice do canto oposto)]
@@ -70,10 +71,7 @@ pub(crate) fn beautify_triangles(pts: &[Vec3], tris: &mut Vec<[usize; 3]>) {
         for (ti, t) in tris.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
-                edges
-                    .entry((a.min(b), a.max(b)))
-                    .or_default()
-                    .push((ti, k));
+                edges.entry((a.min(b), a.max(b))).or_default().push((ti, k));
             }
         }
         let mut flipped = false;
@@ -117,10 +115,14 @@ fn split_quad(pts: &[Vec3], method: QuadMethod) -> Vec<[usize; 3]> {
         return t02.to_vec();
     }
     let valid = |ts: &[[usize; 3]; 2]| {
-        ts.iter().all(|t| (pts[t[1]] - pts[t[0]]).cross(pts[t[2]] - pts[t[0]]).dot(n) > 1e-12)
+        ts.iter()
+            .all(|t| (pts[t[1]] - pts[t[0]]).cross(pts[t[2]] - pts[t[0]]).dot(n) > 1e-12)
     };
     let (v02, v13) = (valid(&t02), valid(&t13));
-    let (d02, d13) = (pts[0].distance_squared(pts[2]), pts[1].distance_squared(pts[3]));
+    let (d02, d13) = (
+        pts[0].distance_squared(pts[2]),
+        pts[1].distance_squared(pts[3]),
+    );
     let prefer_02 = match method {
         QuadMethod::Fixed => true,
         QuadMethod::FixedAlternate => false,
@@ -197,7 +199,11 @@ fn triangulate_impl(
             new_faces.push(face.clone());
             continue;
         }
-        let pts: Vec<Vec3> = face.corners.iter().map(|c| mesh.verts[c.vert as usize].co).collect();
+        let pts: Vec<Vec3> = face
+            .corners
+            .iter()
+            .map(|c| mesh.verts[c.vert as usize].co)
+            .collect();
         let tris: Vec<[usize; 3]> = if n == 4 {
             split_quad(&pts, quad_method)
         } else {
@@ -345,13 +351,17 @@ pub fn tris_to_quads(
         };
         let (x, y) = (c0.corners[i0], c0.corners[(i0 + 1) % 3]);
         let apex0 = c0.corners[(i0 + 2) % 3];
-        let consistent = (0..3).any(|i| {
-            c1.corners[i].vert == y.vert && c1.corners[(i + 1) % 3].vert == x.vert
-        });
+        let consistent =
+            (0..3).any(|i| c1.corners[i].vert == y.vert && c1.corners[(i + 1) % 3].vert == x.vert);
         if !consistent {
             continue;
         }
-        let Some(apex1) = c1.corners.iter().copied().find(|c| c.vert != a && c.vert != b) else {
+        let Some(apex1) = c1
+            .corners
+            .iter()
+            .copied()
+            .find(|c| c.vert != a && c.vert != b)
+        else {
             continue;
         };
         if apex1.vert == apex0.vert {
@@ -387,7 +397,12 @@ pub fn tris_to_quads(
             });
         }
     }
-    cands.sort_by(|a, b| a.score.total_cmp(&b.score).then(a.f0.cmp(&b.f0)).then(a.f1.cmp(&b.f1)));
+    cands.sort_by(|a, b| {
+        a.score
+            .total_cmp(&b.score)
+            .then(a.f0.cmp(&b.f0))
+            .then(a.f1.cmp(&b.f1))
+    });
     let mut used = vec![false; mesh.faces.len()];
     let mut replace: BTreeMap<u32, ([Corner; 4], u32)> = BTreeMap::new(); // f0 -> (quad, f1)
     let mut absorbed = vec![false; mesh.faces.len()];
@@ -448,7 +463,10 @@ pub fn triangulation_diagonals(mesh: &EditMesh, max_angle: f32) -> Vec<EdgeKey> 
                 && e.faces[0] != e.faces[1]
                 && mesh.faces[e.faces[0] as usize].len() == 3
                 && mesh.faces[e.faces[1] as usize].len() == 3
-                && mesh.face_normal(e.faces[0]).dot(mesh.face_normal(e.faces[1])) >= cos_limit
+                && mesh
+                    .face_normal(e.faces[0])
+                    .dot(mesh.face_normal(e.faces[1]))
+                    >= cos_limit
         })
         .map(|e| e.verts)
         .collect()
@@ -515,7 +533,13 @@ mod tests {
         triangulate_faces(&mut a, &[0], QuadMethod::Fixed, NgonMethod::EarClip).unwrap();
         assert_eq!(diag_of(&a), (0, 2));
         let mut b = mk();
-        triangulate_faces(&mut b, &[0], QuadMethod::FixedAlternate, NgonMethod::EarClip).unwrap();
+        triangulate_faces(
+            &mut b,
+            &[0],
+            QuadMethod::FixedAlternate,
+            NgonMethod::EarClip,
+        )
+        .unwrap();
         assert_eq!(diag_of(&b), (1, 3));
     }
 
@@ -536,12 +560,31 @@ mod tests {
             m.add_face(&[0, 3, 2, 1]).unwrap();
             m
         };
-        let diag = |m: &EditMesh| Topology::build(m).edges.iter().find(|e| e.faces.len() == 2).unwrap().verts;
+        let diag = |m: &EditMesh| {
+            Topology::build(m)
+                .edges
+                .iter()
+                .find(|e| e.faces.len() == 2)
+                .unwrap()
+                .verts
+        };
         let mut s = mk();
-        triangulate_faces(&mut s, &[0], QuadMethod::ShortestDiagonal, NgonMethod::EarClip).unwrap();
+        triangulate_faces(
+            &mut s,
+            &[0],
+            QuadMethod::ShortestDiagonal,
+            NgonMethod::EarClip,
+        )
+        .unwrap();
         assert_eq!(diag(&s), (0, 2));
         let mut l = mk();
-        triangulate_faces(&mut l, &[0], QuadMethod::LongestDiagonal, NgonMethod::EarClip).unwrap();
+        triangulate_faces(
+            &mut l,
+            &[0],
+            QuadMethod::LongestDiagonal,
+            NgonMethod::EarClip,
+        )
+        .unwrap();
         assert_eq!(diag(&l), (1, 3));
         // beauty também prefere a curta (maximiza o menor ângulo)
         let mut b = mk();
@@ -563,7 +606,13 @@ mod tests {
         }
         m.add_face(&[0, 3, 2, 1]).unwrap();
         let area = total_area(&m);
-        for qm in [QuadMethod::Fixed, QuadMethod::FixedAlternate, QuadMethod::ShortestDiagonal, QuadMethod::LongestDiagonal, QuadMethod::Beauty] {
+        for qm in [
+            QuadMethod::Fixed,
+            QuadMethod::FixedAlternate,
+            QuadMethod::ShortestDiagonal,
+            QuadMethod::LongestDiagonal,
+            QuadMethod::Beauty,
+        ] {
             let mut c = m.clone();
             triangulate_faces(&mut c, &[0], qm, NgonMethod::EarClip).unwrap();
             assert_eq!(c.face_count(), 2);
@@ -621,13 +670,15 @@ mod tests {
         let mut m = primitives::cube(1.0);
         m.append(&primitives::circle(1.0, 3, false));
         let before = m.face_count();
-        let out = triangulate_faces(&mut m, &[0, 6], QuadMethod::Beauty, NgonMethod::Beauty).unwrap();
+        let out =
+            triangulate_faces(&mut m, &[0, 6], QuadMethod::Beauty, NgonMethod::Beauty).unwrap();
         assert_eq!(m.face_count(), before + 1);
         assert_eq!(out.selection.faces.len(), 3);
         // só triângulos: no-op
         let mut tri = primitives::circle(1.0, 3, false);
         let h = tri.content_hash();
-        let out = triangulate_faces(&mut tri, &[0], QuadMethod::Beauty, NgonMethod::Beauty).unwrap();
+        let out =
+            triangulate_faces(&mut tri, &[0], QuadMethod::Beauty, NgonMethod::Beauty).unwrap();
         assert_eq!(tri.content_hash(), h);
         assert!(out.remap.is_none());
     }
@@ -649,7 +700,10 @@ mod tests {
             assert!(f.corners.iter().all(|c| c.normal == Some(Vec3::Y)));
         }
         let ids = [m.faces[0].corners[0].vert, m.faces[1].corners[0].vert];
-        assert_eq!(ids[0], ids[1], "Fixed divide em 0-2: ambos triângulos começam em 0");
+        assert_eq!(
+            ids[0], ids[1],
+            "Fixed divide em 0-2: ambos triângulos começam em 0"
+        );
     }
 
     #[test]
@@ -677,7 +731,10 @@ mod tests {
         // sem quads: no-op
         let mut c = primitives::circle(1.0, 7, false);
         let h = c.content_hash();
-        assert!(quads_to_tris_all(&mut c, QuadMethod::Fixed).unwrap().remap.is_none());
+        assert!(quads_to_tris_all(&mut c, QuadMethod::Fixed)
+            .unwrap()
+            .remap
+            .is_none());
         assert_eq!(c.content_hash(), h);
     }
 
@@ -689,14 +746,25 @@ mod tests {
             primitives::capsule(0.5, 1.0, 8, 3),
             primitives::grid(5, 4, 5.0, 4.0),
         ] {
-            for qm in [QuadMethod::Fixed, QuadMethod::Beauty, QuadMethod::LongestDiagonal] {
+            for qm in [
+                QuadMethod::Fixed,
+                QuadMethod::Beauty,
+                QuadMethod::LongestDiagonal,
+            ] {
                 let mut m = m0.clone();
-                { let ids = all(&m); triangulate_faces(&mut m, &ids, qm, NgonMethod::Beauty).unwrap(); }
+                {
+                    let ids = all(&m);
+                    triangulate_faces(&mut m, &ids, qm, NgonMethod::Beauty).unwrap();
+                }
                 let tris = all(&m);
                 let out = tris_to_quads(&mut m, &tris, 0.2, true, true, true).unwrap();
                 m.validate().unwrap();
                 let quads = m.faces.iter().filter(|f| f.len() == 4).count();
-                assert!(quads >= m0.faces.iter().filter(|f| f.len() == 4).count() * 9 / 10, "{} {qm:?}: {quads}", m0.name);
+                assert!(
+                    quads >= m0.faces.iter().filter(|f| f.len() == 4).count() * 9 / 10,
+                    "{} {qm:?}: {quads}",
+                    m0.name
+                );
                 assert!((total_area(&m) - total_area(&m0)).abs() / total_area(&m0) < 1e-3);
                 if Topology::build(&m0).is_closed_manifold() {
                     assert!(Topology::build(&m).is_closed_manifold(), "{}", m0.name);
@@ -709,7 +777,16 @@ mod tests {
     #[test]
     fn tris_to_quads_flat_grid_pairs_perfectly() {
         let mut m = primitives::grid(4, 4, 4.0, 4.0);
-        { let ids = all(&m); triangulate_faces(&mut m, &ids, QuadMethod::ShortestDiagonal, NgonMethod::EarClip).unwrap(); }
+        {
+            let ids = all(&m);
+            triangulate_faces(
+                &mut m,
+                &ids,
+                QuadMethod::ShortestDiagonal,
+                NgonMethod::EarClip,
+            )
+            .unwrap();
+        }
         let tris = all(&m);
         let out = tris_to_quads(&mut m, &tris, 0.01, false, false, false).unwrap();
         assert_eq!(m.face_count(), 16);
@@ -727,56 +804,110 @@ mod tests {
             triangulate_faces(&mut m, &[0], QuadMethod::Fixed, NgonMethod::EarClip).unwrap();
             m
         };
-        let diag = Topology::build(&base).edges.iter().find(|e| e.faces.len() == 2).unwrap().verts;
+        let diag = Topology::build(&base)
+            .edges
+            .iter()
+            .find(|e| e.faces.len() == 2)
+            .unwrap()
+            .verts;
         // sem restrições: junta
         let mut a = base.clone();
-        assert_eq!(tris_to_quads(&mut a, &[0, 1], 0.1, true, true, true).unwrap().created_faces.len(), 1);
+        assert_eq!(
+            tris_to_quads(&mut a, &[0, 1], 0.1, true, true, true)
+                .unwrap()
+                .created_faces
+                .len(),
+            1
+        );
         // seam
         let mut s = base.clone();
         s.set_seam(diag.0, diag.1, true);
-        assert!(tris_to_quads(&mut s, &[0, 1], 0.1, true, false, false).unwrap().created_faces.is_empty());
+        assert!(tris_to_quads(&mut s, &[0, 1], 0.1, true, false, false)
+            .unwrap()
+            .created_faces
+            .is_empty());
         assert_eq!(s.face_count(), 2);
         let mut s2 = base.clone();
         s2.set_seam(diag.0, diag.1, true);
         tris_to_quads(&mut s2, &[0, 1], 0.1, false, false, false).unwrap();
         assert_eq!(s2.face_count(), 1);
-        assert!(s2.edge_attrs.is_empty(), "atributo da diagonal removida some");
+        assert!(
+            s2.edge_attrs.is_empty(),
+            "atributo da diagonal removida some"
+        );
         // sharp
         let mut h = base.clone();
         h.set_sharp(diag.0, diag.1, true);
-        assert!(tris_to_quads(&mut h, &[0, 1], 0.1, false, true, false).unwrap().created_faces.is_empty());
+        assert!(tris_to_quads(&mut h, &[0, 1], 0.1, false, true, false)
+            .unwrap()
+            .created_faces
+            .is_empty());
         // material
         let mut mt = base.clone();
         mt.faces[1].material = 2;
-        assert!(tris_to_quads(&mut mt, &[0, 1], 0.1, false, false, true).unwrap().created_faces.is_empty());
-        assert_eq!(tris_to_quads(&mut mt, &[0, 1], 0.1, false, false, false).unwrap().created_faces.len(), 1);
+        assert!(tris_to_quads(&mut mt, &[0, 1], 0.1, false, false, true)
+            .unwrap()
+            .created_faces
+            .is_empty());
+        assert_eq!(
+            tris_to_quads(&mut mt, &[0, 1], 0.1, false, false, false)
+                .unwrap()
+                .created_faces
+                .len(),
+            1
+        );
         // faces não selecionadas não são tocadas
         let mut one = base.clone();
-        assert!(tris_to_quads(&mut one, &[0], 0.1, false, false, false).unwrap().created_faces.is_empty());
+        assert!(tris_to_quads(&mut one, &[0], 0.1, false, false, false)
+            .unwrap()
+            .created_faces
+            .is_empty());
     }
 
     #[test]
     fn tris_to_quads_respects_angle_and_convexity() {
         // dobra de 90° (dois triângulos formando um telhado): max_angle pequeno impede
         let mut m = EditMesh::new("roof");
-        for p in [Vec3::ZERO, Vec3::X, Vec3::new(0.0, 1.0, 1.0), Vec3::new(1.0, 1.0, 0.0)] {
+        for p in [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::new(0.0, 1.0, 1.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ] {
             m.add_vert(p);
         }
         m.add_face(&[0, 1, 3]).unwrap();
         m.add_face(&[0, 3, 2]).unwrap();
         let mut a = m.clone();
-        assert!(tris_to_quads(&mut a, &[0, 1], 0.1, false, false, false).unwrap().created_faces.is_empty());
+        assert!(tris_to_quads(&mut a, &[0, 1], 0.1, false, false, false)
+            .unwrap()
+            .created_faces
+            .is_empty());
         // com o limite máximo, o telhado dobrado (convexo) pode ser unido
         let mut b = m.clone();
-        assert_eq!(tris_to_quads(&mut b, &[0, 1], std::f32::consts::PI, false, false, false).unwrap().created_faces.len(), 1);
+        assert_eq!(
+            tris_to_quads(&mut b, &[0, 1], std::f32::consts::PI, false, false, false)
+                .unwrap()
+                .created_faces
+                .len(),
+            1
+        );
         // dois triângulos coplanares formando um quad côncavo (seta): não junta
         let mut dart = EditMesh::new("dart");
-        for p in [Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.5, 0.0, -0.5), Vec3::new(0.0, 0.0, -2.0)] {
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.5, 0.0, -0.5),
+            Vec3::new(0.0, 0.0, -2.0),
+        ] {
             dart.add_vert(p);
         }
         dart.add_face(&[0, 1, 2]).unwrap();
         dart.add_face(&[0, 2, 3]).unwrap();
-        assert!(tris_to_quads(&mut dart, &[0, 1], 0.1, false, false, false).unwrap().created_faces.is_empty());
+        assert!(tris_to_quads(&mut dart, &[0, 1], 0.1, false, false, false)
+            .unwrap()
+            .created_faces
+            .is_empty());
     }
 
     #[test]
@@ -811,12 +942,24 @@ mod tests {
             Vec3::new(0.0, 0.0, -1.0),
         ];
         let mut ear = triangulate_polygon(&pts);
-        let q = |t: &[[usize; 3]]| t.iter().map(|t| min_angle(pts[t[0]], pts[t[1]], pts[t[2]])).fold(f32::MAX, f32::min);
+        let q = |t: &[[usize; 3]]| {
+            t.iter()
+                .map(|t| min_angle(pts[t[0]], pts[t[1]], pts[t[2]]))
+                .fold(f32::MAX, f32::min)
+        };
         let before = q(&ear);
         beautify_triangles(&pts, &mut ear);
         assert!(q(&ear) >= before - 1e-6);
         assert_eq!(ear.len(), 3);
-        let area: f32 = ear.iter().map(|t| (pts[t[1]] - pts[t[0]]).cross(pts[t[2]] - pts[t[0]]).length() * 0.5).sum();
+        let area: f32 = ear
+            .iter()
+            .map(|t| {
+                (pts[t[1]] - pts[t[0]])
+                    .cross(pts[t[2]] - pts[t[0]])
+                    .length()
+                    * 0.5
+            })
+            .sum();
         let poly = crate::mesh::polygon_area(&pts);
         assert!((area - poly).abs() < 1e-5);
     }
@@ -825,7 +968,10 @@ mod tests {
     fn triangulation_is_deterministic() {
         let run = || {
             let mut m = primitives::quad_sphere(1.0, 5);
-            { let ids = all(&m); triangulate_faces(&mut m, &ids, QuadMethod::Beauty, NgonMethod::Beauty).unwrap(); }
+            {
+                let ids = all(&m);
+                triangulate_faces(&mut m, &ids, QuadMethod::Beauty, NgonMethod::Beauty).unwrap();
+            }
             m.content_hash()
         };
         assert_eq!(run(), run());
@@ -834,7 +980,10 @@ mod tests {
     #[test]
     fn diagonals_helper_finds_triangulation_edges() {
         let mut m = primitives::cube(1.0);
-        { let ids = all(&m); triangulate_faces(&mut m, &ids, QuadMethod::Fixed, NgonMethod::EarClip).unwrap(); }
+        {
+            let ids = all(&m);
+            triangulate_faces(&mut m, &ids, QuadMethod::Fixed, NgonMethod::EarClip).unwrap();
+        }
         assert_eq!(triangulation_diagonals(&m, 0.01).len(), 6);
     }
 
@@ -842,7 +991,10 @@ mod tests {
     fn triangulate_and_requad_large_mesh_is_fast() {
         let mut m = primitives::quad_sphere(1.0, 64);
         let t0 = std::time::Instant::now();
-        { let ids = all(&m); triangulate_faces(&mut m, &ids, QuadMethod::Beauty, NgonMethod::Beauty).unwrap(); }
+        {
+            let ids = all(&m);
+            triangulate_faces(&mut m, &ids, QuadMethod::Beauty, NgonMethod::Beauty).unwrap();
+        }
         assert_eq!(m.face_count(), 2 * 6 * 64 * 64);
         let tris = all(&m);
         tris_to_quads(&mut m, &tris, 0.3, false, false, false).unwrap();

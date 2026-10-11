@@ -42,14 +42,12 @@ pub enum Pivot {
 pub fn pivot_point(mesh: &EditMesh, verts: &[u32], pivot: Pivot) -> ModelResult<Vec3> {
     let sel = unique_verts(mesh, verts, "vértices")?;
     match pivot {
-        Pivot::MedianPoint => {
-            Ok(sel.iter().map(|&v| mesh.co(v)).sum::<Vec3>() / sel.len() as f32)
-        }
+        Pivot::MedianPoint => Ok(sel.iter().map(|&v| mesh.co(v)).sum::<Vec3>() / sel.len() as f32),
         Pivot::BoundingBoxCenter => {
             let first = mesh.co(sel[0]);
-            let (lo, hi) = sel
-                .iter()
-                .fold((first, first), |(lo, hi), &v| (lo.min(mesh.co(v)), hi.max(mesh.co(v))));
+            let (lo, hi) = sel.iter().fold((first, first), |(lo, hi), &v| {
+                (lo.min(mesh.co(v)), hi.max(mesh.co(v)))
+            });
             Ok((lo + hi) * 0.5)
         }
         Pivot::ActiveElement(v) => {
@@ -281,6 +279,7 @@ fn geodesic_distances(mesh: &EditMesh, sources: &[u32], radius: f32) -> Vec<f32>
 /// Defensivo: `radius` não finito ou ≤ 0 equivale a raio zero (só a seleção pesa 1);
 /// índices fora do intervalo em `selected` são ignorados. `Random` usa
 /// [`PROPORTIONAL_RANDOM_SEED`] e o índice do vértice, então é determinístico.
+#[allow(clippy::needless_range_loop)]
 pub fn proportional_weights(
     mesh: &EditMesh,
     selected: &[u32],
@@ -290,7 +289,11 @@ pub fn proportional_weights(
 ) -> Vec<f32> {
     let nv = mesh.verts.len();
     let mut w = vec![0.0f32; nv];
-    let mut sel: Vec<u32> = selected.iter().copied().filter(|&v| (v as usize) < nv).collect();
+    let mut sel: Vec<u32> = selected
+        .iter()
+        .copied()
+        .filter(|&v| (v as usize) < nv)
+        .collect();
     sel.sort_unstable();
     sel.dedup();
     for &v in &sel {
@@ -346,7 +349,10 @@ fn check_weights(mesh: &EditMesh, weights: &[f32]) -> ModelResult<()> {
             mesh.verts.len()
         )));
     }
-    if weights.iter().any(|w| !w.is_finite() || !(0.0..=1.0).contains(w)) {
+    if weights
+        .iter()
+        .any(|w| !w.is_finite() || !(0.0..=1.0).contains(w))
+    {
         return Err(ModelError::InvalidParameter(
             "weights deve conter valores finitos em [0, 1]".into(),
         ));
@@ -419,7 +425,11 @@ pub fn snap_value(value: f32, step: f32) -> f32 {
 /// Snap de uma posição à grade de passo `step` (cada eixo). `step` inválido devolve
 /// `p` sem alteração.
 pub fn snap_to_grid(p: Vec3, step: f32) -> Vec3 {
-    Vec3::new(snap_value(p.x, step), snap_value(p.y, step), snap_value(p.z, step))
+    Vec3::new(
+        snap_value(p.x, step),
+        snap_value(p.y, step),
+        snap_value(p.z, step),
+    )
 }
 
 /// Vértice mais próximo de `point` dentro de `max_distance` (busca linear O(n);
@@ -478,9 +488,7 @@ impl VertexSnapIndex {
                 return;
             }
             let d = self.pos[i as usize].distance(point);
-            if d <= max_distance
-                && best.is_none_or(|(bd, bi)| d < bd || (d == bd && i < bi))
-            {
+            if d <= max_distance && best.is_none_or(|(bd, bi)| d < bd || (d == bd && i < bi)) {
                 best = Some((d, i));
             }
         });
@@ -532,6 +540,7 @@ pub fn snap_to_nearest_edge(
 ///
 /// Parâmetros inválidos (`axis > 2`, `epsilon` negativo/não finito) devolvem tudo `None`.
 /// É a base da simetria do Edit Mode (Mirror X): `translate_verts_symmetric` a usa.
+#[allow(clippy::needless_range_loop)]
 pub fn mirror_vertex_map(mesh: &EditMesh, axis: usize, epsilon: f32) -> Vec<Option<u32>> {
     let nv = mesh.verts.len();
     if axis > 2 || !epsilon.is_finite() || epsilon < 0.0 {
@@ -587,7 +596,9 @@ pub fn translate_verts_symmetric(
 ) -> ModelResult<OpOutput> {
     let sel = unique_verts(mesh, verts, "vértices")?;
     if axis > 2 {
-        return Err(ModelError::InvalidParameter(format!("axis {axis} fora de 0..=2")));
+        return Err(ModelError::InvalidParameter(format!(
+            "axis {axis} fora de 0..=2"
+        )));
     }
     if !delta.is_finite() {
         return Err(ModelError::InvalidParameter("delta não finito".into()));
@@ -646,14 +657,31 @@ mod tests {
     #[test]
     fn pivots_resolve_to_expected_points() {
         let mut m = EditMesh::new("p");
-        for p in [Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0), Vec3::new(1.0, 1.0, 0.0)] {
+        for p in [
+            Vec3::ZERO,
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ] {
             m.add_vert(p);
         }
         let sel = [0, 1, 2, 3];
-        assert_eq!(pivot_point(&m, &sel, Pivot::MedianPoint).unwrap(), Vec3::new(1.25, 0.75, 0.0));
-        assert_eq!(pivot_point(&m, &sel, Pivot::BoundingBoxCenter).unwrap(), Vec3::new(2.0, 1.0, 0.0));
-        assert_eq!(pivot_point(&m, &sel, Pivot::ActiveElement(2)).unwrap(), Vec3::new(0.0, 2.0, 0.0));
-        assert_eq!(pivot_point(&m, &sel, Pivot::Cursor(Vec3::splat(7.0))).unwrap(), Vec3::splat(7.0));
+        assert_eq!(
+            pivot_point(&m, &sel, Pivot::MedianPoint).unwrap(),
+            Vec3::new(1.25, 0.75, 0.0)
+        );
+        assert_eq!(
+            pivot_point(&m, &sel, Pivot::BoundingBoxCenter).unwrap(),
+            Vec3::new(2.0, 1.0, 0.0)
+        );
+        assert_eq!(
+            pivot_point(&m, &sel, Pivot::ActiveElement(2)).unwrap(),
+            Vec3::new(0.0, 2.0, 0.0)
+        );
+        assert_eq!(
+            pivot_point(&m, &sel, Pivot::Cursor(Vec3::splat(7.0))).unwrap(),
+            Vec3::splat(7.0)
+        );
         assert!(pivot_point(&m, &sel, Pivot::ActiveElement(9)).is_err());
         assert!(pivot_point(&m, &sel, Pivot::Cursor(Vec3::NAN)).is_err());
         assert!(pivot_point(&m, &[], Pivot::MedianPoint).is_err());
@@ -684,7 +712,14 @@ mod tests {
         let ids = all(&m);
         let centroid = m.centroid();
         let vol_area = area(&m);
-        rotate_verts(&mut m, &ids, Pivot::MedianPoint, Vec3::Z, std::f32::consts::FRAC_PI_2).unwrap();
+        rotate_verts(
+            &mut m,
+            &ids,
+            Pivot::MedianPoint,
+            Vec3::Z,
+            std::f32::consts::FRAC_PI_2,
+        )
+        .unwrap();
         assert!((m.centroid() - centroid).length() < 1e-5);
         assert!((area(&m) - vol_area).abs() < 1e-4);
         // cubo girado 90° em Z coincide consigo mesmo: bounds iguais
@@ -695,14 +730,25 @@ mod tests {
         // pivô no cursor: um ponto em (1,0,0) gira para (0,1,0) em torno da origem
         let mut p = EditMesh::new("p");
         p.add_vert(Vec3::X);
-        rotate_verts(&mut p, &[0], Pivot::Cursor(Vec3::ZERO), Vec3::Z, std::f32::consts::FRAC_PI_2).unwrap();
+        rotate_verts(
+            &mut p,
+            &[0],
+            Pivot::Cursor(Vec3::ZERO),
+            Vec3::Z,
+            std::f32::consts::FRAC_PI_2,
+        )
+        .unwrap();
         assert!((p.co(0) - Vec3::Y).length() < 1e-6);
         // ângulo 0 não altera
         let mut z = primitives::cube(1.0);
         let h = z.content_hash();
         let zi = all(&z);
         rotate_verts(&mut z, &zi, Pivot::MedianPoint, Vec3::Y, 0.0).unwrap();
-        assert!(z.verts.iter().zip(primitives::cube(1.0).verts.iter()).all(|(a, b)| (a.co - b.co).length() < 1e-6));
+        assert!(z
+            .verts
+            .iter()
+            .zip(primitives::cube(1.0).verts.iter())
+            .all(|(a, b)| (a.co - b.co).length() < 1e-6));
         let _ = h;
     }
 
@@ -722,7 +768,14 @@ mod tests {
     fn scale_global_local_and_pivots() {
         let mut m = primitives::cube(2.0);
         let ids = all(&m);
-        scale_verts(&mut m, &ids, Pivot::MedianPoint, Vec3::new(2.0, 1.0, 0.5), Mat3::IDENTITY).unwrap();
+        scale_verts(
+            &mut m,
+            &ids,
+            Pivot::MedianPoint,
+            Vec3::new(2.0, 1.0, 0.5),
+            Mat3::IDENTITY,
+        )
+        .unwrap();
         let (lo, hi) = m.bounds().unwrap();
         assert!((hi - Vec3::new(2.0, 1.0, 0.5)).length() < 1e-5);
         assert!((lo + Vec3::new(2.0, 1.0, 0.5)).length() < 1e-5);
@@ -731,19 +784,43 @@ mod tests {
         let mut p = EditMesh::new("p");
         p.add_vert(Vec3::new(1.0, 1.0, 0.0));
         p.add_vert(Vec3::new(-1.0, -1.0, 0.0));
-        scale_verts(&mut p, &[0, 1], Pivot::MedianPoint, Vec3::new(2.0, 1.0, 1.0), rot).unwrap();
+        scale_verts(
+            &mut p,
+            &[0, 1],
+            Pivot::MedianPoint,
+            Vec3::new(2.0, 1.0, 1.0),
+            rot,
+        )
+        .unwrap();
         assert!((p.co(0) - Vec3::new(2.0, 2.0, 0.0)).length() < 1e-5);
         // escala em torno do vértice ativo mantém-no fixo
         let mut c = primitives::cube(2.0);
         let anchor = c.co(0);
         let ids = all(&c);
-        scale_verts(&mut c, &ids, Pivot::ActiveElement(0), Vec3::splat(3.0), Mat3::IDENTITY).unwrap();
+        scale_verts(
+            &mut c,
+            &ids,
+            Pivot::ActiveElement(0),
+            Vec3::splat(3.0),
+            Mat3::IDENTITY,
+        )
+        .unwrap();
         assert!((c.co(0) - anchor).length() < 1e-6);
         // escala 0 achata sem NaN
         let mut f = primitives::cube(2.0);
         let ids = all(&f);
-        scale_verts(&mut f, &ids, Pivot::MedianPoint, Vec3::new(1.0, 0.0, 1.0), Mat3::IDENTITY).unwrap();
-        assert!(f.verts.iter().all(|v| v.co.is_finite() && v.co.y.abs() < 1e-6));
+        scale_verts(
+            &mut f,
+            &ids,
+            Pivot::MedianPoint,
+            Vec3::new(1.0, 0.0, 1.0),
+            Mat3::IDENTITY,
+        )
+        .unwrap();
+        assert!(f
+            .verts
+            .iter()
+            .all(|v| v.co.is_finite() && v.co.y.abs() < 1e-6));
         f.validate().unwrap();
     }
 
@@ -754,7 +831,14 @@ mod tests {
             c.normal = Some(Vec3::new(1.0, 1.0, 0.0).normalize());
         }
         let ids = all(&m);
-        scale_verts(&mut m, &ids, Pivot::MedianPoint, Vec3::new(2.0, 1.0, 1.0), Mat3::IDENTITY).unwrap();
+        scale_verts(
+            &mut m,
+            &ids,
+            Pivot::MedianPoint,
+            Vec3::new(2.0, 1.0, 1.0),
+            Mat3::IDENTITY,
+        )
+        .unwrap();
         let n = m.faces[0].corners[0].normal.unwrap();
         // inversa transposta de diag(2,1,1): x/2, y => (0.5, 1) normalizado
         let expected = Vec3::new(0.5, 1.0, 0.0).normalize();
@@ -767,7 +851,14 @@ mod tests {
         let h = m.content_hash();
         assert!(scale_verts(&mut m, &[0], Pivot::MedianPoint, Vec3::NAN, Mat3::IDENTITY).is_err());
         assert!(scale_verts(&mut m, &[0], Pivot::MedianPoint, Vec3::ONE, Mat3::ZERO).is_err());
-        assert!(scale_verts(&mut m, &[0], Pivot::MedianPoint, Vec3::ONE, Mat3::from_diagonal(Vec3::NAN)).is_err());
+        assert!(scale_verts(
+            &mut m,
+            &[0],
+            Pivot::MedianPoint,
+            Vec3::ONE,
+            Mat3::from_diagonal(Vec3::NAN)
+        )
+        .is_err());
         assert!(scale_verts(&mut m, &[], Pivot::MedianPoint, Vec3::ONE, Mat3::IDENTITY).is_err());
         assert_eq!(m.content_hash(), h);
     }
@@ -803,14 +894,30 @@ mod tests {
     #[test]
     fn euclidean_weights_decay_with_distance() {
         let m = primitives::grid(20, 1, 20.0, 1.0);
-        let origin = (0..m.vert_count() as u32).min_by(|&a, &b| m.co(a).x.total_cmp(&m.co(b).x).then(m.co(a).z.total_cmp(&m.co(b).z))).unwrap();
-        for f in [ProportionalFalloff::Smooth, ProportionalFalloff::Linear, ProportionalFalloff::Sphere, ProportionalFalloff::Root, ProportionalFalloff::Sharp, ProportionalFalloff::InverseSquare] {
+        let origin = (0..m.vert_count() as u32)
+            .min_by(|&a, &b| {
+                m.co(a)
+                    .x
+                    .total_cmp(&m.co(b).x)
+                    .then(m.co(a).z.total_cmp(&m.co(b).z))
+            })
+            .unwrap();
+        for f in [
+            ProportionalFalloff::Smooth,
+            ProportionalFalloff::Linear,
+            ProportionalFalloff::Sphere,
+            ProportionalFalloff::Root,
+            ProportionalFalloff::Sharp,
+            ProportionalFalloff::InverseSquare,
+        ] {
             let w = proportional_weights(&m, &[origin], 5.0, f, false);
             assert_eq!(w.len(), m.vert_count());
             assert_eq!(w[origin as usize], 1.0);
             assert!(w.iter().all(|x| (0.0..=1.0).contains(x)));
             // peso depende só da distância: ordenando por distância os pesos são não-crescentes
-            let mut pairs: Vec<(f32, f32)> = (0..m.vert_count()).map(|v| (m.co(v as u32).distance(m.co(origin)), w[v])).collect();
+            let mut pairs: Vec<(f32, f32)> = (0..m.vert_count())
+                .map(|v| (m.co(v as u32).distance(m.co(origin)), w[v]))
+                .collect();
             pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
             for p in pairs.windows(2) {
                 assert!(p[1].1 <= p[0].1 + 1e-6, "{f:?}");
@@ -824,7 +931,10 @@ mod tests {
         }
         // constante: 1 dentro do raio
         let w = proportional_weights(&m, &[origin], 5.0, ProportionalFalloff::Constant, false);
-        assert!(w.iter().enumerate().all(|(v, &x)| (m.co(v as u32).distance(m.co(origin)) < 5.0) == (x == 1.0)));
+        assert!(w
+            .iter()
+            .enumerate()
+            .all(|(v, &x)| (m.co(v as u32).distance(m.co(origin)) < 5.0) == (x == 1.0)));
     }
 
     #[test]
@@ -887,7 +997,14 @@ mod tests {
         let w = proportional_weights(&m, &[], 5.0, ProportionalFalloff::Smooth, true);
         assert!(w.iter().all(|&x| x == 0.0));
         // malha vazia
-        assert!(proportional_weights(&EditMesh::new("e"), &[0], 1.0, ProportionalFalloff::Linear, true).is_empty());
+        assert!(proportional_weights(
+            &EditMesh::new("e"),
+            &[0],
+            1.0,
+            ProportionalFalloff::Linear,
+            true
+        )
+        .is_empty());
     }
 
     #[test]
@@ -902,9 +1019,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn apply_translate_proportional_blends() {
         let mut m = primitives::grid(10, 1, 10.0, 1.0);
-        let center = (0..m.vert_count() as u32).min_by(|&a, &b| m.co(a).length().total_cmp(&m.co(b).length())).unwrap();
+        let center = (0..m.vert_count() as u32)
+            .min_by(|&a, &b| m.co(a).length().total_cmp(&m.co(b).length()))
+            .unwrap();
         let orig = m.clone();
         let w = proportional_weights(&m, &[center], 3.0, ProportionalFalloff::Smooth, false);
         let out = apply_translate_proportional(&mut m, &[center], Vec3::Y, &w).unwrap();
@@ -926,6 +1046,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn apply_transform_proportional_rotates_with_falloff() {
         let mut m = primitives::grid(6, 6, 6.0, 6.0);
         let w = proportional_weights(&m, &[0], 4.0, ProportionalFalloff::Linear, false);
@@ -957,12 +1078,24 @@ mod tests {
 
     #[test]
     fn snapping_helpers() {
-        assert_eq!(snap_to_grid(Vec3::new(0.26, -0.74, 1.49), 0.5), Vec3::new(0.5, -0.5, 1.5));
-        assert_eq!(snap_to_grid(Vec3::new(0.3, 0.3, 0.3), 0.0), Vec3::new(0.3, 0.3, 0.3));
-        assert_eq!(snap_to_grid(Vec3::new(0.3, 0.3, 0.3), -1.0), Vec3::new(0.3, 0.3, 0.3));
-        assert_eq!(snap_to_grid(Vec3::new(0.3, 0.3, 0.3), f32::NAN), Vec3::new(0.3, 0.3, 0.3));
+        assert_eq!(
+            snap_to_grid(Vec3::new(0.26, -0.74, 1.49), 0.5),
+            Vec3::new(0.5, -0.5, 1.5)
+        );
+        assert_eq!(
+            snap_to_grid(Vec3::new(0.3, 0.3, 0.3), 0.0),
+            Vec3::new(0.3, 0.3, 0.3)
+        );
+        assert_eq!(
+            snap_to_grid(Vec3::new(0.3, 0.3, 0.3), -1.0),
+            Vec3::new(0.3, 0.3, 0.3)
+        );
+        assert_eq!(
+            snap_to_grid(Vec3::new(0.3, 0.3, 0.3), f32::NAN),
+            Vec3::new(0.3, 0.3, 0.3)
+        );
         assert_eq!(snap_value(7.0, 5.0), 5.0);
-        assert_eq!(snap_value(f32::NAN, 5.0).is_nan(), true);
+        assert!(snap_value(f32::NAN, 5.0).is_nan());
         let m = primitives::cube(2.0);
         let near = snap_to_nearest_vertex(&m, Vec3::new(1.05, 1.0, 0.95), 0.2, &[]).unwrap();
         assert!((m.co(near) - Vec3::ONE).length() < 1e-5);
@@ -974,9 +1107,18 @@ mod tests {
         assert!(snap_to_nearest_vertex(&m, Vec3::ZERO, -1.0, &[]).is_none());
         // índice espacial dá o mesmo resultado
         let idx = VertexSnapIndex::build(&m, 0.5);
-        for p in [Vec3::new(1.05, 1.0, 0.95), Vec3::new(-0.9, 1.1, -1.0), Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0)] {
+        for p in [
+            Vec3::new(1.05, 1.0, 0.95),
+            Vec3::new(-0.9, 1.1, -1.0),
+            Vec3::ZERO,
+            Vec3::new(5.0, 5.0, 5.0),
+        ] {
             for r in [0.05, 0.3, 1.5, 3.0] {
-                assert_eq!(idx.nearest(p, r, &[]), snap_to_nearest_vertex(&m, p, r, &[]), "{p:?} {r}");
+                assert_eq!(
+                    idx.nearest(p, r, &[]),
+                    snap_to_nearest_vertex(&m, p, r, &[]),
+                    "{p:?} {r}"
+                );
             }
         }
         assert_eq!(idx.nearest(m.co(near), 3.0, &[near]), Some(second));
@@ -993,13 +1135,21 @@ mod tests {
         assert!(snap_to_nearest_edge(&m, Vec3::NAN, 0.5).is_none());
         let (c, t) = closest_point_on_segment(Vec3::ZERO, Vec3::X, Vec3::new(2.0, 1.0, 0.0));
         assert_eq!((c, t), (Vec3::X, 1.0));
-        assert_eq!(closest_point_on_segment(Vec3::X, Vec3::X, Vec3::ZERO), (Vec3::X, 0.0));
+        assert_eq!(
+            closest_point_on_segment(Vec3::X, Vec3::X, Vec3::ZERO),
+            (Vec3::X, 0.0)
+        );
         assert_eq!(edge_of(3, 1), (1, 3));
     }
 
     #[test]
     fn mirror_map_is_an_involution_on_symmetric_meshes() {
-        for m in [primitives::quad_sphere(1.0, 6), primitives::uv_sphere(1.0, 8, 12), primitives::cube_subdivided(2.0, 4), primitives::capsule(0.5, 1.0, 8, 3)] {
+        for m in [
+            primitives::quad_sphere(1.0, 6),
+            primitives::uv_sphere(1.0, 8, 12),
+            primitives::cube_subdivided(2.0, 4),
+            primitives::capsule(0.5, 1.0, 8, 3),
+        ] {
             for axis in 0..3 {
                 let map = mirror_vertex_map(&m, axis, 1e-4);
                 assert_eq!(map.len(), m.vert_count());
@@ -1029,7 +1179,9 @@ mod tests {
             }
         }
         // desloca um vértice: ele e seu espelho original perdem o par
-        let moved = (0..m.vert_count() as u32).find(|&v| m.co(v).x > 0.5).unwrap();
+        let moved = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).x > 0.5)
+            .unwrap();
         let old_mirror = map[moved as usize].unwrap();
         m.verts[moved as usize].co.x += 0.3;
         let map2 = mirror_vertex_map(&m, 0, 1e-4);
@@ -1045,7 +1197,9 @@ mod tests {
     #[test]
     fn mirror_map_tolerance_controls_pairing() {
         let mut m = primitives::grid(2, 2, 2.0, 2.0);
-        let moved = (0..m.vert_count() as u32).find(|&v| m.co(v).x > 0.5).unwrap();
+        let moved = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).x > 0.5)
+            .unwrap();
         m.verts[moved as usize].co.x += 0.01;
         assert_eq!(mirror_vertex_map(&m, 0, 1e-4)[moved as usize], None);
         assert!(mirror_vertex_map(&m, 0, 0.05)[moved as usize].is_some());
@@ -1055,10 +1209,13 @@ mod tests {
     fn symmetric_translate_moves_mirror_counterparts() {
         let mut m = primitives::quad_sphere(1.0, 4);
         let map = mirror_vertex_map(&m, 0, 1e-4);
-        let v = (0..m.vert_count() as u32).find(|&v| m.co(v).x > 0.3 && map[v as usize].is_some()).unwrap();
+        let v = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).x > 0.3 && map[v as usize].is_some())
+            .unwrap();
         let mv = map[v as usize].unwrap();
         let (p0, q0) = (m.co(v), m.co(mv));
-        let out = translate_verts_symmetric(&mut m, &[v], Vec3::new(0.1, 0.2, 0.3), 0, &map).unwrap();
+        let out =
+            translate_verts_symmetric(&mut m, &[v], Vec3::new(0.1, 0.2, 0.3), 0, &map).unwrap();
         assert!((m.co(v) - (p0 + Vec3::new(0.1, 0.2, 0.3))).length() < 1e-6);
         assert!((m.co(mv) - (q0 + Vec3::new(-0.1, 0.2, 0.3))).length() < 1e-6);
         assert!(out.selection.verts.contains(&mv));
@@ -1066,7 +1223,9 @@ mod tests {
         let map2 = mirror_vertex_map(&m, 0, 1e-4);
         assert!(map2[v as usize].is_some());
         // vértice no plano: só a componente permitida
-        let on_plane = (0..m.vert_count() as u32).find(|&v| m.co(v).x.abs() < 1e-6).unwrap();
+        let on_plane = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).x.abs() < 1e-6)
+            .unwrap();
         let before = m.co(on_plane);
         translate_verts_symmetric(&mut m, &[on_plane], Vec3::new(0.5, 0.0, 0.1), 0, &map).unwrap();
         assert!((m.co(on_plane) - (before + Vec3::new(0.0, 0.0, 0.1))).length() < 1e-6);
@@ -1082,7 +1241,13 @@ mod tests {
         let m = primitives::quad_sphere(1.0, 64);
         let t0 = std::time::Instant::now();
         for connected in [false, true] {
-            let w = proportional_weights(&m, &[0, 100, 5000], 0.3, ProportionalFalloff::Smooth, connected);
+            let w = proportional_weights(
+                &m,
+                &[0, 100, 5000],
+                0.3,
+                ProportionalFalloff::Smooth,
+                connected,
+            );
             assert!(w.iter().any(|&x| x > 0.0 && x < 1.0));
         }
         let map = mirror_vertex_map(&m, 0, 1e-4);

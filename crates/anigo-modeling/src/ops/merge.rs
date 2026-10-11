@@ -39,7 +39,11 @@ pub(crate) struct PointGrid {
 
 impl PointGrid {
     pub fn new(cell: f32) -> Self {
-        let cell = if cell.is_finite() && cell > 1e-6 { cell } else { 1e-6 };
+        let cell = if cell.is_finite() && cell > 1e-6 {
+            cell
+        } else {
+            1e-6
+        };
         Self {
             cell,
             map: HashMap::new(),
@@ -59,7 +63,11 @@ impl PointGrid {
     /// Chama `f(id)` para todo id cuja célula intersecta a esfera `(p, radius)`
     /// (é candidato; o chamador testa a distância exata).
     pub fn for_each_near(&self, p: Vec3, radius: f32, mut f: impl FnMut(u32)) {
-        let r = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+        let r = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
         let span = ((r / self.cell).ceil() as i64).clamp(1, 64);
         let (cx, cy, cz) = self.key(p);
         for dx in -span..=span {
@@ -238,7 +246,8 @@ pub(crate) fn weld(mesh: &mut EditMesh, rep: &[u32], moved: &[(u32, Vec3)]) -> R
     let mut dropped = vec![false; entries.len()];
     if !touched.is_empty() {
         for i in 0..entries.len() {
-            let candidate = entries[i].modified || entries[i].face.verts().all(|v| touched.contains(&v));
+            let candidate =
+                entries[i].modified || entries[i].face.verts().all(|v| touched.contains(&v));
             if !candidate {
                 continue;
             }
@@ -567,7 +576,10 @@ mod tests {
     fn exploded(src: &EditMesh) -> EditMesh {
         let mut m = EditMesh::new("exploded");
         for f in &src.faces {
-            let ids: Vec<u32> = f.verts().map(|v| m.push_vert(src.verts[v as usize].clone())).collect();
+            let ids: Vec<u32> = f
+                .verts()
+                .map(|v| m.push_vert(src.verts[v as usize].clone()))
+                .collect();
             let mut nf = f.clone();
             for (c, id) in nf.corners.iter_mut().zip(ids) {
                 c.vert = id;
@@ -630,7 +642,7 @@ mod tests {
         m.add_face(&[0, 2, b, a]).unwrap();
         merge_by_distance(&mut m, None, 0.7, ByDistanceOptions::default()).unwrap();
         assert_eq!(m.vert_count(), 3); // {0,1,2} num só + a + b
-        // a face virou triângulo (0 e 2 fundidos)
+                                       // a face virou triângulo (0 e 2 fundidos)
         assert_eq!(m.face_count(), 1);
         assert_eq!(m.faces[0].len(), 3);
     }
@@ -679,7 +691,13 @@ mod tests {
         m.add_face(&[b, d, c]).unwrap();
         let mut only_b_c = m.clone();
         // b e c selecionados: b-c distam 0.0014 e fundem; a fica fora
-        merge_by_distance(&mut only_b_c, Some(&[b, c]), 0.01, ByDistanceOptions::default()).unwrap();
+        merge_by_distance(
+            &mut only_b_c,
+            Some(&[b, c]),
+            0.01,
+            ByDistanceOptions::default(),
+        )
+        .unwrap();
         assert_eq!(only_b_c.vert_count(), 3);
         // só b selecionado: sem unselected nada acontece
         let mut only_b = m.clone();
@@ -718,7 +736,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(m.content_hash(), h, "vértices coincidentes sem aresta entre si não fundem");
+        assert_eq!(
+            m.content_hash(),
+            h,
+            "vértices coincidentes sem aresta entre si não fundem"
+        );
 
         // par ligado por aresta sharp
         let mut g = EditMesh::new("g");
@@ -751,7 +773,10 @@ mod tests {
         .unwrap();
         assert_eq!(g2.vert_count(), 2);
         assert_eq!(g2.face_count(), 0, "triângulo colapsado");
-        assert!(g2.edge_attrs.is_empty(), "aresta colapsada não deixa atributo");
+        assert!(
+            g2.edge_attrs.is_empty(),
+            "aresta colapsada não deixa atributo"
+        );
     }
 
     #[test]
@@ -759,10 +784,22 @@ mod tests {
         let mut m = primitives::cube(1.0);
         let h = m.content_hash();
         let o = ByDistanceOptions::default();
-        assert!(matches!(merge_by_distance(&mut m, None, -1.0, o), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(merge_by_distance(&mut m, None, f32::NAN, o), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(merge_by_distance(&mut m, Some(&[]), 0.1, o), Err(ModelError::EmptySelection(_))));
-        assert!(matches!(merge_by_distance(&mut m, Some(&[44]), 0.1, o), Err(ModelError::VertexOutOfRange(44, 8))));
+        assert!(matches!(
+            merge_by_distance(&mut m, None, -1.0, o),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            merge_by_distance(&mut m, None, f32::NAN, o),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            merge_by_distance(&mut m, Some(&[]), 0.1, o),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            merge_by_distance(&mut m, Some(&[44]), 0.1, o),
+            Err(ModelError::VertexOutOfRange(44, 8))
+        ));
         assert_eq!(m.content_hash(), h);
     }
 
@@ -815,7 +852,9 @@ mod tests {
         let mut m = primitives::grid(2, 2, 2.0, 2.0);
         let area_before: f32 = (0..m.face_count() as u32).map(|f| m.face_area(f)).sum();
         // dois vértices adjacentes: o do centro e um vizinho
-        let center = (0..m.vert_count() as u32).find(|&v| m.co(v).length() < 1e-6).unwrap();
+        let center = (0..m.vert_count() as u32)
+            .find(|&v| m.co(v).length() < 1e-6)
+            .unwrap();
         let t = Topology::build(&m);
         let nb = t.vert_neighbors(center)[0];
         let out = merge_verts(&mut m, &[center, nb], MergeMode::Center).unwrap();
@@ -888,7 +927,9 @@ mod tests {
     fn merge_collapse_merges_per_component() {
         let mut m = primitives::grid(4, 1, 4.0, 1.0);
         // grid 4x1: vértices em duas fileiras de 5; colapsa uma fileira em duas ilhas
-        let row: Vec<u32> = (0..m.vert_count() as u32).filter(|&v| m.co(v).z < 0.0).collect();
+        let row: Vec<u32> = (0..m.vert_count() as u32)
+            .filter(|&v| m.co(v).z < 0.0)
+            .collect();
         // seleciona 0,1 e 3,4 da primeira fileira (ilhas separadas pelo 2)
         let pick: Vec<u32> = [row[0], row[1], row[3], row[4]].to_vec();
         let out = merge_verts(&mut m, &pick, MergeMode::Collapse).unwrap();
@@ -981,7 +1022,10 @@ mod tests {
 
     #[test]
     fn split_simple_handles_bowtie() {
-        let cs: Vec<Corner> = [0u32, 1, 2, 0, 3, 4].iter().map(|&v| Corner::new(v)).collect();
+        let cs: Vec<Corner> = [0u32, 1, 2, 0, 3, 4]
+            .iter()
+            .map(|&v| Corner::new(v))
+            .collect();
         let parts = split_simple(&cs);
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].len(), 3);

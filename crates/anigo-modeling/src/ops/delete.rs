@@ -406,7 +406,10 @@ pub fn delete_loose_with(
     }
     if use_faces {
         for (fi, edges) in topo.face_edges.iter().enumerate() {
-            if edges.iter().all(|&e| topo.edges[e as usize].faces.len() == 1) {
+            if edges
+                .iter()
+                .all(|&e| topo.edges[e as usize].faces.len() == 1)
+            {
                 kill_faces.push(fi as u32);
                 cleanup.extend(mesh.faces[fi].verts());
             }
@@ -474,7 +477,10 @@ mod tests {
     fn delete_verts_errors_leave_mesh_intact() {
         let mut m = primitives::cube(1.0);
         let h = m.content_hash();
-        assert!(matches!(delete_verts(&mut m, &[]), Err(ModelError::EmptySelection(_))));
+        assert!(matches!(
+            delete_verts(&mut m, &[]),
+            Err(ModelError::EmptySelection(_))
+        ));
         assert!(matches!(
             delete_verts(&mut m, &[0, 99]),
             Err(ModelError::VertexOutOfRange(99, 8))
@@ -518,10 +524,16 @@ mod tests {
     fn delete_edges_errors() {
         let mut m = primitives::cube(1.0);
         let h = m.content_hash();
-        assert!(matches!(delete_edges(&mut m, &[]), Err(ModelError::EmptySelection(_))));
-        assert!(matches!(delete_edges(&mut m, &[(0, 99)]), Err(ModelError::MissingEdge(0, 99))));
+        assert!(matches!(
+            delete_edges(&mut m, &[]),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            delete_edges(&mut m, &[(0, 99)]),
+            Err(ModelError::MissingEdge(0, 99))
+        ));
         // 0 e 6 são diagonais do cubo: não é aresta
-        assert!(matches!(delete_edges(&mut m, &[(0, 6)]), Err(_)));
+        assert!(delete_edges(&mut m, &[(0, 6)]).is_err());
         assert_eq!(m.content_hash(), h);
     }
 

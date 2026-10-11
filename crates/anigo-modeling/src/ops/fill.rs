@@ -88,7 +88,9 @@ pub(crate) fn ordered_loops(
             let (a, b) = (verts[i], verts[(i + 1) % n]);
             if let Some(&f) = topo.edge_faces(a, b).first() {
                 hint.get_or_insert(f);
-                let same = mesh.faces[f as usize].edges().any(|(x, y)| x == a && y == b);
+                let same = mesh.faces[f as usize]
+                    .edges()
+                    .any(|(x, y)| x == a && y == b);
                 if same {
                     agree += 1; // a travessia segue a face existente: a nova deve ir ao contrário
                 } else {
@@ -178,7 +180,11 @@ pub fn fill_hole_verts(mesh: &mut EditMesh, verts: &[u32]) -> ModelResult<OpOutp
 /// Newell do loop). Com `beauty`, os diagonais são otimizados por troca de
 /// arestas (maximiza o menor ângulo, ver `triangulate::beautify_triangles`).
 /// Mesmas validações e orientação de [`fill_hole`]. Seleção devolvida: os triângulos.
-pub fn fill_triangles(mesh: &mut EditMesh, edges: &[EdgeKey], beauty: bool) -> ModelResult<OpOutput> {
+pub fn fill_triangles(
+    mesh: &mut EditMesh,
+    edges: &[EdgeKey],
+    beauty: bool,
+) -> ModelResult<OpOutput> {
     let topo = Topology::build(mesh);
     let edges = unique_edges(&topo, edges, "arestas")?;
     let loops = ordered_loops(mesh, &topo, &edges)?;
@@ -230,7 +236,11 @@ pub fn fill_all_holes(mesh: &mut EditMesh, max_sides: usize) -> ModelResult<OpOu
             }
         }
     }
-    let ambiguous: BTreeSet<u32> = succ.iter().filter(|(_, v)| v.len() > 1).map(|(k, _)| *k).collect();
+    let ambiguous: BTreeSet<u32> = succ
+        .iter()
+        .filter(|(_, v)| v.len() > 1)
+        .map(|(k, _)| *k)
+        .collect();
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut new_faces: Vec<Face> = Vec::new();
     for &start in succ.keys() {
@@ -287,7 +297,10 @@ pub(crate) fn coons_point(
     let (u, v) = (i as f32 / a as f32, j as f32 / b as f32);
     let (p00, p10, p01, p11) = (bottom[0], bottom[a], top[0], top[a]);
     bottom[i] * (1.0 - v) + top[i] * v + left[j] * (1.0 - u) + right[j] * u
-        - (p00 * ((1.0 - u) * (1.0 - v)) + p10 * (u * (1.0 - v)) + p01 * ((1.0 - u) * v) + p11 * (u * v))
+        - (p00 * ((1.0 - u) * (1.0 - v))
+            + p10 * (u * (1.0 - v))
+            + p01 * ((1.0 - u) * v)
+            + p11 * (u * v))
 }
 
 fn bilinear_point(p00: Vec3, p10: Vec3, p01: Vec3, p11: Vec3, u: f32, v: f32) -> Vec3 {
@@ -354,7 +367,12 @@ pub fn grid_fill(
     let top_ids: Vec<u32> = (0..=a).map(|i| rr(a + b + (a - i))).collect();
     let left_ids: Vec<u32> = (0..=b).map(|j| rr(n - j)).collect();
     let pos = |ids: &[u32]| -> Vec<Vec3> { ids.iter().map(|&v| mesh.co(v)).collect() };
-    let (pb, pt, pl, pr) = (pos(&bottom_ids), pos(&top_ids), pos(&left_ids), pos(&right_ids));
+    let (pb, pt, pl, pr) = (
+        pos(&bottom_ids),
+        pos(&top_ids),
+        pos(&left_ids),
+        pos(&right_ids),
+    );
 
     // Atributos dos 4 cantos para os vértices novos.
     let c00 = mesh.verts[bottom_ids[0] as usize].clone();
@@ -394,7 +412,12 @@ pub fn grid_fill(
     let mut created_faces = Vec::new();
     for i in 0..a {
         for j in 0..b {
-            let vs = [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]];
+            let vs = [
+                grid[i][j],
+                grid[i + 1][j],
+                grid[i + 1][j + 1],
+                grid[i][j + 1],
+            ];
             let f = new_face_like(mesh, lp.face_hint, &vs);
             created_faces.push(mesh.faces.len() as u32);
             mesh.faces.push(f);
@@ -450,7 +473,12 @@ mod tests {
     fn fill_hole_on_open_cylinder_and_capsule_loops() {
         let mut m = primitives::cylinder(1.0, 2.0, 12, 3, false);
         let t = Topology::build(&m);
-        let b: Vec<EdgeKey> = t.edges.iter().filter(|e| e.faces.len() == 1).map(|e| e.verts).collect();
+        let b: Vec<EdgeKey> = t
+            .edges
+            .iter()
+            .filter(|e| e.faces.len() == 1)
+            .map(|e| e.verts)
+            .collect();
         assert_eq!(b.len(), 24);
         // dois loops de uma vez
         let out = fill_hole(&mut m, &b).unwrap();
@@ -502,14 +530,26 @@ mod tests {
         let mut m = cube_without(0);
         let h = m.content_hash();
         let edges = boundary_edges(&m);
-        assert!(matches!(fill_hole(&mut m, &[]), Err(ModelError::EmptySelection(_))));
-        assert!(matches!(fill_hole(&mut m, &[(0, 6)]), Err(ModelError::MissingEdge(..))));
+        assert!(matches!(
+            fill_hole(&mut m, &[]),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            fill_hole(&mut m, &[(0, 6)]),
+            Err(ModelError::MissingEdge(..))
+        ));
         // 3 das 4 arestas: loop aberto
-        assert!(matches!(fill_hole(&mut m, &edges[..3]), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            fill_hole(&mut m, &edges[..3]),
+            Err(ModelError::InvalidParameter(_))
+        ));
         // aresta interior (2 faces)
         let t = Topology::build(&m);
         let interior = t.edges.iter().find(|e| e.faces.len() == 2).unwrap().verts;
-        assert!(matches!(fill_hole(&mut m, &[interior]), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            fill_hole(&mut m, &[interior]),
+            Err(ModelError::InvalidParameter(_))
+        ));
         assert_eq!(m.content_hash(), h);
     }
 
@@ -596,7 +636,10 @@ mod tests {
         let out = fill_all_holes(&mut closed, usize::MAX).unwrap();
         assert!(out.created_faces.is_empty());
         assert_eq!(closed.content_hash(), h);
-        assert!(matches!(fill_all_holes(&mut closed, 2), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            fill_all_holes(&mut closed, 2),
+            Err(ModelError::InvalidParameter(_))
+        ));
     }
 
     #[test]
@@ -633,7 +676,14 @@ mod tests {
     #[test]
     fn grid_fill_patterns() {
         // (arestas, quads, vértices novos)
-        for (n, quads, new_verts) in [(4u32, 1usize, 0usize), (6, 2, 0), (8, 4, 1), (10, 6, 2), (12, 9, 4), (16, 16, 9)] {
+        for (n, quads, new_verts) in [
+            (4u32, 1usize, 0usize),
+            (6, 2, 0),
+            (8, 4, 1),
+            (10, 6, 2),
+            (12, 9, 4),
+            (16, 16, 9),
+        ] {
             let mut m = ring(n, 1.0);
             let edges = top_loop(&m);
             let nv = m.vert_count();
@@ -642,13 +692,19 @@ mod tests {
             assert_eq!(out.created_faces.len(), quads, "n={n}");
             assert_eq!(m.vert_count() - nv, new_verts, "n={n}");
             assert_eq!(out.created_verts.len(), new_verts);
-            assert!(m.faces[out.created_faces[0] as usize..].iter().all(|f| f.len() == 4));
+            assert!(m.faces[out.created_faces[0] as usize..]
+                .iter()
+                .all(|f| f.len() == 4));
             // tampa de cima fechada: o resto (fundo aberto) continua com 1 loop
             let t = Topology::build(&m);
             assert_eq!(t.boundary_edge_count(), n as usize);
             // normais da grade apontam para +Y (para fora do cilindro)
             for &f in &out.created_faces {
-                assert!(m.face_normal(f).y > 0.9, "n={n} face {f}: {:?}", m.face_normal(f));
+                assert!(
+                    m.face_normal(f).y > 0.9,
+                    "n={n} face {f}: {:?}",
+                    m.face_normal(f)
+                );
             }
         }
     }
@@ -676,7 +732,13 @@ mod tests {
         let mut m = ring(12, 1.0);
         let edges = top_loop(&m);
         let mut variants = Vec::new();
-        for (span, offset, simple) in [(0, 0, false), (2, 0, false), (4, 0, false), (3, 5, false), (3, 0, true)] {
+        for (span, offset, simple) in [
+            (0, 0, false),
+            (2, 0, false),
+            (4, 0, false),
+            (3, 5, false),
+            (3, 0, true),
+        ] {
             let mut c = m.clone();
             let out = grid_fill(&mut c, &edges, span, offset, simple).unwrap();
             c.validate().unwrap();
@@ -707,7 +769,10 @@ mod tests {
         // área próxima à do polígono regular de 16 lados
         let poly_area = 0.5 * 16.0 * 4.0 * (std::f32::consts::TAU / 16.0).sin();
         let area: f32 = out.created_faces.iter().map(|&f| m.face_area(f)).sum();
-        assert!((area - poly_area).abs() / poly_area < 0.05, "{area} vs {poly_area}");
+        assert!(
+            (area - poly_area).abs() / poly_area < 0.05,
+            "{area} vs {poly_area}"
+        );
     }
 
     #[test]
@@ -723,12 +788,21 @@ mod tests {
         assert!(grid_fill(&mut m2, &edges2, 4, 0, false).is_err());
         assert!(grid_fill(&mut m2, &edges2, 100, 0, false).is_err());
         // dois loops
-        let all: Vec<EdgeKey> = Topology::build(&m2).edges.iter().filter(|e| e.faces.len() == 1).map(|e| e.verts).collect();
+        let all: Vec<EdgeKey> = Topology::build(&m2)
+            .edges
+            .iter()
+            .filter(|e| e.faces.len() == 1)
+            .map(|e| e.verts)
+            .collect();
         assert!(grid_fill(&mut m2, &all, 0, 0, false).is_err());
         assert!(grid_fill(&mut m2, &[], 0, 0, false).is_err());
         // loop de 2 lados não existe; triângulo (3 arestas) é ímpar
         let mut tri = primitives::circle(1.0, 3, false);
-        let tri_edges: Vec<EdgeKey> = Topology::build(&tri).edges.iter().map(|e| e.verts).collect();
+        let tri_edges: Vec<EdgeKey> = Topology::build(&tri)
+            .edges
+            .iter()
+            .map(|e| e.verts)
+            .collect();
         assert!(grid_fill(&mut tri, &tri_edges, 0, 0, false).is_err());
         assert_eq!(m.content_hash(), h);
         assert_eq!(m2.content_hash(), h2);
@@ -747,7 +821,12 @@ mod tests {
         assert_eq!(kill.len(), 4);
         m.delete_faces(&kill).unwrap();
         let t = Topology::build(&m);
-        let edges: Vec<EdgeKey> = t.edges.iter().filter(|e| e.faces.len() == 1).map(|e| e.verts).collect();
+        let edges: Vec<EdgeKey> = t
+            .edges
+            .iter()
+            .filter(|e| e.faces.len() == 1)
+            .map(|e| e.verts)
+            .collect();
         assert_eq!(edges.len(), 8);
         let out = grid_fill(&mut m, &edges, 0, 0, false).unwrap();
         assert_eq!(out.created_faces.len(), 4);
@@ -760,9 +839,17 @@ mod tests {
     #[test]
     fn coons_matches_boundaries_and_bilinear_for_flat_quad() {
         let bottom = [Vec3::ZERO, Vec3::X, Vec3::X * 2.0];
-        let top = [Vec3::Z * 2.0, Vec3::new(1.0, 0.0, 2.0), Vec3::new(2.0, 0.0, 2.0)];
+        let top = [
+            Vec3::Z * 2.0,
+            Vec3::new(1.0, 0.0, 2.0),
+            Vec3::new(2.0, 0.0, 2.0),
+        ];
         let left = [Vec3::ZERO, Vec3::Z, Vec3::Z * 2.0];
-        let right = [Vec3::X * 2.0, Vec3::new(2.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 2.0)];
+        let right = [
+            Vec3::X * 2.0,
+            Vec3::new(2.0, 0.0, 1.0),
+            Vec3::new(2.0, 0.0, 2.0),
+        ];
         let p = coons_point(&bottom, &top, &left, &right, 1, 1);
         assert!((p - Vec3::new(1.0, 0.0, 1.0)).length() < 1e-6);
         assert!((coons_point(&bottom, &top, &left, &right, 2, 0) - bottom[2]).length() < 1e-6);
