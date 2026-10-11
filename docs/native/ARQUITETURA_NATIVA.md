@@ -14,7 +14,7 @@
 
 | Camada | Hoje | Alvo |
 |---|---|---|
-| UI | Svelte 5 (webview) | **egui 0.36 + egui_tiles** (Rust, imediato, docking) |
+| UI | Svelte 5 (webview) | **egui 0.36** (Rust, imediato). Layout atual por painéis redimensionáveis; docking livre (`egui_tiles`) é a tarefa T-2.12 |
 | Viewport | WebGPU em TypeScript | **wgpu 30 em Rust**, o MESMO `anigo-renderer` do headless (um único pipeline) |
 | Modelagem | inexistente | **`anigo-modeling`** (Rust puro) + UI do workspace "Modelagem" |
 | C/C++ | nenhum | **`anigo-native`**: apenas libs prontas e vendorizadas (meshoptimizer, ufbx, xatlas); resto em Rust |
@@ -76,14 +76,22 @@ canônicos em `crates/anigo-renderer/shaders`; viewport e render final usam o me
    (em release usa `include_str!` — hash do contrato continua válido); o shader novo é validado em *error scope* e só substitui o pipeline se passar (erro vira overlay).
 2. **UI e lógica do app** (segundos, estado preservado): experimento com `dx serve --hotpatch` (Subsecond). É experimental → tratado como **spike**, não requisito; fallback é o item 3.
 3. **Qualquer crate** : `bacon`/`cargo watch -x run` com perfil dev otimizado para deps (`opt-level=2` em wgpu/naga/image/glam) + **restauração de sessão** (`session.json`: projeto, câmera, workspace, seleção, layout) → todo reinício parece um hot reload.
-4. Cloud/CI: o app roda sob `Xvfb` + Vulkan por software (lavapipe) com `--screenshot`, gerando PNGs para revisão.
+4. Cloud/CI: o app roda sob `Xvfb` + Vulkan por software (lavapipe) com `--screenshot` e `--scenario <nome>`, gerando PNGs
+   para revisão (job `native` do CI). `xdotool` dá entrada real de mouse/teclado no Xvfb para smoke tests.
+
+### Dois renderers, um propósito cada
+* **Workbench** (`anigo-studio/src/workbench`): ferramenta de edição — grid, sólido com luz de estúdio, arestas/pontos em quads de tela,
+  MSAA. É o "Workbench" do Blender: não precisa ser fiel ao render final, precisa ser rápido e legível.
+* **Cel preview** (`anigo-studio/src/celview.rs`): o **mesmo** `anigo-renderer` do render final/export (`render_to_texture` no `Device`
+  do egui), com os overlays do Workbench por cima. A regra "o que se vê é o que se renderiza" continua valendo para o visual cel.
 
 ## 5. Plano de migração (strangler)
 
-0. ✔ Pesquisa, ADR, motor de modelagem (este PR).
-1. wgpu 24→30 + `encode_scene` em alvo externo (agente de renderer; mesclado).
-2. `anigo-studio` casca: janela, 9 workspaces, tool shelf, inspector, viewport com o renderer, câmera orbit, sessão.
-3. Workspace Modelagem funcional (primitivas, seleção, transformação, extrude/inset/bevel/loop cut, subsurf, mirror, sculpt básico).
+0. ✔ Pesquisa, ADR, motor de modelagem.
+1. ✔ wgpu 24→30 + `encode_scene`/`render_to_texture` em alvo externo (hashes de frame idênticos).
+2. ✔ `anigo-studio` casca: janela, 9 workspaces, tool shelf, inspector, viewport (Workbench + preview Cel), câmera orbit, sessão.
+3. ✔/🟡 Workspace Modelagem: primitivas, seleção v/e/f, G/R/S, gizmo, ~45 operadores, edição proporcional, modificadores, normais, UV, escultura
+   (ver `ROADMAP_TAREFAS.md` para o estado de cada item).
 4. Paridade Personagem (sliders → `Command` do core → viewport).
 5. Biblioteca/Cenário/Animação/Render nativos. Aposentar `src/` Svelte e `webgpu_renderer.ts` quando os testes de paridade passarem.
 

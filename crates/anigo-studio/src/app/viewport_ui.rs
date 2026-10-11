@@ -247,7 +247,7 @@ impl StudioApp {
         }
 
         // ---- teclas (só com o ponteiro no viewport e sem foco de texto)
-        if !resp.hovered() || ui.ctx().egui_wants_keyboard_input() {
+        if !resp.hovered() || ui.ctx().text_edit_focused() {
             return;
         }
         self.handle_hotkeys(ui, mouse_local, size);
