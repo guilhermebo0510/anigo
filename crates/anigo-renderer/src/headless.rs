@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use anyhow::{Context, Result};
 use bytemuck::cast_slice;
@@ -12,6 +12,7 @@ use crate::device_recovery::{DeviceRecreationReport, PresentationMode, Uncapture
 use crate::mesh_validation;
 use crate::render_contract as contract;
 use crate::render_graph::{ExecutionPlan, GraphOverrides, RenderGraph};
+use crate::render_targets::{RenderTarget, RenderTargetCache, TargetViews};
 use crate::uniforms::{
     BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform,
 };
@@ -116,6 +117,17 @@ pub struct HeadlessRenderer {
     dof_bind_group_layout: wgpu::BindGroupLayout,
     /// Textura de profundidade só é amostrável com sampler sem filtragem.
     dof_nearest_sampler: wgpu::Sampler,
+    /// Alvos intermediários (MSAA/profundidade/DoF) reutilizados entre quadros;
+    /// atrás de `Mutex` porque `encode_scene` recebe `&self`.
+    target_cache: Mutex<RenderTargetCache>,
+}
+
+/// Vértices já morfados pelo compute (GPU): substituem o VBO estático dos nós
+/// cuja contagem de vértices bate com a da malha base.
+#[derive(Clone, Copy)]
+struct MorphedVertices<'a> {
+    buffer: &'a wgpu::Buffer,
+    vertex_count: usize,
 }
 
 /// Issue #14: recursos de desenho de um nó preparados uma vez por quadro — o
@@ -932,10 +944,36 @@ impl HeadlessRenderer {
 
         // Issue #11: erros `on_uncaptured_error` são interceptados pelo canal
         // MPSC estruturado (nada de pânico no caminho crítico); o dreno para o
-        // módulo de diagnósticos acontece a cada quadro, no `render_scene`.
+        // módulo de diagnósticos acontece a cada quadro.
         let error_bus = UncapturedErrorBus::new();
         error_bus.install_on(&device);
 
+        Self::assemble(device, queue, adapter_info, error_bus)
+    }
+
+    /// Constrói o renderer sobre um device **externo** (ex.: o do egui/eframe),
+    /// para que o viewport interativo e o app compartilhem o mesmo
+    /// `Device`/`Queue` — e, portanto, texturas sem cópia pela CPU.
+    ///
+    /// Diferente de [`Self::new`], NÃO instala `on_uncaptured_error` no device:
+    /// o handler é do dono do device (instalar aqui sobrescreveria o dele).
+    /// O device não precisa de features extras; limites padrão bastam.
+    /// [`Self::recreate_device_and_swapchain`] passa a usar um device próprio.
+    pub fn from_device(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        adapter_info: wgpu::AdapterInfo,
+    ) -> Result<Self> {
+        diagnostics::report_contract_health();
+        Self::assemble(device, queue, adapter_info, UncapturedErrorBus::new())
+    }
+
+    fn assemble(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        adapter_info: wgpu::AdapterInfo,
+        error_bus: UncapturedErrorBus,
+    ) -> Result<Self> {
         // P1-04: o binding da paleta de skinning vem do contrato (5 no cel, 2 no
         // outline) — contrato e WGSL mudam juntos, nunca um literal solto.
         let cel_skin_binding = contract::skinning_binding("cel").unwrap_or(5);
@@ -966,6 +1004,7 @@ impl HeadlessRenderer {
             dof_pipeline: resources.dof_pipeline,
             dof_bind_group_layout: resources.dof_bind_group_layout,
             dof_nearest_sampler: resources.dof_nearest_sampler,
+            target_cache: Mutex::new(RenderTargetCache::new()),
         })
     }
 
@@ -1011,6 +1050,8 @@ impl HeadlessRenderer {
         self.dof_pipeline = resources.dof_pipeline;
         self.dof_bind_group_layout = resources.dof_bind_group_layout;
         self.dof_nearest_sampler = resources.dof_nearest_sampler;
+        // Os alvos em cache pertencem ao device antigo.
+        self.lock_target_cache().clear();
 
         let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
         diagnostics::report_with_detail(
@@ -1222,7 +1263,7 @@ impl HeadlessRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = tx.send(res);
         });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        self.wait_for_gpu();
 
         rx.recv()
             .context("Channel receive failed while waiting for GPU morph buffer mapping")
@@ -1430,6 +1471,10 @@ impl HeadlessRenderer {
     }
 
     /// Renders a scene into an offscreen RGBA image buffer and returns the image + performance metrics.
+    ///
+    /// Wrapper de [`Self::encode_scene`]: cria a textura de cor, codifica a
+    /// cena, copia para um buffer e faz o readback. Os recursos intermediários
+    /// (MSAA, profundidade, DoF) vêm do [`RenderTargetCache`] do renderer.
     pub async fn render_scene(
         &self,
         scene: &Scene,
@@ -1437,14 +1482,198 @@ impl HeadlessRenderer {
         height: u32,
     ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
         let start_time = Instant::now();
-        self.drain_device_errors();
+        let color_texture = self.create_readback_color_texture(width, height)?;
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Command Encoder"),
+        });
+        let mut metrics = self.encode_scene_inner(
+            &mut encoder,
+            scene,
+            &RenderTarget {
+                color_view: &color_view,
+                width,
+                height,
+            },
+            None,
+        )?;
+        let image = self.submit_and_read_back(encoder, &color_texture, width, height)?;
+        metrics.render_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+        Ok((image, metrics))
+    }
 
-        // 1. Setup Render Target and Depth Texture (formato/MSAA do contrato)
-        let color_format = contract::offscreen_color_format();
-        let depth_format = contract::depth_format();
-        let sample_count = contract::msaa_sample_count().max(1);
+    /// Renders a scene with the sparse morph compute pass executed on GPU immediately before cel-shading in the same frame.
+    pub async fn render_scene_with_sparse_morphs(
+        &self,
+        scene: &Scene,
+        header: &SparseMorphHeader,
+        base_vertices: &[Vertex],
+        deltas: &[SparseMorphDelta],
+        channels: &[MorphChannel],
+        width: u32,
+        height: u32,
+    ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
+        let start_time = Instant::now();
+        let color_texture = self.create_readback_color_texture(width, height)?;
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let texture_desc = wgpu::TextureDescriptor {
+        // Buffers do compute de morphs sparse.
+        let header_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Morph Header Uniform Buffer"),
+            contents: bytemuck::bytes_of(header),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let base_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Morph Base Vertices Storage Buffer"),
+            contents: cast_slice(base_vertices),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let dummy_delta = SparseMorphDelta::new(0, [0.0; 3], [0.0; 3]);
+        let deltas_slice: &[SparseMorphDelta] = if deltas.is_empty() {
+            std::slice::from_ref(&dummy_delta)
+        } else {
+            deltas
+        };
+        let deltas_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Morph Deltas Storage Buffer"),
+            contents: cast_slice(deltas_slice),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let dummy_channel = MorphChannel::new(0.0, 0, 0);
+        let channels_slice: &[MorphChannel] = if channels.is_empty() {
+            std::slice::from_ref(&dummy_channel)
+        } else {
+            channels
+        };
+        let channels_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Morph Channels Storage Buffer"),
+            contents: cast_slice(channels_slice),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let morphed_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Morphed Vertex Buffer (Compute Out -> Vertex In)"),
+            size: (base_vertices.len() * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // Compute de morphs PRIMEIRO, depois os passes de render, no mesmo encoder.
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Morph Compute & Render Command Encoder"),
+        });
+        self.dispatch_sparse_morphs(
+            &mut encoder,
+            &header_buffer,
+            &base_buffer,
+            &deltas_buffer,
+            &channels_buffer,
+            &morphed_vertex_buffer,
+            base_vertices.len() as u32,
+        );
+
+        let mut metrics = self.encode_scene_inner(
+            &mut encoder,
+            scene,
+            &RenderTarget {
+                color_view: &color_view,
+                width,
+                height,
+            },
+            Some(MorphedVertices {
+                buffer: &morphed_vertex_buffer,
+                vertex_count: base_vertices.len(),
+            }),
+        )?;
+        let image = self.submit_and_read_back(encoder, &color_texture, width, height)?;
+        metrics.render_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+        Ok((image, metrics))
+    }
+
+    /// Codifica a cena inteira (pré-passe, outline + cel com MSAA, DoF) em um
+    /// `CommandEncoder` **externo**, sem submeter nem ler nada de volta — é o
+    /// ponto de entrada para o viewport interativo (egui/wgpu compartilhando o
+    /// device) e a base de [`Self::render_scene`].
+    ///
+    /// - `target.color_view` é a cor final/resolvida (formato do contrato,
+    ///   [`contract::offscreen_color_format`], 1× amostra, usage
+    ///   `RENDER_ATTACHMENT`).
+    /// - MSAA, profundidade e as intermediárias de DoF vêm do
+    ///   [`RenderTargetCache`] do renderer e só são realocadas quando
+    ///   `width`/`height` mudam.
+    /// - `RenderMetrics::render_time_ms` é o tempo de **codificação** na CPU.
+    ///
+    /// O encoder precisa ser submetido (na fila deste renderer) pelo chamador.
+    pub fn encode_scene(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &Scene,
+        target: &RenderTarget<'_>,
+    ) -> Result<RenderMetrics> {
+        self.encode_scene_inner(encoder, scene, target, None)
+    }
+
+    /// Renderiza a cena direto numa textura existente (viewport egui).
+    ///
+    /// A textura precisa ter o formato do contrato (`offscreen_color_format`),
+    /// 1 amostra, 2D, e usage `RENDER_ATTACHMENT` (+ `TEXTURE_BINDING` para o
+    /// egui amostrá-la). Cria um encoder próprio e submete na fila do renderer.
+    pub fn render_to_texture(&self, scene: &Scene, texture: &wgpu::Texture) -> Result<RenderMetrics> {
+        let start_time = Instant::now();
+        let expected_format = contract::offscreen_color_format();
+        if texture.format() != expected_format {
+            anyhow::bail!(
+                "textura com formato {:?}; o contrato exige {:?}",
+                texture.format(),
+                expected_format
+            );
+        }
+        if texture.sample_count() != 1 || texture.dimension() != wgpu::TextureDimension::D2 {
+            anyhow::bail!("a textura de destino precisa ser 2D com 1 amostra");
+        }
+        if !texture.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
+            anyhow::bail!("a textura de destino precisa do usage RENDER_ATTACHMENT");
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render To Texture Encoder"),
+        });
+        let mut metrics = self.encode_scene_inner(
+            &mut encoder,
+            scene,
+            &RenderTarget {
+                color_view: &view,
+                width: texture.width(),
+                height: texture.height(),
+            },
+            None,
+        )?;
+        self.queue.submit(Some(encoder.finish()));
+        metrics.render_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+        Ok(metrics)
+    }
+
+    /// Quantas (re)alocações o [`RenderTargetCache`] já fez (telemetria/teste:
+    /// quadros do mesmo tamanho não podem aumentar este contador).
+    pub fn target_cache_allocations(&self) -> u64 {
+        self.lock_target_cache().allocations()
+    }
+
+    fn lock_target_cache(&self) -> std::sync::MutexGuard<'_, RenderTargetCache> {
+        self.target_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Textura de cor 1× lida de volta por `render_scene*`.
+    fn create_readback_color_texture(&self, width: u32, height: u32) -> Result<wgpu::Texture> {
+        if width == 0 || height == 0 {
+            anyhow::bail!("dimensões de render inválidas: {width}x{height}");
+        }
+        Ok(self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Offscreen Color Texture (resolve target)"),
             size: wgpu::Extent3d {
                 width,
@@ -1454,113 +1683,158 @@ impl HeadlessRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: color_format,
+            format: contract::offscreen_color_format(),
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
-        };
-        let color_texture = self.device.create_texture(&texture_desc);
-        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        }))
+    }
 
-        // P0 renderer: mesmo alvo MSAA do viewport, resolvido na textura lida
-        let msaa_texture = if sample_count > 1 && contract::resolve_to_swapchain() {
-            Some(self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Offscreen Color Texture (MSAA)"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
+    /// Espera a GPU terminar; uma falha do poll vira diagnóstico (o `recv` do
+    /// chamador reporta o efeito).
+    fn wait_for_gpu(&self) {
+        if let Err(error) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
+            diagnostics::report_with_detail(
+                "readback_failed",
+                "falha ao aguardar a GPU (device.poll)",
+                Some(error.to_string()),
+            );
+        }
+    }
+
+    /// Copia a textura de cor para um buffer, submete o encoder e lê os pixels
+    /// RGBA8 (descartando o padding de 256 B por linha).
+    fn submit_and_read_back(
+        &self,
+        mut encoder: wgpu::CommandEncoder,
+        color_texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+        // Output buffer com row pitch alinhado (wgpu exige 256 B).
+        let unpadded_bytes_per_row = width * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+        let buffer_size = (padded_bytes_per_row * height) as wgpu::BufferAddress;
+
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Output Download Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &output_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
                 },
-                mip_level_count: 1,
-                sample_count,
-                dimension: wgpu::TextureDimension::D2,
-                format: color_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            }))
-        } else {
-            None
-        };
-        let msaa_view = msaa_texture
-            .as_ref()
-            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
-
-        // Fase 2 (#53): Anime Bokeh DoF — com DoF ligado, a cena resolve numa
-        // textura intermediária 1× (amostrável) e o passe de pós escreve na
-        // textura que é lida de volta. Sem DoF, tudo é exatamente como antes
-        // (frame congelado intacto).
-        let dof_enabled = scene.dof.enabled;
-        let scene_texture = if dof_enabled {
-            Some(self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Offscreen Color Texture (DoF scene, 1x)"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: color_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }))
-        } else {
-            None
-        };
-        let scene_view = scene_texture
-            .as_ref()
-            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
-            match (&msaa_view, &scene_view) {
-                (Some(view), Some(intermediate)) => (view, Some(intermediate)),
-                (Some(view), None) => (view, Some(&color_view)),
-                (None, Some(intermediate)) => (intermediate, None),
-                (None, None) => (&color_view, None),
-            };
-
-        let depth_desc = wgpu::TextureDescriptor {
-            label: Some("Offscreen Depth Texture"),
-            size: wgpu::Extent3d {
+            },
+            wgpu::Extent3d {
                 width,
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: depth_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        };
-        let depth_texture = self.device.create_texture(&depth_desc);
-        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        );
 
-        // Profundidade 1× resolvida — o passe de DoF precisa AMOSTRAR a
-        // distância (a MSAA depth só existe como attachment).
-        let (dof_depth_texture, dof_depth_view) = if dof_enabled && sample_count > 1 {
-            let resolved = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Offscreen Depth Texture (DoF resolve, 1x)"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: depth_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
-            (Some(resolved), Some(view))
-        } else {
-            (None, None)
-        };
+        self.queue.submit(Some(encoder.finish()));
 
-        // 2. Setup Camera Uniform
+        let buffer_slice = output_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        self.wait_for_gpu();
+
+        rx.recv()
+            .context("Channel receive failed while waiting for GPU buffer mapping")
+            .and_then(|result| result.context("Failed to map GPU buffer for image extraction"))
+            .map_err(|error| {
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "falha ao mapear o buffer de imagem na GPU",
+                    Some(error.to_string()),
+                );
+                error
+            })?;
+
+        let padded_data = buffer_slice
+            .get_mapped_range()
+            .context("Failed to access mapped image buffer")?;
+        let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
+
+        for row in 0..height {
+            let start = (row * padded_bytes_per_row) as usize;
+            let end = start + (width * 4) as usize;
+            unpadded_pixels.extend_from_slice(&padded_data[start..end]);
+        }
+
+        drop(padded_data);
+        output_buffer.unmap();
+
+        ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, unpadded_pixels)
+            .context("Failed to construct ImageBuffer from raw unpadded pixels")
+            .map_err(|error| {
+                diagnostics::report_with_detail(
+                    "readback_failed",
+                    "pixels lidos da GPU não formam uma imagem válida",
+                    Some(error.to_string()),
+                );
+                error
+            })
+    }
+
+    /// Núcleo único de codificação: `encode_scene` (sem morphs) e
+    /// `render_scene_with_sparse_morphs` (com o buffer morfado pelo compute)
+    /// desenham exatamente o mesmo quadro.
+    fn encode_scene_inner(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &Scene,
+        target: &RenderTarget<'_>,
+        morphed: Option<MorphedVertices<'_>>,
+    ) -> Result<RenderMetrics> {
+        let start_time = Instant::now();
+        self.drain_device_errors();
+
+        let width = target.width;
+        let height = target.height;
+        if width == 0 || height == 0 {
+            anyhow::bail!("dimensões de render inválidas: {width}x{height}");
+        }
+        let color_view = target.color_view;
+
+        // Alvos intermediários persistentes (MSAA, profundidade, DoF): só
+        // realocam quando o tamanho muda.
+        let dof_enabled = scene.dof.enabled;
+        let TargetViews {
+            msaa_view,
+            depth_texture,
+            depth_view,
+            scene_view,
+            dof_depth_texture,
+            dof_depth_view,
+        } = self
+            .lock_target_cache()
+            .ensure(&self.device, width, height, dof_enabled);
+
+        let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
+            match (&msaa_view, &scene_view) {
+                (Some(view), Some(intermediate)) => (view, Some(intermediate)),
+                (Some(view), None) => (view, Some(color_view)),
+                (None, Some(intermediate)) => (intermediate, None),
+                (None, None) => (color_view, None),
+            };
+
+        // 1. Câmera
         let mut camera_copy = scene.camera.clone();
         camera_copy.aspect = width as f32 / height as f32;
         let view_proj = camera_copy.build_view_projection_matrix();
@@ -1619,23 +1893,6 @@ impl HeadlessRenderer {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        // 4. Setup Output Buffer with row pitch alignment (wgpu requires 256 byte alignment)
-        let unpadded_bytes_per_row = width * 4;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
-        let buffer_size = (padded_bytes_per_row * height) as wgpu::BufferAddress;
-
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Download Buffer"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        // 5. Command Encoding and Rendering
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Command Encoder"),
-        });
 
         // Issue #14: plano de execução do quadro — overrides do snapshot sobre
         // a topologia do contrato (nunca falha: cai no contrato com diagnóstico).
@@ -1696,11 +1953,19 @@ impl HeadlessRenderer {
                 }
 
                 triangle_count += mesh.indices.len() / 3;
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Vertex Buffer"),
-                    contents: cast_slice(&mesh.vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+                // Vértices morfados na GPU quando os tamanhos batem (o compute
+                // escreveu no buffer morfado), senão VBO estático — o handle é
+                // clonado, não os bytes.
+                let vertex_buffer = match morphed {
+                    Some(morph) if mesh.vertices.len() == morph.vertex_count => {
+                        morph.buffer.clone()
+                    }
+                    _ => self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Vertex Buffer"),
+                        contents: cast_slice(&mesh.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                };
                 prepared.push(self.prepare_node_draw(
                     node,
                     mesh,
@@ -1895,7 +2160,7 @@ impl HeadlessRenderer {
             let mut dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Anime Bokeh DoF Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
+                    view: color_view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -1928,720 +2193,16 @@ impl HeadlessRenderer {
             }
         }
 
-        // Copy texture to output download buffer
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &color_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &output_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
 
-        self.queue.submit(Some(encoder.finish()));
-
-        // 6. Map buffer and read image pixels
-        let buffer_slice = output_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = tx.send(res);
-        });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-
-        rx.recv()
-            .context("Channel receive failed while waiting for GPU buffer mapping")
-            .and_then(|result| result.context("Failed to map GPU buffer for image extraction"))
-            .map_err(|error| {
-                diagnostics::report_with_detail(
-                    "readback_failed",
-                    "falha ao mapear o buffer de imagem na GPU",
-                    Some(error.to_string()),
-                );
-                error
-            })?;
-
-        let padded_data = buffer_slice
-            .get_mapped_range()
-            .context("Failed to access mapped image buffer")?;
-        let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
-
-        for row in 0..height {
-            let start = (row * padded_bytes_per_row) as usize;
-            let end = start + (width * 4) as usize;
-            unpadded_pixels.extend_from_slice(&padded_data[start..end]);
-        }
-
-        drop(padded_data);
-        output_buffer.unmap();
-
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, unpadded_pixels)
-            .context("Failed to construct ImageBuffer from raw unpadded pixels")
-            .map_err(|error| {
-                diagnostics::report_with_detail(
-                    "readback_failed",
-                    "pixels lidos da GPU não formam uma imagem válida",
-                    Some(error.to_string()),
-                );
-                error
-            })?;
-
-        let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-
-        let metrics = RenderMetrics {
-            render_time_ms: elapsed,
+        Ok(RenderMetrics {
+            render_time_ms: start_time.elapsed().as_secs_f64() * 1000.0,
             draw_calls,
             culled_draw_calls,
             executed_passes: plan.order.clone(),
             triangle_count,
             adapter_name: self.adapter_info.name.clone(),
             backend: format!("{:?}", self.adapter_info.backend),
-        };
-
-        Ok((image, metrics))
-    }
-
-    /// Renders a scene with the sparse morph compute pass executed on GPU immediately before cel-shading in the same frame.
-    pub async fn render_scene_with_sparse_morphs(
-        &self,
-        scene: &Scene,
-        header: &SparseMorphHeader,
-        base_vertices: &[Vertex],
-        deltas: &[SparseMorphDelta],
-        channels: &[MorphChannel],
-        width: u32,
-        height: u32,
-    ) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, RenderMetrics)> {
-        let start_time = Instant::now();
-        self.drain_device_errors();
-
-        // 1. Setup Render Target and Depth Texture (formato/MSAA do contrato)
-        let color_format = contract::offscreen_color_format();
-        let depth_format = contract::depth_format();
-        let sample_count = contract::msaa_sample_count().max(1);
-
-        let texture_desc = wgpu::TextureDescriptor {
-            label: Some("Offscreen Color Texture (Morphed, resolve target)"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: color_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        };
-        let color_texture = self.device.create_texture(&texture_desc);
-        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // P0 renderer: mesmo alvo MSAA do viewport, resolvido na textura lida
-        let msaa_texture = if sample_count > 1 && contract::resolve_to_swapchain() {
-            Some(self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Offscreen Color Texture (Morphed, resolve target) (MSAA)"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count,
-                dimension: wgpu::TextureDimension::D2,
-                format: color_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            }))
-        } else {
-            None
-        };
-        let msaa_view = msaa_texture
-            .as_ref()
-            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
-
-        // Fase 2 (#53): mesmo fluxo de DoF do render_scene (intermediária 1×
-        // + profundidade resolvida; sem DoF, comportamento anterior).
-        let dof_enabled = scene.dof.enabled;
-        let scene_texture = if dof_enabled {
-            Some(self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Offscreen Color Texture (Morphed, DoF scene, 1x)"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: color_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }))
-        } else {
-            None
-        };
-        let scene_view = scene_texture
-            .as_ref()
-            .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        let (attachment_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
-            match (&msaa_view, &scene_view) {
-                (Some(view), Some(intermediate)) => (view, Some(intermediate)),
-                (Some(view), None) => (view, Some(&color_view)),
-                (None, Some(intermediate)) => (intermediate, None),
-                (None, None) => (&color_view, None),
-            };
-
-        let depth_desc = wgpu::TextureDescriptor {
-            label: Some("Offscreen Depth Texture (Morphed)"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: depth_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        };
-        let depth_texture = self.device.create_texture(&depth_desc);
-        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let (dof_depth_texture, dof_depth_view) = if dof_enabled && sample_count > 1 {
-            let resolved = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Offscreen Depth Texture (Morphed, DoF resolve, 1x)"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: depth_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
-            (Some(resolved), Some(view))
-        } else {
-            (None, None)
-        };
-
-        // 2. Setup Morph Compute Buffers
-        let header_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Morph Header Uniform Buffer"),
-            contents: bytemuck::bytes_of(header),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        let base_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Morph Base Vertices Storage Buffer"),
-            contents: cast_slice(base_vertices),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let dummy_delta = SparseMorphDelta::new(0, [0.0; 3], [0.0; 3]);
-        let deltas_slice: &[SparseMorphDelta] = if deltas.is_empty() {
-            std::slice::from_ref(&dummy_delta)
-        } else {
-            deltas
-        };
-        let deltas_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Morph Deltas Storage Buffer"),
-            contents: cast_slice(deltas_slice),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let dummy_channel = MorphChannel::new(0.0, 0, 0);
-        let channels_slice: &[MorphChannel] = if channels.is_empty() {
-            std::slice::from_ref(&dummy_channel)
-        } else {
-            channels
-        };
-        let channels_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Morph Channels Storage Buffer"),
-            contents: cast_slice(channels_slice),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let morphed_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Morphed Vertex Buffer (Compute Out -> Vertex In)"),
-            size: (base_vertices.len() * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // 3. Setup Camera Uniform
-        let mut camera_copy = scene.camera.clone();
-        camera_copy.aspect = width as f32 / height as f32;
-        let view_proj = camera_copy.build_view_projection_matrix();
-
-        // P1-05: `view_proj`/`camera_pos` são da cena; o **model matrix** é por
-        // nó e é montado no laço de desenho (antes o nó 2 herdava o transform
-        // do nó 1).
-        let camera_view_proj = view_proj.to_cols_array();
-        let camera_pos = camera_copy.eye.extend(1.0).to_array();
-
-        // Issue #12: matrizes mundiais resolvidas uma vez por quadro, como no
-        // caminho principal (`W = W_pai × T_local`).
-        let world_matrices = scene.resolve_world_transforms().unwrap_or_default();
-
-        // 4. Setup Light Uniform
-        let light_uniform = LightUniform {
-            direction: [
-                scene.light.direction[0],
-                scene.light.direction[1],
-                scene.light.direction[2],
-                scene.light.intensity,
-            ],
-            color: [
-                scene.light.color[0],
-                scene.light.color[1],
-                scene.light.color[2],
-                scene.light.ambient_intensity,
-            ],
-            shadow_color: [
-                scene.light.shadow_color[0],
-                scene.light.shadow_color[1],
-                scene.light.shadow_color[2],
-                scene.light.shadow_saturation,
-            ],
-            ambient_sky: [scene.light.ambient_sky[0], scene.light.ambient_sky[1], scene.light.ambient_sky[2], 1.0],
-            ambient_ground: [scene.light.ambient_ground[0], scene.light.ambient_ground[1], scene.light.ambient_ground[2], 1.0],
-        };
-        let light_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Light Uniform Buffer"),
-            contents: cast_slice(&[light_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        // P1-04: paleta de ossos (24 × mat4 = 1536 B) entregue pelo núcleo. Sem
-        // ela o WGSL não compila (binding 5/2) e o vértice ficaria na pose de
-        // repouso.
-        let bone_palette = bone_palette_uniform(scene);
-        let bones_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Bone Palette Uniform Buffer"),
-            contents: cast_slice(&[bone_palette]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        // 5. Setup Output Download Buffer
-        let unpadded_bytes_per_row = width * 4;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
-        let buffer_size = (padded_bytes_per_row * height) as wgpu::BufferAddress;
-
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Download Buffer"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        // 6. Command Encoding: Compute Pass followed by Render Pass
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Morph Compute & Render Command Encoder"),
-        });
-
-        // Dispatch Sparse Morph Compute Pass FIRST
-        self.dispatch_sparse_morphs(
-            &mut encoder,
-            &header_buffer,
-            &base_buffer,
-            &deltas_buffer,
-            &channels_buffer,
-            &morphed_vertex_buffer,
-            base_vertices.len() as u32,
-        );
-
-        // Issue #14: o mesmo plano do caminho principal — os dois caminhos do
-        // headless não podem divergir no que desenham.
-        let plan = self.graph_execution_plan();
-        let depth_prepass = plan.contains(GraphOverrides::DEPTH_PREPASS);
-
-        let mut draw_calls = 0;
-        let mut triangle_count = 0;
-        // Issue #13: o mesmo filtro de frustum do caminho principal — os dois
-        // caminhos do headless não podem divergir no que desenham.
-        let frustum = anigo_core::math::Frustum::from_view_projection(&view_proj);
-        let mut culled_draw_calls = 0u32;
-
-        // Issue #14: aspecto do quadro + recursos de desenho preparados uma vez,
-        // como no caminho principal.
-        let aspect = width as f32 / height.max(1) as f32;
-        let mut prepared: Vec<PreparedPassInputs> = Vec::new();
-        for node in &scene.nodes {
-            if !node.visible {
-                continue;
-            }
-            if let Some(mesh) = &node.mesh {
-                if mesh.vertices.is_empty() || mesh.indices.is_empty() {
-                    continue;
-                }
-
-                // P1-03: valida a malha **antes** de criar VBO/IBO. Uma
-                // malha reprovada vira diagnóstico com código do contrato e
-                // o nó é pulado (sem buffer torto, sem erro do wgpu).
-                if let Err(problem) = mesh_validation::validate_mesh(mesh) {
-                    diagnostics::report_with_detail(
-                        "mesh_invalid",
-                        "malha reprovada antes de criar buffers de GPU",
-                        Some(problem.message()),
-                    );
-                    continue;
-                }
-
-                // P1-05: model/normal do nó atual (era o transform de nodes[0]).
-                // Issue #12: a matriz é a **mundial** (pai × local); nós
-                // ausentes do mapa caem na transformação local.
-                let model_mat = world_matrices
-                    .get(&node.id)
-                    .copied()
-                    .unwrap_or_else(|| node.transform.to_matrix());
-
-                // Issue #13: fora do frustum não há buffer nem draw call.
-                if let Some(local_bounds) = mesh.local_bounds() {
-                    let volume = crate::culling::SceneVolume::from_local(&local_bounds, &model_mat);
-                    if !volume.is_visible(&frustum) {
-                        culled_draw_calls += 1;
-                        continue;
-                    }
-                }
-
-                triangle_count += mesh.indices.len() / 3;
-                // Vértices morfados na GPU quando os tamanhos batem (o compute
-                // escreveu no `morphed_vertex_buffer`), senão VBO estático — o
-                // handle é clonado, não os bytes.
-                let vertex_buffer = if mesh.vertices.len() == base_vertices.len() {
-                    morphed_vertex_buffer.clone()
-                } else {
-                    self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Static Vertex Buffer"),
-                        contents: cast_slice(&mesh.vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    })
-                };
-                prepared.push(self.prepare_node_draw(
-                    node,
-                    mesh,
-                    model_mat,
-                    camera_view_proj,
-                    camera_pos,
-                    aspect,
-                    &light_buffer,
-                    &bones_buffer,
-                    vertex_buffer,
-                ));
-            }
-        }
-
-        // Issue #14: pré-passe de profundidade sobre a geometria morfada.
-        if depth_prepass {
-            let mut prepass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Depth Prepass (Morphed)"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            for inputs in &prepared {
-                prepass.set_pipeline(&self.depth_prepass_pipeline);
-                prepass.set_bind_group(0, &inputs.cel_bind_group, &[]);
-                prepass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
-                prepass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                prepass.draw_indexed(0..inputs.index_count, 0, 0..1);
-                draw_calls += 1;
-            }
-        }
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Anime Cel Render Pass with Morphed Vertices"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: attachment_view,
-                    resolve_target,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: scene.background_color[0] as f64,
-                            g: scene.background_color[1] as f64,
-                            b: scene.background_color[2] as f64,
-                            a: scene.background_color[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    // Fase 2 (#53): a resolve da profundidade MSAA→1× é manual
-                    // (copy_texture_to_texture) — o wgpu deste projeto não tem
-                    // o campo de depth resolve no attachment.
-                    depth_ops: Some(wgpu::Operations {
-                        // Issue #14: com o pré-passe, o z-buffer resolvido é
-                        // carregado em vez de limpo.
-                        load: if depth_prepass {
-                            wgpu::LoadOp::Load
-                        } else {
-                            wgpu::LoadOp::Clear(1.0)
-                        },
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            for inputs in &prepared {
-                render_pass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                // Issue #14: a ordem dos passes vem do plano (contrato +
-                // overrides do snapshot), a mesma do viewport.
-                for pass_name in &plan.order {
-                    // O pré-passe executa no `RenderPass` dedicado acima.
-                    if pass_name == GraphOverrides::DEPTH_PREPASS {
-                        continue;
-                    }
-                    match pass_name.as_str() {
-                        "outline" => {
-                            render_pass.set_pipeline(&self.outline_pipeline);
-                            render_pass.set_bind_group(0, &inputs.outline_bind_group, &[]);
-                        }
-                        "cel" => {
-                            render_pass.set_pipeline(&self.cel_pipeline);
-                            render_pass.set_bind_group(0, &inputs.cel_bind_group, &[]);
-                        }
-                        "dof_post" => {
-                            continue;
-                        }
-                        other => {
-                            // P1-01: passe sem pipeline vira diagnóstico
-                            // observável (era debug_assert!).
-                            contract::report(format!(
-                                "passe '{}' do plano não tem pipeline no headless",
-                                other
-                            ));
-                            continue;
-                        }
-                    }
-                    render_pass.draw_indexed(0..inputs.index_count, 0, 0..1);
-                    draw_calls += 1;
-                }
-            }
-        }
-
-        // Resolve manual da profundidade (MSAA → 1×): o wgpu deste projeto não
-        // expõe depth resolve no attachment; o copy é o padrão do próprio
-        // resolve de cor e só entra quando o DoF pediu a textura 1×.
-        if let Some(dof_depth_texture) = &dof_depth_texture {
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &depth_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: dof_depth_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-
-        // Fase 2 (#53): Anime Bokeh DoF — idêntico ao do render_scene.
-        if dof_enabled {
-            if let (Some(scene_view_for_dof), Some(dof_depth_for_dof)) =
-                (scene_view.as_ref(), dof_depth_view.as_ref())
-            {
-            let dof_uniform = crate::uniforms::DofUniform::from_settings(
-                scene.dof.focus_distance,
-                scene.dof.f_number,
-                scene.dof.bokeh_shape,
-                scene.dof.focal_mm,
-                scene.dof.max_radius_px,
-                width,
-                height,
-                scene.camera.z_near,
-                scene.camera.z_far,
-            );
-            let dof_uniform_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("DofUniform (Morphed)"),
-                contents: bytemuck::bytes_of(&dof_uniform),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let dof_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("DoF Bind Group (Morphed)"),
-                layout: &self.dof_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: dof_uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(scene_view_for_dof),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(dof_depth_for_dof),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.dof_nearest_sampler),
-                    },
-                ],
-            });
-            let mut dof_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Anime Bokeh DoF Pass (Morphed)"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if let Some(ref pipeline) = self.dof_pipeline {
-                dof_pass.set_pipeline(pipeline);
-                dof_pass.set_bind_group(0, &dof_bind_group, &[]);
-                dof_pass.draw(0..3, 0..1);
-                draw_calls += 1;
-            } else {
-                diagnostics::report(
-                    "dof_unavailable",
-                    "DoF desabilitado: backend gráfico não suporta leitura de textura de profundidade",
-                );
-            }
-            } else {
-                diagnostics::report(
-                    "dof_unavailable",
-                    "DoF habilitado sem as texturas intermediárias 1× — passe pulado neste frame",
-                );
-            }
-        }
-
-        // 7. Copy rendered color texture to download buffer
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &color_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &output_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        self.queue.submit(Some(encoder.finish()));
-
-        // 8. Map buffer and read image pixels
-        let buffer_slice = output_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = tx.send(res);
-        });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-
-        rx.recv()
-            .context("Channel receive failed while waiting for GPU buffer mapping")
-            .and_then(|result| result.context("Failed to map GPU buffer for image extraction"))
-            .map_err(|error| {
-                diagnostics::report_with_detail(
-                    "readback_failed",
-                    "falha ao mapear o buffer de imagem na GPU",
-                    Some(error.to_string()),
-                );
-                error
-            })?;
-
-        let padded_data = buffer_slice
-            .get_mapped_range()
-            .context("Failed to access mapped image buffer")?;
-        let mut unpadded_pixels = Vec::with_capacity((width * height * 4) as usize);
-
-        for row in 0..height {
-            let start = (row * padded_bytes_per_row) as usize;
-            let end = start + (width * 4) as usize;
-            unpadded_pixels.extend_from_slice(&padded_data[start..end]);
-        }
-
-        drop(padded_data);
-        output_buffer.unmap();
-
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, unpadded_pixels)
-            .context("Failed to construct ImageBuffer from raw unpadded pixels")
-            .map_err(|error| {
-                diagnostics::report_with_detail(
-                    "readback_failed",
-                    "pixels lidos da GPU não formam uma imagem válida",
-                    Some(error.to_string()),
-                );
-                error
-            })?;
-
-        let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-
-        let metrics = RenderMetrics {
-            render_time_ms: elapsed,
-            draw_calls,
-            culled_draw_calls,
-            executed_passes: plan.order.clone(),
-            triangle_count,
-            adapter_name: self.adapter_info.name.clone(),
-            backend: format!("{:?}", self.adapter_info.backend),
-        };
-
-        Ok((image, metrics))
+        })
     }
 }
 
