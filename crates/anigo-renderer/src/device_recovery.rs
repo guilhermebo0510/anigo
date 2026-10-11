@@ -265,10 +265,10 @@ impl UncapturedErrorBus {
     pub fn install_on(&self, device: &wgpu::Device) {
         let sender = self.sender.clone();
         let in_flight = std::sync::Arc::clone(&self.in_flight);
-        // wgpu 24: `on_uncaptured_error(Box<dyn UncapturedErrorHandler>)` com
-        // `UncapturedErrorHandler: Fn(Error) + Send + 'static` — o handler recebe
-        // o `wgpu::Error` **por valor** (não há `Option` nem `&`).
-        device.on_uncaptured_error(Box::new(move |error: wgpu::Error| {
+        // wgpu 30: `on_uncaptured_error(Arc<dyn UncapturedErrorHandler>)` com
+        // `UncapturedErrorHandler: Fn(Error) + Send + Sync + 'static` — o handler
+        // recebe o `wgpu::Error` **por valor** (não há `Option` nem `&`).
+        device.on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
             if sender
                 .send(UncapturedErrorRecord::from_wgpu_error(&error))
                 .is_ok()
