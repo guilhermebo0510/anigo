@@ -260,6 +260,27 @@ impl StudioApp {
                     .logarithmic(true)
                     .text("Raio"),
             );
+            use anigo_modeling::ops::transform::ProportionalFalloff as F;
+            let label = |f: F| match f {
+                F::Smooth => "Suave",
+                F::Sphere => "Esfera",
+                F::Root => "Raiz",
+                F::InverseSquare => "Inverso quadrado",
+                F::Sharp => "Agudo",
+                F::Linear => "Linear",
+                F::Constant => "Constante",
+                F::Random => "Aleatório",
+            };
+            ui.add_enabled_ui(self.modeling.proportional.enabled, |ui| {
+                egui::ComboBox::from_id_salt("pfalloff")
+                    .selected_text(label(self.modeling.proportional.falloff))
+                    .show_ui(ui, |ui| {
+                        for f in [F::Smooth, F::Sphere, F::Root, F::InverseSquare, F::Sharp, F::Linear, F::Constant, F::Random] {
+                            ui.selectable_value(&mut self.modeling.proportional.falloff, f, label(f));
+                        }
+                    });
+                ui.checkbox(&mut self.modeling.proportional.connected_only, "Somente conectados");
+            });
         });
         self.inspector_edit_operators(ui);
         self.inspector_modifiers(ui);

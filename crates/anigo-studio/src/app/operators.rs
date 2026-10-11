@@ -6,7 +6,9 @@ use super::StudioApp;
 use crate::icons;
 use crate::modeling::{Constraint, Mode, SnapshotPub, TransformKind};
 use crate::theme;
-use anigo_modeling::ops::{bevel, bisect, extrude, inset, loops, OpOutput};
+use anigo_modeling::ops::{
+    bevel, bisect, bridge, delete, dissolve, extrude, fill, flip, inset, loops, merge, misc, smooth, triangulate, OpOutput,
+};
 use anigo_modeling::{EditMesh, ModelError, ModelResult, Selection};
 use egui::RichText;
 use glam::{Vec2, Vec3};
@@ -20,9 +22,59 @@ pub enum OpKind {
     Bevel,
     LoopCut,
     Bisect,
+    DeleteVerts,
+    DeleteEdges,
+    DeleteFaces,
+    DeleteOnlyFaces,
+    MergeCenter,
+    MergeByDistance,
+    DissolveVerts,
+    DissolveEdges,
+    DissolveFaces,
+    LimitedDissolve,
+    FillHole,
+    GridFill,
+    Bridge,
+    Triangulate,
+    TrisToQuads,
+    FlipNormals,
+    RecalcOutside,
+    Smooth,
+    Relax,
+    Subdivide,
+    Poke,
+    MarkSharp,
+    ClearSharp,
+    MarkSeam,
+    ClearSeam,
+    SetCrease,
+    HideSelected,
+    RevealAll,
 }
 
 impl OpKind {
+    /// Operadores que exigem uma seleção/ação direta (sem painel de ajuste de parâmetros).
+    pub fn has_params(self) -> bool {
+        matches!(
+            self,
+            OpKind::Extrude
+                | OpKind::Inset
+                | OpKind::InsetIndividual
+                | OpKind::Bevel
+                | OpKind::LoopCut
+                | OpKind::Bisect
+                | OpKind::MergeByDistance
+                | OpKind::LimitedDissolve
+                | OpKind::Bridge
+                | OpKind::Smooth
+                | OpKind::Relax
+                | OpKind::Subdivide
+                | OpKind::Poke
+                | OpKind::SetCrease
+                | OpKind::GridFill
+        )
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             OpKind::Extrude => "Extrudar região",
@@ -32,6 +84,34 @@ impl OpKind {
             OpKind::Bevel => "Chanfro",
             OpKind::LoopCut => "Corte em loop",
             OpKind::Bisect => "Cortar por plano",
+            OpKind::DeleteVerts => "Excluir vértices",
+            OpKind::DeleteEdges => "Excluir arestas",
+            OpKind::DeleteFaces => "Excluir faces",
+            OpKind::DeleteOnlyFaces => "Excluir só faces",
+            OpKind::MergeCenter => "Unir no centro",
+            OpKind::MergeByDistance => "Unir por distância",
+            OpKind::DissolveVerts => "Dissolver vértices",
+            OpKind::DissolveEdges => "Dissolver arestas",
+            OpKind::DissolveFaces => "Dissolver faces",
+            OpKind::LimitedDissolve => "Dissolução limitada",
+            OpKind::FillHole => "Preencher buraco",
+            OpKind::GridFill => "Preencher em grade",
+            OpKind::Bridge => "Ponte entre loops",
+            OpKind::Triangulate => "Triangular",
+            OpKind::TrisToQuads => "Triângulos para quads",
+            OpKind::FlipNormals => "Inverter normais",
+            OpKind::RecalcOutside => "Recalcular normais (fora)",
+            OpKind::Smooth => "Suavizar vértices",
+            OpKind::Relax => "Relaxar vértices",
+            OpKind::Subdivide => "Subdividir",
+            OpKind::Poke => "Poke",
+            OpKind::MarkSharp => "Marcar aresta dura",
+            OpKind::ClearSharp => "Limpar aresta dura",
+            OpKind::MarkSeam => "Marcar costura",
+            OpKind::ClearSeam => "Limpar costura",
+            OpKind::SetCrease => "Vinco de subdivisão",
+            OpKind::HideSelected => "Ocultar seleção",
+            OpKind::RevealAll => "Revelar tudo",
         }
     }
 }
@@ -54,6 +134,15 @@ pub struct OpParams {
     pub clear_inner: bool,
     pub clear_outer: bool,
     pub fill: bool,
+    pub factor: f32,
+    pub iterations: u32,
+    pub merge_distance: f32,
+    pub dissolve_angle_deg: f32,
+    pub subdiv_cuts: u32,
+    pub subdiv_smooth: f32,
+    pub crease: f32,
+    pub poke_offset: f32,
+    pub lock_boundary: bool,
 }
 
 impl Default for OpParams {
@@ -74,6 +163,15 @@ impl Default for OpParams {
             clear_inner: false,
             clear_outer: false,
             fill: true,
+            factor: 0.5,
+            iterations: 1,
+            merge_distance: 0.001,
+            dissolve_angle_deg: 5.0,
+            subdiv_cuts: 1,
+            subdiv_smooth: 0.0,
+            crease: 1.0,
+            poke_offset: 0.0,
+            lock_boundary: true,
         }
     }
 }
@@ -123,6 +221,124 @@ pub fn apply_kind(kind: OpKind, params: &OpParams, mesh: &mut EditMesh, sel: &Se
             normal[params.plane_axis.min(2)] = 1.0;
             bisect::bisect(mesh, normal * params.plane_offset, normal, params.clear_inner, params.clear_outer, params.fill, 1e-5)
         }
+        _ => apply_more(kind, params, mesh, sel),
+    }
+}
+
+fn components(edges: &[anigo_modeling::EdgeKey]) -> Vec<Vec<anigo_modeling::EdgeKey>> {
+    let mut parent: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    fn find(p: &mut std::collections::BTreeMap<u32, u32>, x: u32) -> u32 {
+        let mut r = x;
+        while p.get(&r).copied().unwrap_or(r) != r {
+            r = p[&r];
+        }
+        p.insert(x, r);
+        r
+    }
+    for &(a, b) in edges {
+        parent.entry(a).or_insert(a);
+        parent.entry(b).or_insert(b);
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+    let mut groups: std::collections::BTreeMap<u32, Vec<anigo_modeling::EdgeKey>> = std::collections::BTreeMap::new();
+    for &e in edges {
+        let r = find(&mut parent, e.0);
+        groups.entry(r).or_default().push(e);
+    }
+    groups.into_values().collect()
+}
+
+fn apply_more(kind: OpKind, params: &OpParams, mesh: &mut EditMesh, sel: &Selection) -> ModelResult<OpOutput> {
+    let faces: Vec<u32> = sel.faces.iter().copied().collect();
+    let edges: Vec<anigo_modeling::EdgeKey> = sel.edges.iter().copied().collect();
+    let verts: Vec<u32> = sel.verts.iter().copied().collect();
+    match kind {
+        OpKind::DeleteVerts => delete::delete_verts(mesh, &verts),
+        OpKind::DeleteEdges => delete::delete_edges(mesh, &edges),
+        OpKind::DeleteFaces => delete::delete_faces(mesh, &faces),
+        OpKind::DeleteOnlyFaces => delete::delete_faces_keep_verts(mesh, &faces),
+        OpKind::MergeCenter => merge::merge_verts(mesh, &verts, merge::MergeMode::Center),
+        OpKind::MergeByDistance => {
+            let scope = (!verts.is_empty()).then_some(verts.as_slice());
+            merge::merge_by_distance(mesh, scope, params.merge_distance, merge::ByDistanceOptions::default())
+        }
+        OpKind::DissolveVerts => dissolve::dissolve_verts(mesh, &verts, false, false),
+        OpKind::DissolveEdges => dissolve::dissolve_edges(mesh, &edges, true),
+        OpKind::DissolveFaces => dissolve::dissolve_faces(mesh, &faces),
+        OpKind::LimitedDissolve => dissolve::limited_dissolve(
+            mesh,
+            params.dissolve_angle_deg.to_radians(),
+            false,
+            dissolve::Delimit::default(),
+        ),
+        OpKind::FillHole => fill::fill_hole(mesh, &edges),
+        OpKind::GridFill => fill::grid_fill(mesh, &edges, 0, 0, false),
+        OpKind::Bridge => {
+            let comps = components(&edges);
+            if comps.len() != 2 {
+                return Err(ModelError::InvalidParameter(format!(
+                    "a ponte precisa de exatamente 2 loops de arestas selecionados (há {})",
+                    comps.len()
+                )));
+            }
+            let topo = anigo_modeling::Topology::build(mesh);
+            let path = |c: &Vec<anigo_modeling::EdgeKey>| -> ModelResult<loops::EdgePath> {
+                let start = c[0];
+                if topo.is_boundary_edge(start.0, start.1) {
+                    loops::boundary_loop(mesh, &topo, start)
+                } else {
+                    loops::edge_loop(mesh, &topo, start)
+                }
+            };
+            let (a, b) = (path(&comps[0])?, path(&comps[1])?);
+            bridge::bridge_edge_loops(mesh, &a, &b, 1, 0, bridge::BridgeInterpolation::Linear)
+        }
+        OpKind::Triangulate => triangulate::triangulate_faces(
+            mesh,
+            &faces,
+            triangulate::QuadMethod::Beauty,
+            triangulate::NgonMethod::Beauty,
+        ),
+        OpKind::TrisToQuads => triangulate::tris_to_quads(mesh, &faces, 40f32.to_radians(), true, true, true),
+        OpKind::FlipNormals => flip::flip_faces(mesh, &faces),
+        OpKind::RecalcOutside => flip::recalc_normals_outside(mesh, false),
+        OpKind::Smooth => smooth::smooth_verts(
+            mesh,
+            &verts,
+            params.factor,
+            params.iterations,
+            params.lock_boundary,
+            [true; 3],
+            smooth::SmoothWeights::Uniform,
+        ),
+        OpKind::Relax => smooth::relax_verts(
+            mesh,
+            &verts,
+            params.factor,
+            params.iterations,
+            smooth::RelaxMethod::Taubin { pass_band: 0.1 },
+            params.lock_boundary,
+        ),
+        OpKind::Subdivide => {
+            if !faces.is_empty() {
+                misc::subdivide_faces(mesh, &faces, params.subdiv_cuts as usize, params.subdiv_smooth)
+            } else {
+                misc::subdivide_edges(mesh, &edges, params.subdiv_cuts as usize, params.subdiv_smooth, 0.0, 1)
+            }
+        }
+        OpKind::Poke => misc::poke_faces(mesh, &faces, params.poke_offset, true),
+        OpKind::MarkSharp => misc::mark_sharp(mesh, &edges, true),
+        OpKind::ClearSharp => misc::mark_sharp(mesh, &edges, false),
+        OpKind::MarkSeam => misc::mark_seam(mesh, &edges, true),
+        OpKind::ClearSeam => misc::mark_seam(mesh, &edges, false),
+        OpKind::SetCrease => misc::set_crease(mesh, &edges, params.crease),
+        OpKind::HideSelected => misc::hide_faces(mesh, &faces),
+        OpKind::RevealAll => Ok(misc::reveal_all(mesh)),
+        // os demais já foram tratados em `apply_kind`
+        _ => Err(ModelError::InvalidParameter("operador sem implementação neste ramo".into())),
     }
 }
 
@@ -195,14 +411,33 @@ impl StudioApp {
             self.run_op(OpKind::LoopCut);
         } else if consume(ui, Modifiers::NONE, Key::K) {
             self.run_op(OpKind::Bisect);
+        } else if consume(ui, Modifiers::NONE, Key::X) || consume(ui, Modifiers::NONE, Key::Delete) {
+            let kind = match self.modeling.select_mode {
+                anigo_modeling::SelectMode::Vertex => OpKind::DeleteVerts,
+                anigo_modeling::SelectMode::Edge => OpKind::DeleteEdges,
+                anigo_modeling::SelectMode::Face => OpKind::DeleteFaces,
+            };
+            self.run_op(kind);
+        } else if consume(ui, Modifiers::NONE, Key::M) {
+            self.run_op(OpKind::MergeCenter);
+        } else if consume(ui, Modifiers::NONE, Key::F) {
+            self.run_op(OpKind::FillHole);
+        } else if consume(ui, Modifiers::COMMAND, Key::T) {
+            self.run_op(OpKind::Triangulate);
+        } else if consume(ui, Modifiers::COMMAND, Key::N) {
+            self.run_op(OpKind::RecalcOutside);
+        } else if consume(ui, Modifiers::ALT, Key::H) {
+            self.run_op(OpKind::RevealAll);
+        } else if consume(ui, Modifiers::NONE, Key::H) {
+            self.run_op(OpKind::HideSelected);
         }
     }
 
     pub(crate) fn inspector_edit_operators(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(RichText::new("Operadores").strong())
-            .default_open(true)
-            .show(ui, |ui| {
-                let rows: [(OpKind, &str, &str); 7] = [
+        const GROUPS: &[(&str, &[(OpKind, &str, &str)])] = &[
+            (
+                "Geometria",
+                &[
                     (OpKind::Extrude, icons::ARROW_CLOCKWISE, "E"),
                     (OpKind::ExtrudeIndividual, icons::ARROW_CLOCKWISE, ""),
                     (OpKind::Inset, icons::SQUARES_FOUR, "I"),
@@ -210,18 +445,71 @@ impl StudioApp {
                     (OpKind::Bevel, icons::POLYGON, "Ctrl+B"),
                     (OpKind::LoopCut, icons::LINE_SEGMENTS, "Ctrl+R"),
                     (OpKind::Bisect, icons::KNIFE, "K"),
-                ];
-                ui.horizontal_wrapped(|ui| {
-                    for (k, icon, key) in rows {
-                        let mut btn = ui.button(format!("{icon} {}", k.label()));
-                        if !key.is_empty() {
-                            btn = btn.on_hover_text(key);
+                    (OpKind::Bridge, icons::PIPE, ""),
+                    (OpKind::Subdivide, icons::GRID_FOUR, ""),
+                    (OpKind::Poke, icons::SPARKLE, ""),
+                ],
+            ),
+            (
+                "Remover / unir",
+                &[
+                    (OpKind::DeleteVerts, icons::TRASH, "X"),
+                    (OpKind::DeleteEdges, icons::TRASH, ""),
+                    (OpKind::DeleteFaces, icons::TRASH, ""),
+                    (OpKind::DeleteOnlyFaces, icons::TRASH, ""),
+                    (OpKind::MergeCenter, icons::UNITE, "M"),
+                    (OpKind::MergeByDistance, icons::UNITE, ""),
+                    (OpKind::DissolveVerts, icons::EXCLUDE, ""),
+                    (OpKind::DissolveEdges, icons::EXCLUDE, ""),
+                    (OpKind::DissolveFaces, icons::EXCLUDE, ""),
+                    (OpKind::LimitedDissolve, icons::EXCLUDE, ""),
+                    (OpKind::FillHole, icons::PAINT_BUCKET, "F"),
+                    (OpKind::GridFill, icons::GRID_NINE, ""),
+                ],
+            ),
+            (
+                "Faces / normais",
+                &[
+                    (OpKind::Triangulate, icons::POLYGON, "Ctrl+T"),
+                    (OpKind::TrisToQuads, icons::SQUARES_FOUR, "Alt+J"),
+                    (OpKind::FlipNormals, icons::ARROWS_CLOCKWISE, ""),
+                    (OpKind::RecalcOutside, icons::ARROWS_OUT, "Ctrl+N"),
+                    (OpKind::HideSelected, icons::EYE_SLASH, "H"),
+                    (OpKind::RevealAll, icons::EYE, "Alt+H"),
+                ],
+            ),
+            (
+                "Vértices",
+                &[(OpKind::Smooth, icons::DROP, ""), (OpKind::Relax, icons::SPIRAL, "")],
+            ),
+            (
+                "Atributos de aresta",
+                &[
+                    (OpKind::MarkSharp, icons::LINE_SEGMENT, ""),
+                    (OpKind::ClearSharp, icons::LINE_SEGMENT, ""),
+                    (OpKind::MarkSeam, icons::SCISSORS, ""),
+                    (OpKind::ClearSeam, icons::SCISSORS, ""),
+                    (OpKind::SetCrease, icons::SNOWFLAKE, ""),
+                ],
+            ),
+        ];
+        egui::CollapsingHeader::new(RichText::new("Operadores").strong())
+            .default_open(true)
+            .show(ui, |ui| {
+                for (title, ops) in GROUPS {
+                    ui.label(RichText::new(*title).color(theme::TEXT_DIM).size(11.5));
+                    ui.horizontal_wrapped(|ui| {
+                        for (k, icon, key) in ops.iter() {
+                            let mut btn = ui.button(format!("{icon} {}", k.label()));
+                            if !key.is_empty() {
+                                btn = btn.on_hover_text(*key);
+                            }
+                            if btn.clicked() {
+                                self.run_op(*k);
+                            }
                         }
-                        if btn.clicked() {
-                            self.run_op(k);
-                        }
-                    }
-                });
+                    });
+                }
             });
         self.inspector_last_op(ui);
     }
@@ -236,6 +524,9 @@ impl StudioApp {
             return;
         };
         let kind = last.kind;
+        if !kind.has_params() {
+            return;
+        }
         let mut p = last.params.clone();
         let mut changed = false;
         egui::CollapsingHeader::new(RichText::new(format!("Ajustar: {}", kind.label())).strong().color(theme::ACCENT))
@@ -274,6 +565,26 @@ impl StudioApp {
                         });
                         changed |= ui.add(egui::Slider::new(&mut p.slide, -1.0..=1.0).text("Deslizar")).changed();
                     }
+                    OpKind::MergeByDistance => changed |= dv(ui, "Distância", &mut p.merge_distance, 0.0005),
+                    OpKind::LimitedDissolve => changed |= dv(ui, "Ângulo (°)", &mut p.dissolve_angle_deg, 0.5),
+                    OpKind::Smooth | OpKind::Relax => {
+                        changed |= dv(ui, "Fator", &mut p.factor, 0.01);
+                        ui.horizontal(|ui| {
+                            ui.label("Iterações");
+                            changed |= ui.add(egui::DragValue::new(&mut p.iterations).range(1..=100)).changed();
+                        });
+                        changed |= ui.checkbox(&mut p.lock_boundary, "Travar fronteira").changed();
+                    }
+                    OpKind::Subdivide => {
+                        ui.horizontal(|ui| {
+                            ui.label("Cortes");
+                            changed |= ui.add(egui::DragValue::new(&mut p.subdiv_cuts).range(1..=16)).changed();
+                        });
+                        changed |= dv(ui, "Suavização", &mut p.subdiv_smooth, 0.01);
+                    }
+                    OpKind::Poke => changed |= dv(ui, "Deslocamento", &mut p.poke_offset, 0.01),
+                    OpKind::SetCrease => changed |= ui.add(egui::Slider::new(&mut p.crease, 0.0..=1.0).text("Vinco")).changed(),
+                    OpKind::Bridge | OpKind::GridFill => {}
                     OpKind::Bisect => {
                         ui.horizontal(|ui| {
                             for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
@@ -285,6 +596,7 @@ impl StudioApp {
                         changed |= ui.checkbox(&mut p.clear_outer, "Remover lado positivo").changed();
                         changed |= ui.checkbox(&mut p.fill, "Preencher corte").changed();
                     }
+                    _ => {}
                 }
             });
         if changed {
@@ -395,6 +707,121 @@ mod tests {
         s.edit_op("Inset", |m, sel| apply_kind(OpKind::Inset, &OpParams { thickness: 0.3, ..Default::default() }, m, sel)).unwrap();
         assert_ne!(hash_a, s.active_object().unwrap().mesh.content_hash());
         assert_eq!(s.history_labels().len(), d0 + 1);
+    }
+
+    fn run(s: &mut ModelingSession, kind: OpKind) -> Result<(), String> {
+        s.edit_op(kind.label(), |m, sel| apply_kind(kind, &OpParams::default(), m, sel))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn delete_fill_triangulate_flip_smooth_subdivide_and_attributes() {
+        // buraco → preencher
+        let mut s = session_with(PrimitiveKind::Cube);
+        s.set_select_mode(SelectMode::Face);
+        let sel = Selection::from_faces(&s.active_object().unwrap().mesh, [0u32]);
+        s.set_selection(sel, None);
+        run(&mut s, OpKind::DeleteOnlyFaces).unwrap();
+        assert_eq!(s.active_object().unwrap().mesh.face_count(), 5);
+        s.set_select_mode(SelectMode::Edge);
+        let topo = Topology::build(&s.active_object().unwrap().mesh);
+        let boundary: Vec<_> = topo.edges.iter().filter(|e| e.faces.len() == 1).map(|e| e.verts).collect();
+        assert_eq!(boundary.len(), 4);
+        s.set_selection(Selection::from_edges(boundary), None);
+        run(&mut s, OpKind::FillHole).unwrap();
+        assert!(Topology::build(&s.active_object().unwrap().mesh).is_closed_manifold());
+
+        // triangular tudo e voltar a quads
+        s.set_select_mode(SelectMode::Face);
+        s.select_all();
+        run(&mut s, OpKind::Triangulate).unwrap();
+        assert_eq!(s.active_object().unwrap().mesh.face_count(), 12);
+        s.select_all();
+        run(&mut s, OpKind::TrisToQuads).unwrap();
+        assert_eq!(s.active_object().unwrap().mesh.face_count(), 6);
+
+        // inverter e recalcular normais
+        s.select_all();
+        run(&mut s, OpKind::FlipNormals).unwrap();
+        run(&mut s, OpKind::RecalcOutside).unwrap();
+        let m = &s.active_object().unwrap().mesh;
+        for f in 0..m.face_count() as u32 {
+            assert!(m.face_normal(f).dot(m.face_center(f) - m.centroid()) > 0.0);
+        }
+
+        // atributos de aresta
+        s.set_select_mode(SelectMode::Edge);
+        s.select_all();
+        run(&mut s, OpKind::MarkSeam).unwrap();
+        assert!(s.active_object().unwrap().mesh.edge_attrs.values().all(|e| e.seam));
+        run(&mut s, OpKind::ClearSeam).unwrap();
+        assert!(s.active_object().unwrap().mesh.edge_attrs.values().all(|e| !e.seam));
+
+        // subdividir faces e suavizar
+        s.set_select_mode(SelectMode::Face);
+        s.select_all();
+        run(&mut s, OpKind::Subdivide).unwrap();
+        assert_eq!(s.active_object().unwrap().mesh.face_count(), 24);
+        s.select_all();
+        s.set_select_mode(SelectMode::Vertex);
+        s.select_all();
+        let before = s.active_object().unwrap().mesh.content_hash();
+        run(&mut s, OpKind::Smooth).unwrap();
+        assert_ne!(before, s.active_object().unwrap().mesh.content_hash());
+        s.active_object().unwrap().mesh.validate().unwrap();
+    }
+
+    #[test]
+    fn merge_dissolve_and_bridge() {
+        let mut s = session_with(PrimitiveKind::Cube);
+        s.set_select_mode(SelectMode::Vertex);
+        s.select_all();
+        run(&mut s, OpKind::MergeByDistance).unwrap();
+        assert_eq!(s.active_object().unwrap().mesh.vert_count(), 8);
+
+        // dissolver as arestas internas de um grid → 1 face
+        let mut g = session_with(PrimitiveKind::Grid);
+        g.set_select_mode(SelectMode::Edge);
+        let topo = Topology::build(&g.active_object().unwrap().mesh);
+        let interior: Vec<_> = topo.edges.iter().filter(|e| e.faces.len() == 2).map(|e| e.verts).collect();
+        g.set_selection(Selection::from_edges(interior), None);
+        run(&mut g, OpKind::DissolveEdges).unwrap();
+        assert_eq!(g.active_object().unwrap().mesh.face_count(), 1);
+
+        // ponte entre os dois aros de um cilindro sem tampas
+        let mut c = ModelingSession::new();
+        c.add_primitive(PrimitiveKind::Cylinder, Vec3::ZERO);
+        c.toggle_edit_mode();
+        c.set_select_mode(SelectMode::Face);
+        let mesh = c.active_object().unwrap().mesh.clone();
+        let caps: Vec<u32> = (0..mesh.face_count() as u32).filter(|&f| mesh.faces[f as usize].len() > 4).collect();
+        assert_eq!(caps.len(), 2);
+        c.set_selection(Selection::from_faces(&mesh, caps), None);
+        run(&mut c, OpKind::DeleteOnlyFaces).unwrap();
+        c.set_select_mode(SelectMode::Edge);
+        let topo = Topology::build(&c.active_object().unwrap().mesh);
+        // arestas de fronteira = os dois aros
+        let rims: Vec<_> = topo.edges.iter().filter(|e| e.faces.len() == 1).map(|e| e.verts).collect();
+        c.set_selection(Selection::from_edges(rims), None);
+        // as arestas verticais já existem: a ponte recusa ou gera não-manifold documentado; exige ao menos não corromper
+        let hash = c.active_object().unwrap().mesh.content_hash();
+        let r = run(&mut c, OpKind::Bridge);
+        if r.is_err() {
+            assert_eq!(hash, c.active_object().unwrap().mesh.content_hash(), "erro não altera a malha");
+        }
+        c.active_object().unwrap().mesh.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_selection_errors_are_friendly_and_atomic() {
+        let mut s = session_with(PrimitiveKind::Cube);
+        let before = s.active_object().unwrap().mesh.clone();
+        for kind in [OpKind::DeleteFaces, OpKind::Bridge, OpKind::FillHole, OpKind::DissolveFaces, OpKind::Bevel] {
+            let r = run(&mut s, kind);
+            assert!(r.is_err(), "{kind:?} sem seleção deveria falhar");
+            assert_eq!(s.active_object().unwrap().mesh, before, "{kind:?}");
+        }
     }
 
     #[test]

@@ -130,6 +130,9 @@ struct ActiveModal {
 pub struct Proportional {
     pub enabled: bool,
     pub radius: f32,
+    pub falloff: anigo_modeling::ops::transform::ProportionalFalloff,
+    /// Só vértices conectados (distância geodésica) — não vaza entre ilhas.
+    pub connected_only: bool,
 }
 
 pub struct ModelingSession {
@@ -169,6 +172,8 @@ impl ModelingSession {
             proportional: Proportional {
                 enabled: false,
                 radius: 1.0,
+                falloff: anigo_modeling::ops::transform::ProportionalFalloff::Smooth,
+                connected_only: false,
             },
             xray: false,
             snap_enabled: false,
@@ -457,19 +462,37 @@ impl ModelingSession {
         };
         let obj = &self.doc.objects[idx];
         let model = obj.model_matrix();
+        let mut prop_weights: Option<Vec<f32>> = None;
         let (pivot, originals) = match self.mode {
             Mode::Edit => {
                 if self.selection.verts.is_empty() {
                     self.status = "Nada selecionado".into();
                     return false;
                 }
-                let originals: Vec<(u32, Vec3)> = self
+                let mut originals: Vec<(u32, Vec3)> = self
                     .selection
                     .verts
                     .iter()
                     .map(|v| (*v, model.transform_point3(obj.mesh.co(*v))))
                     .collect();
                 let pivot = originals.iter().map(|(_, p)| *p).sum::<Vec3>() / originals.len() as f32;
+                if self.proportional.enabled {
+                    // pesos por vértice (espaço local → raio convertido pela escala média do objeto)
+                    let avg_scale = (obj.transform.scale.x + obj.transform.scale.y + obj.transform.scale.z) / 3.0;
+                    let selected: Vec<u32> = self.selection.verts.iter().copied().collect();
+                    let w = anigo_modeling::ops::transform::proportional_weights(
+                        &obj.mesh,
+                        &selected,
+                        self.proportional.radius / avg_scale.max(1e-4),
+                        self.proportional.falloff,
+                        self.proportional.connected_only,
+                    );
+                    originals = (0..obj.mesh.vert_count() as u32)
+                        .filter(|v| w.get(*v as usize).copied().unwrap_or(0.0) > 1e-4)
+                        .map(|v| (v, model.transform_point3(obj.mesh.co(v))))
+                        .collect();
+                    prop_weights = Some(originals.iter().map(|(v, _)| w[*v as usize]).collect());
+                }
                 (pivot, originals)
             }
             Mode::Object => {
@@ -479,6 +502,7 @@ impl ModelingSession {
             Mode::Sculpt => return false,
         };
         let mut transform = ModalTransform::new(kind, mouse, pivot, originals);
+        transform.weights = prop_weights;
         if self.snap_enabled {
             transform.snap_step = match kind {
                 TransformKind::Grab => 0.25,
@@ -721,6 +745,35 @@ mod tests {
         assert!(s.can_undo());
         assert_eq!(s.undo().as_deref(), Some("Mover"));
         assert_eq!(s.active_object().unwrap().mesh, before);
+    }
+
+    #[test]
+    fn proportional_editing_moves_neighbors_with_falloff_and_not_other_islands() {
+        let mut s = ModelingSession::new();
+        s.add_primitive(PrimitiveKind::Grid, Vec3::ZERO);
+        s.toggle_edit_mode();
+        // centro do grid selecionado
+        let mesh = s.active_object().unwrap().mesh.clone();
+        let center = (0..mesh.vert_count() as u32).find(|&v| mesh.co(v).length() < 1e-5).unwrap();
+        s.set_selection(Selection::from_verts([center]), Some(center));
+        s.proportional.enabled = true;
+        s.proportional.radius = 1.5;
+        s.begin_modal(TransformKind::Grab, Vec2::ZERO);
+        {
+            let m = s.modal_mut().unwrap();
+            m.toggle_axis(super::super::modal::Axis::Y, false);
+            m.push_numeric('1');
+        }
+        s.update_modal(Vec2::ZERO, &ctx());
+        let moved = &s.active_object().unwrap().mesh;
+        let dy = |v: u32| moved.co(v).y - mesh.co(v).y;
+        assert!((dy(center) - 1.0).abs() < 1e-5, "o selecionado move 100%");
+        let near = (0..mesh.vert_count() as u32).filter(|&v| v != center && (mesh.co(v) - mesh.co(center)).length() < 0.6).next().unwrap();
+        assert!(dy(near) > 0.0 && dy(near) < 1.0, "vizinho move parcialmente: {}", dy(near));
+        let far = (0..mesh.vert_count() as u32).find(|&v| (mesh.co(v) - mesh.co(center)).length() > 1.9).unwrap();
+        assert!(dy(far).abs() < 1e-6, "fora do raio não move");
+        s.cancel_modal();
+        assert_eq!(s.active_object().unwrap().mesh, mesh);
     }
 
     #[test]

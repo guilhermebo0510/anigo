@@ -8,7 +8,7 @@ use glam::{Vec2, Vec3};
 
 pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
-    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel", "modifiers",
+    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel", "modifiers", "proportional",
 ];
 
 impl StudioApp {
@@ -128,6 +128,34 @@ impl StudioApp {
                     }
                 }
                 self.camera.distance = 8.5;
+            }
+            "proportional" => {
+                m.delete_active_object();
+                m.add_primitive(PrimitiveKind::Grid, Vec3::new(0.0, 0.0, 0.0));
+                m.set_mode(Mode::Edit);
+                m.set_select_mode(SelectMode::Vertex);
+                let center = {
+                    let mesh = &m.active_object().expect("objeto").mesh;
+                    (0..mesh.vert_count() as u32).find(|&v| mesh.co(v).length() < 1e-5)
+                };
+                if let Some(c) = center {
+                    m.set_selection(Selection::from_verts([c]), Some(c));
+                    m.proportional.enabled = true;
+                    m.proportional.radius = 1.6;
+                    if m.begin_modal(TransformKind::Grab, Vec2::ZERO) {
+                        if let Some(t) = m.modal_mut() {
+                            t.toggle_axis(Axis::Y, false);
+                            t.push_numeric('1');
+                            t.push_numeric('.');
+                            t.push_numeric('2');
+                        }
+                        let ctx = ModalContext { camera: self.camera, viewport: Vec2::new(1000.0, 800.0) };
+                        m.update_modal(Vec2::ZERO, &ctx);
+                        m.confirm_modal();
+                    }
+                }
+                self.camera.pitch = 0.45;
+                self.camera.target = Vec3::new(0.0, 0.4, 0.0);
             }
             "modifiers" => {
                 use anigo_modeling::modifiers::{mirror::MirrorParams, stack::{Modifier, ModifierEntry, SubsurfSettings}};
