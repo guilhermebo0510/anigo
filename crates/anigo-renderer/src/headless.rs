@@ -68,6 +68,8 @@ struct DeviceResources {
     outline_pipeline: wgpu::RenderPipeline,
     /// Issue #14: pipeline só-profundidade do pré-passe (Early-Z).
     depth_prepass_pipeline: wgpu::RenderPipeline,
+    /// DoF: pipeline só-profundidade 1× (profundidade amostrável do pós).
+    dof_depth_pipeline: Option<wgpu::RenderPipeline>,
     cel_bind_group_layout: wgpu::BindGroupLayout,
     outline_bind_group_layout: wgpu::BindGroupLayout,
     morph_compute_pipeline: wgpu::ComputePipeline,
@@ -93,6 +95,8 @@ pub struct HeadlessRenderer {
     outline_pipeline: wgpu::RenderPipeline,
     /// Issue #14: pipeline só-profundidade do pré-passe (Early-Z).
     depth_prepass_pipeline: wgpu::RenderPipeline,
+    /// DoF: pipeline só-profundidade 1× (profundidade amostrável do pós).
+    dof_depth_pipeline: Option<wgpu::RenderPipeline>,
     /// Issue #14: reconfiguração do plano vinda do snapshot do núcleo.
     graph_overrides: GraphOverrides,
     cel_bind_group_layout: wgpu::BindGroupLayout,
@@ -709,9 +713,9 @@ impl HeadlessRenderer {
                 bind_group_layouts: &[Some(&cel_bind_group_layout)],
                 immediate_size: 0,
             });
-        let depth_prepass_pipeline =
+        let make_depth_only_pipeline = |label: &str, sample_count: u32| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Depth Prepass Pipeline"),
+                label: Some(label),
                 layout: Some(&depth_prepass_pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &cel_shader,
@@ -737,12 +741,24 @@ impl HeadlessRenderer {
                     bias: cel_pass_spec.depth_bias,
                 }),
                 multisample: wgpu::MultisampleState {
-                    count: contract::msaa_sample_count(),
+                    count: sample_count,
                     ..Default::default()
                 },
                 multiview_mask: None,
                 cache: None,
-            });
+            })
+        };
+        let depth_prepass_pipeline =
+            make_depth_only_pipeline("Depth Prepass Pipeline", contract::msaa_sample_count());
+        // DoF: a profundidade amostrável é 1× (a MSAA depth só existe como
+        // attachment e não pode ser copiada/resolvida para 1×), então o DoF
+        // re-rasteriza a geometria só com profundidade, sem MSAA, no mesmo
+        // vertex shader (nenhum WGSL novo). Não existe onde o DoF não existe.
+        let dof_depth_pipeline = if adapter_info.backend == wgpu::Backend::Gl {
+            None
+        } else {
+            Some(make_depth_only_pipeline("DoF Depth Pipeline (1x)", 1))
+        };
         // Sparse Morph Target Compute Pipeline
         let morph_pass_spec = contract::compute_pass("sparse_morph");
         let morph_shader_src = contract::MORPH_SPARSE_COMPUTE_WGSL;
@@ -921,6 +937,7 @@ impl HeadlessRenderer {
             cel_pipeline,
             outline_pipeline,
             depth_prepass_pipeline,
+            dof_depth_pipeline,
             cel_bind_group_layout,
             outline_bind_group_layout,
             morph_compute_pipeline,
@@ -990,6 +1007,7 @@ impl HeadlessRenderer {
             cel_pipeline: resources.cel_pipeline,
             outline_pipeline: resources.outline_pipeline,
             depth_prepass_pipeline: resources.depth_prepass_pipeline,
+            dof_depth_pipeline: resources.dof_depth_pipeline,
             graph_overrides: GraphOverrides::default(),
             cel_bind_group_layout: resources.cel_bind_group_layout,
             outline_bind_group_layout: resources.outline_bind_group_layout,
@@ -1039,6 +1057,7 @@ impl HeadlessRenderer {
         self.cel_pipeline = resources.cel_pipeline;
         self.outline_pipeline = resources.outline_pipeline;
         self.depth_prepass_pipeline = resources.depth_prepass_pipeline;
+        self.dof_depth_pipeline = resources.dof_depth_pipeline;
         self.cel_bind_group_layout = resources.cel_bind_group_layout;
         self.outline_bind_group_layout = resources.outline_bind_group_layout;
         self.morph_compute_pipeline = resources.morph_compute_pipeline;
@@ -1817,11 +1836,10 @@ impl HeadlessRenderer {
         let dof_enabled = scene.dof.enabled;
         let TargetViews {
             msaa_view,
-            depth_texture,
             depth_view,
             scene_view,
-            dof_depth_texture,
             dof_depth_view,
+            ..
         } = self
             .lock_target_cache()
             .ensure(&self.device, width, height, dof_enabled);
@@ -2087,29 +2105,36 @@ impl HeadlessRenderer {
             }
         }
 
-        // Resolve manual da profundidade (MSAA → 1×): o wgpu deste projeto não
-        // expõe depth resolve no attachment; o copy é o padrão do próprio
-        // resolve de cor e só entra quando o DoF pediu a textura 1×.
-        if let Some(dof_depth_texture) = &dof_depth_texture {
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &depth_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: dof_depth_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
+        // Fase 2 (#53): profundidade 1× para o DoF. Uma textura MSAA não pode
+        // ser copiada nem amostrada como 1×, então a geometria é rasterizada de
+        // novo só com profundidade (mesmos buffers/bind groups do passe
+        // principal). Só roda com DoF ligado e pipeline disponível.
+        if let (Some(dof_depth_view), Some(dof_depth_pipeline)) =
+            (dof_depth_view.as_ref(), self.dof_depth_pipeline.as_ref())
+        {
+            let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("DoF Depth Pass (1x)"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: dof_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            depth_pass.set_pipeline(dof_depth_pipeline);
+            for inputs in &prepared {
+                depth_pass.set_bind_group(0, &inputs.cel_bind_group, &[]);
+                depth_pass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                depth_pass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                depth_pass.draw_indexed(0..inputs.index_count, 0, 0..1);
+                draw_calls += 1;
+            }
         }
 
         // Fase 2 (#53): Anime Bokeh DoF — mesmo shader/uniforms do viewport;

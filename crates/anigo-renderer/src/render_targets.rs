@@ -21,10 +21,8 @@ pub struct RenderTarget<'a> {
 /// para um quadro.
 pub(crate) struct TargetViews {
     pub msaa_view: Option<wgpu::TextureView>,
-    pub depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
     pub scene_view: Option<wgpu::TextureView>,
-    pub dof_depth_texture: Option<wgpu::Texture>,
     pub dof_depth_view: Option<wgpu::TextureView>,
 }
 
@@ -32,13 +30,11 @@ struct Allocated {
     width: u32,
     height: u32,
     msaa_view: Option<wgpu::TextureView>,
-    depth_texture: wgpu::Texture,
+    // Os views mantêm as texturas vivas; só eles são guardados.
     depth_view: wgpu::TextureView,
     /// Intermediária 1× do DoF (a cena resolve aqui e o pós escreve na cor
     /// final). Alocada sob demanda, na primeira cena com DoF.
-    scene_texture: Option<wgpu::Texture>,
     scene_view: Option<wgpu::TextureView>,
-    dof_depth_texture: Option<wgpu::Texture>,
     dof_depth_view: Option<wgpu::TextureView>,
 }
 
@@ -123,11 +119,8 @@ impl RenderTargetCache {
                 width,
                 height,
                 msaa_view,
-                depth_texture,
                 depth_view,
-                scene_texture: None,
                 scene_view: None,
-                dof_depth_texture: None,
                 dof_depth_view: None,
             });
             self.allocations += 1;
@@ -142,7 +135,7 @@ impl RenderTargetCache {
         // amostrável; a profundidade 1× idem (a MSAA depth só existe como
         // attachment). Sob demanda: cenas sem DoF não pagam por elas.
         if dof_enabled {
-            if allocated.scene_texture.is_none() {
+            if allocated.scene_view.is_none() {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Offscreen Color Texture (DoF scene, 1x)"),
                     size: extent,
@@ -156,10 +149,9 @@ impl RenderTargetCache {
                 });
                 allocated.scene_view =
                     Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                allocated.scene_texture = Some(texture);
                 self.allocations += 1;
             }
-            if sample_count > 1 && allocated.dof_depth_texture.is_none() {
+            if allocated.dof_depth_view.is_none() {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Offscreen Depth Texture (DoF resolve, 1x)"),
                     size: extent,
@@ -168,23 +160,19 @@ impl RenderTargetCache {
                     dimension: wgpu::TextureDimension::D2,
                     format: depth_format,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_DST,
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 });
                 allocated.dof_depth_view =
                     Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-                allocated.dof_depth_texture = Some(texture);
                 self.allocations += 1;
             }
         }
 
         TargetViews {
             msaa_view: allocated.msaa_view.clone(),
-            depth_texture: allocated.depth_texture.clone(),
             depth_view: allocated.depth_view.clone(),
             scene_view: if dof_enabled { allocated.scene_view.clone() } else { None },
-            dof_depth_texture: if dof_enabled { allocated.dof_depth_texture.clone() } else { None },
             dof_depth_view: if dof_enabled { allocated.dof_depth_view.clone() } else { None },
         }
     }
