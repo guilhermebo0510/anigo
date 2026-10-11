@@ -1,0 +1,32 @@
+[package]
+name = "anigo-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ANIGO: fronteira C/C++ (meshoptimizer, ufbx, xatlas) com features Cargo desligáveis; o resto do app compila sem toolchain C++"
+
+[features]
+default = ["meshopt", "ufbx", "xatlas"]
+# meshoptimizer 0.25 (C++ vendorizado pelo crate `meshopt` 0.6.2): simplificação/LOD, caches de vértice.
+meshopt = ["dep:meshopt"]
+# ufbx 0.23 (C vendorizado pelo crate `ufbx` 0.11.5): import FBX.
+ufbx = ["dep:ufbx"]
+# xatlas (C++ vendorizado em vendor/xatlas + shim extern "C"; build.rs com `cc`): auto-unwrap/atlas de UV.
+# NÃO usa o crate `xatlas-rs`: ver docs/native/CPP_FFI.md ("Por que não xatlas-rs").
+xatlas = ["dep:cc"]
+
+[dependencies]
+anigo-core = { workspace = true }
+anigo-modeling = { path = "../anigo-modeling" }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+meshopt = { version = "=0.6.2", optional = true }
+ufbx = { version = "=0.11.5", optional = true }
+
+[build-dependencies]
+cc = { version = "=1.8.0", optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
