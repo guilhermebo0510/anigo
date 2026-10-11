@@ -6,4 +6,4 @@ pub mod modal;
 pub mod session;
 
 pub use modal::{Axis, Constraint, ModalContext, ModalTransform, TransformKind};
-pub use session::{Document, Mode, ModelObject, ModelingSession, PrimitiveKind};
+pub use session::{Document, Mode, ModelObject, ModelingSession, PrimitiveKind, SnapshotPub};

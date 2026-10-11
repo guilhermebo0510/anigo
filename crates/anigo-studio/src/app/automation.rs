@@ -8,7 +8,7 @@ use glam::{Vec2, Vec3};
 
 pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
-    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit",
+    "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel",
 ];
 
 impl StudioApp {
@@ -104,6 +104,42 @@ impl StudioApp {
                 if let Some(c) = self.gpu.as_mut().and_then(|g| g.cel.as_mut()) {
                     c.light.direction = glam::Vec3::new(-0.45, 0.6, 0.65).normalize().to_array();
                 }
+            }
+            "ops-demo" => {
+                use crate::app::operators::{apply_kind, OpKind, OpParams};
+                m.set_mode(Mode::Edit);
+                m.set_select_mode(SelectMode::Face);
+                let top = Selection::from_faces(&m.active_object().expect("objeto").mesh, [2u32]);
+                m.set_selection(top, None);
+                let p = |f: &dyn Fn(&mut OpParams)| {
+                    let mut p = OpParams::default();
+                    f(&mut p);
+                    p
+                };
+                let steps: [(OpKind, OpParams); 4] = [
+                    (OpKind::Extrude, p(&|q| q.distance = 0.9)),
+                    (OpKind::Inset, p(&|q| q.thickness = 0.28)),
+                    (OpKind::Extrude, p(&|q| q.distance = -0.35)),
+                    (OpKind::Inset, p(&|q| q.thickness = 0.1)),
+                ];
+                for (k, params) in steps {
+                    if let Err(e) = m.edit_op(k.label(), |mesh, sel| apply_kind(k, &params, mesh, sel)) {
+                        eprintln!("ops-demo: {e}");
+                    }
+                }
+                self.camera.distance = 8.5;
+            }
+            "ops-bevel" => {
+                use crate::app::operators::{apply_kind, OpKind, OpParams};
+                m.set_mode(Mode::Edit);
+                m.set_select_mode(SelectMode::Edge);
+                m.select_all();
+                let params = OpParams { width: 0.22, segments: 4, ..OpParams::default() };
+                if let Err(e) = m.edit_op("Chanfro", |mesh, sel| apply_kind(OpKind::Bevel, &params, mesh, sel)) {
+                    eprintln!("ops-bevel: {e}");
+                }
+                m.select_none();
+                self.view_shading = crate::app::ViewShading::Cel;
             }
             "cel-edit" => {
                 m.delete_active_object();

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 mod automation;
 mod gizmo;
 mod inspector;
-mod operators;
+pub mod operators;
 mod viewport_ui;
 
 pub(crate) struct CachedObject {
@@ -76,6 +76,9 @@ pub struct StudioApp {
     pub(crate) last_mouse: egui::Pos2,
     pub(crate) viewport_hovered: bool,
     pub(crate) gizmo_drag: bool,
+    pub(crate) op_params: operators::OpParams,
+    pub(crate) last_op: Option<operators::LastOp>,
+    pub(crate) frame_pending: bool,
     pub(crate) box_start: Option<glam::Vec2>,
 }
 
@@ -156,6 +159,9 @@ impl StudioApp {
             last_mouse: egui::Pos2::ZERO,
             viewport_hovered: false,
             gizmo_drag: false,
+            op_params: operators::OpParams::default(),
+            last_op: None,
+            frame_pending: false,
             box_start: None,
         }
     }
@@ -357,6 +363,9 @@ impl StudioApp {
     fn on_tool_selected(&mut self, id: &str) {
         if self.ws == WorkspaceId::Modelagem {
             self.modeling.status = format!("Ferramenta: {}", tr(&format!("tool.{id}")));
+            if let Some(kind) = operators::tool_to_op(id) {
+                self.run_op(kind);
+            }
         }
     }
 

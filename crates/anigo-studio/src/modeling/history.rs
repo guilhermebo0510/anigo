@@ -27,6 +27,11 @@ impl<T: Clone> History<T> {
         }
     }
 
+    /// Remove a última entrada de undo SEM aplicá-la (usado ao refazer uma operação com novos parâmetros).
+    pub fn pop_undo(&mut self) -> Option<String> {
+        self.undo.pop_back().map(|(l, _)| l)
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

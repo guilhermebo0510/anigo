@@ -31,11 +31,13 @@ impl Axis {
 }
 
 /// Restrição de eixo: um eixo (Axis) ou o plano que o exclui (Shift+eixo).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Constraint {
     None,
     Axis(Axis),
     Plane(Axis),
+    /// Direção arbitrária de mundo (ex.: normal da região extrudada).
+    Direction(Vec3),
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +157,17 @@ impl ModalTransform {
                 };
                 axis * self.snap(amount)
             }
+            Constraint::Direction(dir) => {
+                let dir = dir.normalize_or_zero();
+                let amount = match numeric {
+                    Some(n) => n,
+                    None => {
+                        let foreshorten = (1.0 - dir.dot(cam.forward()).powi(2)).sqrt().max(0.15);
+                        screen_delta.dot(dir) / foreshorten
+                    }
+                };
+                dir * self.snap(amount)
+            }
             Constraint::Plane(a) => {
                 let mut v = match numeric {
                     Some(n) => cam.right() * n,
@@ -226,13 +239,14 @@ impl ModalTransform {
     fn rotation_axis(&self, ctx: &ModalContext) -> Vec3 {
         match self.constraint {
             Constraint::Axis(a) | Constraint::Plane(a) => a.vector(),
+            Constraint::Direction(d) => d.normalize_or_zero(),
             Constraint::None => -ctx.camera.forward(),
         }
     }
 
     fn scale_vector(&self, f: f32) -> Vec3 {
         match self.constraint {
-            Constraint::None => Vec3::splat(f),
+            Constraint::None | Constraint::Direction(_) => Vec3::splat(f),
             Constraint::Axis(a) => {
                 let mut s = Vec3::ONE;
                 match a {
@@ -300,6 +314,7 @@ impl ModalTransform {
             Constraint::None => String::new(),
             Constraint::Axis(a) => format!("  {a:?}"),
             Constraint::Plane(a) => format!("  plano ⊥ {a:?}"),
+            Constraint::Direction(_) => "  normal".to_string(),
         };
         match self.kind {
             TransformKind::Grab => {
@@ -457,6 +472,17 @@ mod tests {
         let mut m = one_point(TransformKind::Scale);
         m.toggle_axis(Axis::Y, false);
         assert!(m.status_text(Vec2::new(500.0, 300.0), &c).contains("Y"));
+    }
+
+    #[test]
+    fn direction_constraint_moves_along_normal_only() {
+        let c = ctx();
+        let mut m = one_point(TransformKind::Grab);
+        m.constraint = Constraint::Direction(Vec3::new(0.0, 0.0, 2.0)); // não normalizada de propósito
+        m.push_numeric('3');
+        let out = m.apply(Vec2::ZERO, &c);
+        assert!((out[0].1 - Vec3::new(1.0, 0.0, 3.0)).length() < 1e-5);
+        assert!(m.status_text(Vec2::ZERO, &c).contains("normal"));
     }
 
     #[test]

@@ -511,6 +511,7 @@ impl ModelingSession {
                                 let angle = m.transform.rotation_angle(mouse, ctx);
                                 let axis = match m.transform.constraint {
                                     super::modal::Constraint::Axis(a) | super::modal::Constraint::Plane(a) => a.vector(),
+                                    super::modal::Constraint::Direction(d) => d.normalize_or_zero(),
                                     super::modal::Constraint::None => -ctx.camera.forward(),
                                 };
                                 let base = m.before.doc.objects.get(idx).map(|o| o.transform.rotation);
@@ -552,6 +553,38 @@ impl ModelingSession {
         if let Some(m) = self.modal.take() {
             self.restore(m.before);
         }
+    }
+
+    // --------------------------------------------------------- operadores de edição
+
+    /// Executa um operador sobre a malha ativa em **cópia**; só se der certo aplica, registra
+    /// o undo e troca a seleção. Em erro nada muda (a malha e o histórico ficam intactos).
+    pub fn edit_op<F>(&mut self, label: &str, f: F) -> Result<anigo_modeling::ops::OpOutput, anigo_modeling::ModelError>
+    where
+        F: FnOnce(&mut EditMesh, &Selection) -> anigo_modeling::ModelResult<anigo_modeling::ops::OpOutput>,
+    {
+        let idx = self.doc.active.ok_or(anigo_modeling::ModelError::EmptySelection("sem objeto ativo"))?;
+        let before = self.snapshot();
+        let mut mesh = self.doc.objects[idx].mesh.clone();
+        let out = f(&mut mesh, &self.selection)?;
+        mesh.validate()?;
+        self.history.record(label, &before);
+        self.doc.objects[idx].mesh = mesh;
+        self.selection = out.selection.clone();
+        self.active_vert = None;
+        self.revision += 1;
+        Ok(out)
+    }
+
+    /// Estado completo atual (para o painel "ajustar última operação").
+    pub fn capture(&self) -> SnapshotPub {
+        self.snapshot()
+    }
+
+    /// Volta ao estado capturado e descarta a última entrada de undo (refazer com outros parâmetros).
+    pub fn rewind_to(&mut self, snap: SnapshotPub) {
+        self.history.pop_undo();
+        self.restore(snap.0);
     }
 
     // ------------------------------------------------------------------ estatísticas
