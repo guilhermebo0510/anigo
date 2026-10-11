@@ -1,0 +1,28 @@
+[package]
+name = "anigo-studio"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO Studio nativo: UI e viewport 100% Rust (egui + wgpu)"
+
+[[bin]]
+name = "anigo-studio"
+path = "src/main.rs"
+
+[dependencies]
+anigo-core = { workspace = true }
+anigo-modeling = { path = "../anigo-modeling" }
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }
+egui = "0.36"
+egui-phosphor = "0.14"
+glam = { workspace = true }
+bytemuck = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+notify = "8"
+
+[dev-dependencies]

@@ -2,6 +2,7 @@
 members = [
     "crates/anigo-core",
     "crates/anigo-modeling",
+    "crates/anigo-studio",
     "crates/anigo-renderer",
     "crates/anigo-mcp",
     "crates/anigo-ik",
