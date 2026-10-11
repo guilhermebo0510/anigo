@@ -16,7 +16,10 @@ use egui::{Color32, RichText, Vec2 as EVec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+mod automation;
+mod gizmo;
 mod inspector;
+mod operators;
 mod viewport_ui;
 
 pub(crate) struct CachedObject {
@@ -29,7 +32,6 @@ pub(crate) struct Gpu {
     pub wb: Workbench,
     pub tex: Option<egui::TextureId>,
     pub cache: Vec<CachedObject>,
-    pub uploaded_revision: u64,
     pub adapter_name: String,
     pub backend: String,
 }
@@ -60,7 +62,8 @@ pub struct StudioApp {
     pub(crate) overlay_wire: bool,
     pub(crate) last_mouse: egui::Pos2,
     pub(crate) viewport_hovered: bool,
-    pub(crate) add_menu_open: bool,
+    pub(crate) gizmo_drag: bool,
+    pub(crate) box_start: Option<glam::Vec2>,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -111,6 +114,11 @@ impl StudioApp {
         i18n::set_lang(lang);
         tracing::info!("sessão restaurada: {restored}");
 
+        if !restored {
+            let (lo, hi) = (glam::Vec3::new(-1.0, 0.0, -1.0), glam::Vec3::new(1.0, 2.0, 1.0));
+            camera.frame_bounds(lo, hi);
+            camera.distance *= 1.9;
+        }
         let shader_watcher = dev_shader_path().and_then(|p| ShaderWatcher::new(p).ok());
 
         let mut library = LibraryState::default();
@@ -133,7 +141,8 @@ impl StudioApp {
             overlay_wire: false,
             last_mouse: egui::Pos2::ZERO,
             viewport_hovered: false,
-            add_menu_open: false,
+            gizmo_drag: false,
+            box_start: None,
         }
     }
 
@@ -165,7 +174,6 @@ impl StudioApp {
                     wb,
                     tex: None,
                     cache: Vec::new(),
-                    uploaded_revision: 0,
                     adapter_name: info.name,
                     backend: format!("{:?}", info.backend),
                 });
@@ -484,6 +492,7 @@ impl eframe::App for StudioApp {
         self.frame_count += 1;
         self.ensure_gpu(frame);
         self.poll_hot_reload();
+        self.run_scenario();
 
         self.top_bar(ui);
         self.status_bar(ui);

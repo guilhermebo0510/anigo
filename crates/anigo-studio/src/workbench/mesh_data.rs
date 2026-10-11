@@ -48,6 +48,8 @@ pub struct BuildOptions<'a> {
     pub active_vert: Option<u32>,
     /// Wireframe sobre o sólido em modo Objeto.
     pub object_wire: bool,
+    /// Objeto ativo em modo Objeto: contorno laranja (equivalente ao outline de seleção do Blender).
+    pub highlight_object: bool,
     pub base_color: [f32; 4],
     pub normals: NormalParams,
 }
@@ -60,6 +62,7 @@ impl Default for BuildOptions<'_> {
             selection: None,
             active_vert: None,
             object_wire: false,
+            highlight_object: false,
             base_color: [0.72, 0.72, 0.76, 1.0],
             normals: NormalParams::default(),
         }
@@ -135,6 +138,8 @@ pub fn build_draw_data(mesh: &EditMesh, opts: &BuildOptions) -> MeshDrawData {
             } else {
                 Some(([0.02, 0.02, 0.03, 0.9], 1.2))
             }
+        } else if opts.highlight_object {
+            Some(([select_rgba[0], select_rgba[1], select_rgba[2], 0.95], 1.6))
         } else if opts.object_wire {
             Some(([0.05, 0.05, 0.06, 0.55], 1.0))
         } else {
