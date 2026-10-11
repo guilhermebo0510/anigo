@@ -60,11 +60,14 @@ const DOF_DISC: array<vec2<f32>, 16> =
         vec2<f32>(0.805404, -0.465000),
     );
 
-// Fullscreen triangle sem buffer de vértices.
+// Fullscreen triangle sem buffer de vértices: (-1,-1), (3,-1), (-1,3) — CCW,
+// cobre o quadrado [-1,1]². (A versão anterior, x = 2·vi−1 e y = 2·vi−3, gerava
+// três pontos COLINEARES — triângulo degenerado, nenhum pixel rasterizado e o
+// passe de DoF deixava a cor final zerada.)
 @vertex
 fn vs_dof(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let x = f32(i32(vi) * 2 - 1);
-    let y = f32(i32(vi) * 2 - 3);
+    let x = f32(i32((vi << 1u) & 2u)) * 2.0 - 1.0;
+    let y = f32(i32(vi & 2u)) * 2.0 - 1.0;
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
@@ -105,29 +108,54 @@ fn aperture_mask(p: vec2<f32>, shape: f32) -> f32 {
     return hexagon_mask(p);
 }
 
+// Raio do bokeh (px) de uma profundidade de hardware: CoC (m no sensor) →
+// fração da altura do sensor → px da imagem, limitado por `limits.x` (teto de
+// custo). Compartilhado pelo pixel central e pelas amostras do disco.
+fn bokeh_radius_px(depth: f32) -> f32 {
+    let frag_dist = linearize_depth(depth);
+    let coc = circle_of_confusion(frag_dist, dof.params.x, dof.params.w, dof.params.y);
+    return min(coc / dof.limits.y * dof.resolution.y, dof.limits.x);
+}
+
 @fragment
 fn fs_dof(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = pos.xy / dof.resolution.xy;
-    let frag_dist = linearize_depth(textureLoad(scene_depth, vec2<i32>(pos.xy), 0));
-
-    // Raio do bokeh em px: CoC (m no sensor) → fração da altura do sensor →
-    // px da imagem, limitado por `limits.x` (teto de custo).
-    let coc = circle_of_confusion(frag_dist, dof.params.x, dof.params.w, dof.params.y);
-    let radius_px = min(coc / dof.limits.y * dof.resolution.y, dof.limits.x);
+    let center_depth = textureLoad(scene_depth, vec2<i32>(pos.xy), 0);
+    let radius_px = bokeh_radius_px(center_depth);
 
     // Em foco (ou quase): amostra única — nitidez milimétrica garantida.
+    // `textureSampleLevel` (LOD explícito) em vez de `textureSample`: este
+    // retorno é por pixel (depende da profundidade), então qualquer `textureSample`
+    // depois dele estaria em fluxo de controle NÃO uniforme — derivadas
+    // indefinidas, e Tint/Chrome rejeitam o módulo. Sem mipmaps o LOD 0 é o
+    // mesmo texel, então o resultado não muda.
     if (radius_px < 0.5) {
-        return textureSample(scene_color, dof_sampler, uv);
+        return textureSampleLevel(scene_color, dof_sampler, uv, 0.0);
     }
 
-    var acc = textureSample(scene_color, dof_sampler, uv).rgba;
+    var acc = textureSampleLevel(scene_color, dof_sampler, uv, 0.0).rgba;
     var wsum = 1.0;
     let r = radius_px / dof.resolution.y; // fração de tela vertical
+    let max_px = vec2<i32>(dof.resolution.xy) - vec2<i32>(1, 1);
     for (var i = 0u; i < 16u; i++) {
         let p = DOF_DISC[i];
-        let w = aperture_mask(p, dof.params.z);
+        var w = aperture_mask(p, dof.params.z);
         if (w > 0.5) {
-            acc += textureSample(scene_color, dof_sampler, uv + vec2<f32>(p.x * r, p.y * r)).rgba * w;
+            let sample_uv = uv + vec2<f32>(p.x * r, p.y * r);
+            // Pesos por profundidade (anti-halo): uma amostra DIANTE do pixel
+            // central só contribui se o próprio círculo de confusão dela o
+            // alcança (raio da amostra ≥ distância até o centro). Sem isto o
+            // fundo desfocado "bebe" a cor do personagem em foco e cria um halo
+            // claro em volta dele. Amostras atrás (ou no mesmo plano) entram
+            // sempre — é o que suaviza a borda de um primeiro plano desfocado.
+            let sample_px = clamp(vec2<i32>(sample_uv * dof.resolution.xy), vec2<i32>(0, 0), max_px);
+            let sample_depth = textureLoad(scene_depth, sample_px, 0);
+            let sample_radius_px = bokeh_radius_px(sample_depth);
+            let dist_px = length(p) * radius_px;
+            let covers = clamp(sample_radius_px - dist_px + 1.0, 0.0, 1.0);
+            let behind = select(0.0, 1.0, sample_depth >= center_depth);
+            w = w * max(covers, behind);
+            acc += textureSampleLevel(scene_color, dof_sampler, sample_uv, 0.0).rgba * w;
             wsum += w;
         }
     }

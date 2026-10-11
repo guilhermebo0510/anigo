@@ -19,18 +19,17 @@ const SIZE: u32 = 256;
 const GOLDEN_FEMALE_BASE: u64 = 0xbaa8_e1f7_4abe_3d5d;
 /// Cubo com outline (plano padrão do contrato: outline + cel), 256x256.
 const GOLDEN_CUBE_OUTLINE: u64 = 0xd244_06b5_945f_dd58;
-/// Base feminina com DoF ligado, 256x256.
+/// Base feminina com DoF ligado (foco padrão 2 m, personagem a ~3,5 m → fundo e
+/// personagem desfocados), 256x256.
 ///
-/// ATENÇÃO (defeito PRÉ-EXISTENTE, anterior à migração do wgpu): o quadro com
-/// DoF sai 100% zerado (RGBA = 0). Causa: `vs_dof` (postprocess_dof.wgsl) emite
-/// um triângulo DEGENERADO — x = 2·vi−1 e y = 2·vi−3 são colineares
-/// ((-1,-3), (1,-1), (3,1)) —, então o passe de pós não rasteriza nenhum pixel
-/// e a cor final, que só o pós escreve, fica em zero. (Até o commit "DoF
-/// depth" o baseline wgpu 24 também gerava um CommandBuffer inválido pelo
-/// resolve MSAA→1× da profundidade; isso foi consertado sem mudar um pixel.)
-/// Este hash é o do quadro transparente (FNV-1a de 256·256·4 zeros). Shaders
-/// são congelados, então o conserto do shader fará este hash MUDAR de propósito.
-const GOLDEN_DOF: u64 = 0x9c73_5bed_0a72_2325;
+/// Histórico: até a Fase 0 do motor cel este quadro saía 100% zerado (hash
+/// 0x9c735bed0a722325 = FNV-1a de 256·256·4 zeros) por um defeito PRÉ-EXISTENTE:
+/// `vs_dof` emitia um triângulo DEGENERADO (x = 2·vi−1, y = 2·vi−3 são
+/// colineares), então o passe de pós não rasterizava nenhum pixel. O vertex
+/// shader agora emite o fullscreen triangle correto e o fragmento usa
+/// `textureSampleLevel` + pesos por profundidade (anti-halo). O hash abaixo é do
+/// quadro com a cena de fato desfocada (PNG inspecionado, ver docs/native/CEL_ENGINE_FASE1.md).
+const GOLDEN_DOF: u64 = 0x948e_8b8f_09cc_d6ff;
 
 fn female_base_scene() -> Scene {
     let mesh = Mesh::create_canonical_base(BaseGender::Female);
@@ -120,7 +119,7 @@ fn golden_cube_with_outline() {
 #[test]
 fn golden_dof_enabled() {
     let errors_before = anigo_renderer::recent_errors().len();
-    check("dof", dof_scene(), GOLDEN_DOF, true);
+    check("dof", dof_scene(), GOLDEN_DOF, false);
     // O caminho de DoF não pode gerar erro de validação do wgpu (um comando
     // inválido envenenaria o encoder compartilhado de `encode_scene`).
     let errors = anigo_renderer::recent_errors();
