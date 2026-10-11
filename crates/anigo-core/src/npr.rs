@@ -421,6 +421,80 @@ pub fn blend_outline_normal(mesh_normal: [f32; 3], smooth_normal: [f32; 3], blen
     [m[0] / len, m[1] / len, m[2] / len]
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Face SDF — espelha o bloco ANIGO-FACE-SDF (face_sdf.wgsl == cel_shading.wgsl)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Junta da cabeça na paleta de skinning canônica (esqueleto de 24 ossos:
+/// Root 0, Hips 1, Pelvis 2, Spine 3, Chest 4, UpperChest 5, Neck 6, **Head 7**).
+/// WGSL: `FACE_HEAD_JOINT` em cel_shading.wgsl.
+pub const FACE_HEAD_JOINT: usize = 7;
+
+/// `smoothstep` do WGSL (Hermite).
+pub fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Eixos X e Z (frente) do rosto no MUNDO a partir do osso da cabeça:
+/// `(model · (head_skin · e))` — o que o vertex shader do cel emite
+/// (`face_right`/`face_forward`). Com paleta identidade são as colunas 0 e 2 da
+/// matriz de modelo (o comportamento anterior à pose da cabeça). `palette` são
+/// os `bone_count × 16` floats do `SkinPayload`.
+pub fn face_frame(palette: &[f32], model: glam::Mat4) -> (glam::Vec3, glam::Vec3) {
+    let start = FACE_HEAD_JOINT * 16;
+    let head_skin = if palette.len() >= start + 16 {
+        glam::Mat4::from_cols_slice(&palette[start..start + 16])
+    } else {
+        glam::Mat4::IDENTITY
+    };
+    let right = (model * (head_skin * glam::Vec4::new(1.0, 0.0, 0.0, 0.0))).truncate();
+    let forward = (model * (head_skin * glam::Vec4::new(0.0, 0.0, 1.0, 0.0))).truncate();
+    (right, forward)
+}
+
+/// `theta = atan2(L·X, L·Z)`: 0 = luz frontal, ±π/2 = lateral (sinal = lado),
+/// ±π = traseira. WGSL: `face_sdf_theta`.
+pub fn face_sdf_theta(local_x: glam::Vec3, local_z: glam::Vec3, light_dir: glam::Vec3) -> f32 {
+    light_dir.dot(local_x).atan2(light_dir.dot(local_z))
+}
+
+/// Limiar do SDF: 0.5 (frontal) → 0.75 (traseira) + offset do usuário.
+/// WGSL: `face_sdf_threshold`.
+pub fn face_sdf_threshold(theta: f32, offset: f32) -> f32 {
+    let light_front = theta.cos() * 0.5 + 0.5;
+    0.5 + (1.0 - light_front) * 0.25 + offset
+}
+
+/// Fator de sombra facial: 1 = na sombra (`sdf` abaixo do limiar), 0 = fora.
+/// WGSL: `face_sdf_factor`.
+pub fn face_sdf_factor(sdf: f32, threshold: f32, softness: f32) -> f32 {
+    let s = softness.max(0.001);
+    1.0 - smoothstep(threshold - s, threshold + s, sdf)
+}
+
+/// Espelhamento do `u` do mapa pelo lado da luz (theta < 0) em torno de
+/// `mirror_center`; `mirror_center <= 0` desliga. WGSL: `face_sdf_mirror_uv`.
+pub fn face_sdf_mirror_u(u: f32, theta: f32, mirror_center: f32) -> f32 {
+    if mirror_center > 0.0 && theta < 0.0 {
+        2.0 * mirror_center - u
+    } else {
+        u
+    }
+}
+
+/// Cor do rosto sombreado: `mix(base_cel, min(base_cel, shadow), factor)` por
+/// componente — a cor de sombra do material (a mesma do terminador), nunca mais
+/// clara que a banda já existente. Substitui o antigo `base_cel * 0.72` fixo.
+pub fn face_shadow_tone(base_cel: [f32; 3], shadow: [f32; 3], factor: f32) -> [f32; 3] {
+    let mut out = [0.0; 3];
+    for i in 0..3 {
+        let target = base_cel[i].min(shadow[i]);
+        out[i] = base_cel[i] * (1.0 - factor) + target * factor;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,5 +774,90 @@ mod tests {
         let half = blend_outline_normal(mesh, smooth, 0.5);
         let r = 0.5f32.sqrt();
         assert!((half[1] - r).abs() < 1e-6 && (half[2] - r).abs() < 1e-6);
+    }
+
+    // ── Face SDF ────────────────────────────────────────────────────────────
+
+    use glam::{Mat4, Vec3};
+
+    #[test]
+    fn golden_face_sdf_theta_axes() {
+        let (x, z) = (Vec3::X, Vec3::Z);
+        let pi = std::f32::consts::PI;
+        assert_eq!(face_sdf_theta(x, z, Vec3::Z), 0.0);
+        assert!((face_sdf_theta(x, z, Vec3::X) - pi / 2.0).abs() < 1e-6);
+        assert!((face_sdf_theta(x, z, -Vec3::X) + pi / 2.0).abs() < 1e-6);
+        assert!((face_sdf_theta(x, z, -Vec3::Z).abs() - pi).abs() < 1e-6);
+        // a 45° (luz em (1,0,1)/√2)
+        let l = Vec3::new(1.0, 0.0, 1.0).normalize();
+        assert!((face_sdf_theta(x, z, l) - pi / 4.0).abs() < 1e-6);
+        // escala uniforme dos eixos não muda o ângulo (as colunas do modelo carregam escala)
+        assert!((face_sdf_theta(x * 3.0, z * 3.0, l) - pi / 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn golden_face_sdf_threshold_sweeps_from_half_to_three_quarters() {
+        let pi = std::f32::consts::PI;
+        assert!((face_sdf_threshold(0.0, 0.0) - 0.5).abs() < 1e-7);
+        assert!((face_sdf_threshold(pi / 2.0, 0.0) - 0.625).abs() < 1e-6);
+        assert!((face_sdf_threshold(pi, 0.0) - 0.75).abs() < 1e-6);
+        // simétrico em theta (o lado entra só pelo espelhamento do mapa)
+        assert_eq!(face_sdf_threshold(-1.0, 0.0), face_sdf_threshold(1.0, 0.0));
+        assert!((face_sdf_threshold(0.0, 0.1) - 0.6).abs() < 1e-7);
+        // 45°: 0.5 + (1 − (cos45·0.5 + 0.5))·0.25 = 0.536611…
+        assert!((face_sdf_threshold(pi / 4.0, 0.0) - 0.536_611_6).abs() < 1e-5);
+    }
+
+    #[test]
+    fn golden_face_sdf_factor_is_a_smooth_step_down() {
+        assert_eq!(face_sdf_factor(0.9, 0.6, 0.05), 0.0);
+        assert_eq!(face_sdf_factor(0.1, 0.6, 0.05), 1.0);
+        assert!((face_sdf_factor(0.6, 0.6, 0.05) - 0.5).abs() < 1e-6);
+        // softness mínima 0.001
+        assert!((face_sdf_factor(0.6, 0.6, 0.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn golden_face_sdf_mirror_flips_u_only_for_negative_theta() {
+        assert_eq!(face_sdf_mirror_u(0.1, 0.5, 0.25), 0.1); // luz em +X: sem espelho
+        assert!((face_sdf_mirror_u(0.1, -0.5, 0.25) - 0.4).abs() < 1e-7); // 2·0.25 − 0.1
+        assert_eq!(face_sdf_mirror_u(0.1, -0.5, 0.0), 0.1); // 0 = desligado
+        assert_eq!(face_sdf_mirror_u(0.1, 0.0, 0.25), 0.1); // theta = 0 não espelha
+        assert!((face_sdf_mirror_u(0.3, -2.0, 0.5) - 0.7).abs() < 1e-7); // mapa centrado
+    }
+
+    #[test]
+    fn golden_face_shadow_tone_uses_the_material_shadow_color() {
+        let lit = [0.9, 0.8, 0.7];
+        let shadow = [0.3, 0.25, 0.4];
+        assert_eq!(face_shadow_tone(lit, shadow, 0.0), lit);
+        assert_eq!(face_shadow_tone(lit, shadow, 1.0), [0.3, 0.25, 0.4f32.min(0.7)]);
+        // nunca clareia uma banda já mais profunda
+        let deep = [0.05, 0.05, 0.05];
+        assert_eq!(face_shadow_tone(deep, shadow, 1.0), deep);
+        let half = face_shadow_tone(lit, shadow, 0.5);
+        assert!((half[0] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn face_frame_is_the_model_columns_with_identity_palette_and_follows_the_head_bone() {
+        let model = Mat4::from_rotation_y(0.3) * Mat4::from_scale(Vec3::splat(2.0));
+        let identity: Vec<f32> = (0..24).flat_map(|_| Mat4::IDENTITY.to_cols_array()).collect();
+        let (right, forward) = face_frame(&identity, model);
+        assert!((right - model.x_axis.truncate()).length() < 1e-6);
+        assert!((forward - model.z_axis.truncate()).length() < 1e-6);
+        // cabeça girada 90° em Y: o rosto passa a olhar para +X
+        let mut posed = identity.clone();
+        let head = FACE_HEAD_JOINT * 16;
+        posed[head..head + 16].copy_from_slice(&Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2).to_cols_array());
+        let (right, forward) = face_frame(&posed, Mat4::IDENTITY);
+        assert!((forward - Vec3::X).length() < 1e-6, "{forward:?}");
+        assert!((right - (-Vec3::Z)).length() < 1e-6, "{right:?}");
+        // luz frontal do mundo vira luz lateral (-X local) para essa cabeça
+        let theta = face_sdf_theta(right, forward, Vec3::Z);
+        assert!((theta + std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // paleta curta → identidade
+        let (r, f) = face_frame(&[], Mat4::IDENTITY);
+        assert_eq!((r, f), (Vec3::X, Vec3::Z));
     }
 }

@@ -127,6 +127,9 @@ pub struct HeadlessRenderer {
     target_cache: Mutex<RenderTargetCache>,
     /// Motor cel (Fase 1): normais suavizadas do contorno por geometria.
     outline_normal_cache: Mutex<OutlineNormalCache>,
+    /// Mapa SDF da sombra facial (binding 16 do cel). `None` = neutro 1x1 branco
+    /// (fator de sombra 0: a face SDF não altera a imagem).
+    face_sdf_view: Mutex<Option<wgpu::TextureView>>,
 }
 
 /// Vértices já morfados pelo compute (GPU): substituem o VBO estático dos nós
@@ -1045,6 +1048,7 @@ impl HeadlessRenderer {
             dof_nearest_sampler: resources.dof_nearest_sampler,
             target_cache: Mutex::new(RenderTargetCache::new()),
             outline_normal_cache: Mutex::new(OutlineNormalCache::default()),
+            face_sdf_view: Mutex::new(None),
         })
     }
 
@@ -1379,6 +1383,16 @@ impl HeadlessRenderer {
         // Motor cel (Fase 1): largura por distância/FOV, taper e tinta por
         // material saem de `NprParams` (padrão = uniform de antes, byte a byte).
         let outline_uniform = OutlineUniform::for_material(&mat, aspect, fov_y);
+        // Mapa SDF facial: o do renderer (se houver e o material usa) ou o neutro.
+        let face_sdf_map = if mat.face_sdf_enabled {
+            self.face_sdf_view
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        } else {
+            None
+        };
+        let face_sdf_view = face_sdf_map.as_ref().unwrap_or(&self.mtoon_neutral_view);
         let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Outline Uniform Buffer"),
             contents: cast_slice(&[outline_uniform]),
@@ -1455,10 +1469,11 @@ impl HeadlessRenderer {
                     binding: 15,
                     resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
                 },
-                // Fase 2 (#17): SDF facial — neutro 1x1 (R=1 → fator 0).
+                // Fase 2 (#17): SDF facial — o mapa do renderer quando o material o
+                // usa (`set_face_sdf_map`); senão o neutro 1x1 (R=1 → fator 0).
                 wgpu::BindGroupEntry {
                     binding: 16,
-                    resource: wgpu::BindingResource::TextureView(&self.mtoon_neutral_view),
+                    resource: wgpu::BindingResource::TextureView(face_sdf_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 17,
@@ -1708,6 +1723,107 @@ impl HeadlessRenderer {
         self.queue.submit(Some(encoder.finish()));
         metrics.render_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
         Ok(metrics)
+    }
+
+    /// Define o mapa SDF da sombra facial (canal R de uma textura `R8Unorm`
+    /// `width × height`, linhas de cima para baixo; ver `face_sdf_map`). Vale
+    /// para todo material com `face_sdf_enabled`; sem mapa o slot é o neutro 1x1.
+    pub fn set_face_sdf_map(&self, width: u32, height: u32, r8: &[u8]) -> Result<()> {
+        if width == 0 || height == 0 || r8.len() != (width as usize) * (height as usize) {
+            anyhow::bail!(
+                "mapa SDF facial inválido: {}x{} exige {} bytes (R8), recebeu {}",
+                width,
+                height,
+                width as usize * height as usize,
+                r8.len()
+            );
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Face SDF Map (R8)"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            r8,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        *self
+            .face_sdf_view
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(view);
+        Ok(())
+    }
+
+    /// Como [`Self::set_face_sdf_map`], mas com valores `f32` (0..1) guardados em
+    /// `R16Float`: sem a quantização de 8 bits (útil para mapas procedurais/gradientes
+    /// suaves; um PNG de artista é R8 por natureza).
+    pub fn set_face_sdf_map_f32(&self, width: u32, height: u32, values: &[f32]) -> Result<()> {
+        if width == 0 || height == 0 || values.len() != (width as usize) * (height as usize) {
+            anyhow::bail!(
+                "mapa SDF facial inválido: {}x{} exige {} valores, recebeu {}",
+                width,
+                height,
+                width as usize * height as usize,
+                values.len()
+            );
+        }
+        let halves: Vec<u16> = values.iter().map(|v| crate::face_sdf_map::f32_to_f16_bits(*v)).collect();
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Face SDF Map (R16Float)"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            cast_slice(&halves),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 2),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        *self
+            .face_sdf_view
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(view);
+        Ok(())
+    }
+
+    /// Remove o mapa SDF facial (volta ao neutro: a sombra facial não altera a imagem).
+    pub fn clear_face_sdf_map(&self) {
+        *self
+            .face_sdf_view
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     /// Quantas (re)alocações o [`RenderTargetCache`] já fez (telemetria/teste:

@@ -91,7 +91,37 @@ fn base_at_distance(distance: f32, tweak: impl Fn(&mut StylizedMaterial)) -> Sce
     scene
 }
 
+/// Cabeça (esfera UV) com sombra facial SDF; luz a `angle_deg` do eixo frontal
+/// (+Z local), positivo para +X. `mirror` liga o espelhamento (eixo u = 0.25).
+fn face_scene(angle_deg: f32, mirror: bool) -> Scene {
+    let a = angle_deg.to_radians();
+    let mut scene = probe_sphere(|m| {
+        m.face_sdf_enabled = true;
+        m.face_shadow_smoothness = 0.04;
+        m.outline_width = 0.006;
+        m.shadow_threshold = 0.2; // terminador do cel fora do caminho: só o SDF aparece
+        m.npr.face_sdf_mirror_center = if mirror { 0.25 } else { 0.0 };
+    });
+    scene.light.direction = Vec3::new(a.sin(), 0.0, a.cos()).to_array();
+    scene.background_color = LIGHT_BG;
+    scene
+}
+
+fn parse_face(name: &str) -> Option<(f32, bool)> {
+    let rest = name.strip_prefix("face_")?;
+    let (kind, angle) = rest.split_once('_')?;
+    let value: f32 = if let Some(neg) = angle.strip_prefix('n') {
+        -neg.parse::<f32>().ok()?
+    } else {
+        angle.parse::<f32>().ok()?
+    };
+    Some((value, kind == "m"))
+}
+
 fn build(name: &str) -> Option<(Scene, u32)> {
+    if let Some((angle, mirror)) = parse_face(name) {
+        return Some((face_scene(angle, mirror), 256));
+    }
     Some(match name {
         "female_base" => (female_base(), 512),
         "dof_off" => (dof_depth_scene(false, 4.0), 512),
@@ -144,6 +174,9 @@ fn main() {
     }
     std::fs::create_dir_all(&out_dir).unwrap();
     let renderer = pollster::block_on(HeadlessRenderer::new()).expect("sem adaptador GPU");
+    // mapa SDF procedural para as cenas face_* (rosto = metade u ∈ [0, 0.5] da esfera UV)
+    let sdf = anigo_renderer::face_sdf_map::procedural_face_sdf_f32(512, 256, 0.25, 0.25, true);
+    renderer.set_face_sdf_map_f32(512, 256, &sdf).expect("mapa SDF");
     for name in names {
         let Some((scene, size)) = build(&name) else {
             eprintln!("cena desconhecida: {name}");

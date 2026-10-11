@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 533,
-      "fnv1a64": "90ea832b2cbcccdf"
+      "lines": 562,
+      "fnv1a64": "266c04d4782cd76f"
     },
     {
       "name": "inverted_hull",
@@ -54,10 +54,11 @@ export const RENDER_CONTRACT_DATA = {
       "entry_points": {
         "theta": "face_sdf_theta",
         "threshold": "face_sdf_threshold",
-        "factor": "face_sdf_factor"
+        "factor": "face_sdf_factor",
+        "mirror": "face_sdf_mirror_uv"
       },
-      "lines": 41,
-      "fnv1a64": "bda7e76d52a49c35"
+      "lines": 57,
+      "fnv1a64": "b2db836b5e3b01a8"
     },
     {
       "name": "anime_eye",
@@ -1204,7 +1205,10 @@ export const RENDER_CONTRACT_DATA = {
     "sdf_channel": "r",
     "sdf_semantics": "0 = centro da região de sombra (nasal/olhos/queixo), 1 = fora da região",
     "neutral_when_disabled": "neutro 1x1 branco (R=1) → fator 0 → imagem inalterada",
-    "darkening": 0.72,
+    "shadow_tone": "mix(base_cel, min(base_cel, shadow_color), factor)",
+    "mirror": "u' = 2 * face_sdf_mirror_center - u quando theta < 0 e face_sdf_mirror_center > 0",
+    "frame": "face_right = model * (palette[7] * (1,0,0,0)); face_forward = model * (palette[7] * (0,0,1,0))",
+    "head_joint": 7,
     "block_markers": [
       "// ANIGO-FACE-SDF-BEGIN",
       "// ANIGO-FACE-SDF-END"
@@ -1216,7 +1220,8 @@ export const RENDER_CONTRACT_DATA = {
     "entry_functions": [
       "face_sdf_theta",
       "face_sdf_threshold",
-      "face_sdf_factor"
+      "face_sdf_factor",
+      "face_sdf_mirror_uv"
     ],
     "golden": [
       {
@@ -1816,6 +1821,16 @@ export const RENDER_CONTRACT_DATA = {
         "uniform": "outline.color (host)",
         "shader": "inverted_hull",
         "effect": "Multiplicador de saturação (HSV) da tinta (1 = igual à base; ~2.5 transforma pele clara em marrom-avermelhado). Só vale com outline_ink_blend > 0."
+      },
+      {
+        "name": "face_sdf_mirror_center",
+        "range": [
+   0, 1
+  ],
+        "default": 0,
+        "uniform": "material.params8.w",
+        "shader": "cel_shading",
+        "effect": "0 = sem espelhamento (sombra facial simétrica, o comportamento anterior). > 0 = u do eixo de simetria do rosto no mapa SDF (0.5 para mapas centrados; 0.25 na esfera UV/cabeça canônica): com a luz do lado oposto ao autorado (theta < 0) o mapa é amostrado espelhado. Só vale com face_sdf_enabled e um mapa ancorado."
       }
     ]
   },

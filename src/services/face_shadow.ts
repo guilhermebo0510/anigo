@@ -15,7 +15,9 @@ import type { Mat4 } from "./camera_math";
 /**
  * Azimut da luz no espaço local da cabeça (theta).
  *
- * `model` é a matriz do nó 0, column-major: a coluna 0 carrega o eixo X local
+ * `model` são os eixos do rosto (motor cel: com paleta de skinning identidade é a
+ * matriz do nó 0; com pose, o WGSL leva os eixos da junta 7 — Head — ao mundo antes).
+ * column-major: a coluna 0 carrega o eixo X local
  * e a coluna 2 o eixo Z local, em coordenadas de mundo — para escala positiva
  * a direção é preservada, então não precisamos da inversa (o WGSL faz o
  * mesmo com `camera.model[0]`/`camera.model[2]`). O eixo Z local é a frente
@@ -52,21 +54,34 @@ export function faceSdfFactor(sdf: number, threshold: number, softness: number):
   return 1.0 - t * t * (3.0 - 2.0 * t);
 }
 
-/** 0..1 — quanto da cor base fica escurecida pela sombra facial (0.72 = 28% de escurecimento). */
-export const FACE_SDF_DARKENING = 0.72;
+/**
+ * Espelhamento do `u` do mapa SDF pelo lado da luz (motor cel, Fase 1): o mapa é
+ * autorado para luz em +X local (theta >= 0); com theta < 0 ele é sampleado em
+ * `u' = 2·center − u`. `mirrorCenter <= 0` desliga (o comportamento anterior).
+ * Mesma fórmula do `face_sdf_mirror_uv` do WGSL.
+ */
+export function faceSdfMirrorU(u: number, theta: number, mirrorCenter: number): number {
+  return mirrorCenter > 0 && theta < 0 ? 2 * mirrorCenter - u : u;
+}
 
 /**
- * Cor base final após a sombra facial (o mesmo `mix(base, base*0.72, fator)`
- * do WGSL). `sdf` = 1.0 (neutro branco ancorado) devolve `base` intacto.
+ * Cor do rosto sombreado (o mesmo `mix(base, min(base, shadow), fator)` do WGSL):
+ * a região do SDF recebe a COR DE SOMBRA do material (a mesma do terminador), nunca
+ * mais clara que a banda já existente. Substitui o antigo escurecimento fixo
+ * `base * 0.72`. `sdf` = 1.0 (neutro branco ancorado) devolve `base` intacto.
  */
 export function faceShadowApply(
   base: [number, number, number],
+  shadow: [number, number, number],
   sdf: number,
   theta: number,
   offset: number,
   smoothness: number
 ): [number, number, number] {
   const factor = faceSdfFactor(sdf, faceSdfThreshold(theta, offset), smoothness);
-  const k = 1.0 - factor * (1.0 - FACE_SDF_DARKENING);
-  return [base[0] * k, base[1] * k, base[2] * k];
+  const tone = (channel: number) => {
+    const target = Math.min(base[channel], shadow[channel]);
+    return base[channel] * (1.0 - factor) + target * factor;
+  };
+  return [tone(0), tone(1), tone(2)];
 }

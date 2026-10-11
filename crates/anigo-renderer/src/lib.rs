@@ -1,6 +1,7 @@
 pub mod culling;
 pub mod device_recovery;
 pub mod diagnostics;
+pub mod face_sdf_map;
 pub mod headless;
 pub mod mesh_validation;
 pub mod outline_normals;

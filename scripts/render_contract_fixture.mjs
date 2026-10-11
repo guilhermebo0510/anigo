@@ -105,6 +105,7 @@ export function renderContractFixture() {
       theta: "face_sdf_theta",
       threshold: "face_sdf_threshold",
       factor: "face_sdf_factor",
+      mirror: "face_sdf_mirror_uv",
     }),
     shader("anime_eye", "crates/anigo-renderer/shaders/anime_eye.wgsl", "wgsl", "library", {
       parallax: "eye_parallax_uv",
@@ -577,10 +578,23 @@ export function renderContractFixture() {
       sdf_channel: "r",
       sdf_semantics: "0 = centro da região de sombra (nasal/olhos/queixo), 1 = fora da região",
       neutral_when_disabled: "neutro 1x1 branco (R=1) → fator 0 → imagem inalterada",
-      darkening: 0.72,
+      // Motor cel (Fase 1): a sombra facial usa a COR DE SOMBRA do material (a
+      // mesma do terminador): mix(base_cel, min(base_cel, shadow_color), fator).
+      // Antes era um escurecimento fixo base_cel * 0.72 (campo `darkening`, removido).
+      shadow_tone: "mix(base_cel, min(base_cel, shadow_color), factor)",
+      // Espelhamento: o mapa é autorado para luz em +X local (theta >= 0) e é
+      // sampleado com u' = 2*center - u quando theta < 0 (center = material
+      // `face_sdf_mirror_center`, 0 = desligado, o comportamento anterior).
+      mirror: "u' = 2 * face_sdf_mirror_center - u quando theta < 0 e face_sdf_mirror_center > 0",
+      // Frame do rosto: eixos X/Z da junta 7 (Head) da paleta de skinning levados
+      // ao mundo pelo vertex shader do cel (flat). Paleta identidade = colunas 0 e
+      // 2 da matriz de modelo (como antes). Limitação: a junta é a do esqueleto
+      // canônico de 24 ossos; um rig com outra numeração precisa remapear.
+      frame: "face_right = model * (palette[7] * (1,0,0,0)); face_forward = model * (palette[7] * (0,0,1,0))",
+      head_joint: 7,
       block_markers: ["// ANIGO-FACE-SDF-BEGIN", "// ANIGO-FACE-SDF-END"],
       shared_by: ["face_sdf", "cel_shading"],
-      entry_functions: ["face_sdf_theta", "face_sdf_threshold", "face_sdf_factor"],
+      entry_functions: ["face_sdf_theta", "face_sdf_threshold", "face_sdf_factor", "face_sdf_mirror_uv"],
       golden: [
         { azimuth_degrees: 0, theta: 0.0, light_front: 1.0, threshold: 0.5, factor_sdf_half: 0.5 },
         { azimuth_degrees: 45, theta: 0.78539819, light_front: 0.8535534, threshold: 0.53661167, factor_sdf_half: 0.9510253 },
@@ -880,6 +894,11 @@ export function renderContractFixture() {
           name: "outline_ink_saturation", range: [0, 3], default: 2.5,
           uniform: "outline.color (host)", shader: "inverted_hull",
           effect: "Multiplicador de saturação (HSV) da tinta (1 = igual à base; ~2.5 transforma pele clara em marrom-avermelhado). Só vale com outline_ink_blend > 0.",
+        },
+        {
+          name: "face_sdf_mirror_center", range: [0, 1], default: 0,
+          uniform: "material.params8.w", shader: "cel_shading",
+          effect: "0 = sem espelhamento (sombra facial simétrica, o comportamento anterior). > 0 = u do eixo de simetria do rosto no mapa SDF (0.5 para mapas centrados; 0.25 na esfera UV/cabeça canônica): com a luz do lado oposto ao autorado (theta < 0) o mapa é amostrado espelhado. Só vale com face_sdf_enabled e um mapa ancorado.",
         },
       ],
     },
