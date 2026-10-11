@@ -462,11 +462,11 @@ impl PartialOrd for HeapNode {
 pub(crate) type DijkstraTree = HashMap<u32, (f64, u32, u32)>;
 
 /// Dijkstra determinístico a partir de `src` pelas arestas para as quais `weight`
-/// devolve `Some(custo)`. Com `target`, para ao fixá-lo.
+/// devolve `Some(custo)`. Para ao fixar o primeiro vértice (diferente de `src`) que satisfaz `stop`.
 pub(crate) fn dijkstra(
     topo: &Topology,
     src: u32,
-    target: Option<u32>,
+    stop: impl Fn(u32) -> bool,
     weight: impl Fn(u32) -> Option<f64>,
 ) -> DijkstraTree {
     let mut tree: DijkstraTree = HashMap::new();
@@ -478,7 +478,7 @@ pub(crate) fn dijkstra(
         if !done.insert(v) {
             continue;
         }
-        if Some(v) == target {
+        if v != src && stop(v) {
             break;
         }
         for &e in &topo.vert_edges[v as usize] {
@@ -524,7 +524,7 @@ pub fn seam_path(mesh: &EditMesh, from_vert: u32, to_vert: u32) -> ModelResult<V
         return Ok(Vec::new());
     }
     let topo = Topology::build(mesh);
-    let tree = dijkstra(&topo, from_vert, Some(to_vert), |e| Some(edge_len(mesh, &topo, e)));
+    let tree = dijkstra(&topo, from_vert, |v| v == to_vert, |e| Some(edge_len(mesh, &topo, e)));
     if !tree.contains_key(&to_vert) {
         return Err(ModelError::UnsupportedTopology(format!(
             "não há caminho de arestas entre os vértices {from_vert} e {to_vert}"
@@ -624,7 +624,7 @@ fn disk_cut(mesh: &EditMesh, topo: &Topology, faces: &[u32], in_island: &[bool])
             .unwrap_or(0)
     };
 
-    let tree = dijkstra(topo, root, None, |e| {
+    let tree = dijkstra(topo, root, |_| false, |e| {
         if !edge_set.contains(&e) {
             None
         } else if interior(e) {
@@ -723,6 +723,11 @@ pub struct CharacterSeamParams {
     pub angle: f32,
     /// Corta ilhas que ainda não são disco (esferas, tubos, toros) para permitir o unwrap.
     pub open_closed_islands: bool,
+    /// Déficit angular (radianos, `2π − Σ ângulos das faces`) a partir do qual um vértice
+    /// interno é tratado como ponta (ápice de cone, mecha, chifre): um corte mínimo liga a
+    /// ponta à costura/fronteira mais próxima, pois uma ponta não se achata sem distorção.
+    /// `<= 0` desliga. Padrão 60°.
+    pub point_defect: f32,
 }
 
 impl Default for CharacterSeamParams {
@@ -730,6 +735,7 @@ impl Default for CharacterSeamParams {
         Self {
             angle: 70.0_f32.to_radians(),
             open_closed_islands: true,
+            point_defect: 60.0_f32.to_radians(),
         }
     }
 }
@@ -741,10 +747,75 @@ pub struct AutoSeamReport {
     pub angle_seams: usize,
     /// Costuras novas para abrir ilhas fechadas/tubulares/com genus.
     pub cut_seams: usize,
+    /// Costuras novas que ligam pontas (vértices de grande déficit angular) à costura mais próxima.
+    pub point_seams: usize,
     /// Ilhas resultantes.
     pub islands: usize,
     /// Ilhas que continuam sem ser disco (topologia patológica; o unwrap ainda roda mas com distorção).
     pub non_disk_islands: usize,
+}
+
+/// Liga cada vértice interno de grande déficit angular à costura/fronteira mais próxima
+/// por um caminho mínimo. Devolve quantas arestas foram marcadas.
+fn cut_sharp_points(mesh: &mut EditMesh, defect_min: f32) -> ModelResult<usize> {
+    if !defect_min.is_finite() {
+        return Err(ModelError::InvalidParameter(format!("point_defect inválido: {defect_min}")));
+    }
+    let topo = Topology::build(mesh);
+    let n = mesh.verts.len();
+    let mut angle_sum = vec![0.0f64; n];
+    for face in &mesh.faces {
+        let k = face.corners.len();
+        for i in 0..k {
+            let p = mesh.co(face.corners[i].vert).as_dvec3();
+            let a = mesh.co(face.corners[(i + k - 1) % k].vert).as_dvec3() - p;
+            let b = mesh.co(face.corners[(i + 1) % k].vert).as_dvec3() - p;
+            let c = a.normalize_or_zero().dot(b.normalize_or_zero()).clamp(-1.0, 1.0);
+            angle_sum[face.corners[i].vert as usize] += c.acos();
+        }
+    }
+    let mut is_cut = vec![false; n];
+    for info in &topo.edges {
+        if info.faces.len() != 2 || is_seam(mesh, info.verts) {
+            is_cut[info.verts.0 as usize] = true;
+            is_cut[info.verts.1 as usize] = true;
+        }
+    }
+    let mut cands: Vec<(f64, u32)> = (0..n as u32)
+        .filter(|&v| !is_cut[v as usize] && !topo.vert_faces[v as usize].is_empty())
+        .map(|v| (std::f64::consts::TAU - angle_sum[v as usize], v))
+        .filter(|&(d, _)| d > defect_min as f64)
+        .collect();
+    cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut marked = 0;
+    for (_, v) in cands {
+        if is_cut[v as usize] {
+            continue;
+        }
+        let tree = dijkstra(&topo, v, |x| is_cut[x as usize], |e| Some(edge_len(mesh, &topo, e)));
+        let Some(end) = tree
+            .iter()
+            .filter(|(&x, _)| x != v && is_cut[x as usize])
+            .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0).then(a.0.cmp(b.0)))
+            .map(|(&x, _)| x)
+        else {
+            continue;
+        };
+        let mut x = end;
+        let mut path = Vec::new();
+        while x != v {
+            let (_, p, e) = tree[&x];
+            path.push(topo.edges[e as usize].verts);
+            is_cut[x as usize] = true;
+            x = p;
+        }
+        for &(a, b) in &path {
+            mesh.set_seam(a, b, true);
+        }
+        is_cut[v as usize] = true;
+        marked += path.len();
+    }
+    Ok(marked)
 }
 
 /// Costuras automáticas para personagem com os parâmetros padrão. Ver [`auto_seams_for_character_with`].
@@ -755,7 +826,8 @@ pub fn auto_seams_for_character(mesh: &mut EditMesh) -> ModelResult<AutoSeamRepo
 /// Heurística de costuras para personagens: (1) marca arestas com ângulo diedral acima
 /// de `params.angle` (separa dobras fortes: nariz, orelha, bordas de roupa); (2) para
 /// cada ilha resultante que não seja disco, aplica um corte mínimo (caminho mais curto
-/// entre laços de fronteira, meridiano em esferas, geradores em toros) que a abre.
+/// entre laços de fronteira, meridiano em esferas, geradores em toros) que a abre; (3) liga
+/// pontas agudas (ápice de cone, mechas) à costura mais próxima ([`CharacterSeamParams::point_defect`]).
 /// Não é um "auto-seam artístico": posicione costuras ocultas à mão quando importar.
 pub fn auto_seams_for_character_with(
     mesh: &mut EditMesh,
@@ -763,6 +835,12 @@ pub fn auto_seams_for_character_with(
 ) -> ModelResult<AutoSeamReport> {
     if mesh.faces.is_empty() {
         return Err(ModelError::EmptySelection("a malha não possui faces"));
+    }
+    if !params.point_defect.is_finite() {
+        return Err(ModelError::InvalidParameter(format!(
+            "point_defect inválido: {}",
+            params.point_defect
+        )));
     }
     let mut report = AutoSeamReport {
         angle_seams: auto_seams_by_angle(mesh, params.angle)?,
@@ -787,6 +865,9 @@ pub fn auto_seams_for_character_with(
         mesh.set_seam(a, b, true);
     }
     report.cut_seams = cuts.len();
+    if params.point_defect > 0.0 {
+        report.point_seams = cut_sharp_points(mesh, params.point_defect)?;
+    }
     // Reavalia após o corte.
     let topo2 = Topology::build(mesh);
     let islands2 = build_islands(mesh, &topo2, &all, false);
@@ -1053,6 +1134,30 @@ mod tests {
         assert_eq!(rep2.angle_seams + rep2.cut_seams, 0);
         assert_eq!(s, snapshot);
         assert!(auto_seams_for_character(&mut EditMesh::new("v")).is_err());
+    }
+
+    #[test]
+    fn auto_seams_character_cuts_cone_apex_down_to_the_base() {
+        let mut m = primitives::cone(1.0, 0.0, 2.0, 12, true);
+        let apex = (0..m.vert_count() as u32).find(|&v| m.co(v).y > 0.99).unwrap();
+        let rep = auto_seams_for_character(&mut m).unwrap();
+        assert_eq!(rep.angle_seams, 12, "anel da base");
+        assert!(rep.point_seams >= 1, "{rep:?}");
+        let seam_at_apex = m.edge_attrs.iter().any(|(&(a, b), e)| e.seam && (a == apex || b == apex));
+        assert!(seam_at_apex, "o ápice deve ter uma costura incidente");
+        // desligado: nenhuma costura de ponta e a ilha lateral continua com o ápice interno
+        let mut n = primitives::cone(1.0, 0.0, 2.0, 12, true);
+        let off = auto_seams_for_character_with(&mut n, &CharacterSeamParams { point_defect: 0.0, ..Default::default() }).unwrap();
+        assert_eq!(off.point_seams, 0);
+        // parâmetro inválido: malha intacta
+        let mut k = primitives::cone(1.0, 0.0, 2.0, 12, true);
+        let before = k.clone();
+        let bad = CharacterSeamParams { point_defect: f32::NAN, ..Default::default() };
+        assert!(auto_seams_for_character_with(&mut k, &bad).is_err());
+        assert_eq!(k, before);
+        let bad_angle = CharacterSeamParams { angle: 9.0, ..Default::default() };
+        assert!(auto_seams_for_character_with(&mut k, &bad_angle).is_err());
+        assert_eq!(k, before);
     }
 
     #[test]

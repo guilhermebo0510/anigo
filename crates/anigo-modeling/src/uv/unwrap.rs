@@ -89,12 +89,12 @@ impl Csr {
 
     /// `y = A x`.
     pub(crate) fn mul(&self, x: &[f64], y: &mut [f64]) {
-        for r in 0..self.n {
+        for (r, yr) in y.iter_mut().enumerate().take(self.n) {
             let mut s = 0.0;
             for k in self.row_ptr[r]..self.row_ptr[r + 1] {
                 s += self.val[k] * x[self.col[k] as usize];
             }
-            y[r] = s;
+            *yr = s;
         }
     }
 
@@ -743,7 +743,7 @@ fn lscm_solve(
     let max_it = if params.max_cg_iterations > 0 {
         params.max_cg_iterations
     } else {
-        (m.max(2000)).min(50_000)
+        m.clamp(2000, 50_000)
     };
     let (iterations, residual) = pcg(&a, &rhs, &mut x, params.tolerance, max_it);
     let mut q = vec![DVec2::ZERO; nv];
@@ -866,7 +866,7 @@ fn arap_refine(sys: &IslandSystem, q: &mut [DVec2], iterations: u32, params: &Un
         }
     }
     let l = Csr::from_triplets(nv - 1, trip);
-    let max_it = if params.max_cg_iterations > 0 { params.max_cg_iterations } else { (nv.max(2000)).min(20_000) };
+    let max_it = if params.max_cg_iterations > 0 { params.max_cg_iterations } else { nv.clamp(2000, 20_000) };
     let mut total_it = 0;
     for _ in 0..iterations {
         // passo local: rotação mais próxima de cada triângulo
@@ -973,7 +973,9 @@ fn check_mesh(mesh: &EditMesh) -> ModelResult<()> {
 /// de qualquer escrita (malha intacta). Veja o módulo para o algoritmo e as limitações.
 ///
 /// Com `params.pack` (padrão) as ilhas terminam empacotadas em `[0,1]²` com a margem dada;
-/// sem pack cada ilha fica em unidades do mundo com o canto mínimo na origem.
+/// sem pack cada ilha fica em unidades do mundo com o canto mínimo na origem. Com `faces =
+/// Some(..)` o pack só considera as ilhas desdobradas: o resultado pode sobrepor UVs de faces
+/// não selecionadas (como no Blender).
 pub fn unwrap_lscm(
     mesh: &mut EditMesh,
     faces: Option<&[u32]>,
@@ -1423,6 +1425,62 @@ mod tests {
     }
 
     #[test]
+    fn single_triangle_and_quad_are_reproduced_exactly() {
+        let mut t = EditMesh::new("tri");
+        t.add_vert(Vec3::new(0.0, 0.0, 0.0));
+        t.add_vert(Vec3::new(3.0, 0.0, 0.0));
+        t.add_vert(Vec3::new(1.0, 2.0, 1.0));
+        t.add_face(&[0, 1, 2]).unwrap();
+        unwrap_lscm(&mut t, None, &no_pack()).unwrap();
+        let uv: Vec<Vec2> = t.faces[0].corners.iter().map(|c| c.uv).collect();
+        for (i, j) in [(0, 1), (1, 2), (2, 0)] {
+            let d3 = (t.co(i as u32) - t.co(j as u32)).length();
+            assert!(((uv[i] - uv[j]).length() - d3).abs() < 1e-4);
+        }
+        assert!(flipped_faces(&t).is_empty());
+        let mut q = primitives::plane(2.0);
+        unwrap_lscm(&mut q, None, &UnwrapParams::default()).unwrap();
+        assert!(mean_stretch(&q) < 1.0001);
+        assert!(flipped_faces(&q).is_empty());
+    }
+
+    #[test]
+    fn character_primitives_with_auto_seams_unwrap_cleanly() {
+        let meshes = vec![
+            primitives::quad_sphere(1.0, 6),
+            primitives::capsule(0.4, 1.0, 12, 4),
+            primitives::torus(1.0, 0.3, 16, 8),
+            primitives::cylinder(0.5, 2.0, 12, 4, true),
+            primitives::cone(1.0, 0.0, 2.0, 12, true),
+            primitives::uv_sphere(1.0, 10, 16),
+            primitives::cube_subdivided(1.0, 3),
+        ];
+        for mut m in meshes {
+            let name = m.name.clone();
+            crate::uv::seams::auto_seams_for_character(&mut m).unwrap();
+            let rep = unwrap_lscm(&mut m, None, &UnwrapParams::default()).unwrap();
+            assert_eq!(rep.non_disk_islands, 0, "{name}");
+            assert!(flipped_faces(&m).is_empty(), "{name}: invertidas");
+            assert!(self_overlapping_faces(&m).is_empty(), "{name}: dobras");
+            assert_eq!(overlap_count(&m), 0, "{name}: ilhas sobrepostas");
+            assert!(rep.max_residual < 1e-6, "{name}: CG não convergiu ({})", rep.max_residual);
+            let (lo, hi) = crate::uv::metrics::uv_bounds(&m).unwrap();
+            assert!(lo.min_element() >= -1e-6 && hi.max_element() <= 1.0 + 1e-5, "{name}: fora de [0,1]");
+            assert!(mean_stretch(&m) < 1.6, "{name}: estiramento {}", mean_stretch(&m));
+            m.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn cone_with_apex_seam_unrolls_isometrically() {
+        let mut m = primitives::cone(1.0, 0.0, 2.0, 12, false);
+        crate::uv::seams::auto_seams_for_character(&mut m).unwrap();
+        unwrap_lscm(&mut m, None, &no_pack()).unwrap();
+        assert!(mean_stretch(&m) < 1.001, "{}", mean_stretch(&m));
+        assert!(flipped_faces(&m).is_empty());
+    }
+
+    #[test]
     fn concave_quad_uses_only_valid_diagonal() {
         // quad côncavo (dardo) no plano
         let mut m = EditMesh::new("dardo");
@@ -1593,6 +1651,22 @@ mod tests {
         assert!(el.as_secs() < 120, "demorou {el:?} ({} its)", rep.cg_iterations);
         assert!(flipped_faces(&m).is_empty());
         assert!(mean_stretch(&m) < 1.05);
+    }
+
+    /// Malha de ~24k faces (`quad_sphere(1.0, 64)`): lento em debug (minutos), por isso `#[ignore]`.
+    /// Rode com `cargo test -p anigo-modeling --release -- --ignored large_quad_sphere`.
+    #[test]
+    #[ignore]
+    fn large_quad_sphere_unwraps_in_reasonable_time() {
+        let mut m = primitives::quad_sphere(1.0, 64);
+        assert!(m.face_count() > 24_000);
+        crate::uv::seams::auto_seams_for_character(&mut m).unwrap();
+        let t = std::time::Instant::now();
+        let rep = unwrap_lscm(&mut m, None, &UnwrapParams::default()).unwrap();
+        eprintln!("quad_sphere(64): {:?}, {} its, res {:e}", t.elapsed(), rep.cg_iterations, rep.max_residual);
+        assert!(flipped_faces(&m).is_empty());
+        assert!(rep.max_residual < 1e-6);
+        assert_eq!(overlap_count(&m), 0);
     }
 
     #[test]
