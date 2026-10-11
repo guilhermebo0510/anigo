@@ -152,6 +152,65 @@ fn face_stretch_info(mesh: &EditMesh, f: u32) -> Option<(f32, f64)> {
     Some(((num / den) as f32, mesh.face_area(f) as f64))
 }
 
+/// Razão global `ΣA_uv / ΣA_3d` (área UV por área 3D) sobre as faces com área 3D válida;
+/// `None` se não há nenhuma ou se a área UV total é nula.
+fn global_area_ratio(mesh: &EditMesh) -> Option<f64> {
+    let (mut uv, mut a3) = (0.0f64, 0.0f64);
+    for f in 0..mesh.faces.len() as u32 {
+        let a = mesh.face_area(f) as f64;
+        if a < 1e-14 {
+            continue;
+        }
+        a3 += a;
+        uv += poly_signed_area(&face_uvs(mesh, f)).abs();
+    }
+    (a3 > 0.0 && uv > 0.0).then(|| uv / a3)
+}
+
+/// Distorção de área da face `f`: `max(a, 1/a)` com `a = (A_uv/A_3d) / razão_global`
+/// (1 = área proporcional ao 3D; é a métrica "Area" do overlay de stretch do Blender).
+/// `NaN` se `f` é inválido; `INFINITY` se a área UV colapsou; `1.0` se a face 3D é degenerada
+/// ou a malha não tem área UV.
+pub fn face_area_distortion(mesh: &EditMesh, f: u32) -> f32 {
+    if f as usize >= mesh.faces.len() {
+        return f32::NAN;
+    }
+    let a3 = mesh.face_area(f) as f64;
+    let Some(r) = global_area_ratio(mesh) else { return 1.0 };
+    if a3 < 1e-14 {
+        return 1.0;
+    }
+    let a = poly_signed_area(&face_uvs(mesh, f)).abs() / a3 / r;
+    if a <= 1e-12 {
+        f32::INFINITY
+    } else {
+        a.max(1.0 / a) as f32
+    }
+}
+
+/// Média (ponderada pela área 3D) de [`face_area_distortion`] sobre as faces com distorção
+/// finita; 1.0 em malha sem área.
+pub fn mean_area_distortion(mesh: &EditMesh) -> f32 {
+    let Some(r) = global_area_ratio(mesh) else { return 1.0 };
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for f in 0..mesh.faces.len() as u32 {
+        let a3 = mesh.face_area(f) as f64;
+        if a3 < 1e-14 {
+            continue;
+        }
+        let a = poly_signed_area(&face_uvs(mesh, f)).abs() / a3 / r;
+        if a > 1e-12 {
+            num += a3 * a.max(1.0 / a);
+            den += a3;
+        }
+    }
+    if den > 0.0 {
+        (num / den) as f32
+    } else {
+        1.0
+    }
+}
+
 /// Estatísticas de estiramento de uma ilha.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IslandStretch {
@@ -435,6 +494,8 @@ pub struct UvReport {
     /// Média do `face_stretch` entre faces não colapsadas.
     pub mean_stretch: f32,
     pub max_stretch: f32,
+    /// Distorção de área média (ver [`mean_area_distortion`]).
+    pub mean_area_distortion: f32,
     /// Faces com UV colapsado.
     pub degenerate_faces: usize,
     pub flipped_faces: usize,
@@ -480,6 +541,7 @@ pub fn uv_report(mesh: &EditMesh, texture_size: u32) -> ModelResult<UvReport> {
         bounds: uv_bounds(mesh),
         mean_stretch: if cnt > 0 { (sum / cnt as f64) as f32 } else { 1.0 },
         max_stretch: max,
+        mean_area_distortion: mean_area_distortion(mesh),
         degenerate_faces: degenerate,
         flipped_faces: flipped,
         overlapping_island_pairs: overlap_count(mesh),
@@ -660,6 +722,26 @@ mod tests {
         let back: UvReport = serde_json::from_str(&json).unwrap();
         assert_eq!(rep, back);
         assert!(uv_report(&m, 0).is_err());
+    }
+
+    #[test]
+    fn area_distortion_detects_non_uniform_scale_between_faces() {
+        let mut m = primitives::grid(2, 1, 2.0, 1.0);
+        // face 0 com área UV 4x a da face 1 (mesma área 3D)
+        set_uv(&mut m, 0, &[Vec2::new(0.0, 0.0), Vec2::new(0.0, 2.0), Vec2::new(2.0, 2.0), Vec2::new(2.0, 0.0)]);
+        set_uv(&mut m, 1, &[Vec2::new(2.0, 0.0), Vec2::new(2.0, 1.0), Vec2::new(3.0, 1.0), Vec2::new(3.0, 0.0)]);
+        let d0 = face_area_distortion(&m, 0);
+        let d1 = face_area_distortion(&m, 1);
+        // razão global = 5/2: a0 = 1.6, a1 = 0.4 => distorções 1.6 e 2.5
+        assert!((d0 - 1.6).abs() < 1e-4 && (d1 - 2.5).abs() < 1e-4, "{d0} {d1}");
+        assert!(mean_area_distortion(&m) > 1.5);
+        assert!(face_area_distortion(&m, 9).is_nan());
+        set_uv(&mut m, 1, &[Vec2::ZERO; 4]);
+        assert!(face_area_distortion(&m, 1).is_infinite());
+        // uniforme => 1
+        let uni = primitives::cube(1.0);
+        assert!((mean_area_distortion(&uni) - 1.0).abs() < 1e-4);
+        assert_eq!(mean_area_distortion(&EditMesh::new("v")), 1.0);
     }
 
     #[test]

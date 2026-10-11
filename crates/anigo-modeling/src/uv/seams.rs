@@ -227,7 +227,6 @@ pub(crate) struct Wedges {
     pub offset: Vec<usize>,
     /// Wedge de cada corner (indexado por `offset[f] + corner`); `u32::MAX` fora do conjunto.
     pub var: Vec<u32>,
-    pub count: usize,
 }
 
 impl Wedges {
@@ -286,11 +285,7 @@ pub(crate) fn compute_wedges(
             var[offset[f] + c] = id_of_root[r];
         }
     }
-    Wedges {
-        offset,
-        var,
-        count: count as usize,
-    }
+    Wedges { offset, var }
 }
 
 /// Característica de Euler da ilha **cortada** (V' − E' + F usando wedges como vértices).
