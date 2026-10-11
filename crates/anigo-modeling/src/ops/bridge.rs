@@ -54,10 +54,7 @@ fn face_direction(mesh: &EditMesh, topo: &Topology, verts: &[u32], closed: bool)
 fn shift_cost(mesh: &EditMesh, a: &[u32], b: &[u32], shift: usize) -> f32 {
     let n = a.len();
     (0..n)
-        .map(|i| {
-            mesh.co(a[i])
-                .distance_squared(mesh.co(b[(i + shift) % n]))
-        })
+        .map(|i| mesh.co(a[i]).distance_squared(mesh.co(b[(i + shift) % n])))
         .sum()
 }
 
@@ -329,7 +326,10 @@ mod tests {
         let mut seen = HashSet::new();
         for f in &m.faces {
             for (a, b) in f.edges() {
-                assert!(seen.insert((a, b)), "aresta dirigida ({a},{b}) repetida: enrolamento inconsistente");
+                assert!(
+                    seen.insert((a, b)),
+                    "aresta dirigida ({a},{b}) repetida: enrolamento inconsistente"
+                );
             }
         }
     }
@@ -372,14 +372,21 @@ mod tests {
                 .verts;
             boundary_loop(&m, &t, e).unwrap()
         };
-        let (l_bot, l_top, u_bot, u_top) = (rim(false, false), rim(false, true), rim(true, false), rim(true, true));
-        let o1 = bridge_edge_loops(&mut m, &l_top, &u_bot, 1, 0, BridgeInterpolation::Linear).unwrap();
+        let (l_bot, l_top, u_bot, u_top) = (
+            rim(false, false),
+            rim(false, true),
+            rim(true, false),
+            rim(true, true),
+        );
+        let o1 =
+            bridge_edge_loops(&mut m, &l_top, &u_bot, 1, 0, BridgeInterpolation::Linear).unwrap();
         assert_eq!(o1.created_faces.len(), 8);
         let tm = Topology::build(&m);
         assert_eq!(tm.boundary_edge_count(), 16);
         assert_eq!(tm.non_manifold_edge_count(), 0);
         assert_consistent_orientation(&m);
-        let o2 = bridge_edge_loops(&mut m, &u_top, &l_bot, 2, 0, BridgeInterpolation::Linear).unwrap();
+        let o2 =
+            bridge_edge_loops(&mut m, &u_top, &l_bot, 2, 0, BridgeInterpolation::Linear).unwrap();
         assert_eq!(o2.created_faces.len(), 16);
         assert_closed(&m, Some(0));
         assert_consistent_orientation(&m);
@@ -398,15 +405,37 @@ mod tests {
         let mut m = bottom.clone();
         let (voff, _) = m.append(&top);
         let t = Topology::build(&m);
-        let a = boundary_loop(&m, &t, t.edges.iter().find(|e| e.faces.len() == 1 && e.verts.0 < voff).unwrap().verts).unwrap();
-        let b = boundary_loop(&m, &t, t.edges.iter().find(|e| e.faces.len() == 1 && e.verts.0 >= voff).unwrap().verts).unwrap();
+        let a = boundary_loop(
+            &m,
+            &t,
+            t.edges
+                .iter()
+                .find(|e| e.faces.len() == 1 && e.verts.0 < voff)
+                .unwrap()
+                .verts,
+        )
+        .unwrap();
+        let b = boundary_loop(
+            &m,
+            &t,
+            t.edges
+                .iter()
+                .find(|e| e.faces.len() == 1 && e.verts.0 >= voff)
+                .unwrap()
+                .verts,
+        )
+        .unwrap();
         bridge_edge_loops(&mut m, &a, &b, 1, 0, BridgeInterpolation::Linear).unwrap();
         assert_closed(&m, Some(2));
         assert_consistent_orientation(&m);
         assert_outward_star(&m);
         // cilindro de raio 1 e altura 1 inscrito em polígono de 12 lados
         let expected = 0.5 * 12.0 * (std::f32::consts::TAU / 12.0).sin();
-        assert!((signed_volume(&m) - expected).abs() < 1e-3, "{}", signed_volume(&m));
+        assert!(
+            (signed_volume(&m) - expected).abs() < 1e-3,
+            "{}",
+            signed_volume(&m)
+        );
     }
 
     #[test]
@@ -437,7 +466,8 @@ mod tests {
             let (lo, hi) = ((by_y[0], by_y[1]), (by_y[2], by_y[3]));
             let close = |p: Vec3, q: Vec3| (p.x - q.x).abs() < 1e-5 && (p.z - q.z).abs() < 1e-5;
             assert!(
-                (close(lo.0, hi.0) && close(lo.1, hi.1)) || (close(lo.0, hi.1) && close(lo.1, hi.0)),
+                (close(lo.0, hi.0) && close(lo.1, hi.1))
+                    || (close(lo.0, hi.1) && close(lo.1, hi.0)),
                 "quad torcido"
             );
         }
@@ -535,7 +565,13 @@ mod tests {
         // linear mantém o raio 1; suave também (tangentes paralelas ao eixo) mas com y não-uniforme
         let ys_lin: Vec<f32> = o1.created_verts.iter().map(|&v| lin.co(v).y).collect();
         let ys_smo: Vec<f32> = o2.created_verts.iter().map(|&v| smo.co(v).y).collect();
-        assert!(ys_lin.iter().zip(&ys_smo).any(|(p, q)| (p - q).abs() > 1e-4) || ys_lin == ys_smo);
+        assert!(
+            ys_lin
+                .iter()
+                .zip(&ys_smo)
+                .any(|(p, q)| (p - q).abs() > 1e-4)
+                || ys_lin == ys_smo
+        );
         for v in &smo.verts {
             assert!(v.co.is_finite());
         }
@@ -546,8 +582,12 @@ mod tests {
     #[test]
     fn open_loops_make_a_strip_and_reverse_properly() {
         let mut m = EditMesh::new("strip");
-        let a: Vec<u32> = (0..4).map(|i| m.add_vert(Vec3::new(i as f32, 0.0, 0.0))).collect();
-        let b: Vec<u32> = (0..4).map(|i| m.add_vert(Vec3::new(3.0 - i as f32, 1.0, 0.0))).collect();
+        let a: Vec<u32> = (0..4)
+            .map(|i| m.add_vert(Vec3::new(i as f32, 0.0, 0.0)))
+            .collect();
+        let b: Vec<u32> = (0..4)
+            .map(|i| m.add_vert(Vec3::new(3.0 - i as f32, 1.0, 0.0)))
+            .collect();
         let out = bridge_edge_loops(
             &mut m,
             &EdgePath::from_verts(a, false),
@@ -576,18 +616,42 @@ mod tests {
         let call = |m: &mut EditMesh, a: &EdgePath, b: &EdgePath, s: u32, tw: i32| {
             bridge_edge_loops(m, a, b, s, tw, BridgeInterpolation::Linear)
         };
-        assert!(matches!(call(&mut m, &a, &short, 1, 0), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            call(&mut m, &a, &short, 1, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
         let open_b = EdgePath::from_verts(b.verts.clone(), false);
-        assert!(matches!(call(&mut m, &a, &open_b, 1, 0), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(call(&mut m, &a, &b, 0, 0), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(call(&mut m, &a, &b, 1000, 0), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            call(&mut m, &a, &open_b, 1, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            call(&mut m, &a, &b, 0, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            call(&mut m, &a, &b, 1000, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
         let open_a = EdgePath::from_verts(a.verts.clone(), false);
-        assert!(matches!(call(&mut m, &open_a, &open_b, 1, 2), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(call(&mut m, &a, &a, 1, 0), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            call(&mut m, &open_a, &open_b, 1, 2),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            call(&mut m, &a, &a, 1, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
         let bad = EdgePath::from_verts(vec![100, 101, 102, 103, 104, 105, 106, 107], true);
-        assert!(matches!(call(&mut m, &a, &bad, 1, 0), Err(ModelError::VertexOutOfRange(_, _))));
+        assert!(matches!(
+            call(&mut m, &a, &bad, 1, 0),
+            Err(ModelError::VertexOutOfRange(_, _))
+        ));
         let tiny = EdgePath::from_verts(vec![0, 1], true);
-        assert!(matches!(call(&mut m, &tiny, &tiny, 1, 0), Err(ModelError::InvalidParameter(_))));
+        assert!(matches!(
+            call(&mut m, &tiny, &tiny, 1, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
         assert_eq!(h, m.content_hash());
         let _ = edge_key(0, 1);
     }

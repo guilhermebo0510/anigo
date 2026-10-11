@@ -95,16 +95,6 @@ pub(crate) fn prune_orphan_edge_attrs(mesh: &mut EditMesh, keep_wire: &BTreeSet<
         .retain(|k, _| used.contains(k) || keep_wire.contains(k));
 }
 
-/// Define o atributo de uma aresta (sem podar valores padrão — usado para
-/// arestas que precisam existir).
-pub(crate) fn put_edge_attr(mesh: &mut EditMesh, a: u32, b: u32, attr: EdgeAttr) {
-    if attr.is_default() {
-        mesh.edge_attrs.remove(&edge_key(a, b));
-    } else {
-        mesh.edge_attrs.insert(edge_key(a, b), attr);
-    }
-}
-
 /// UV do corner de `v` dentro de `face` (primeira ocorrência).
 pub(crate) fn corner_uv(face: &Face, v: u32) -> Option<Vec2> {
     face.corners.iter().find(|c| c.vert == v).map(|c| c.uv)
@@ -122,15 +112,6 @@ pub(crate) fn unique_corner_index(face: &Face, v: u32) -> Option<usize> {
         }
     }
     found
-}
-
-/// Cria um corner com UV dada e sem normal customizada.
-pub(crate) fn corner_with_uv(vert: u32, uv: Vec2) -> Corner {
-    Corner {
-        vert,
-        uv,
-        normal: None,
-    }
 }
 
 /// UV que o corner `i` teria se sua posição 3D passasse a `new_pos`, assumindo
@@ -166,7 +147,10 @@ pub(crate) fn uv_at_shifted(pts: &[Vec3], uvs: &[Vec2], i: usize, new_pos: Vec3)
 /// Posições e UVs dos corners de uma face (snapshot).
 pub(crate) fn face_pts_uvs(positions: &[Vec3], face: &Face) -> (Vec<Vec3>, Vec<Vec2>) {
     (
-        face.corners.iter().map(|c| positions[c.vert as usize]).collect(),
+        face.corners
+            .iter()
+            .map(|c| positions[c.vert as usize])
+            .collect(),
         face.corners.iter().map(|c| c.uv).collect(),
     )
 }
@@ -197,7 +181,13 @@ fn region_normal(mesh: &EditMesh, faces: &[u32]) -> Vec3 {
 }
 
 /// Primeira face (≠ `exclude`) que usa a aresta, preferindo as que não estão em `avoid`.
-fn neighbor_face(topo: &Topology, a: u32, b: u32, exclude: u32, avoid: &dyn Fn(u32) -> bool) -> Option<u32> {
+fn neighbor_face(
+    topo: &Topology,
+    a: u32,
+    b: u32,
+    exclude: u32,
+    avoid: &dyn Fn(u32) -> bool,
+) -> Option<u32> {
     let faces = topo.edge_faces(a, b);
     faces
         .iter()
@@ -229,7 +219,11 @@ fn neighbor_face(topo: &Topology, a: u32, b: u32, exclude: u32, avoid: &dyn Fn(u
 /// Seleção devolvida: a tampa (`faces` + seus vértices e arestas). `created_faces`
 /// lista as paredes, `created_verts` os vértices duplicados.
 pub fn extrude_faces_region(mesh: &mut EditMesh, faces: &[u32]) -> ModelResult<OpOutput> {
-    let region = validated_faces(mesh, faces, "extrude de região precisa de ao menos uma face")?;
+    let region = validated_faces(
+        mesh,
+        faces,
+        "extrude de região precisa de ao menos uma face",
+    )?;
     let topo = Topology::build(mesh);
     let wires = wire_edge_keys(mesh);
     let mut in_region = vec![false; mesh.faces.len()];
@@ -281,7 +275,10 @@ pub fn extrude_faces_region(mesh: &mut EditMesh, faces: &[u32]) -> ModelResult<O
             created_verts.push(nv);
         }
     }
-    let snapshot: Vec<Face> = region.iter().map(|&f| mesh.faces[f as usize].clone()).collect();
+    let snapshot: Vec<Face> = region
+        .iter()
+        .map(|&f| mesh.faces[f as usize].clone())
+        .collect();
     let mut attr_moves: Vec<(EdgeKey, EdgeAttr)> = Vec::new();
     for (idx, &f) in region.iter().enumerate() {
         let old = &snapshot[idx];
@@ -358,7 +355,11 @@ pub fn extrude_faces_region_along_normal(
             "distância de extrude não finita: {distance}"
         )));
     }
-    let region = validated_faces(mesh, faces, "extrude de região precisa de ao menos uma face")?;
+    let region = validated_faces(
+        mesh,
+        faces,
+        "extrude de região precisa de ao menos uma face",
+    )?;
     let normal = region_normal(mesh, &region);
     if normal == Vec3::ZERO {
         return Err(ModelError::Numeric(
@@ -381,7 +382,11 @@ pub fn extrude_faces_region_along_normal(
 /// tampa vizinha); os vértices originais permanecem para as faces não
 /// selecionadas. Seleção devolvida: as tampas.
 pub fn extrude_faces_individual(mesh: &mut EditMesh, faces: &[u32]) -> ModelResult<OpOutput> {
-    let region = validated_faces(mesh, faces, "extrude individual precisa de ao menos uma face")?;
+    let region = validated_faces(
+        mesh,
+        faces,
+        "extrude individual precisa de ao menos uma face",
+    )?;
     let topo = Topology::build(mesh);
     let wires = wire_edge_keys(mesh);
     let selected: HashSet<u32> = region.iter().copied().collect();
@@ -484,10 +489,7 @@ pub fn extrude_edges(mesh: &mut EditMesh, edges: &[EdgeKey]) -> ModelResult<OpOu
         let faces = topo.edge_faces(a, b);
         if let Some(&f0) = faces.first() {
             let face = &mesh.faces[f0 as usize];
-            if let Some((x, y)) = face
-                .edges()
-                .find(|&(x, y)| edge_key(x, y) == (a, b))
-            {
+            if let Some((x, y)) = face.edges().find(|&(x, y)| edge_key(x, y) == (a, b)) {
                 // a parede percorre a aresta no sentido oposto ao da face
                 dir.insert((a, b), (y, x));
             }
@@ -583,7 +585,11 @@ pub fn extrude_edges(mesh: &mut EditMesh, edges: &[EdgeKey]) -> ModelResult<OpOu
 /// solta** nova (registrada em `edge_attrs` com valor padrão). Seleção
 /// devolvida: os vértices novos (para o usuário mover).
 pub fn extrude_verts(mesh: &mut EditMesh, verts: &[u32]) -> ModelResult<OpOutput> {
-    let verts = validated_verts(mesh, verts, "extrude de vértices precisa de ao menos um vértice")?;
+    let verts = validated_verts(
+        mesh,
+        verts,
+        "extrude de vértices precisa de ao menos um vértice",
+    )?;
     let mut created = Vec::new();
     for &v in &verts {
         let nv = mesh.push_vert(mesh.verts[v as usize].clone());
@@ -610,16 +616,16 @@ pub(crate) mod test_util {
     pub fn signed_volume(m: &EditMesh) -> f32 {
         let mut vol = 0.0;
         for f in &m.faces {
-            let p: Vec<Vec3> = f.corners.iter().map(|c| m.verts[c.vert as usize].co).collect();
+            let p: Vec<Vec3> = f
+                .corners
+                .iter()
+                .map(|c| m.verts[c.vert as usize].co)
+                .collect();
             for i in 1..p.len() - 1 {
                 vol += p[0].dot(p[i].cross(p[i + 1]));
             }
         }
         vol / 6.0
-    }
-
-    pub fn surface_area(m: &EditMesh) -> f32 {
-        (0..m.face_count() as u32).map(|f| m.face_area(f)).sum()
     }
 
     /// Fechada, 2-manifold, válida e (opcionalmente) com Euler esperado.
@@ -639,7 +645,9 @@ pub(crate) mod test_util {
         assert!(used.iter().all(|u| *u), "há vértices órfãos");
         // arestas soltas não devem existir
         assert!(
-            m.edge_attrs.keys().all(|k| t.edge(k.0, k.1).is_some_and(|e| !e.faces.is_empty())),
+            m.edge_attrs
+                .keys()
+                .all(|k| t.edge(k.0, k.1).is_some_and(|e| !e.faces.is_empty())),
             "attrs de aresta órfãos viraram wire edges"
         );
     }
@@ -665,12 +673,7 @@ mod tests {
 
     fn top_face(m: &EditMesh) -> u32 {
         (0..m.face_count() as u32)
-            .max_by(|&a, &b| {
-                m.face_normal(a)
-                    .y
-                    .partial_cmp(&m.face_normal(b).y)
-                    .unwrap()
-            })
+            .max_by(|&a, &b| m.face_normal(a).y.partial_cmp(&m.face_normal(b).y).unwrap())
             .unwrap()
     }
 
@@ -686,7 +689,10 @@ mod tests {
         assert_eq!(out.selection.faces.len(), 1);
         assert!(out.selection.faces.contains(&f));
         assert_closed(&m, Some(2));
-        assert!((signed_volume(&m) - 8.0).abs() < 1e-4, "ainda sem mover: volume igual");
+        assert!(
+            (signed_volume(&m) - 8.0).abs() < 1e-4,
+            "ainda sem mover: volume igual"
+        );
         for &v in &out.selection.verts {
             m.verts[v as usize].co.y += 0.5;
         }
@@ -898,7 +904,10 @@ mod tests {
         // todas as normais iguais (faixa coerente)
         let n0 = m.face_normal(0);
         for f in 1..3u32 {
-            assert!(m.face_normal(f).dot(n0) > 0.99, "normal inconsistente na faixa");
+            assert!(
+                m.face_normal(f).dot(n0) > 0.99,
+                "normal inconsistente na faixa"
+            );
         }
         let t = Topology::build(&m);
         assert_eq!(t.non_manifold_edge_count(), 0);

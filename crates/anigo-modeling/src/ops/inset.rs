@@ -418,7 +418,11 @@ mod tests {
         assert_closed(&m, Some(2));
         assert_outward_star(&m);
         assert!((area0 - 4.0).abs() < 1e-5);
-        assert!((m.face_area(f) - 2.25).abs() < 1e-4, "área interna {}", m.face_area(f));
+        assert!(
+            (m.face_area(f) - 2.25).abs() < 1e-4,
+            "área interna {}",
+            m.face_area(f)
+        );
         assert!((signed_volume(&m) - 8.0).abs() < 1e-4);
         assert!(out.selection.faces.contains(&f) && out.selection.faces.len() == 1);
         // todos os vértices internos permanecem no plano do topo
@@ -478,8 +482,14 @@ mod tests {
             // distância à aresta original mais próxima entre as três
             let tri = [
                 (Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)),
-                (Vec3::new(2.0, 0.0, 0.0), Vec3::new(1.0, 0.0, -(3.0f32).sqrt())),
-                (Vec3::new(1.0, 0.0, -(3.0f32).sqrt()), Vec3::new(0.0, 0.0, 0.0)),
+                (
+                    Vec3::new(2.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, -(3.0f32).sqrt()),
+                ),
+                (
+                    Vec3::new(1.0, 0.0, -(3.0f32).sqrt()),
+                    Vec3::new(0.0, 0.0, 0.0),
+                ),
             ];
             tri.iter()
                 .map(|&(a, b)| {
@@ -492,25 +502,41 @@ mod tests {
         let mut even = build();
         inset_faces_region(&mut even, &[0], 0.2, 0.0, false, true, true).unwrap();
         // com offset uniforme, a distância às arestas é exatamente 0.2
-        assert!((dist_to_edge(&even, 0) - 0.2).abs() < 1e-4, "{}", dist_to_edge(&even, 0));
+        assert!(
+            (dist_to_edge(&even, 0) - 0.2).abs() < 1e-4,
+            "{}",
+            dist_to_edge(&even, 0)
+        );
         let mut non_even = build();
         inset_faces_region(&mut non_even, &[0], 0.2, 0.0, false, true, false).unwrap();
         // sem offset uniforme, o vértice anda 0.2 na bissetriz: distância = 0.2*sin(30deg) = 0.1
-        assert!((dist_to_edge(&non_even, 0) - 0.1).abs() < 1e-4, "{}", dist_to_edge(&non_even, 0));
+        assert!(
+            (dist_to_edge(&non_even, 0) - 0.1).abs() < 1e-4,
+            "{}",
+            dist_to_edge(&non_even, 0)
+        );
     }
 
     #[test]
     fn outset_keeps_region_shape_and_grows_ring_outside() {
         let mut m = primitives::cube_subdivided(2.0, 3);
         let f = (0..m.face_count() as u32)
-            .find(|&f| m.face_normal(f).y > 0.9 && m.face_center(f).length() < 1.0 + 1e-3 && m.face_center(f).x.abs() < 1e-3 && m.face_center(f).z.abs() < 1e-3)
+            .find(|&f| {
+                m.face_normal(f).y > 0.9
+                    && m.face_center(f).length() < 1.0 + 1e-3
+                    && m.face_center(f).x.abs() < 1e-3
+                    && m.face_center(f).z.abs() < 1e-3
+            })
             .unwrap();
         let center_before = m.face_center(f);
         let area_before = m.face_area(f);
         let out = inset_faces_region(&mut m, &[f], 0.1, 0.0, true, true, true).unwrap();
         assert_closed(&m, Some(2));
         assert!((m.face_center(f) - center_before).length() < 1e-5);
-        assert!((m.face_area(f) - area_before).abs() < 1e-5, "região mantém forma");
+        assert!(
+            (m.face_area(f) - area_before).abs() < 1e-5,
+            "região mantém forma"
+        );
         // o anel está fora: cada quad do anel tem área > 0
         for &q in &out.created_faces {
             assert!(m.face_area(q) > 1e-4);
@@ -524,7 +550,12 @@ mod tests {
         let seed = face_with_normal(&m, Vec3::Y);
         let topo = Topology::build(&m);
         let mut faces = vec![seed];
-        faces.extend(topo.face_neighbors(seed).into_iter().filter(|&g| m.face_normal(g).y > 0.9).take(1));
+        faces.extend(
+            topo.face_neighbors(seed)
+                .into_iter()
+                .filter(|&g| m.face_normal(g).y > 0.9)
+                .take(1),
+        );
         let out = inset_faces_region(&mut m, &faces, 0.05, 0.0, false, true, true).unwrap();
         assert_eq!(out.created_faces.len(), 6); // perímetro de 2 quads
         assert_closed(&m, Some(2));
@@ -578,7 +609,11 @@ mod tests {
         let out = inset_faces_region(&mut m, &[0], 0.1, 0.0, false, true, true).unwrap();
         // UV da face interna: 0.1 .. 0.9
         for c in &m.faces[0].corners {
-            assert!(c.uv.x > 0.09 && c.uv.x < 0.91 && c.uv.y > 0.09 && c.uv.y < 0.91, "{:?}", c.uv);
+            assert!(
+                c.uv.x > 0.09 && c.uv.x < 0.91 && c.uv.y > 0.09 && c.uv.y < 0.91,
+                "{:?}",
+                c.uv
+            );
             assert!((c.uv.x - 0.1).abs() < 1e-4 || (c.uv.x - 0.9).abs() < 1e-4);
         }
         // o anel mantém material e UV externa original
@@ -674,7 +709,9 @@ mod tests {
         };
         assert_eq!(run(), run());
         let mut m = primitives::quad_sphere(1.0, 64);
-        let faces: Vec<u32> = (0..m.face_count() as u32).filter(|f| m.face_center(*f).y > 0.5).collect();
+        let faces: Vec<u32> = (0..m.face_count() as u32)
+            .filter(|f| m.face_center(*f).y > 0.5)
+            .collect();
         let t0 = std::time::Instant::now();
         inset_faces_region(&mut m, &faces, 0.003, 0.0, false, true, true).unwrap();
         assert!(t0.elapsed().as_secs() < 30);

@@ -6,7 +6,7 @@
 //! * [`boundary_loop`] — cadeia de arestas de fronteira.
 //! * [`loop_cut`] — `Ctrl+R`: divide todos os quads do ring em `cuts + 1` fatias.
 
-use super::extrude::{lerp_corner, prune_orphan_edge_attrs, validated_verts, wire_edge_keys};
+use super::extrude::{lerp_corner, prune_orphan_edge_attrs, wire_edge_keys};
 use crate::error::{ModelError, ModelResult};
 use crate::mesh::{edge_key, EVert, EdgeAttr, EdgeKey, EditMesh, Face};
 use crate::ops::OpOutput;
@@ -116,7 +116,13 @@ fn next_loop_vert(topo: &Topology, prev: u32, cur: u32) -> Option<u32> {
 
 /// Segue o loop a partir de `prev -> cur`. Devolve os vértices seguintes e se
 /// fechou de volta em `stop`.
-fn walk_loop(topo: &Topology, stop: u32, mut prev: u32, mut cur: u32, limit: usize) -> (Vec<u32>, bool) {
+fn walk_loop(
+    topo: &Topology,
+    stop: u32,
+    mut prev: u32,
+    mut cur: u32,
+    limit: usize,
+) -> (Vec<u32>, bool) {
     let mut out = vec![cur];
     for _ in 0..limit {
         if cur == stop {
@@ -168,7 +174,11 @@ pub fn edge_loop(mesh: &EditMesh, topo: &Topology, start_edge: EdgeKey) -> Model
 
 /// Boundary loop: cadeia de arestas de fronteira conectada a `start_edge`.
 /// Para em junções (mais de uma continuação). Falha se a aresta não é de fronteira.
-pub fn boundary_loop(mesh: &EditMesh, topo: &Topology, start_edge: EdgeKey) -> ModelResult<EdgePath> {
+pub fn boundary_loop(
+    mesh: &EditMesh,
+    topo: &Topology,
+    start_edge: EdgeKey,
+) -> ModelResult<EdgePath> {
     let _ = mesh;
     let (a, b) = edge_key(start_edge.0, start_edge.1);
     check_edge(topo, (a, b))?;
@@ -348,7 +358,13 @@ fn points_along(splits: &HashMap<EdgeKey, Split>, a: u32, b: u32) -> Vec<(u32, f
         if s.x == a {
             out.extend(s.inner.iter().copied().zip(s.ts.iter().copied()));
         } else {
-            out.extend(s.inner.iter().rev().copied().zip(s.ts.iter().rev().map(|t| 1.0 - t)));
+            out.extend(
+                s.inner
+                    .iter()
+                    .rev()
+                    .copied()
+                    .zip(s.ts.iter().rev().map(|t| 1.0 - t)),
+            );
         }
     }
     out.push((b, 1.0));
@@ -427,20 +443,21 @@ pub fn loop_cut(
     let mut orient: Vec<(u32, u32)> = vec![(0, 0); n];
     orient[pos0] = start;
     // face entre edges[i] e edges[i+1] é ring.faces[i]
-    let pair = |mesh: &EditMesh, f: u32, from: EdgeKey, from_or: (u32, u32)| -> Option<(u32, u32)> {
-        let c = quad_verts(mesh, f)?;
-        for k in 0..4 {
-            if edge_key(c[k], c[(k + 1) % 4]) == from {
-                let forward = (c[k], c[(k + 1) % 4]) == from_or;
-                return Some(if forward {
-                    (c[(k + 3) % 4], c[(k + 2) % 4])
-                } else {
-                    (c[(k + 2) % 4], c[(k + 3) % 4])
-                });
+    let pair =
+        |mesh: &EditMesh, f: u32, from: EdgeKey, from_or: (u32, u32)| -> Option<(u32, u32)> {
+            let c = quad_verts(mesh, f)?;
+            for k in 0..4 {
+                if edge_key(c[k], c[(k + 1) % 4]) == from {
+                    let forward = (c[k], c[(k + 1) % 4]) == from_or;
+                    return Some(if forward {
+                        (c[(k + 3) % 4], c[(k + 2) % 4])
+                    } else {
+                        (c[(k + 2) % 4], c[(k + 3) % 4])
+                    });
+                }
             }
-        }
-        None
-    };
+            None
+        };
     for i in pos0..n.saturating_sub(1) {
         orient[i + 1] = pair(mesh, ring.faces[i], ring.edges[i], orient[i])
             .ok_or_else(|| ModelError::UnsupportedTopology("ring inconsistente".into()))?;
@@ -613,12 +630,6 @@ pub fn loop_cut(
     })
 }
 
-/// Valida um conjunto de vértices usados como início de seleção de loops
-/// (helper de conveniência para a UI): devolve os índices ordenados.
-pub fn validated_loop_verts(mesh: &EditMesh, verts: &[u32]) -> ModelResult<Vec<u32>> {
-    validated_verts(mesh, verts, "seleção de vértices vazia")
-}
-
 // -------------------------------------------------------------------- testes
 
 #[cfg(test)]
@@ -653,7 +664,9 @@ mod tests {
         // uv sphere: loop vertical termina nos polos (valência != 4)
         let u = primitives::uv_sphere(1.0, 6, 8);
         let tu = Topology::build(&u);
-        let e = some_edge_with(&u, |a, b| (a.y - b.y).abs() > 0.1 && a.y.abs() < 0.9 && b.y.abs() < 0.9);
+        let e = some_edge_with(&u, |a, b| {
+            (a.y - b.y).abs() > 0.1 && a.y.abs() < 0.9 && b.y.abs() < 0.9
+        });
         let lp = edge_loop(&u, &tu, e).unwrap();
         assert!(!lp.closed);
         assert_eq!(lp.edges.len(), lp.verts.len() - 1);
@@ -706,7 +719,9 @@ mod tests {
         let m = primitives::grid(4, 3, 4.0, 3.0);
         let t = Topology::build(&m);
         // aresta horizontal (varia em x) no meio: o ring atravessa as 3 fileiras verticalmente
-        let e = some_edge_with(&m, |a, b| (a.z - b.z).abs() < 1e-6 && (a.x - b.x).abs() > 0.5 && a.z.abs() < 0.6);
+        let e = some_edge_with(&m, |a, b| {
+            (a.z - b.z).abs() < 1e-6 && (a.x - b.x).abs() > 0.5 && a.z.abs() < 0.6
+        });
         let ring = edge_ring(&m, &t, e).unwrap();
         assert_eq!(ring.edges.len(), 4);
         assert_eq!(ring.faces.len(), 3);
@@ -735,7 +750,9 @@ mod tests {
         let mut m = primitives::quad_sphere(1.0, 4);
         let before_f = m.face_count();
         let before_v = m.vert_count();
-        let e = some_edge_with(&m, |a, b| a.y > 0.0 && b.y > 0.0 && (a.y - b.y).abs() > 0.05);
+        let e = some_edge_with(&m, |a, b| {
+            a.y > 0.0 && b.y > 0.0 && (a.y - b.y).abs() > 0.05
+        });
         let out = loop_cut(&mut m, e, 1, 0.0).unwrap();
         assert!(out.closed);
         assert_eq!(out.faces_cut, 16);
@@ -780,18 +797,28 @@ mod tests {
     #[test]
     fn loop_cut_slide_positions_and_direction() {
         let mut m = primitives::grid(2, 1, 2.0, 1.0);
-        let e = some_edge_with(&m, |a, b| (a.x - b.x).abs() > 0.5 && (a.z + 0.5).abs() < 1e-6 && (b.z + 0.5).abs() < 1e-6 && a.x.min(b.x) < -0.5);
+        let e = some_edge_with(&m, |a, b| {
+            (a.x - b.x).abs() > 0.5
+                && (a.z + 0.5).abs() < 1e-6
+                && (b.z + 0.5).abs() < 1e-6
+                && a.x.min(b.x) < -0.5
+        });
         // a aresta cobre x de -1 a 0; o corte no meio cai em x = -0.5
         let mut m0 = m.clone();
         loop_cut(&mut m0, e, 1, 0.0).unwrap();
-        let mid: Vec<f32> = (m.vert_count()..m0.vert_count()).map(|v| m0.co(v as u32).x).collect();
+        let mid: Vec<f32> = (m.vert_count()..m0.vert_count())
+            .map(|v| m0.co(v as u32).x)
+            .collect();
         assert!(mid.iter().any(|x| (x + 0.5).abs() < 1e-5));
         // slide +0.5 -> t = 0.75 a partir do menor índice da aresta
         let out = loop_cut(&mut m, e, 1, 0.5).unwrap();
         let (lo, hi) = (m.co(e.0).x, m.co(e.1).x);
         let expected = lo + (hi - lo) * 0.75;
         let xs: Vec<f32> = out.op.created_verts.iter().map(|&v| m.co(v).x).collect();
-        assert!(xs.iter().any(|x| (x - expected).abs() < 1e-5), "{xs:?} vs {expected}");
+        assert!(
+            xs.iter().any(|x| (x - expected).abs() < 1e-5),
+            "{xs:?} vs {expected}"
+        );
         // extremos não geram vértices degenerados
         let mut m2 = primitives::grid(2, 1, 2.0, 1.0);
         loop_cut(&mut m2, e, 1, 1.0).unwrap();
@@ -803,7 +830,12 @@ mod tests {
     #[test]
     fn loop_cut_interpolates_uv_and_attrs() {
         let mut m = primitives::grid(2, 1, 2.0, 1.0);
-        let e = some_edge_with(&m, |a, b| (a.x - b.x).abs() > 0.5 && (a.z + 0.5).abs() < 1e-6 && (b.z + 0.5).abs() < 1e-6 && a.x.min(b.x) < -0.5);
+        let e = some_edge_with(&m, |a, b| {
+            (a.x - b.x).abs() > 0.5
+                && (a.z + 0.5).abs() < 1e-6
+                && (b.z + 0.5).abs() < 1e-6
+                && a.x.min(b.x) < -0.5
+        });
         m.set_seam(e.0, e.1, true);
         m.set_crease(e.0, e.1, 0.8);
         // rungs com sharp nos dois lados
@@ -836,7 +868,10 @@ mod tests {
         let nl = out.op.created_verts[0];
         assert!(m.edge_attr(e.0, nl).seam && m.edge_attr(nl, e.1).seam);
         assert!((m.edge_attr(e.0, nl).crease - 0.8).abs() < 1e-6);
-        assert!(!m.edge_attrs.contains_key(&edge_key(e.0, e.1)), "aresta antiga não existe mais");
+        assert!(
+            !m.edge_attrs.contains_key(&edge_key(e.0, e.1)),
+            "aresta antiga não existe mais"
+        );
         // aresta nova do loop é sharp (ambos os degraus eram)
         let loop_edge = *out.op.selection.edges.iter().next().unwrap();
         assert!(m.edge_attr(loop_edge.0, loop_edge.1).sharp);
@@ -849,21 +884,39 @@ mod tests {
         let mut m = primitives::quad_sphere(1.0, 2);
         let h = m.content_hash();
         let e = Topology::build(&m).edges[0].verts;
-        assert!(matches!(loop_cut(&mut m, e, 0, 0.0), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(loop_cut(&mut m, e, 1, 1.5), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(loop_cut(&mut m, e, 1, f32::NAN), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(loop_cut(&mut m, (0, 9999), 1, 0.0), Err(ModelError::VertexOutOfRange(9999, _))));
+        assert!(matches!(
+            loop_cut(&mut m, e, 0, 0.0),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            loop_cut(&mut m, e, 1, 1.5),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            loop_cut(&mut m, e, 1, f32::NAN),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            loop_cut(&mut m, (0, 9999), 1, 0.0),
+            Err(ModelError::VertexOutOfRange(9999, _))
+        ));
         let missing = (0..m.vert_count() as u32)
             .find(|&v| Topology::build(&m).edge(0, v).is_none() && v != 0)
             .unwrap();
-        assert!(matches!(loop_cut(&mut m, (0, missing), 1, 0.0), Err(ModelError::MissingEdge(_, _))));
+        assert!(matches!(
+            loop_cut(&mut m, (0, missing), 1, 0.0),
+            Err(ModelError::MissingEdge(_, _))
+        ));
         assert_eq!(h, m.content_hash());
         // aresta solta
         let mut w = primitives::cube(1.0);
         crate::ops::extrude::extrude_verts(&mut w, &[0]).unwrap();
         let hw = w.content_hash();
         let wire = *w.edge_attrs.keys().next().unwrap();
-        assert!(matches!(loop_cut(&mut w, wire, 1, 0.0), Err(ModelError::UnsupportedTopology(_))));
+        assert!(matches!(
+            loop_cut(&mut w, wire, 1, 0.0),
+            Err(ModelError::UnsupportedTopology(_))
+        ));
         // triângulos: ring vazio
         let mut u = primitives::uv_sphere(1.0, 3, 4);
         let tri_edge = Topology::build(&u)
@@ -873,7 +926,10 @@ mod tests {
             .map(|e| e.verts);
         if let Some(te) = tri_edge {
             let hu = u.content_hash();
-            assert!(matches!(loop_cut(&mut u, te, 1, 0.0), Err(ModelError::UnsupportedTopology(_))));
+            assert!(matches!(
+                loop_cut(&mut u, te, 1, 0.0),
+                Err(ModelError::UnsupportedTopology(_))
+            ));
             assert_eq!(hu, u.content_hash());
         }
         assert_eq!(hw, w.content_hash());
@@ -891,7 +947,9 @@ mod tests {
         assert_closed(&m, Some(0));
 
         let mut g = primitives::grid(4, 4, 4.0, 4.0);
-        let e = some_edge_with(&g, |a, b| (a.z - b.z).abs() > 0.5 && a.x.abs() < 0.1 && b.x.abs() < 0.1);
+        let e = some_edge_with(&g, |a, b| {
+            (a.z - b.z).abs() > 0.5 && a.x.abs() < 0.1 && b.x.abs() < 0.1
+        });
         let out = loop_cut(&mut g, e, 1, 0.0).unwrap();
         assert_eq!(out.faces_cut, 4);
         let tg = Topology::build(&g);
@@ -903,7 +961,9 @@ mod tests {
     fn loop_cut_is_deterministic_and_fast_on_large_sphere() {
         let build = || {
             let mut m = primitives::quad_sphere(1.0, 64);
-            let e = some_edge_with(&m, |a, b| a.y > 0.3 && b.y > 0.3 && (a.y - b.y).abs() > 0.001);
+            let e = some_edge_with(&m, |a, b| {
+                a.y > 0.3 && b.y > 0.3 && (a.y - b.y).abs() > 0.001
+            });
             let t0 = std::time::Instant::now();
             let out = loop_cut(&mut m, e, 1, 0.25).unwrap();
             assert!(out.faces_cut > 100);

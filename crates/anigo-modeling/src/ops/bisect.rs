@@ -121,9 +121,9 @@ pub fn bisect(
             "ponto/normal do plano não finitos".into(),
         ));
     }
-    let normal = plane_normal.try_normalize().ok_or_else(|| {
-        ModelError::InvalidParameter("normal do plano deve ser não nula".into())
-    })?;
+    let normal = plane_normal
+        .try_normalize()
+        .ok_or_else(|| ModelError::InvalidParameter("normal do plano deve ser não nula".into()))?;
     if !merge_epsilon.is_finite() || merge_epsilon < 0.0 {
         return Err(ModelError::InvalidParameter(format!(
             "merge_epsilon deve ser finito e >= 0 (recebeu {merge_epsilon})"
@@ -151,7 +151,11 @@ pub fn bisect(
             let (dl, dh) = (dist[lo as usize], dist[hi as usize]);
             let t = (dl / (dl - dh)).clamp(0.0, 1.0);
             let id = (old_n + new_verts.len()) as u32;
-            new_verts.push(EVert::lerp(&mesh.verts[lo as usize], &mesh.verts[hi as usize], t));
+            new_verts.push(EVert::lerp(
+                &mesh.verts[lo as usize],
+                &mesh.verts[hi as usize],
+                t,
+            ));
             crossing.insert(e.verts, (id, t));
         }
     }
@@ -390,19 +394,27 @@ pub fn bisect(
         mesh.faces.push(f);
         created_faces.push((mesh.faces.len() - 1) as u32);
     }
-    debug_assert_eq!(created_faces.first().copied().unwrap_or(first_cap as u32), first_cap as u32);
+    debug_assert_eq!(
+        created_faces.first().copied().unwrap_or(first_cap as u32),
+        first_cap as u32
+    );
     for (k, a) in attr_new {
         mesh.edge_attrs.insert(k, a);
     }
     prune_orphan_edge_attrs(mesh, &wires);
 
     // vértices do plano (para a seleção) antes da compactação
-    let plane_ids: BTreeSet<u32> = (0..mesh.verts.len() as u32).filter(|&v| is_plane(v)).collect();
+    let plane_ids: BTreeSet<u32> = (0..mesh.verts.len() as u32)
+        .filter(|&v| is_plane(v))
+        .collect();
     let mut cut_edges: Vec<EdgeKey> = Vec::new();
     {
         let topo2 = Topology::build(mesh);
         for e in &topo2.edges {
-            if !e.faces.is_empty() && plane_ids.contains(&e.verts.0) && plane_ids.contains(&e.verts.1) {
+            if !e.faces.is_empty()
+                && plane_ids.contains(&e.verts.0)
+                && plane_ids.contains(&e.verts.1)
+            {
                 cut_edges.push(e.verts);
             }
         }
@@ -419,9 +431,11 @@ pub fn bisect(
             Some(v)
         }
     };
-    let mut selection = Selection::from_edges(cut_edges.iter().filter_map(|&(a, b)| {
-        Some(edge_key(map_v(a)?, map_v(b)?))
-    }));
+    let mut selection = Selection::from_edges(
+        cut_edges
+            .iter()
+            .filter_map(|&(a, b)| Some(edge_key(map_v(a)?, map_v(b)?))),
+    );
     for &f in &created_faces {
         selection.faces.insert(f);
     }
@@ -540,24 +554,64 @@ mod tests {
         assert!(signed_volume(&m) > 0.0 && signed_volume(&m) < 8.0);
         // plano passando exatamente por vértices (diagonal x = z): faces quad viram triângulos
         let mut d = primitives::cube(2.0);
-        bisect(&mut d, Vec3::ZERO, Vec3::new(1.0, 0.0, -1.0), true, false, true, 1e-5).unwrap();
+        bisect(
+            &mut d,
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, -1.0),
+            true,
+            false,
+            true,
+            1e-5,
+        )
+        .unwrap();
 
         assert_closed(&d, Some(2));
-        assert!((signed_volume(&d) - 4.0).abs() < 1e-3, "metade do cubo: {}", signed_volume(&d));
+        assert!(
+            (signed_volume(&d) - 4.0).abs() < 1e-3,
+            "metade do cubo: {}",
+            signed_volume(&d)
+        );
     }
 
     #[test]
     fn plane_missing_the_mesh_is_a_noop_or_clears_everything() {
         let mut m = primitives::cube(2.0);
         let h = m.content_hash();
-        let out = bisect(&mut m, Vec3::new(0.0, 5.0, 0.0), Vec3::Y, false, false, false, 1e-5).unwrap();
+        let out = bisect(
+            &mut m,
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::Y,
+            false,
+            false,
+            false,
+            1e-5,
+        )
+        .unwrap();
         assert_eq!(h, m.content_hash());
         assert!(out.created_verts.is_empty() && out.selection.edges.is_empty());
         // tudo no lado interno: clear_outer não remove nada
-        bisect(&mut m, Vec3::new(0.0, 5.0, 0.0), Vec3::Y, false, true, true, 1e-5).unwrap();
+        bisect(
+            &mut m,
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::Y,
+            false,
+            true,
+            true,
+            1e-5,
+        )
+        .unwrap();
         assert_eq!(h, m.content_hash());
         // clear_inner remove tudo
-        bisect(&mut m, Vec3::new(0.0, 5.0, 0.0), Vec3::Y, true, false, false, 1e-5).unwrap();
+        bisect(
+            &mut m,
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::Y,
+            true,
+            false,
+            false,
+            1e-5,
+        )
+        .unwrap();
         assert_eq!(m.face_count(), 0);
     }
 
@@ -576,7 +630,10 @@ mod tests {
             (0.0, 2.0),
         ];
         // (x, z) com z crescendo para -Z para normal +Y no enrolamento anti-horário visto de cima
-        let vs: Vec<u32> = pts.iter().map(|&(x, z)| m.add_vert(Vec3::new(x, 0.0, -z))).collect();
+        let vs: Vec<u32> = pts
+            .iter()
+            .map(|&(x, z)| m.add_vert(Vec3::new(x, 0.0, -z)))
+            .collect();
         m.add_face(&vs).unwrap();
         if m.face_normal(0).y < 0.0 {
             m.flip_face(0).unwrap();
@@ -585,14 +642,34 @@ mod tests {
         assert!((total - 5.0).abs() < 1e-4);
         // plano z = -1.5 (corta as duas pontas do U)
         let mut cut = m.clone();
-        bisect(&mut cut, Vec3::new(0.0, 0.0, -1.5), Vec3::NEG_Z, false, false, false, 1e-6).unwrap();
+        bisect(
+            &mut cut,
+            Vec3::new(0.0, 0.0, -1.5),
+            Vec3::NEG_Z,
+            false,
+            false,
+            false,
+            1e-6,
+        )
+        .unwrap();
         let area: f32 = (0..cut.face_count() as u32).map(|f| cut.face_area(f)).sum();
         assert!((area - 5.0).abs() < 1e-3);
         assert_eq!(cut.face_count(), 3, "corpo + duas pontas");
         // removendo o lado z < -1.5 (pontas)
         let mut base = m.clone();
-        bisect(&mut base, Vec3::new(0.0, 0.0, -1.5), Vec3::NEG_Z, false, true, false, 1e-6).unwrap();
-        let area: f32 = (0..base.face_count() as u32).map(|f| base.face_area(f)).sum();
+        bisect(
+            &mut base,
+            Vec3::new(0.0, 0.0, -1.5),
+            Vec3::NEG_Z,
+            false,
+            true,
+            false,
+            1e-6,
+        )
+        .unwrap();
+        let area: f32 = (0..base.face_count() as u32)
+            .map(|f| base.face_area(f))
+            .sum();
         // ficam z em [0,1.5]: 5 - 2 * (1 x 0.5) = 4
         assert!((area - 4.0).abs() < 1e-3, "{area}");
         base.validate().unwrap();
@@ -607,11 +684,24 @@ mod tests {
             .edges
             .iter()
             .map(|e| e.verts)
-            .find(|&(a, b)| (m.co(a).z - m.co(b).z).abs() < 1e-6 && m.co(a).x.min(m.co(b).x) < -0.9 && m.co(a).z < 0.0)
+            .find(|&(a, b)| {
+                (m.co(a).z - m.co(b).z).abs() < 1e-6
+                    && m.co(a).x.min(m.co(b).x) < -0.9
+                    && m.co(a).z < 0.0
+            })
             .unwrap();
         m.set_seam(e.0, e.1, true);
         m.faces[0].material = 4;
-        let out = bisect(&mut m, Vec3::new(-0.5, 0.0, 0.0), Vec3::X, false, false, false, 1e-6).unwrap();
+        let out = bisect(
+            &mut m,
+            Vec3::new(-0.5, 0.0, 0.0),
+            Vec3::X,
+            false,
+            false,
+            false,
+            1e-6,
+        )
+        .unwrap();
         assert_eq!(out.created_verts.len(), 2);
         // UV do vértice novo: u = 0.25 (x=-0.5 entre -1 e 0 => u de 0 a 0.5)
         for &v in &out.created_verts {
@@ -634,7 +724,11 @@ mod tests {
             .unwrap();
         assert!(m.edge_attr(nv, e.0).seam && m.edge_attr(nv, e.1).seam);
         assert!(!m.edge_attrs.contains_key(&edge_key(e.0, e.1)) || m.edge_attr(e.0, e.1).seam);
-        assert!(m.faces.iter().take(2).all(|f| f.material == 4 || f.material == 0));
+        assert!(m
+            .faces
+            .iter()
+            .take(2)
+            .all(|f| f.material == 4 || f.material == 0));
         m.validate().unwrap();
     }
 
@@ -670,7 +764,15 @@ mod tests {
             Err(ModelError::InvalidParameter(_))
         ));
         assert!(matches!(
-            bisect(&mut m, Vec3::ZERO, Vec3::new(f32::INFINITY, 0.0, 0.0), true, false, true, 0.0),
+            bisect(
+                &mut m,
+                Vec3::ZERO,
+                Vec3::new(f32::INFINITY, 0.0, 0.0),
+                true,
+                false,
+                true,
+                0.0
+            ),
             Err(ModelError::InvalidParameter(_))
         ));
         assert!(matches!(
@@ -698,7 +800,9 @@ mod tests {
         bisect(&mut tight, Vec3::ZERO, Vec3::Y, true, false, true, 0.0).unwrap();
         let mut loose = m.clone();
         bisect(&mut loose, Vec3::ZERO, Vec3::Y, true, false, true, 1e-3).unwrap();
-        assert!(tight.vert_count() > loose.vert_count() || tight.face_count() >= loose.face_count());
+        assert!(
+            tight.vert_count() > loose.vert_count() || tight.face_count() >= loose.face_count()
+        );
         assert_closed(&loose, Some(2));
         assert!(before > 0);
     }
@@ -708,7 +812,16 @@ mod tests {
         let run = || {
             let mut m = primitives::quad_sphere(1.0, 64);
             let t0 = std::time::Instant::now();
-            bisect(&mut m, Vec3::new(0.0, 0.013, 0.0), Vec3::new(0.2, 1.0, 0.1), true, false, true, 1e-6).unwrap();
+            bisect(
+                &mut m,
+                Vec3::new(0.0, 0.013, 0.0),
+                Vec3::new(0.2, 1.0, 0.1),
+                true,
+                false,
+                true,
+                1e-6,
+            )
+            .unwrap();
             assert!(t0.elapsed().as_secs() < 30);
             m
         };

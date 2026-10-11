@@ -41,7 +41,11 @@ fn build_chains(edges: &BTreeSet<EdgeKey>) -> Vec<Chain> {
     let mut chains = Vec::new();
     let other = |e: EdgeKey, v: u32| if e.0 == v { e.1 } else { e.0 };
     // começa por extremidades (grau != 2) para cadeias abertas; depois ciclos
-    let mut starts: Vec<u32> = adj.iter().filter(|(_, l)| l.len() != 2).map(|(&v, _)| v).collect();
+    let mut starts: Vec<u32> = adj
+        .iter()
+        .filter(|(_, l)| l.len() != 2)
+        .map(|(&v, _)| v)
+        .collect();
     starts.extend(adj.keys().copied());
     for s in starts {
         for &e0 in &adj[&s] {
@@ -84,7 +88,9 @@ fn spin_impl(
     offset_per_turn: f32,
 ) -> ModelResult<OpOutput> {
     if !center.is_finite() || !axis.is_finite() {
-        return Err(ModelError::InvalidParameter("centro/eixo não finitos".into()));
+        return Err(ModelError::InvalidParameter(
+            "centro/eixo não finitos".into(),
+        ));
     }
     let axis_n = axis
         .try_normalize()
@@ -95,7 +101,9 @@ fn spin_impl(
         )));
     }
     if !offset_per_turn.is_finite() {
-        return Err(ModelError::InvalidParameter("deslocamento por volta não finito".into()));
+        return Err(ModelError::InvalidParameter(
+            "deslocamento por volta não finito".into(),
+        ));
     }
     if steps == 0 || steps > 100_000 {
         return Err(ModelError::InvalidParameter(format!(
@@ -157,9 +165,12 @@ fn spin_impl(
     }
     let pv: Vec<u32> = profile_verts.iter().copied().collect();
     let pos: Vec<Vec3> = mesh.verts.iter().map(|v| v.co).collect();
-    let closed_ring =
-        merge_duplicates && offset_per_turn == 0.0 && angle.abs() >= TAU - 1e-4;
-    let copies = if closed_ring { steps as usize } else { steps as usize + 1 };
+    let closed_ring = merge_duplicates && offset_per_turn == 0.0 && angle.abs() >= TAU - 1e-4;
+    let copies = if closed_ring {
+        steps as usize
+    } else {
+        steps as usize + 1
+    };
     if pv.len().saturating_mul(copies) > MAX_NEW_VERTS {
         return Err(ModelError::InvalidParameter(format!(
             "spin geraria {} vértices (limite {MAX_NEW_VERTS})",
@@ -171,11 +182,19 @@ fn spin_impl(
         let d = p - center;
         d - axis_n * d.dot(axis_n)
     };
-    let max_r = pv.iter().map(|&v| radial(pos[v as usize]).length()).fold(0.0f32, f32::max);
+    let max_r = pv
+        .iter()
+        .map(|&v| radial(pos[v as usize]).length())
+        .fold(0.0f32, f32::max);
     let axis_eps = 1e-5 * max_r.max(1.0);
     let on_axis: HashMap<u32, bool> = pv
         .iter()
-        .map(|&v| (v, offset_per_turn == 0.0 && radial(pos[v as usize]).length() <= axis_eps))
+        .map(|&v| {
+            (
+                v,
+                offset_per_turn == 0.0 && radial(pos[v as usize]).length() <= axis_eps,
+            )
+        })
         .collect();
 
     // transformação da cópia k
@@ -259,7 +278,12 @@ fn spin_impl(
             let (vp, vq) = (acc[ei], acc[ei + 1]);
             for k in 0..steps as usize {
                 let (u0, u1) = (k as f32 / steps as f32, (k + 1) as f32 / steps as f32);
-                let ring = [lookup(k, p), lookup(k, q), lookup(k + 1, q), lookup(k + 1, p)];
+                let ring = [
+                    lookup(k, p),
+                    lookup(k, q),
+                    lookup(k + 1, q),
+                    lookup(k + 1, p),
+                ];
                 let uvs = [
                     Vec2::new(u0, vp),
                     Vec2::new(u0, vq),
@@ -372,7 +396,16 @@ pub fn spin(
     steps: u32,
     merge_duplicates: bool,
 ) -> ModelResult<OpOutput> {
-    spin_impl(mesh, selection, center, axis, angle, steps, merge_duplicates, 0.0)
+    spin_impl(
+        mesh,
+        selection,
+        center,
+        axis,
+        angle,
+        steps,
+        merge_duplicates,
+        0.0,
+    )
 }
 
 /// Screw: como [`spin`], mas cada cópia sobe `offset_per_turn` por volta
@@ -386,7 +419,16 @@ pub fn screw(
     steps: u32,
     offset_per_turn: f32,
 ) -> ModelResult<OpOutput> {
-    spin_impl(mesh, selection, center, axis, angle, steps, false, offset_per_turn)
+    spin_impl(
+        mesh,
+        selection,
+        center,
+        axis,
+        angle,
+        steps,
+        false,
+        offset_per_turn,
+    )
 }
 
 // -------------------------------------------------------------------- testes
@@ -401,9 +443,13 @@ mod tests {
 
     fn polyline(points: &[(f32, f32)]) -> (EditMesh, Selection) {
         let mut m = EditMesh::new("profile");
-        let vs: Vec<u32> = points.iter().map(|&(r, y)| m.add_vert(Vec3::new(r, y, 0.0))).collect();
+        let vs: Vec<u32> = points
+            .iter()
+            .map(|&(r, y)| m.add_vert(Vec3::new(r, y, 0.0)))
+            .collect();
         for w in vs.windows(2) {
-            m.edge_attrs.insert(edge_key(w[0], w[1]), EdgeAttr::default());
+            m.edge_attrs
+                .insert(edge_key(w[0], w[1]), EdgeAttr::default());
         }
         let sel = Selection::from_edges(m.edge_attrs.keys().copied());
         (m, sel)
@@ -413,7 +459,10 @@ mod tests {
         let mut seen = HashSet::new();
         for f in &m.faces {
             for (a, b) in f.edges() {
-                assert!(seen.insert((a, b)), "enrolamento inconsistente em ({a},{b})");
+                assert!(
+                    seen.insert((a, b)),
+                    "enrolamento inconsistente em ({a},{b})"
+                );
             }
         }
     }
@@ -428,12 +477,20 @@ mod tests {
         assert_outward_star(&m);
         // 4 arestas: 2 com polo (triângulos) e 2 quadriláteras = 12*4 faces
         assert_eq!(out.created_faces.len(), 48);
-        assert_eq!(m.vert_count(), 2 + 3 * 12, "2 polos + 3 vértices fora do eixo por cópia");
+        assert_eq!(
+            m.vert_count(),
+            2 + 3 * 12,
+            "2 polos + 3 vértices fora do eixo por cópia"
+        );
         assert_eq!(out.selection.faces.len(), 48);
         // volume do sólido de 12 lados
         let k = 0.5 * 12.0 * (TAU / 12.0).sin();
         let integral = 1.0 + 0.5 / 3.0 * (1.0 + 0.5 + 0.25);
-        assert!((signed_volume(&m) - k * integral).abs() < 1e-3, "{}", signed_volume(&m));
+        assert!(
+            (signed_volume(&m) - k * integral).abs() < 1e-3,
+            "{}",
+            signed_volume(&m)
+        );
         // triângulos nos polos
         assert_eq!(m.faces.iter().filter(|f| f.len() == 3).count(), 24);
     }
@@ -450,12 +507,20 @@ mod tests {
         assert_consistent_orientation(&m);
         // normais para fora do sólido: a parede externa aponta para +radial
         let outer = (0..m.face_count() as u32)
-            .find(|&f| m.face_center(f).x.abs().max(m.face_center(f).z.abs()) > 1.7 && m.face_center(f).y > 0.1 && m.face_center(f).y < 0.9)
+            .find(|&f| {
+                m.face_center(f).x.abs().max(m.face_center(f).z.abs()) > 1.7
+                    && m.face_center(f).y > 0.1
+                    && m.face_center(f).y < 0.9
+            })
             .unwrap();
         let c = m.face_center(outer);
         assert!(m.face_normal(outer).dot(Vec3::new(c.x, 0.0, c.z)) > 0.0);
         let inner = (0..m.face_count() as u32)
-            .find(|&f| m.face_center(f).x.abs().max(m.face_center(f).z.abs()) < 1.2 && m.face_center(f).y > 0.1 && m.face_center(f).y < 0.9)
+            .find(|&f| {
+                m.face_center(f).x.abs().max(m.face_center(f).z.abs()) < 1.2
+                    && m.face_center(f).y > 0.1
+                    && m.face_center(f).y < 0.9
+            })
             .unwrap();
         let c = m.face_center(inner);
         assert!(m.face_normal(inner).dot(Vec3::new(c.x, 0.0, c.z)) < 0.0);
@@ -471,7 +536,15 @@ mod tests {
             }
         }
         assert_eq!(loops.len(), 2);
-        bridge_edge_loops(&mut m, &loops[0], &loops[1], 1, 0, BridgeInterpolation::Linear).unwrap();
+        bridge_edge_loops(
+            &mut m,
+            &loops[0],
+            &loops[1],
+            1,
+            0,
+            BridgeInterpolation::Linear,
+        )
+        .unwrap();
         assert_closed(&m, Some(0));
         assert_consistent_orientation(&m);
         // volume do "pote": anel de seção 1x1 (paredes) fechado pelo topo: > 0
@@ -535,8 +608,16 @@ mod tests {
         let (mut m, sel) = polyline(&[(1.0, 0.0), (1.5, 0.0)]);
         let out = screw(&mut m, &sel, Vec3::ZERO, Vec3::Y, TAU * 3.0, 36, 0.5).unwrap();
         assert_eq!(out.created_faces.len(), 36);
-        let top = out.selection.verts.iter().map(|&v| m.co(v).y).fold(f32::MIN, f32::max);
-        assert!((top - 1.5).abs() < 1e-4, "3 voltas * 0.5 = 1.5, obteve {top}");
+        let top = out
+            .selection
+            .verts
+            .iter()
+            .map(|&v| m.co(v).y)
+            .fold(f32::MIN, f32::max);
+        assert!(
+            (top - 1.5).abs() < 1e-4,
+            "3 voltas * 0.5 = 1.5, obteve {top}"
+        );
         let t = Topology::build(&m);
         assert_eq!(t.non_manifold_edge_count(), 0);
         assert_consistent_orientation(&m);
@@ -550,9 +631,13 @@ mod tests {
     fn cycle_profile_makes_closed_torus() {
         let mut m = EditMesh::new("sq");
         let pts = [(2.0, -0.5), (3.0, -0.5), (3.0, 0.5), (2.0, 0.5)];
-        let vs: Vec<u32> = pts.iter().map(|&(r, y)| m.add_vert(Vec3::new(r, y, 0.0))).collect();
+        let vs: Vec<u32> = pts
+            .iter()
+            .map(|&(r, y)| m.add_vert(Vec3::new(r, y, 0.0)))
+            .collect();
         for i in 0..4 {
-            m.edge_attrs.insert(edge_key(vs[i], vs[(i + 1) % 4]), EdgeAttr::default());
+            m.edge_attrs
+                .insert(edge_key(vs[i], vs[(i + 1) % 4]), EdgeAttr::default());
         }
         let sel = Selection::from_edges(m.edge_attrs.keys().copied());
         spin(&mut m, &sel, Vec3::ZERO, Vec3::Y, TAU, 12, true).unwrap();
@@ -566,9 +651,22 @@ mod tests {
         let mut m = EditMesh::new("v");
         let v = m.add_vert(Vec3::new(1.0, 0.0, 0.0));
         let axis_v = m.add_vert(Vec3::new(0.0, 1.0, 0.0));
-        let out = spin(&mut m, &Selection::from_verts([v, axis_v]), Vec3::ZERO, Vec3::Y, TAU, 6, true).unwrap();
+        let out = spin(
+            &mut m,
+            &Selection::from_verts([v, axis_v]),
+            Vec3::ZERO,
+            Vec3::Y,
+            TAU,
+            6,
+            true,
+        )
+        .unwrap();
         assert!(out.created_faces.is_empty());
-        assert_eq!(out.created_verts.len(), 5, "o vértice no eixo não é duplicado");
+        assert_eq!(
+            out.created_verts.len(),
+            5,
+            "o vértice no eixo não é duplicado"
+        );
         let t = Topology::build(&m);
         assert_eq!(t.edges.len(), 6, "anel de 6 arestas soltas");
         assert!(t.edges.iter().all(|e| e.faces.is_empty()));
@@ -579,7 +677,10 @@ mod tests {
     fn face_selection_spins_its_outline() {
         let mut m = EditMesh::new("quad");
         let pts = [(2.0, 0.0), (3.0, 0.0), (3.0, 1.0), (2.0, 1.0)];
-        let vs: Vec<u32> = pts.iter().map(|&(r, y)| m.add_vert(Vec3::new(r, y, 0.0))).collect();
+        let vs: Vec<u32> = pts
+            .iter()
+            .map(|&(r, y)| m.add_vert(Vec3::new(r, y, 0.0)))
+            .collect();
         m.add_face(&vs).unwrap();
         let sel = Selection::from_faces(&m, [0u32]);
         let n0 = m.face_count();
@@ -600,7 +701,12 @@ mod tests {
         // uv dentro de [0,1]
         for f in &m.faces {
             for c in &f.corners {
-                assert!(c.uv.x >= -1e-6 && c.uv.x <= 1.0 + 1e-6 && c.uv.y >= -1e-6 && c.uv.y <= 1.0 + 1e-6);
+                assert!(
+                    c.uv.x >= -1e-6
+                        && c.uv.x <= 1.0 + 1e-6
+                        && c.uv.y >= -1e-6
+                        && c.uv.y <= 1.0 + 1e-6
+                );
             }
         }
     }
@@ -609,32 +715,71 @@ mod tests {
     fn invalid_inputs_leave_mesh_untouched() {
         let (mut m, sel) = polyline(&[(1.0, 0.0), (1.0, 1.0)]);
         let h = m.content_hash();
-        let ok = |m: &mut EditMesh, s: &Selection, c: Vec3, a: Vec3, ang: f32, st: u32| spin(m, s, c, a, ang, st, true);
-        assert!(matches!(ok(&mut m, &sel, Vec3::ZERO, Vec3::ZERO, 1.0, 4), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(ok(&mut m, &sel, Vec3::NAN, Vec3::Y, 1.0, 4), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, 0.0, 4), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, f32::NAN, 4), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, 1000.0, 4), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, 1.0, 0), Err(ModelError::InvalidParameter(_))));
-        assert!(matches!(ok(&mut m, &Selection::default(), Vec3::ZERO, Vec3::Y, 1.0, 4), Err(ModelError::EmptySelection(_))));
+        let ok = |m: &mut EditMesh, s: &Selection, c: Vec3, a: Vec3, ang: f32, st: u32| {
+            spin(m, s, c, a, ang, st, true)
+        };
         assert!(matches!(
-            ok(&mut m, &Selection::from_verts([9]), Vec3::ZERO, Vec3::Y, 1.0, 4),
+            ok(&mut m, &sel, Vec3::ZERO, Vec3::ZERO, 1.0, 4),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            ok(&mut m, &sel, Vec3::NAN, Vec3::Y, 1.0, 4),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, 0.0, 4),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, f32::NAN, 4),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, 1000.0, 4),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            ok(&mut m, &sel, Vec3::ZERO, Vec3::Y, 1.0, 0),
+            Err(ModelError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            ok(&mut m, &Selection::default(), Vec3::ZERO, Vec3::Y, 1.0, 4),
+            Err(ModelError::EmptySelection(_))
+        ));
+        assert!(matches!(
+            ok(
+                &mut m,
+                &Selection::from_verts([9]),
+                Vec3::ZERO,
+                Vec3::Y,
+                1.0,
+                4
+            ),
             Err(ModelError::VertexOutOfRange(9, 2))
         ));
         let mut bad = sel.clone();
         bad.edges.insert((0, 5));
-        assert!(matches!(ok(&mut m, &bad, Vec3::ZERO, Vec3::Y, 1.0, 4), Err(ModelError::VertexOutOfRange(5, 2))));
+        assert!(matches!(
+            ok(&mut m, &bad, Vec3::ZERO, Vec3::Y, 1.0, 4),
+            Err(ModelError::VertexOutOfRange(5, 2))
+        ));
         let mut m3 = m.clone();
         m3.add_vert(Vec3::ONE);
         m3.add_vert(Vec3::ONE * 2.0);
         let mut missing = Selection::default();
         missing.edges.insert((0, 3));
         let h3 = m3.content_hash();
-        assert!(matches!(ok(&mut m3, &missing, Vec3::ZERO, Vec3::Y, 1.0, 4), Err(ModelError::MissingEdge(0, 3))));
+        assert!(matches!(
+            ok(&mut m3, &missing, Vec3::ZERO, Vec3::Y, 1.0, 4),
+            Err(ModelError::MissingEdge(0, 3))
+        ));
         assert_eq!(h3, m3.content_hash());
         let mut f = sel.clone();
         f.faces.insert(4);
-        assert!(matches!(ok(&mut m, &f, Vec3::ZERO, Vec3::Y, 1.0, 4), Err(ModelError::FaceOutOfRange(4, 0))));
+        assert!(matches!(
+            ok(&mut m, &f, Vec3::ZERO, Vec3::Y, 1.0, 4),
+            Err(ModelError::FaceOutOfRange(4, 0))
+        ));
         assert!(matches!(
             screw(&mut m, &sel, Vec3::ZERO, Vec3::Y, 1.0, 4, f32::INFINITY),
             Err(ModelError::InvalidParameter(_))
