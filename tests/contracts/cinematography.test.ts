@@ -250,10 +250,13 @@ test("paridade Rust: math.rs, DofSettings, DofUniform, Tauri e headless", () => 
   const headless = readRepoFile("crates/anigo-renderer/src/headless.rs");
   assert.ok(headless.includes("scene.dof.enabled"), "headless não consulta Scene.dof");
   assert.ok(headless.includes("dof_pipeline"), "headless sem pipeline de DoF");
-  // O wgpu deste projeto não expõe depth resolve no attachment: a resolve
-  // MSAA→1× é manual (copy_texture_to_texture, mesma semântica de min do
-  // resolve de cor). O browser usa o depthResolveAttachment da spec.
-  assert.ok(headless.includes("encoder.copy_texture_to_texture"), "profundidade do DoF sem resolve 1×");
+  // O wgpu não expõe depth resolve no attachment e uma textura MSAA não pode
+  // ser copiada para 1×: a profundidade amostrável do DoF vem de um passe
+  // só-profundidade sem MSAA (mesmo vertex shader). O browser usa o
+  // depthResolveAttachment da spec.
+  assert.ok(headless.includes("dof_depth_pipeline"), "profundidade do DoF sem pipeline 1×");
+  assert.ok(headless.includes("DoF Depth Pass (1x)"), "profundidade do DoF sem passe 1×");
+  assert.ok(!headless.includes("copy_texture_to_texture"), "copy MSAA→1× da profundidade é inválido no wgpu");
 
   const main = readRepoFile("src-tauri/src/main.rs");
   assert.ok(main.includes("async fn set_dof_settings"), "Tauri sem set_dof_settings");

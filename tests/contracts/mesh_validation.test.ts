@@ -143,10 +143,17 @@ test("headless valida a malha antes do VBO", () => {
   const firstBuffer = headless.indexOf("let vertex_buffer = ");
   assert.ok(firstValidation > 0, "headless precisa validar a malha");
   assert.ok(firstValidation < firstBuffer, "validação precisa vir antes da criação do VBO");
+  // Um único núcleo (`encode_scene_inner`) codifica o quadro: os dois caminhos
+  // públicos (normal e sparse morphs) passam por ele e, portanto, pela validação.
   assert.equal(
     (headless.match(/mesh_validation::validate_mesh\(mesh\)/g) ?? []).length,
-    2,
-    "os dois caminhos de render (normal e sparse morphs) precisam validar"
+    1,
+    "a validação da malha vive no núcleo único de codificação"
+  );
+  assert.equal(
+    (headless.match(/self\.encode_scene_inner\(/g) ?? []).length,
+    4,
+    "render_scene, render_scene_with_sparse_morphs, encode_scene e render_to_texture usam o mesmo núcleo"
   );
   assert.match(headless, /diagnostics::report_with_detail\(\s*"mesh_invalid"/);
 });

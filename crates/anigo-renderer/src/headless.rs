@@ -2047,9 +2047,8 @@ impl HeadlessRenderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
-                    // Fase 2 (#53): a resolve da profundidade MSAA→1× é manual
-                    // (copy_texture_to_texture) — o wgpu deste projeto não tem
-                    // o campo de depth resolve no attachment.
+                    // Fase 2 (#53): sem depth resolve no attachment; a
+                    // profundidade 1× do DoF vem do "DoF Depth Pass (1x)".
                     depth_ops: Some(wgpu::Operations {
                         // Issue #14: com o pré-passe, o z-buffer resolvido é
                         // carregado em vez de limpo.
