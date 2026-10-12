@@ -758,6 +758,10 @@ pub enum Command {
         #[serde(default)]
         op: PoseOp,
     },
+    /// Workspace Animação: UMA edição atômica dos clips do projeto (inserir/apagar/mover chaves, interpolação,
+    /// faixa, loop, fps, marcadores, criar/remover/renomear clips — ver `crate::animation::AnimEdit`). Todas têm
+    /// inverso exato; agrupe várias em `Batch` (ex.: auto-key = `Batch[SetPose, EditAnimation(InsertKeys)]`).
+    EditAnimation { edit: crate::animation::AnimEdit },
     /// Applies several commands atomically (single undo entry).
     Batch { commands: Vec<Command> },
 }
@@ -857,6 +861,7 @@ impl Command {
                 (PoseOp::Edit, [one]) => format!("Pose {}", one.bone),
                 _ => format!("Pose {}", op.label()),
             },
+            Command::EditAnimation { edit } => edit.description(),
             Command::Batch { commands } => {
                 format!("Batch of {} commands", commands.len())
             }
@@ -895,7 +900,8 @@ impl Command {
             | Command::SetNodeProps { .. }
             | Command::ReplaceNodesAsset { .. }
             | Command::PatchAssets { .. }
-            | Command::SetRenderOutput { .. } => ChangeScope::Presentation,
+            | Command::SetRenderOutput { .. }
+            | Command::EditAnimation { .. } => ChangeScope::Presentation,
             Command::RenameProject { .. } => ChangeScope::Project,
             Command::Batch { commands } => commands
                 .iter()
@@ -957,6 +963,7 @@ impl Command {
                 ids.extend(bones.iter().map(|b| b.bone.clone()));
                 ids
             }
+            Command::EditAnimation { edit } => vec![edit.clip_id().map(|c| c.to_string()).unwrap_or_else(|| "ani_*".to_string())],
             Command::Batch { commands } => {
                 commands.iter().flat_map(Command::affected).collect()
             }
@@ -1648,6 +1655,7 @@ impl Command {
                 }
                 Ok(())
             }
+            Command::EditAnimation { edit } => edit.validate(state).map_err(anim_error),
         }
     }
 
@@ -2004,6 +2012,15 @@ impl Command {
                     hands: hands.map(|_| pose.hands),
                     op: *op,
                 })
+            }
+            Command::EditAnimation { edit } => {
+                let mut inverse: Vec<Command> = edit
+                    .inverse(&state.animation)
+                    .map_err(anim_error)?
+                    .into_iter()
+                    .map(|edit| Command::EditAnimation { edit })
+                    .collect();
+                Ok(if inverse.len() == 1 { inverse.remove(0) } else { Command::Batch { commands: inverse } })
             }
         }
     }
@@ -2395,6 +2412,7 @@ impl Command {
                 state.character.pose.apply_patch(bones, *root_translation, *hips_translation, *hands);
                 Ok(())
             }
+            Command::EditAnimation { edit } => edit.apply(&mut state.animation).map_err(anim_error),
             Command::Batch { commands } => {
                 for command in commands {
                     command.apply_unchecked(state)?;
@@ -2475,6 +2493,15 @@ fn scope_priority(scope: ChangeScope) -> u8 {
         ChangeScope::Camera => 2,
         ChangeScope::Presentation => 1,
         ChangeScope::Project => 0,
+    }
+}
+
+fn anim_error(error: crate::animation::AnimError) -> CommandError {
+    use crate::animation::AnimError;
+    match error {
+        AnimError::NoOp(message) => CommandError::NoOp(message),
+        AnimError::Invalid(detail) => CommandError::InvalidValue { field: "animation".to_string(), detail },
+        AnimError::Unknown { kind, target } => CommandError::UnknownTarget { kind, target },
     }
 }
 

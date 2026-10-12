@@ -17,9 +17,11 @@
  */
 
 import {
+  ANIM_EDIT_OPS,
   COMMAND_KINDS,
   NODE_KINDS,
   POSE_BONE_NAMES,
+  type AnimEditWire,
   type CameraProjectionPatchWire,
   type CommandWire,
   type HandsPoseWire,
@@ -262,6 +264,8 @@ export type CommandIntent =
       hands?: HandsPoseWire;
       op?: PoseOpWire;
     }
+  /** Workspace Animação: UMA edição atômica dos clips (chaves, interpolação, faixa, fps, marcadores, clips). */
+  | { kind: "animation"; edit: AnimEditWire }
   | { kind: "batch"; intents: CommandIntent[] };
 
 // ---------------------------------------------------------------------------
@@ -988,6 +992,54 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
       if (intent.hands) command.hands = intent.hands;
       if (intent.op) command.op = intent.op;
       return { ok: true, command };
+    }
+
+    case "animation": {
+      const edit = intent.edit;
+      if (!(ANIM_EDIT_OPS as readonly string[]).includes(edit.op)) {
+        return fail("invalid_value", `operação de animação '${(edit as { op: string }).op}' desconhecida`, "edit.op");
+      }
+      const frames: number[] = [];
+      if (edit.op === "insert_keys") {
+        if (edit.keys.length === 0) return fail("no_op", "nenhuma chave", "keys");
+        for (const k of edit.keys) {
+          frames.push(k.key.frame);
+          const v = k.key.value.v;
+          for (const c of Array.isArray(v) ? v : [v]) {
+            const bad = finite(c, "value");
+            if (bad) return bad;
+          }
+        }
+      } else if (edit.op === "delete_keys" || edit.op === "set_interpolation") {
+        if (edit.keys.length === 0) return fail("no_op", "nenhuma chave", "keys");
+        for (const k of edit.keys) frames.push(k.frame);
+      } else if (edit.op === "move_keys") {
+        if (edit.moves.length === 0) return fail("no_op", "nenhum movimento", "moves");
+        for (const m of edit.moves) frames.push(m.frame, m.to_frame);
+      } else if (edit.op === "set_fps") {
+        const bad = finite(edit.fps, "fps") ?? inRange(edit.fps, 1, 240, "fps");
+        if (bad) return bad;
+      } else if (edit.op === "set_clip_range" && edit.range) {
+        frames.push(edit.range[0], edit.range[1]);
+        if (edit.range[1] < edit.range[0]) return fail("invalid_value", "faixa invertida", "range");
+      } else if (edit.op === "set_clip_playback" && edit.hold_step != null) {
+        const bad = inRange(edit.hold_step, 1, 12, "hold_step");
+        if (bad) return bad;
+      }
+      for (const f of frames) {
+        if (!Number.isInteger(f) || f < 0 || f > 1_000_000) {
+          return fail("invalid_value", `quadro ${f} precisa ser um inteiro em [0, 1000000]`, "frame");
+        }
+      }
+      if (edit.op === "set_interpolation" && edit.interp.kind === "bezier") {
+        const [x1, y1, x2, y2] = edit.interp.c;
+        for (const [value, name] of [[x1, "x1"], [y1, "y1"], [x2, "x2"], [y2, "y2"]] as const) {
+          const bad = finite(value, name);
+          if (bad) return bad;
+        }
+        if (x1 < 0 || x1 > 1 || x2 < 0 || x2 > 1) return fail("invalid_value", "alças Bézier: x precisa estar em [0, 1]", "interp");
+      }
+      return { ok: true, command: { kind: "edit_animation", edit } };
     }
 
     case "batch": {

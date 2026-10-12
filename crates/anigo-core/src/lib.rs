@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod bone_sync;
 pub mod command;
 pub mod deformation;

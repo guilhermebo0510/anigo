@@ -55,6 +55,8 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   replace_nodes_asset: "presentation",
   patch_assets: "presentation",
   set_render_output: "presentation",
+  // Animação: clips/chaves são dados do projeto, não invalidam geometria nem a paleta de skinning.
+  edit_animation: "presentation",
   set_background_color: "presentation",
   set_render_settings: "presentation",
   rename_project: "project",

@@ -12,6 +12,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ANIM_EDIT_OPS,
   COMMAND_CONTRACT_VERSION,
   COMMAND_KINDS,
   NODE_KINDS,
@@ -89,7 +90,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       `command kinds drifted: ${diff(rustKinds, [...COMMAND_KINDS])}`
     );
     assert.deepEqual([...wireMembers.keys()], rustKinds, "the union must cover every kind");
-    assert.equal(COMMAND_KINDS.length, 30);
+    assert.equal(COMMAND_KINDS.length, 31);
   });
 
   it("the snake_case array literal matches the exported tuple", () => {
@@ -128,6 +129,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       "DuplicateNodes",
       "PatchAssets",
       "SetPose",
+      "EditAnimation",
     ];
     for (const variant of variants) {
       const kind = pascalToSnake(variant);
@@ -201,6 +203,64 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
     };
     assert.equal(isCommandWire(command), true);
     assert.equal(scopeOfCommand(command), "deformation");
+  });
+  it("animation commands (Animação) mirror the Rust animation module", () => {
+    const rustAnim = readRepoFile("crates/anigo-core/src/animation.rs");
+    const rustProject = readRepoFile("crates/anigo-core/src/project.rs");
+    // vocabulário das edições, na mesma ordem
+    assert.deepEqual([...ANIM_EDIT_OPS], enumVariants(rustAnim, "AnimEdit").map(pascalToSnake), "AnimEdit drifted");
+    assert.deepEqual(tsStringArrayConst(TS_COMMAND, "ANIM_EDIT_OPS"), [...ANIM_EDIT_OPS]);
+    // campos de cada edição
+    const tsSlice = TS_COMMAND.slice(TS_COMMAND.indexOf("export type AnimEditWire ="), TS_COMMAND.indexOf("export const ANIM_EDIT_OPS"));
+    const rustEdits = enumVariantFields(rustAnim, "AnimEdit");
+    for (const [variant, rustFields] of rustEdits) {
+      const op = pascalToSnake(variant);
+      const line = new RegExp(`\\{ op: "${op}"([^}]*)\\}`).exec(tsSlice);
+      assert.ok(line, `AnimEditWire is missing ${op}`);
+      const tsFields = [...line[1].matchAll(/;\s*([a-z_]+)\??:/g)].map((m) => m[1]);
+      assert.deepEqual(sorted(tsFields), sorted(rustFields), `${op} drifted: ${diff(rustFields, tsFields)}`);
+    }
+    // enums pequenos
+    for (const [tsName, rustName] of [
+      ["LoopModeWire", "LoopMode"],
+      ["ExtrapolationWire", "Extrapolation"],
+      ["HandSideWire", "HandSide"],
+      ["SunPropWire", "SunProp"],
+      ["CameraPropWire", "CameraProp"],
+    ] as const) {
+      assert.deepEqual(tsStringUnion(TS_COMMAND, tsName), enumVariants(rustAnim, rustName).map(pascalToSnake), `${rustName} drifted`);
+    }
+    // uniões marcadas: `kind` (Interp, ChannelTarget) e `t` (KeyValue)
+    const kinds = (name: string, tag: string) => {
+      const start = TS_COMMAND.indexOf(`export type ${name} =`);
+      const end = TS_COMMAND.indexOf(";\n", start);
+      return [...TS_COMMAND.slice(start, end).matchAll(new RegExp(`${tag}: "([a-z_0-9]+)"`, "g"))].map((m) => m[1]);
+    };
+    assert.deepEqual(kinds("InterpWire", "kind"), enumVariants(rustAnim, "Interp").map(pascalToSnake), "Interp drifted");
+    assert.deepEqual(kinds("ChannelTargetWire", "kind"), enumVariants(rustAnim, "ChannelTarget").map(pascalToSnake), "ChannelTarget drifted");
+    assert.deepEqual(kinds("KeyValueWire", "t"), enumVariants(rustAnim, "KeyValue").map(pascalToSnake), "KeyValue drifted");
+    // campos das estruturas
+    for (const [tsName, rustName, source] of [
+      ["KeyWire", "Key", rustAnim],
+      ["ChannelWire", "Channel", rustAnim],
+      ["MarkerWire", "Marker", rustAnim],
+      ["KeyInsertWire", "KeyInsert", rustAnim],
+      ["KeyRefWire", "KeyRef", rustAnim],
+      ["KeyMoveWire", "KeyMove", rustAnim],
+      ["AnimationClipWire", "AnimationClip", rustProject],
+      ["AnimationTrackWire", "AnimationTrack", rustProject],
+      ["TransformKeyframeWire", "TransformKeyframe", rustProject],
+    ] as const) {
+      assert.deepEqual(sorted(tsInterfaceFields(TS_COMMAND, tsName)), sorted(fieldsOf(source, rustName)), `${rustName} drifted`);
+    }
+    // campos que o Rust preenche por padrão são opcionais no fio
+    assert.deepEqual(sorted(defaultedFields(rustProject, "AnimationClip")), sorted(["tracks", "channels", "range", "loop_mode", "extrapolation", "hold_step", "markers"]));
+    const command: CommandWire = {
+      kind: "edit_animation",
+      edit: { op: "insert_keys", clip_id: "ani_walk", keys: [{ target: { kind: "bone", bone: "Head" }, key: { frame: 3, value: { t: "quat", v: [0, 0, 0, 1] }, interp: { kind: "ease" } } }] },
+    };
+    assert.equal(isCommandWire(command), true);
+    assert.equal(scopeOfCommand(command), "presentation");
   });
 });
 
