@@ -126,6 +126,10 @@ pub struct NormalsUi {
     pub brush_hit: Option<Vec3>,
     /// Último quadro em que o corpo do painel foi desenhado (controla o marcador de pivô).
     panel_frame: u64,
+    /// Abre/fecha (uma vez) as seções do painel; usado por cenários de screenshot.
+    pub force_open_normals: Option<bool>,
+    pub force_open_paint: Option<bool>,
+    pub force_open_sharp: Option<bool>,
 }
 
 impl Default for NormalsUi {
@@ -162,6 +166,9 @@ impl Default for NormalsUi {
             stroke: None,
             brush_hit: None,
             panel_frame: 0,
+            force_open_normals: None,
+            force_open_paint: None,
+            force_open_sharp: None,
         }
     }
 }
@@ -524,12 +531,14 @@ impl StudioApp {
 
         egui::CollapsingHeader::new(RichText::new(tr("panel.normals")).strong())
             .default_open(true)
+            .open(st.force_open_normals.take())
             .show(ui, |ui| {
                 st.panel_frame = frame;
                 self.normals_panel_body(ui, &mut st, &mut acts);
             });
         egui::CollapsingHeader::new(RichText::new(l("Pintura NPR", "NPR paint")).strong())
             .default_open(false)
+            .open(st.force_open_paint.take())
             .show(ui, |ui| {
                 self.paint_panel_body(ui, &mut st, &mut acts);
             });
@@ -579,6 +588,7 @@ impl StudioApp {
         // ------------------------------------------------ sharp e sombreamento
         egui::CollapsingHeader::new(l("Sharp e sombreamento", "Sharp & shading"))
             .default_open(true)
+            .open(st.force_open_sharp.take())
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui.button(l("Marcar sharp", "Mark sharp")).on_hover_text(l("Arestas selecionadas viram duras (ciano)", "Selected edges become hard (cyan)")).clicked() {
@@ -1225,9 +1235,9 @@ fn head_shape(mesh: &mut EditMesh) {
         let mut q = p;
         if q.y < 0.0 {
             let t = (-q.y).clamp(0.0, 1.0);
-            let k = 1.0 - 0.38 * t * t;
+            let k = 1.0 - 0.55 * t * t;
             q.x *= k;
-            q.z *= 0.9 + 0.1 * k;
+            q.z *= 0.8 + 0.2 * k;
         }
         q.y *= 1.12;
         if q.z > 0.0 {
@@ -1245,7 +1255,7 @@ impl StudioApp {
     /// Cenários `normals-*`. Devolve `true` se o nome era de um deles.
     pub(crate) fn scenario_normals(&mut self, name: &str) -> bool {
         use crate::modeling::PrimitiveKind;
-        let light = Vec3::new(-0.45, 0.6, 0.65).normalize();
+        let light = Vec3::new(-0.85, 0.35, 0.45).normalize();
         match name {
             "normals-overlay" => {
                 let m = &mut self.modeling;
@@ -1283,6 +1293,9 @@ impl StudioApp {
                 m.select_none();
                 self.normals_ui.show_normals = true;
                 self.normals_ui.normal_length = 0.24;
+                self.normals_ui.force_open_normals = Some(true);
+                self.normals_ui.force_open_sharp = Some(true);
+                self.normals_ui.force_open_paint = Some(false);
                 self.camera.distance = 4.2;
                 true
             }
@@ -1315,6 +1328,9 @@ impl StudioApp {
                     self.modeling.set_mode(Mode::Edit);
                     self.normals_ui.tool = NormalTool::Point;
                     self.normals_ui.show_normals = false;
+                    self.normals_ui.force_open_normals = Some(true);
+                    self.normals_ui.force_open_sharp = Some(false);
+                    self.normals_ui.force_open_paint = Some(false);
                 }
                 true
             }
@@ -1343,6 +1359,9 @@ impl StudioApp {
                     }
                 }
                 self.paint_attr_active = true;
+                self.normals_ui.force_open_normals = Some(false);
+                self.normals_ui.force_open_sharp = Some(true);
+                self.normals_ui.force_open_paint = Some(true);
                 self.normals_ui.view_channel = true;
                 self.normals_ui.channel = VertexChannel::AmbientOcclusion;
                 self.normals_ui.paint_radius = 0.3;
