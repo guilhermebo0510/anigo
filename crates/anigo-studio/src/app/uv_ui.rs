@@ -79,6 +79,8 @@ pub(crate) struct UvState {
     pub last_error: Option<String>,
     /// Face sob o cursor no editor (tooltip e destaque).
     pub hover_face: Option<u32>,
+    /// Última linha de rastreio (ANIGO_TRACE_UV), para só imprimir mudanças.
+    pub trace_last: String,
 }
 
 impl Default for UvState {
@@ -99,6 +101,7 @@ impl Default for UvState {
             tex_checker: [None, None],
             last_error: None,
             hover_face: None,
+            trace_last: String::new(),
         }
     }
 }

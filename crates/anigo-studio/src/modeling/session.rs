@@ -795,6 +795,48 @@ mod tests {
     }
 
     #[test]
+    fn interactive_uv_edit_commit_undo_and_cancel_restore_exactly() {
+        let mut s = ModelingSession::with_default_cube();
+        s.toggle_edit_mode();
+        let before = s.active_object().unwrap().mesh.clone();
+        // edição interativa: captura, muta direto, confirma
+        let snap = s.capture();
+        s.active_object_mut().unwrap().mesh.faces[0].corners[0].uv.x += 0.25;
+        s.commit_snapshot("Mover UV", snap);
+        assert_eq!(s.history_labels().last().copied(), Some("Mover UV"));
+        assert_eq!(s.undo().as_deref(), Some("Mover UV"));
+        assert_eq!(s.active_object().unwrap().mesh, before);
+        // cancelar: restaura sem deixar entrada de histórico
+        let depth = s.history_labels().len();
+        let snap = s.capture();
+        s.active_object_mut().unwrap().mesh.faces[1].corners[2].uv.y -= 0.5;
+        s.restore_snapshot(snap);
+        assert_eq!(s.active_object().unwrap().mesh, before);
+        assert_eq!(s.history_labels().len(), depth);
+    }
+
+    #[test]
+    fn edit_uv_is_transactional_and_skips_noop_entries() {
+        let mut s = ModelingSession::with_default_cube();
+        s.toggle_edit_mode();
+        let depth = s.history_labels().len();
+        assert!(s.edit_uv("nada", |_, _| Ok(())).is_ok());
+        assert_eq!(s.history_labels().len(), depth, "sem mudança não registra undo");
+        let r: Result<(), _> = s.edit_uv("falha", |m, _| {
+            m.faces[0].corners[0].uv.x = 9.0;
+            Err(anigo_modeling::ModelError::EmptySelection("x"))
+        });
+        assert!(r.is_err());
+        assert_ne!(s.active_object().unwrap().mesh.faces[0].corners[0].uv.x, 9.0);
+        s.edit_uv("muda", |m, _| {
+            m.faces[0].corners[0].uv.x = 9.0;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.history_labels().len(), depth + 1);
+    }
+
+    #[test]
     fn duplicate_creates_distinct_object() {
         let mut s = ModelingSession::with_default_cube();
         let i = s.duplicate_active_object().unwrap();

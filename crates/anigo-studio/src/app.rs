@@ -550,7 +550,7 @@ impl eframe::App for StudioApp {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
                 egui::Panel::bottom("uv_editor")
-                    .default_size(300.0)
+                    .default_size(360.0)
                     .size_range(160.0..=700.0)
                     .show(ui, |ui| self.uv_editor_panel(ui));
             }

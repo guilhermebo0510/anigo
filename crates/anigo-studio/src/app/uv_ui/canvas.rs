@@ -329,7 +329,7 @@ impl StudioApp {
                 };
                 for (ci, c) in face.corners.iter().enumerate() {
                     let selected = geom::corner_selected(sel, sel_mode, fi as u32, c.vert);
-                    if selected {
+                    if selected && sel_mode != SelectMode::Face {
                         painter.circle_filled(pts[ci], 3.4, theme::SELECT);
                         painter.circle_stroke(pts[ci], 3.4, Stroke::new(1.0, Color32::BLACK));
                     } else if sel_mode == SelectMode::Vertex {
@@ -372,9 +372,9 @@ impl StudioApp {
             draw_legend(&painter, rect, self.uv.color_mode);
         }
         let hint = "Roda: zoom · MMB: mover vista · clique/caixa: selecionar (Shift soma, Alt/duplo: ilha) · G/R/S: mover/girar/escalar · Home: enquadrar";
-        painter.text(rect.left_bottom() + egui::vec2(8.0, -6.0), Align2::LEFT_BOTTOM, hint, FontId::proportional(11.0), Color32::from_rgba_unmultiplied(160, 160, 172, 170));
+        painter.text(rect.left_top() + egui::vec2(8.0, 5.0), Align2::LEFT_TOP, hint, FontId::proportional(11.0), Color32::from_rgba_unmultiplied(160, 160, 172, 170));
         painter.text(
-            rect.right_bottom() + egui::vec2(-8.0, -6.0),
+            rect.right_bottom() + egui::vec2(-8.0, -22.0),
             Align2::RIGHT_BOTTOM,
             format!("{:.0} px/u", self.uv.view.zoom),
             FontId::proportional(11.0),
@@ -403,6 +403,24 @@ impl StudioApp {
                         draw_tip(&painter, rect, p, &txt);
                     }
                 }
+            }
+        }
+        // rastreio para testes de entrada reais (xdotool): ANIGO_TRACE_UV=<face alvo>
+        if let Ok(v) = std::env::var("ANIGO_TRACE_UV") {
+            let target: u32 = v.parse().unwrap_or(0);
+            let c = mesh.faces.get(target as usize).map(|f| f.corners.iter().map(|c| c.uv).sum::<Vec2>() / f.corners.len().max(1) as f32);
+            let at = c.map(|c| view.to_screen(c, origin)).unwrap_or(Vec2::ZERO);
+            let line = format!(
+                "uvtrace ppp={} face{target}_px={:.0},{:.0} sel_faces={:?} sel_verts={}",
+                ctx.pixels_per_point(),
+                at.x,
+                at.y,
+                sel.faces,
+                sel.verts.len()
+            );
+            if line != self.uv.trace_last {
+                eprintln!("{line}");
+                self.uv.trace_last = line;
             }
         }
         if resp.hovered() || self.uv.modal.is_some() {
