@@ -16,6 +16,19 @@ use std::sync::Arc;
 enum SceneOwner {
     Modeling,
     Character,
+    Level,
+}
+
+/// Nó do cenário montado pelo workspace Cenário (um por `NodeSlot` do projeto).
+#[derive(Clone)]
+pub struct LevelNodeIn {
+    pub id: String,
+    pub parent: Option<String>,
+    pub transform: anigo_core::Transform,
+    pub visible: bool,
+    /// Chave da geometria + a malha (só é clonada para o renderer quando a chave muda).
+    pub geom: Option<(String, Arc<anigo_core::Mesh>)>,
+    pub material: anigo_core::StylizedMaterial,
 }
 
 pub struct CelPreview {
@@ -37,6 +50,9 @@ pub struct CelPreview {
     char_light: StylizedLight,
     /// Caixa envolvente (min, max) da malha deformada do personagem.
     pub character_bounds: Option<(glam::Vec3, glam::Vec3)>,
+    /// Cenário: geometria atual de cada nó (id → chave) e assinatura do último quadro desenhado.
+    level_geom: std::collections::HashMap<String, String>,
+    level_sig: u64,
 }
 
 impl CelPreview {
@@ -60,7 +76,107 @@ impl CelPreview {
             char_key: None,
             char_light: StylizedLight::default(),
             character_bounds: None,
+            level_geom: std::collections::HashMap::new(),
+            level_sig: 0,
         })
+    }
+
+    /// Sincroniza a cena do renderer com o workspace Cenário: um nó por `NodeSlot` (hierarquia
+    /// respeitada pelo `parent_id`), malhas compartilhadas por chave, luz e câmera do projeto.
+    /// Devolve `true` quando algo que muda a imagem mudou desde o último quadro desenhado.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_level(
+        &mut self,
+        nodes: &[LevelNodeIn],
+        light: StylizedLight,
+        camera: &OrbitCamera,
+        aspect: f32,
+        background: [f32; 4],
+        extra_sig: u64,
+    ) -> bool {
+        if self.owner != SceneOwner::Level {
+            self.scene.nodes.clear();
+            self.level_geom.clear();
+            self.owner = SceneOwner::Level;
+            self.char_key = None;
+            self.level_sig = 0;
+        }
+        let mut old: std::collections::HashMap<String, SceneNode> =
+            std::mem::take(&mut self.scene.nodes).into_iter().map(|n| (n.id.clone(), n)).collect();
+        let mut h = extra_sig ^ 0xcbf2_9ce4_8422_2325;
+        let mut mix = |bits: u32| {
+            h ^= bits as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        let mut next_keys = std::collections::HashMap::with_capacity(nodes.len());
+        for n in nodes {
+            let wanted_key = n.geom.as_ref().map(|g| g.0.clone());
+            let mut node = match old.remove(&n.id) {
+                Some(existing) if self.level_geom.get(&n.id).cloned() == wanted_key => existing,
+                _ => {
+                    let mut fresh = SceneNode::new(n.id.clone(), n.id.clone());
+                    fresh.mesh = n.geom.as_ref().map(|g| (*g.1).clone());
+                    fresh
+                }
+            };
+            node.parent_id = n.parent.clone();
+            node.transform = n.transform;
+            node.visible = n.visible;
+            node.material = Some(n.material.clone());
+            if let Some(k) = wanted_key {
+                next_keys.insert(n.id.clone(), k);
+            }
+            for b in n.transform.translation.to_array().into_iter().chain(n.transform.scale.to_array()).chain(n.transform.rotation.to_array()) {
+                mix(b.to_bits());
+            }
+            mix(n.visible as u32);
+            for b in n.material.base_color.into_iter().chain(n.material.shade_color) {
+                mix(b.to_bits());
+            }
+            mix(n.material.outline_width.to_bits());
+            mix(n.geom.as_ref().map_or(0, |g| g.0.len() as u32));
+            self.scene.nodes.push(node);
+        }
+        self.level_geom = next_keys;
+        self.scene.rebuild_children();
+        self.scene.background_color = background;
+        self.scene.light = light;
+        self.scene.camera = Camera {
+            eye: camera.eye(),
+            target: camera.target,
+            up: camera.up(),
+            fov_y: camera.fov_y,
+            aspect,
+            z_near: camera.near,
+            z_far: camera.far,
+            orthographic: camera.orthographic.then(|| {
+                anigo_core::OrthographicBounds::from_height(2.0 * camera.distance * (camera.fov_y * 0.5).tan(), aspect)
+            }),
+        };
+        for b in camera.eye().to_array().into_iter().chain(camera.target.to_array()).chain([camera.fov_y, camera.distance, aspect]) {
+            mix(b.to_bits());
+        }
+        mix(camera.orthographic as u32);
+        for b in self.scene.light.direction {
+            mix(b.to_bits());
+        }
+        mix(self.scene.light.intensity.to_bits());
+        for b in self.scene.background_color {
+            mix(b.to_bits());
+        }
+        let changed = h != self.level_sig;
+        self.level_sig = h;
+        changed
+    }
+
+    /// Como [`CelPreview::render`], mas só redesenha se `dirty` ou se a textura foi recriada
+    /// (o renderer sobe os buffers de cada nó a cada quadro: cenas grandes não devem pagar isso parados).
+    pub fn render_if(&mut self, size: (u32, u32), dirty: bool) -> bool {
+        let size = (size.0.max(1), size.1.max(1));
+        if !dirty && self.texture.as_ref().is_some_and(|t| t.2 == size) {
+            return false;
+        }
+        self.render(size)
     }
 
     /// Sincroniza a cena com o PERSONAGEM da sessão do núcleo: a malha já deformada

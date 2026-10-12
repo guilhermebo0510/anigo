@@ -24,6 +24,8 @@ import {
   type MaterialPatchWire,
   type MeshPresetWire,
   type NodeKindWire,
+  type NodePatchWire,
+  type NodeSourceWire,
   type TonemapOperatorWire,
   type TransformWire,
 } from "../contracts/commands.v1";
@@ -209,6 +211,41 @@ export type CommandIntent =
       depth_prepass?: boolean;
     }
   | { kind: "rename_project"; name: string; current_name?: string }
+  /** Editor de cenário: transformação local de vários nós num só comando. */
+  | {
+      kind: "nodes_transform";
+      entries: Array<{
+        node_id: string;
+        translation?: [number, number, number];
+        rotation?: [number, number, number, number];
+        scale?: [number, number, number];
+      }>;
+    }
+  /** Editor de cenário: duplica nós com ids novos (o remapeamento vem da UI/planejador). */
+  | {
+      kind: "duplicate_nodes";
+      copies: Array<{ source: string; copy: string; name: string }>;
+      offset?: [number, number, number];
+    }
+  /** Editor de cenário: nome, cadeado, tags, pasta, camada, overrides ou origem de um nó. */
+  | { kind: "node_props"; node_id: string; patch: NodePatchWire }
+  /** Editor de cenário: troca a malha/origem de nós preservando a transformação. */
+  | {
+      kind: "replace_nodes_asset";
+      entries: Array<{
+        node_id: string;
+        mesh_uri?: string | null;
+        primitive_index?: number;
+        source?: NodeSourceWire | null;
+        name?: string | null;
+      }>;
+    }
+  /** Editor de cenário: registra/remove ativos no registro do projeto (URI → id derivado). */
+  | {
+      kind: "patch_assets";
+      put: Array<{ uri: string; byte_len?: number | null; content_hash?: string | null }>;
+      remove_uris?: string[];
+    }
   | { kind: "batch"; intents: CommandIntent[] };
 
 // ---------------------------------------------------------------------------
@@ -741,6 +778,127 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
         return fail("no_op", `o projeto já se chama '${intent.name}'`, "name");
       }
       return { ok: true, command: { kind: "rename_project", name: intent.name } };
+    }
+
+    case "nodes_transform": {
+      if (intent.entries.length === 0) return fail("empty_batch", "nenhum nó para transformar");
+      const seen = new Set<string>();
+      const entries: Array<Record<string, unknown>> = [];
+      for (const entry of intent.entries) {
+        if (!isValidStableId(entry.node_id, "node")) {
+          return fail("unknown_target", `node_id '${entry.node_id}' inválido`, "node_id");
+        }
+        if (seen.has(entry.node_id)) {
+          return fail("invalid_value", `o nó '${entry.node_id}' aparece duas vezes`, "entries");
+        }
+        seen.add(entry.node_id);
+        const out: Record<string, unknown> = { node_id: entry.node_id };
+        if (entry.translation !== undefined) {
+          const problem = buildVec3(entry.translation, "translation");
+          if (problem) return problem;
+          out["translation"] = [...entry.translation];
+        }
+        if (entry.rotation !== undefined) {
+          const problem = checkQuaternion(entry.rotation);
+          if (problem) return problem;
+          out["rotation"] = [...entry.rotation];
+        }
+        if (entry.scale !== undefined) {
+          const problem = buildVec3(entry.scale, "scale");
+          if (problem) return problem;
+          out["scale"] = [...entry.scale];
+        }
+        entries.push(out);
+      }
+      return {
+        ok: true,
+        command: { kind: "set_nodes_transform", entries } as unknown as CommandWire,
+        unverifiedTarget: true,
+      };
+    }
+
+    case "duplicate_nodes": {
+      if (intent.copies.length === 0) return fail("no_op", "nada para duplicar");
+      const copies = new Set<string>();
+      for (const c of intent.copies) {
+        if (!isValidStableId(c.source, "node")) {
+          return fail("unknown_target", `source '${c.source}' inválido`, "copies");
+        }
+        if (!isValidStableId(c.copy, "node") || copies.has(c.copy)) {
+          return fail("invalid_value", `id de cópia '${c.copy}' inválido ou repetido`, "copies");
+        }
+        if (c.name.trim().length === 0) return fail("invalid_value", "o nome da cópia não pode ser vazio", "name");
+        copies.add(c.copy);
+      }
+      if (intent.offset !== undefined) {
+        const problem = buildVec3(intent.offset, "offset");
+        if (problem) return problem;
+      }
+      const command: CommandWire = {
+        kind: "duplicate_nodes",
+        copies: intent.copies.map((c) => ({ ...c })),
+      };
+      if (intent.offset !== undefined) command.offset = [...intent.offset];
+      return { ok: true, command, unverifiedTarget: true };
+    }
+
+    case "node_props": {
+      if (!isValidStableId(intent.node_id, "node")) {
+        return fail("unknown_target", `node_id '${intent.node_id}' inválido`, "node_id");
+      }
+      if (Object.keys(intent.patch).length === 0) return fail("no_op", "patch de propriedades vazio");
+      if (intent.patch.name !== undefined && intent.patch.name.trim().length === 0) {
+        return fail("invalid_value", "o nome do nó não pode ser vazio", "name");
+      }
+      if (intent.patch.tags !== undefined) {
+        const lower = intent.patch.tags.map((t) => t.toLowerCase());
+        if (intent.patch.tags.some((t) => t.trim().length === 0 || t.length > 64) || new Set(lower).size !== lower.length) {
+          return fail("invalid_value", "tags vazias, longas ou repetidas", "tags");
+        }
+      }
+      return { ok: true, command: { kind: "set_node_props", node_id: intent.node_id, patch: { ...intent.patch } }, unverifiedTarget: true };
+    }
+
+    case "replace_nodes_asset": {
+      if (intent.entries.length === 0) return fail("no_op", "nada para substituir");
+      const entries = [];
+      for (const e of intent.entries) {
+        if (!isValidStableId(e.node_id, "node")) {
+          return fail("unknown_target", `node_id '${e.node_id}' inválido`, "node_id");
+        }
+        const out: Record<string, unknown> = { node_id: e.node_id };
+        if (e.mesh_uri !== undefined) {
+          out["mesh"] =
+            e.mesh_uri === null
+              ? null
+              : e.primitive_index !== undefined
+                ? { asset_id: assetIdForUri(e.mesh_uri), primitive_index: e.primitive_index }
+                : { asset_id: assetIdForUri(e.mesh_uri) };
+        }
+        if (e.source !== undefined) out["source"] = e.source;
+        if (e.name !== undefined) out["name"] = e.name;
+        entries.push(out);
+      }
+      return { ok: true, command: { kind: "replace_nodes_asset", entries } as unknown as CommandWire, unverifiedTarget: true };
+    }
+
+    case "patch_assets": {
+      if (intent.put.length === 0 && (intent.remove_uris?.length ?? 0) === 0) {
+        return fail("no_op", "registro de ativos sem mudanças");
+      }
+      const put = intent.put.map((e) => ({
+        asset_id: assetIdForUri(e.uri),
+        kind: "mesh" as const,
+        uri: e.uri,
+        ...(e.byte_len !== undefined ? { byte_len: e.byte_len } : {}),
+        ...(e.content_hash !== undefined ? { content_hash: e.content_hash } : {}),
+      }));
+      if (put.some((e) => e.uri.length === 0 || e.uri.startsWith("/"))) {
+        return fail("invalid_value", "uri de ativo vazia ou absoluta", "put");
+      }
+      const command: CommandWire = { kind: "patch_assets", put };
+      if (intent.remove_uris !== undefined) command.remove = intent.remove_uris.map(assetIdForUri);
+      return { ok: true, command };
     }
 
     case "batch": {

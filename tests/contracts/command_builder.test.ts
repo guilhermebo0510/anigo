@@ -51,7 +51,7 @@ function rejected(intent: CommandIntent, code: string): void {
 }
 
 describe("Intent → Command — toda alteração da UI vira um comando do contrato", () => {
-  it("cobre os 23 tipos de comando do contrato v1", () => {
+  it("cobre os 28 tipos de comando do contrato v1", () => {
     const intents: CommandIntent[] = [
       { kind: "morph", slider_id: UNIT_SLIDER.id, value: 1.05 },
       { kind: "reset_morphs", override_count: 3 },
@@ -86,6 +86,24 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
       { kind: "background_color", color: [0.1, 0.2, 0.3, 1] },
       { kind: "render_settings", msaa_samples: 8 },
       { kind: "rename_project", name: "Estudo" },
+      {
+        kind: "nodes_transform",
+        entries: [{ node_id: "nod_jacket", translation: [1, 0, 0] }],
+      },
+      {
+        kind: "duplicate_nodes",
+        copies: [{ source: "nod_jacket", copy: "nod_jacket_2", name: "Jaqueta 2" }],
+        offset: [1, 0, 0],
+      },
+      { kind: "node_props", node_id: "nod_jacket", patch: { locked: true, tags: ["cenario"] } },
+      {
+        kind: "replace_nodes_asset",
+        entries: [{ node_id: "nod_jacket", mesh_uri: "anigo://library/0190a1b2-0000-7000-8000-000000000001" }],
+      },
+      {
+        kind: "patch_assets",
+        put: [{ uri: "anigo://library/0190a1b2-0000-7000-8000-000000000001", byte_len: 10 }],
+      },
       { kind: "batch", intents: [{ kind: "zoom", factor: 1.1 }, { kind: "render_settings", tonemap: "neutral" }] },
     ];
 

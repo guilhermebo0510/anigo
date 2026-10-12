@@ -4,6 +4,7 @@ pub mod deformation;
 pub mod export;
 pub mod hierarchy;
 pub mod ids;
+pub mod level;
 pub mod math;
 pub mod mesh;
 pub mod morph;
@@ -43,6 +44,10 @@ pub use ids::{
 pub use math::{
     Aabb, BoundingSphere, Camera, Frustum, FrustumPlane, OrthographicBounds, ProjectionError,
     ProjectionMode, Transform,
+};
+pub use level::{
+    library_uri, library_uuid, LightShape, NodeAssetEntry, NodeAttrs, NodeCopy, NodeOverrides, NodePatch,
+    NodeSource, NodeTransformEntry, PlanError, PrimitiveShape, LIBRARY_URI_PREFIX,
 };
 pub use mesh::{BaseGender, Mesh, Vertex};
 pub use npr::NprParams;

@@ -736,9 +736,11 @@ pub(crate) fn route_undo_redo(
     modeling: &mut crate::modeling::ModelingSession,
     undo: bool,
 ) -> Option<String> {
-    if ws == crate::workspace::WorkspaceId::Personagem {
+    use crate::workspace::WorkspaceId;
+    if ws == WorkspaceId::Personagem || ws == WorkspaceId::Cenario {
         let r = if undo { core.undo() } else { core.redo() };
         return Some(match r {
+            Ok(o) if ws == WorkspaceId::Cenario => super::scene_ui::describe_scene(&o.description),
             Ok(o) => describe(&o.description),
             Err(e) => e,
         });
@@ -756,7 +758,8 @@ pub(crate) fn can_undo_redo(
     core: &anigo_session::CoreSession,
     modeling: &crate::modeling::ModelingSession,
 ) -> (bool, bool) {
-    if ws == crate::workspace::WorkspaceId::Personagem {
+    use crate::workspace::WorkspaceId;
+    if ws == WorkspaceId::Personagem || ws == WorkspaceId::Cenario {
         (core.history().can_undo(), core.history().can_redo())
     } else {
         (modeling.can_undo(), modeling.can_redo())
@@ -848,6 +851,15 @@ mod tests {
         assert!(route_undo_redo(WorkspaceId::Modelagem, &mut core, &mut modeling, true).is_none());
         assert_eq!(modeling.doc.objects.len(), objs - 1);
         assert_eq!(core.project().character.proportions.height_overall, 1.2, "o núcleo não foi tocado");
+        // Cenário: usa o mesmo núcleo (cena canônica), nunca a ModelingSession
+        let objs_now = modeling.doc.objects.len();
+        assert_eq!(can_undo_redo(WorkspaceId::Cenario, &core, &modeling), (true, false));
+        assert!(route_undo_redo(WorkspaceId::Cenario, &mut core, &mut modeling, true).is_some());
+        assert_eq!(core.project().character.proportions.height_overall, 1.0);
+        assert_eq!(modeling.doc.objects.len(), objs_now, "a modelagem não foi tocada pelo Cenário");
+        assert_eq!(can_undo_redo(WorkspaceId::Cenario, &core, &modeling), (false, true));
+        assert!(route_undo_redo(WorkspaceId::Cenario, &mut core, &mut modeling, false).is_some());
+        assert_eq!(core.project().character.proportions.height_overall, 1.2);
         // desfazer sem histórico não quebra
         assert!(route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, true).is_some());
         assert!(route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, true).is_some());

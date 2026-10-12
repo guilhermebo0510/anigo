@@ -135,10 +135,12 @@ pub const ILUMINACAO: &[ToolDef] = &[
     tool("ambient", icons::CLOUD, "tool.ambient"),
 ];
 
+/// Ferramentas do Cenário (esquema do Unreal): Q seleção, W mover, E girar, R escalar.
 pub const CENARIO: &[ToolDef] = &[
-    tool("stage", icons::CUBE, "tool.stage"),
-    tool("props", icons::FOLDER, "tool.props"),
-    tool("environment", icons::CLOUD, "tool.environment"),
+    tool("select_box", icons::CURSOR, "tool.select_box"),
+    tool("move", icons::ARROWS_OUT_CARDINAL, "tool.move"),
+    tool("rotate", icons::ARROWS_CLOCKWISE, "tool.rotate"),
+    tool("scale", icons::ARROWS_OUT, "tool.scale"),
 ];
 
 pub const ANIMACAO: &[ToolDef] = &[

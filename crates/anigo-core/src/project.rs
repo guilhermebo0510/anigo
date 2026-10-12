@@ -30,6 +30,7 @@ use crate::ids::{
     MorphId, NodeId, ProjectId, SceneId,
 };
 use crate::hierarchy::{self, NodeKind};
+use crate::level::{NodeOverrides, NodeSource};
 use crate::math::{Camera, Transform};
 use crate::mesh::{BaseGender, Mesh};
 use crate::morph_catalog::{find_slider_def, ALL_MORPH_SLIDERS};
@@ -375,6 +376,25 @@ pub struct NodeSlot {
     /// `hair`, `accessory`, `humanoid_bone`, `mesh`, `light`, `camera`, `group`).
     #[serde(default)]
     pub kind: NodeKind,
+    /// Editor de cenário: o nó não pode ser selecionado/transformado na viewport (cadeado).
+    /// Os campos abaixo são aditivos: ausentes do JSON enquanto estiverem no padrão.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+    /// Etiquetas livres (buscáveis no Outliner).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Pasta do Outliner (organização; não afeta a transformação). `Pai/Filho` = aninhada.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Camada de cena (BG/MG/FG/…): organização e, no futuro, passes de render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// De onde o nó veio (ativo da Biblioteca, primitiva, câmera de cena…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NodeSource>,
+    /// Substituições de material por instância.
+    #[serde(default, skip_serializing_if = "NodeOverrides::is_default")]
+    pub overrides: NodeOverrides,
 }
 
 impl NodeSlot {
@@ -389,6 +409,12 @@ impl NodeSlot {
             visible: true,
             parent_id: None,
             kind,
+            locked: false,
+            tags: Vec::new(),
+            folder: None,
+            layer: None,
+            source: None,
+            overrides: NodeOverrides::default(),
         }
     }
 
@@ -683,6 +709,12 @@ impl Default for SceneState {
             // Issue #12: o manequim é a raiz do personagem na cena canônica.
             parent_id: None,
             kind: NodeKind::CharacterRoot,
+            locked: false,
+            tags: Vec::new(),
+            folder: None,
+            layer: None,
+            source: None,
+            overrides: NodeOverrides::default(),
         };
 
         Self {
@@ -974,6 +1006,24 @@ impl ProjectState {
             for component in node.transform.rotation.to_array() {
                 require_finite("scene.nodes[].transform.rotation", component)?;
             }
+            // Editor de cenário: dados extras do nó.
+            let invalid = |detail: String| ProjectError::InvalidValue {
+                field: format!("scene.nodes.{}", node.node_id),
+                detail,
+            };
+            crate::level::validate_tags(&node.tags).map_err(&invalid)?;
+            node.overrides.validate().map_err(&invalid)?;
+            if let Some(source) = &node.source {
+                source.validate().map_err(&invalid)?;
+                if let Some(uri) = source.library_uri() {
+                    let expected = AssetId::for_uri(uri);
+                    if node.mesh.as_ref().map(|m| &m.asset_id) != Some(&expected) {
+                        return Err(invalid(format!(
+                            "library asset node must reference mesh asset '{expected}'"
+                        )));
+                    }
+                }
+            }
         }
 
         // Issue #12: a topologia é validada como um todo — ids únicos, todo
@@ -1113,6 +1163,25 @@ impl ProjectState {
             }
         }
         self.character.morph_values = morph_values;
+
+        // Nós de ativos da Biblioteca: o registro e a referência de malha são reparados a partir da
+        // URI de origem (o arquivo pode estar ausente nesta máquina — a UI mostra um marcador; o nó
+        // nunca vira o manequim por engano).
+        for node in &mut self.scene.nodes {
+            if let Some(NodeSource::LibraryAsset { uri, .. }) = &node.source {
+                let entry = AssetEntry::from_uri(AssetKind::Mesh, uri.clone());
+                node.mesh = Some(MeshRef { asset_id: entry.asset_id.clone(), primitive_index: 0 });
+                self.assets.entry(entry.asset_id.clone()).or_insert(entry);
+            }
+            // tags: sem vazias, sem repetidas (sem diferenciar maiúsculas), no máximo 64 de 64 caracteres
+            let mut seen = BTreeSet::new();
+            node.tags = std::mem::take(&mut node.tags)
+                .into_iter()
+                .map(|t| t.trim().chars().take(64).collect::<String>())
+                .filter(|t| !t.is_empty() && seen.insert(t.to_lowercase()))
+                .take(64)
+                .collect();
+        }
 
         // Dangling mesh references become procedural canonical bases.
         for node in &mut self.scene.nodes {

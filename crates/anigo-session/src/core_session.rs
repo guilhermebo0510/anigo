@@ -293,6 +293,29 @@ impl CoreSession {
         Ok(outcome)
     }
 
+    /// Profundidade máxima do desfazer (o editor de cenário usa bem mais que o padrão do projeto).
+    pub fn set_history_limit(&mut self, limit: usize) {
+        self.history.set_limit(limit);
+    }
+
+    /// Salta no histórico até restarem exatamente `target_depth` passos desfazíveis
+    /// (painel "Histórico": clicar numa linha desfaz/refaz até ali). Devolve quantos passos andou.
+    pub fn jump_to_depth(&mut self, target_depth: usize) -> Result<usize, String> {
+        self.cancel_preview();
+        let total = self.history.undo_depth() + self.history.redo_depth();
+        let target = target_depth.min(total);
+        let mut steps = 0;
+        while self.history.undo_depth() > target {
+            self.undo()?;
+            steps += 1;
+        }
+        while self.history.undo_depth() < target {
+            self.redo()?;
+            steps += 1;
+        }
+        Ok(steps)
+    }
+
     /// Descarta a geometria em cache (reconstruída no próximo snapshot, que já
     /// devolve a nova revisão estática ao cliente).
     fn invalidate_geometry(&mut self) {
@@ -968,5 +991,46 @@ mod tests {
         session.cancel_preview();
         let back = session.deformed_mesh().expect("mesh");
         assert!((top(&back) - top(&base)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn jump_to_depth_walks_the_history_both_ways() {
+        let mut session = CoreSession::new();
+        session.set_history_limit(50);
+        for i in 0..5 {
+            session
+                .apply(Command::RenameProject { name: format!("Projeto {i}") })
+                .expect("apply");
+        }
+        assert_eq!(session.history().undo_depth(), 5);
+        assert_eq!(session.jump_to_depth(2).expect("jump"), 3);
+        assert_eq!(session.project().name, "Projeto 1");
+        assert_eq!(session.history().redo_depth(), 3);
+        assert_eq!(session.jump_to_depth(4).expect("jump"), 2);
+        assert_eq!(session.project().name, "Projeto 3");
+        // alvo além do fim é limitado ao topo; zero volta ao projeto inicial
+        assert_eq!(session.jump_to_depth(99).expect("jump"), 1);
+        assert_eq!(session.project().name, "Projeto 4");
+        session.jump_to_depth(0).expect("jump");
+        assert_eq!(session.project().name, "Untitled Project");
+    }
+
+    #[test]
+    fn scene_gesture_is_one_undo_step_through_preview_and_commit() {
+        use anigo_core::level::NodeTransformEntry;
+        use anigo_core::{NodeId, Transform};
+        let mut session = CoreSession::new();
+        let id = NodeId::canonical_character();
+        let entry = |x: f32| NodeTransformEntry::full(id.clone(), Transform::from_translation(glam::Vec3::new(x, 0.0, 0.0)));
+        // arrasto: vários passos ao vivo, nenhum no histórico
+        for x in [0.1, 0.5, 1.0, 2.5] {
+            session.preview(Command::SetNodesTransform { entries: vec![entry(x)] }).expect("preview");
+        }
+        assert_eq!(session.history().undo_depth(), 0);
+        session.commit_preview(Command::SetNodesTransform { entries: vec![entry(2.5)] }).expect("commit");
+        assert_eq!(session.history().undo_depth(), 1, "o gesto inteiro vira UM passo");
+        assert_eq!(session.project().scene.nodes[0].transform.translation.x, 2.5);
+        session.undo().expect("undo");
+        assert_eq!(session.project().scene.nodes[0].transform.translation.x, 0.0);
     }
 }

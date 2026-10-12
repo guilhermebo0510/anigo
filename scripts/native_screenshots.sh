@@ -29,6 +29,12 @@ shot modelagem_cabelo_cel modelagem hair-cel
 shot modelagem_uv modelagem uv-editor
 shot modelagem_normais_overlay modelagem normals-overlay
 shot modelagem_normais_transfer modelagem normals-transfer-clean
+shot cenario_vazio cenario cenario-vazio
+shot cenario_montado cenario cenario-montado
+shot cenario_snap cenario cenario-snap
+shot cenario_outliner cenario cenario-outliner
+shot cenario_gizmo cenario cenario-gizmo
+shot cenario_camera cenario cenario-camera
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)

@@ -46,6 +46,12 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   remove_node: "presentation",
   set_node_parent: "presentation",
   set_node_transform: "presentation",
+  // Editor de cenário (Fase 1): tudo apresentação.
+  set_nodes_transform: "presentation",
+  duplicate_nodes: "presentation",
+  set_node_props: "presentation",
+  replace_nodes_asset: "presentation",
+  patch_assets: "presentation",
   set_background_color: "presentation",
   set_render_settings: "presentation",
   rename_project: "project",

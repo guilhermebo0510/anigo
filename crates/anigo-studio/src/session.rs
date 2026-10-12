@@ -24,6 +24,12 @@ pub struct SessionState {
     pub character_document: Option<String>,
     #[serde(default)]
     pub character_camera: Option<OrbitCamera>,
+    /// Câmera de edição do workspace Cenário (o projeto da cena vive em `character_document`).
+    #[serde(default)]
+    pub scene_camera: Option<OrbitCamera>,
+    /// Snap, ferramenta, sombreamento e painéis do Cenário.
+    #[serde(default)]
+    pub scene_prefs: Option<crate::app::ScenePrefs>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -92,6 +98,8 @@ mod tests {
             document: m.doc.clone(),
             character_document: None,
             character_camera: None,
+            scene_camera: None,
+            scene_prefs: None,
         }
     }
 

@@ -17,16 +17,18 @@
 //! of its own, it only displays `can_undo`/`can_redo` and the descriptions.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::hierarchy::NodeKind;
 use crate::ids::{AssetId, LightId, MaterialId, MorphId, NodeId};
+use crate::level::{NodeAssetEntry, NodeAttrs, NodeCopy, NodePatch, NodeTransformEntry};
 use crate::math::{Camera, Transform};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
 use crate::project::{
-    MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
+    AssetEntry, MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
     URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
 use crate::scene::StylizedMaterial;
@@ -541,6 +543,10 @@ pub enum Command {
         #[serde(default)]
         material_id: Option<MaterialId>,
         index: u32,
+        /// Editor de cenário: visível/bloqueado/tags/pasta/camada/origem/overrides do nó. Ausente
+        /// = tudo no padrão (o JSON dos comandos antigos não muda).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attrs: Option<NodeAttrs>,
     },
     /// Issue #12: remove um nó e toda a sua subárvore.
     ///
@@ -589,6 +595,29 @@ pub enum Command {
     },
     /// Renames the project.
     RenameProject { name: String },
+    /// Editor de cenário: patcha o TRS **local** de vários nós de uma vez (um gesto de gizmo com
+    /// multisseleção = um comando). Nós inexistentes recusam o comando inteiro.
+    SetNodesTransform { entries: Vec<NodeTransformEntry> },
+    /// Editor de cenário: duplica nós remapeando ids e pais (cópia de um filho cujo pai também foi
+    /// copiado aponta para a cópia do pai). `offset` (translação local) vai nas raízes copiadas.
+    DuplicateNodes {
+        copies: Vec<NodeCopy>,
+        #[serde(default)]
+        offset: Option<[f32; 3]>,
+    },
+    /// Editor de cenário: patcha nome/cadeado/tags/pasta/camada/overrides/origem de um nó.
+    SetNodeProps { node_id: NodeId, patch: NodePatch },
+    /// Editor de cenário: troca a malha/origem de vários nós preservando a transformação
+    /// ("Substituir selecionados por…", atualizar para uma revisão nova do ativo).
+    ReplaceNodesAsset { entries: Vec<NodeAssetEntry> },
+    /// Editor de cenário: registra/atualiza (`put`) e remove (`remove`) entradas do registro de ativos
+    /// do projeto. Existe como comando próprio para que o undo seja exato (colocar um ativo da
+    /// Biblioteca = `Batch[PatchAssets, AddNode]`).
+    PatchAssets {
+        put: Vec<AssetEntry>,
+        #[serde(default)]
+        remove: Vec<AssetId>,
+    },
     /// Applies several commands atomically (single undo entry).
     Batch { commands: Vec<Command> },
 }
@@ -667,6 +696,22 @@ impl Command {
             Command::SetBackgroundColor { .. } => "Background".to_string(),
             Command::SetRenderSettings { .. } => "Render settings".to_string(),
             Command::RenameProject { .. } => "Rename project".to_string(),
+            Command::SetNodesTransform { entries } => match entries.as_slice() {
+                [one] => format!("Transform {}", one.node_id),
+                _ => format!("Transform {} nodes", entries.len()),
+            },
+            Command::DuplicateNodes { copies, .. } => format!("Duplicate {} nodes", copies.len()),
+            Command::SetNodeProps { node_id, patch } => {
+                if patch.name.is_some() {
+                    format!("Rename {node_id}")
+                } else if patch.locked.is_some() {
+                    format!("Lock {node_id}")
+                } else {
+                    format!("Properties {node_id}")
+                }
+            }
+            Command::ReplaceNodesAsset { entries } => format!("Replace asset of {} nodes", entries.len()),
+            Command::PatchAssets { put, remove } => format!("Assets +{} -{}", put.len(), remove.len()),
             Command::Batch { commands } => {
                 format!("Batch of {} commands", commands.len())
             }
@@ -698,7 +743,12 @@ impl Command {
             | Command::AddNode { .. }
             | Command::RemoveNode { .. }
             | Command::SetNodeParent { .. }
-            | Command::SetNodeTransform { .. } => ChangeScope::Presentation,
+            | Command::SetNodeTransform { .. }
+            | Command::SetNodesTransform { .. }
+            | Command::DuplicateNodes { .. }
+            | Command::SetNodeProps { .. }
+            | Command::ReplaceNodesAsset { .. }
+            | Command::PatchAssets { .. } => ChangeScope::Presentation,
             Command::RenameProject { .. } => ChangeScope::Project,
             Command::Batch { commands } => commands
                 .iter()
@@ -741,6 +791,15 @@ impl Command {
                 None => vec![node_id.to_string()],
             },
             Command::SetNodeTransform { node_id, .. } => vec![node_id.to_string()],
+            Command::SetNodesTransform { entries } => entries.iter().map(|e| e.node_id.to_string()).collect(),
+            Command::DuplicateNodes { copies, .. } => copies.iter().map(|c| c.copy.to_string()).collect(),
+            Command::SetNodeProps { node_id, .. } => vec![node_id.to_string()],
+            Command::ReplaceNodesAsset { entries } => entries.iter().map(|e| e.node_id.to_string()).collect(),
+            Command::PatchAssets { put, remove } => put
+                .iter()
+                .map(|e| e.asset_id.to_string())
+                .chain(remove.iter().map(AssetId::to_string))
+                .collect(),
             Command::LoadMeshPreset { .. } => vec![NodeId::canonical_character().to_string()],
             Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } => {
                 vec!["rnd_main".to_string()]
@@ -997,6 +1056,7 @@ impl Command {
                 transform,
                 mesh,
                 material_id,
+                attrs,
                 ..
             } => {
                 if state.scene.nodes.iter().any(|node| &node.node_id == node_id) {
@@ -1037,6 +1097,19 @@ impl Command {
                     }
                 }
                 validate_transform("transform", *transform)?;
+                if let Some(attrs) = attrs {
+                    crate::level::validate_tags(&attrs.tags)
+                        .map_err(|detail| CommandError::InvalidValue { field: "tags".to_string(), detail })?;
+                    attrs
+                        .overrides
+                        .validate()
+                        .map_err(|detail| CommandError::InvalidValue { field: "overrides".to_string(), detail })?;
+                    if let Some(source) = &attrs.source {
+                        source
+                            .validate()
+                            .map_err(|detail| CommandError::InvalidValue { field: "source".to_string(), detail })?;
+                    }
+                }
                 Ok(())
             }
             Command::RemoveNode { node_id } => {
@@ -1184,6 +1257,156 @@ impl Command {
                     return Err(CommandError::NoOp(format!(
                         "project is already named '{name}'"
                     )));
+                }
+                Ok(())
+            }
+            Command::SetNodesTransform { entries } => {
+                if entries.is_empty() {
+                    return Err(CommandError::NoOp("empty transform batch".to_string()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                let mut changed = false;
+                for entry in entries {
+                    let node = find_node(state, &entry.node_id)?;
+                    if !seen.insert(entry.node_id.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "entries".to_string(),
+                            detail: format!("node '{}' listed twice", entry.node_id),
+                        });
+                    }
+                    let mut transform = node.transform;
+                    if let Some(translation) = entry.translation {
+                        validate_vector("translation", translation)?;
+                        transform.translation = glam::Vec3::from_array(translation);
+                    }
+                    if let Some(rotation) = entry.rotation {
+                        validate_quaternion(rotation)?;
+                        transform.rotation = glam::Quat::from_array(rotation);
+                    }
+                    if let Some(scale) = entry.scale {
+                        validate_vector("scale", scale)?;
+                        transform.scale = glam::Vec3::from_array(scale);
+                    }
+                    validate_transform("transform", transform)?;
+                    changed |= transform != node.transform;
+                }
+                if !changed {
+                    return Err(CommandError::NoOp("no node transform changes".to_string()));
+                }
+                Ok(())
+            }
+            Command::DuplicateNodes { copies, offset } => {
+                if copies.is_empty() {
+                    return Err(CommandError::NoOp("nothing to duplicate".to_string()));
+                }
+                if let Some(offset) = offset {
+                    validate_vector("offset", *offset)?;
+                }
+                let mut new_ids = std::collections::BTreeSet::new();
+                let mut sources = std::collections::BTreeSet::new();
+                for copy in copies {
+                    let source = find_node(state, &copy.source)?;
+                    if matches!(source.kind, NodeKind::CharacterRoot | NodeKind::HumanoidBone) {
+                        return Err(CommandError::InvalidValue {
+                            field: "copies".to_string(),
+                            detail: format!("node '{}' cannot be duplicated", copy.source),
+                        });
+                    }
+                    if state.scene.node(&copy.copy).is_some() || !new_ids.insert(copy.copy.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "copies".to_string(),
+                            detail: format!("copy id '{}' already exists", copy.copy),
+                        });
+                    }
+                    if !sources.insert(copy.source.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "copies".to_string(),
+                            detail: format!("node '{}' listed twice", copy.source),
+                        });
+                    }
+                    if copy.name.trim().is_empty() {
+                        return Err(CommandError::InvalidValue {
+                            field: "name".to_string(),
+                            detail: "copy name must not be empty".to_string(),
+                        });
+                    }
+                }
+                Ok(())
+            }
+            Command::SetNodeProps { node_id, patch } => {
+                let node = find_node(state, node_id)?;
+                if patch.is_empty() {
+                    return Err(CommandError::NoOp("empty node patch".to_string()));
+                }
+                patch.validate()?;
+                if let Some(source) = &patch.source {
+                    // trocar a origem de/para um ativo da Biblioteca exige malha coerente: use ReplaceNodesAsset
+                    if source.library_uri() != node.source.as_ref().and_then(|s| s.library_uri()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "source".to_string(),
+                            detail: "library assets are replaced with ReplaceNodesAsset".to_string(),
+                        });
+                    }
+                }
+                if patch.is_noop_for(node) {
+                    return Err(CommandError::NoOp(format!("node '{node_id}' already has those properties")));
+                }
+                Ok(())
+            }
+            Command::ReplaceNodesAsset { entries } => {
+                if entries.is_empty() {
+                    return Err(CommandError::NoOp("nothing to replace".to_string()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for entry in entries {
+                    find_node(state, &entry.node_id)?;
+                    if !seen.insert(entry.node_id.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "entries".to_string(),
+                            detail: format!("node '{}' listed twice", entry.node_id),
+                        });
+                    }
+                    if let Some(reference) = &entry.mesh {
+                        require_known_asset(state, &reference.asset_id)?;
+                    }
+                    if let Some(source) = &entry.source {
+                        source
+                            .validate()
+                            .map_err(|detail| CommandError::InvalidValue { field: "source".to_string(), detail })?;
+                    }
+                    if let Some(name) = &entry.name {
+                        if name.trim().is_empty() {
+                            return Err(CommandError::InvalidValue {
+                                field: "name".to_string(),
+                                detail: "node name must not be empty".to_string(),
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Command::PatchAssets { put, remove } => {
+                if put.is_empty() && remove.is_empty() {
+                    return Err(CommandError::NoOp("empty asset patch".to_string()));
+                }
+                for entry in put {
+                    if Path::new(&entry.uri).is_absolute() || entry.uri.trim().is_empty() {
+                        return Err(CommandError::InvalidValue {
+                            field: "put".to_string(),
+                            detail: "asset uri must be a non-empty portable uri".to_string(),
+                        });
+                    }
+                    if remove.contains(&entry.asset_id) {
+                        return Err(CommandError::InvalidValue {
+                            field: "remove".to_string(),
+                            detail: format!("asset '{}' is both put and removed", entry.asset_id),
+                        });
+                    }
+                }
+                let changed = put.iter().any(|e| state.assets.get(&e.asset_id) != Some(e))
+                    || remove.iter().any(|id| state.assets.contains_key(id));
+                if !changed {
+                    return Err(CommandError::NoOp("asset registry already up to date".to_string()));
                 }
                 Ok(())
             }
@@ -1381,6 +1604,7 @@ impl Command {
                         mesh: slot.mesh.clone(),
                         material_id: slot.material_id.clone(),
                         index: index as u32,
+                        attrs: NodeAttrs::of(slot),
                     });
                     if parent_inside {
                         links.push(Command::SetNodeParent {
@@ -1465,6 +1689,66 @@ impl Command {
             Command::RenameProject { .. } => Ok(Command::RenameProject {
                 name: state.name.clone(),
             }),
+            Command::SetNodesTransform { entries } => {
+                let mut inverse = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let node = find_node(state, &entry.node_id)?;
+                    inverse.push(NodeTransformEntry {
+                        node_id: entry.node_id.clone(),
+                        translation: entry.translation.map(|_| node.transform.translation.to_array()),
+                        rotation: entry.rotation.map(|_| node.transform.rotation.to_array()),
+                        scale: entry.scale.map(|_| node.transform.scale.to_array()),
+                    });
+                }
+                Ok(Command::SetNodesTransform { entries: inverse })
+            }
+            Command::DuplicateNodes { copies, .. } => {
+                // Remover as cópias de topo remove as subárvores copiadas (o inverso é exato: as cópias
+                // são acrescentadas no fim da lista).
+                let source_to_copy: BTreeMap<&NodeId, &NodeId> = copies.iter().map(|c| (&c.source, &c.copy)).collect();
+                let mut roots = Vec::new();
+                for copy in copies {
+                    let source = find_node(state, &copy.source)?;
+                    let parent_copied = source.parent_id.as_ref().is_some_and(|p| source_to_copy.contains_key(p));
+                    if !parent_copied {
+                        roots.push(Command::RemoveNode { node_id: copy.copy.clone() });
+                    }
+                }
+                Ok(if roots.len() == 1 { roots.remove(0) } else { Command::Batch { commands: roots } })
+            }
+            Command::SetNodeProps { node_id, patch } => {
+                let node = find_node(state, node_id)?;
+                Ok(Command::SetNodeProps { node_id: node_id.clone(), patch: patch.inverse_of(node) })
+            }
+            Command::ReplaceNodesAsset { entries } => {
+                let mut inverse = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let node = find_node(state, &entry.node_id)?;
+                    inverse.push(NodeAssetEntry {
+                        node_id: entry.node_id.clone(),
+                        mesh: node.mesh.clone(),
+                        source: node.source.clone(),
+                        name: entry.name.as_ref().map(|_| node.name.clone()),
+                    });
+                }
+                Ok(Command::ReplaceNodesAsset { entries: inverse })
+            }
+            Command::PatchAssets { put, remove } => {
+                let mut restore_put = Vec::new();
+                let mut restore_remove = Vec::new();
+                for entry in put {
+                    match state.assets.get(&entry.asset_id) {
+                        Some(previous) => restore_put.push(previous.clone()),
+                        None => restore_remove.push(entry.asset_id.clone()),
+                    }
+                }
+                for id in remove {
+                    if let Some(previous) = state.assets.get(id) {
+                        restore_put.push(previous.clone());
+                    }
+                }
+                Ok(Command::PatchAssets { put: restore_put, remove: restore_remove })
+            }
             Command::Batch { commands } => {
                 // Inverse of a batch is the reversed batch of inverses. The
                 // intermediate states are replayed on a scratch copy so each
@@ -1684,8 +1968,9 @@ impl Command {
                 mesh,
                 material_id,
                 index,
+                attrs,
             } => {
-                let slot = NodeSlot {
+                let mut slot = NodeSlot {
                     node_id: node_id.clone(),
                     name: name.clone(),
                     transform: *transform,
@@ -1694,7 +1979,16 @@ impl Command {
                     visible: true,
                     parent_id: parent_id.clone(),
                     kind: *node_kind,
+                    locked: false,
+                    tags: Vec::new(),
+                    folder: None,
+                    layer: None,
+                    source: None,
+                    overrides: Default::default(),
                 };
+                if let Some(attrs) = attrs {
+                    attrs.apply_to(&mut slot);
+                }
                 let position = (*index as usize).min(state.scene.nodes.len());
                 state.scene.nodes.insert(position, slot);
                 Ok(())
@@ -1781,6 +2075,69 @@ impl Command {
             }
             Command::RenameProject { name } => {
                 state.name = name.clone();
+                Ok(())
+            }
+            Command::SetNodesTransform { entries } => {
+                for entry in entries {
+                    let node = find_node_mut(state, &entry.node_id)?;
+                    if let Some(translation) = entry.translation {
+                        node.transform.translation = glam::Vec3::from_array(translation);
+                    }
+                    if let Some(rotation) = entry.rotation {
+                        node.transform.rotation = glam::Quat::from_array(rotation).normalize();
+                    }
+                    if let Some(scale) = entry.scale {
+                        node.transform.scale = glam::Vec3::from_array(scale);
+                    }
+                }
+                Ok(())
+            }
+            Command::DuplicateNodes { copies, offset } => {
+                let map: BTreeMap<NodeId, NodeId> = copies.iter().map(|c| (c.source.clone(), c.copy.clone())).collect();
+                let mut fresh = Vec::with_capacity(copies.len());
+                for copy in copies {
+                    let source = find_node(state, &copy.source)?.clone();
+                    let mut slot = source.clone();
+                    slot.node_id = copy.copy.clone();
+                    slot.name = copy.name.clone();
+                    match source.parent_id.as_ref().and_then(|p| map.get(p)) {
+                        // pai também copiado: a cópia vai sob a cópia do pai
+                        Some(new_parent) => slot.parent_id = Some(new_parent.clone()),
+                        // pai fora do conjunto: mantém o pai original; só aqui entra o offset
+                        None => {
+                            if let Some(offset) = offset {
+                                slot.transform.translation += glam::Vec3::from_array(*offset);
+                            }
+                        }
+                    }
+                    fresh.push(slot);
+                }
+                state.scene.nodes.extend(fresh);
+                Ok(())
+            }
+            Command::SetNodeProps { node_id, patch } => {
+                let node = find_node_mut(state, node_id)?;
+                patch.apply_to(node);
+                Ok(())
+            }
+            Command::ReplaceNodesAsset { entries } => {
+                for entry in entries {
+                    let node = find_node_mut(state, &entry.node_id)?;
+                    node.mesh = entry.mesh.clone();
+                    node.source = entry.source.clone();
+                    if let Some(name) = &entry.name {
+                        node.name = name.trim().to_string();
+                    }
+                }
+                Ok(())
+            }
+            Command::PatchAssets { put, remove } => {
+                for id in remove {
+                    state.assets.remove(id);
+                }
+                for entry in put {
+                    state.assets.insert(entry.asset_id.clone(), entry.clone());
+                }
                 Ok(())
             }
             Command::Batch { commands } => {
@@ -2125,6 +2482,29 @@ impl CommandHistory {
     /// Description of the next redoable command.
     pub fn last_redo_description(&self) -> Option<&str> {
         self.redo.last().map(|entry| entry.description.as_str())
+    }
+
+    /// Descrições dos passos desfazíveis, do mais antigo ao mais recente (painel de histórico).
+    pub fn undo_descriptions(&self) -> Vec<&str> {
+        self.undo.iter().map(|entry| entry.description.as_str()).collect()
+    }
+
+    /// Descrições dos passos refazíveis, do próximo a refazer ao mais distante.
+    pub fn redo_descriptions(&self) -> Vec<&str> {
+        self.redo.iter().rev().map(|entry| entry.description.as_str()).collect()
+    }
+
+    /// Profundidade máxima do desfazer.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Ajusta a profundidade máxima (descarta os passos mais antigos se necessário).
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.max(1);
+        while self.undo.len() > self.limit {
+            self.undo.remove(0);
+        }
     }
 
     /// Serializes the session log (deterministic; used by tests + autosave).
@@ -2572,6 +2952,7 @@ mod tests {
                 mesh: None,
                 material_id: None,
                 index: 1,
+                attrs: None,
             },
             Command::SetNodeTransform {
                 node_id: NodeId::canonical_character(),
@@ -2655,6 +3036,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 1,
+                    attrs: None,
                 },
             )
             .expect("add node");
@@ -2670,6 +3052,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 2,
+                    attrs: None,
                 },
             )
             .expect("add child node");
@@ -2753,6 +3136,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 3,
+                    attrs: None,
                 },
             )
             .expect("add second root");
@@ -2977,6 +3361,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 0,
+                    attrs: None,
                 },
             ),
             Err(CommandError::InvalidValue { .. })
@@ -2993,6 +3378,7 @@ mod tests {
                 mesh: None,
                 material_id: None,
                 index: 1,
+                attrs: None,
             },
         );
         assert!(matches!(orphan, Err(CommandError::UnknownTarget { .. })));

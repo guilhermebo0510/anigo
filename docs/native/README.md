@@ -12,6 +12,7 @@
 | [BIBLIOTECA_BACKEND.md](BIBLIOTECA_BACKEND.md) / [BIBLIOTECA_BENCH.md](BIBLIOTECA_BENCH.md) | `anigo-assets`: SQLite/FTS5, locais, import GLB/glTF/OBJ/FBX/VRM, material toon canônico, miniaturas, benchmark de 50 mil ativos |
 | [BIBLIOTECA_UI.md](BIBLIOTECA_UI.md) | Workspace Biblioteca: grade virtualizada, miniaturas 3D cel, gestão, import, cenários de captura |
 | [FISICA.md](FISICA.md) | `anigo-physics`: spring bone VRM-exato, XPBD (cabelo, roupa por proxy, acessórios), `PhysicsWorld`, presets, números medidos, o que não foi validado visualmente e o que o renderer precisaria (storage buffer de N ossos) |
+| [CENARIO_UI.md](CENARIO_UI.md) | Workspace Cenário (editor de níveis estilo UE5): viewport/fly, Content Drawer da Biblioteca, seleção BVH, gizmo e snap, Outliner/Details/Histórico, smoke xdotool |
 | [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 

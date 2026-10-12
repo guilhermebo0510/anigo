@@ -38,11 +38,15 @@ pub struct Built {
 
 /// Cria (do zero) a biblioteca temporária do cenário.
 pub fn build(name: &str) -> Result<Built, String> {
+    build_n(name, synthetic_count())
+}
+
+/// Como [`build`], com `n` ativos sintéticos (os cenários do Cenário usam poucos, para os reais aparecerem).
+pub fn build_n(name: &str, n: usize) -> Result<Built, String> {
     let dir = std::env::var_os("ANIGO_SCENARIO_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join(format!("anigo-lib-scenario-{}-{}", std::process::id(), name.trim_start_matches("biblioteca-"))));
     let _ = std::fs::remove_dir_all(&dir);
-    let n = synthetic_count();
     let t = Instant::now();
     let lib = synth::build_synthetic(&dir.join("lib"), n, 42).map_err(|e| e.to_string())?;
     let assets = synth::populate_scenario(&lib, &dir.join("work")).map_err(|e| e.to_string())?;

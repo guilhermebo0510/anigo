@@ -88,7 +88,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       `command kinds drifted: ${diff(rustKinds, [...COMMAND_KINDS])}`
     );
     assert.deepEqual([...wireMembers.keys()], rustKinds, "the union must cover every kind");
-    assert.equal(COMMAND_KINDS.length, 23);
+    assert.equal(COMMAND_KINDS.length, 28);
   });
 
   it("the snake_case array literal matches the exported tuple", () => {
@@ -124,6 +124,8 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       "AddNode",
       "SetNodeParent",
       "SetNodeTransform",
+      "DuplicateNodes",
+      "PatchAssets",
     ];
     for (const variant of variants) {
       const kind = pascalToSnake(variant);
