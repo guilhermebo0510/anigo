@@ -96,8 +96,8 @@ impl Default for HairSection {
     fn default() -> Self {
         Self {
             kind: SectionKind::Flat,
-            width: 0.08,
-            thickness: 0.02,
+            width: 0.22,
+            thickness: 0.05,
             twist: 0.0,
             curl: 1.2,
         }
@@ -123,14 +123,14 @@ impl Default for HairClump {
     fn default() -> Self {
         Self {
             count: 5,
-            spread: 0.025,
-            tip_spread: 0.006,
+            spread: 0.07,
+            tip_spread: 0.015,
             noise: 0.15,
             twist: 0.0,
             points: 10,
             length_variation: 0.12,
             seed: 1,
-            strand_width: 0.025,
+            strand_width: 0.06,
         }
     }
 }

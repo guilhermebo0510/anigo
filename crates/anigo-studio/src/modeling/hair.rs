@@ -69,6 +69,8 @@ pub enum ScriptStep {
     Comb(Vec<Vec3>),
     /// Seleciona a última mecha criada e o ponto indicado.
     SelectLast(Option<usize>),
+    /// Volta ao Modo Objeto (captura limpa, sem guias).
+    LeaveHairMode,
 }
 
 struct PointDrag {
@@ -656,6 +658,10 @@ impl HairState {
                         self.end_comb();
                     }
                 }
+                ScriptStep::LeaveHairMode => {
+                    session.set_mode(Mode::Object);
+                    session.doc.active = None; // captura limpa: sem realce de objeto ativo
+                }
                 ScriptStep::SelectLast(point) => {
                     if let Some(g) = self.active_group(session).and_then(|g| session.doc.hair.group(g)) {
                         if let Some(s) = g.strands.last() {
@@ -1010,6 +1016,31 @@ mod tests {
             other => panic!("esperava segmento, veio {other:?}"),
         }
         assert_eq!(hs.pick(&s, &v, Vec2::new(5.0, 5.0)), None);
+    }
+
+    #[test]
+    fn hair_group_object_exports_to_glb_and_back_with_custom_normals() {
+        let mut s = session_with_head();
+        let mut hs = HairState::new();
+        hs.template.section.kind = anigo_modeling::hair::SectionKind::Tube;
+        hs.run_script(&mut s, &view(), &[ScriptStep::NewGroup("Franja"), ScriptStep::Draw(meridian(0.3, 1.0, 0.1))]);
+        let g = &s.doc.hair.groups[0];
+        let obj = s.doc.objects.iter().find(|o| Some(o.id) == g.object_id).unwrap().clone();
+        let dir = std::env::temp_dir().join(format!("anigo_hair_glb_{}", std::process::id()));
+        let path = crate::library::export_object_glb(&obj, &dir).unwrap();
+        assert!(path.exists() && std::fs::metadata(&path).unwrap().len() > 200);
+        let back = crate::library::import_glb_mesh(&path).unwrap();
+        assert!(back.face_count() > 0);
+        back.validate().unwrap();
+        // as normais viesadas para fora da cabeça sobrevivem à viagem: apontam para longe do centro
+        let core = obj.to_core().unwrap();
+        let center = s.doc.hair.scalp_center;
+        let outward = core.vertices.iter().filter(|v| {
+            let p = glam::Vec3::from_array(v.position) - center;
+            glam::Vec3::from_array(v.normal).dot(p.normalize_or_zero()) > 0.0
+        }).count();
+        assert!(outward * 10 > core.vertices.len() * 8, "a maioria das normais aponta para fora da cabeça");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

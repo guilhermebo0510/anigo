@@ -112,12 +112,12 @@ pub struct StrokeParams {
 impl Default for StrokeParams {
     fn default() -> Self {
         Self {
-            resample_step: 0.02,
+            resample_step: 0.04,
             smooth_iters: 3,
-            rdp_epsilon: 0.004,
-            lift_root: 0.004,
+            rdp_epsilon: 0.012,
+            lift_root: 0.012,
             lift_tip: 0.05,
-            max_points: 24,
+            max_points: 12,
             min_length: 0.03,
         }
     }

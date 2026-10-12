@@ -23,6 +23,9 @@ shot biblioteca biblioteca biblioteca-grid
 shot biblioteca_detalhes biblioteca biblioteca-detalhes
 shot modelagem_escultura modelagem sculpt-draw
 shot modelagem_escultura_mascara modelagem sculpt-mask
+shot modelagem_cabelo_desenho modelagem hair-draw
+shot modelagem_cabelo_grupos modelagem hair-groups
+shot modelagem_cabelo_cel modelagem hair-cel
 shot modelagem_uv modelagem uv-editor
 shot modelagem_normais_overlay modelagem normals-overlay
 shot modelagem_normais_transfer modelagem normals-transfer-clean

@@ -12,6 +12,7 @@ pub const SCENARIOS: &[&str] = &[
     "uv-editor", "uv-sphere", "uv-click",
     "normals-overlay", "normals-transfer", "normals-transfer-clean", "normals-paint",
     "sculpt-ready", "sculpt-draw", "sculpt-mask",
+    "hair-ready", "hair-draw", "hair-groups", "hair-cel",
     "character-default", "character-sliders", "character-female", "character-front", "character-face",
 ];
 
@@ -29,6 +30,10 @@ impl StudioApp {
         }
         if name.starts_with("sculpt-") {
             self.run_sculpt_scenario(&name);
+            return;
+        }
+        if name.starts_with("hair-") {
+            self.run_hair_scenario(&name);
             return;
         }
         let m = &mut self.modeling;
@@ -305,6 +310,91 @@ impl StudioApp {
             }
             other => {
                 eprintln!("cenário desconhecido: {other} (disponíveis: {SCENARIOS:?})");
+            }
+        }
+    }
+
+    /// Cenários do Modo Cabelo: cabeça de teste (esfera) + traços roteirizados que rodam no primeiro
+    /// quadro do viewport pelo mesmo caminho do mouse (`HairState::run_script`).
+    fn run_hair_scenario(&mut self, name: &str) {
+        use crate::modeling::hair::{HairTool, ScriptStep};
+        let m = &mut self.modeling;
+        m.delete_active_object();
+        m.add_primitive(PrimitiveKind::UvSphere, Vec3::new(0.0, 1.2, 0.0));
+        if let Some(o) = m.active_object_mut() {
+            o.name = "Cabeça de teste".into();
+            o.mesh = anigo_modeling::primitives::uv_sphere(1.0, 32, 64);
+            o.mesh.name = o.name.clone();
+            // pele (preview Solid/Cel) para o cabelo contrastar
+            o.material = Some(crate::modeling::ObjectMaterial {
+                name: "Pele".into(),
+                base_color: [0.80, 0.56, 0.46],
+                shade_color: [0.52, 0.32, 0.32],
+                highlight_color: [1.0, 0.95, 0.9],
+            });
+        }
+        m.clear_history();
+        m.revision += 1;
+        m.set_mode(Mode::Hair);
+        self.camera.target = Vec3::new(0.0, 1.2, 0.0);
+        self.camera.distance = 5.2;
+        self.camera.yaw = 0.25;
+        self.camera.pitch = 0.18;
+        let tool = if name == "hair-groups" { HairTool::Edit } else { HairTool::Draw };
+        self.tool_idx.insert(self.ws, tool.index());
+        self.hair.tool = tool;
+        // ponto na esfera de raio 1 (espaço local) em (longitude, latitude); `out`/`drop` levam o ponto
+        // para fora da silhueta (o traço continua num plano paralelo à tela)
+        let sph = |lon: f32, lat: f32| Vec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos());
+        let lock = |lon: f32, lat0: f32, lat1: f32, out: f32, drop: f32| -> Vec<Vec3> {
+            let mut pts: Vec<Vec3> = (0..=10).map(|k| sph(lon, lat0 + (lat1 - lat0) * k as f32 / 10.0)).collect();
+            let end = sph(lon, lat1);
+            let dir = Vec3::new(end.x, 0.0, end.z).normalize_or_zero();
+            for k in 1..=5 {
+                let t = k as f32 / 5.0;
+                pts.push(end + dir * (out * t) - Vec3::Y * (drop * t));
+            }
+            pts
+        };
+        let mut steps: Vec<ScriptStep> = Vec::new();
+        match name {
+            // sem traços: o smoke de entrada real (xdotool) desenha a mecha
+            "hair-ready" => {}
+            "hair-draw" => {
+                steps.push(ScriptStep::NewGroup("Franja"));
+                steps.push(ScriptStep::Symmetry(true));
+                for (lon, lat1, drop) in [(0.18, 0.55, 0.3), (0.40, 0.45, 0.35), (0.62, 0.3, 0.5), (0.85, 0.1, 0.7)] {
+                    steps.push(ScriptStep::Draw(lock(lon, 1.35, lat1, 0.10, drop)));
+                }
+                steps.push(ScriptStep::SelectLast(Some(2)));
+            }
+            _ => {
+                steps.push(ScriptStep::NewGroup("Franja"));
+                steps.push(ScriptStep::Symmetry(true));
+                for (lon, lat1, drop) in [(0.15, 0.6, 0.25), (0.38, 0.5, 0.3), (0.6, 0.4, 0.4)] {
+                    steps.push(ScriptStep::Draw(lock(lon, 1.35, lat1, 0.06, drop)));
+                }
+                steps.push(ScriptStep::NewGroup("Lateral"));
+                steps.push(ScriptStep::Symmetry(true));
+                for (lon, lat0, drop) in [(1.15, 1.0, 1.0), (1.4, 0.8, 1.3), (1.65, 0.7, 1.2)] {
+                    steps.push(ScriptStep::Draw(lock(lon, lat0, -0.1, 0.22, drop)));
+                }
+                steps.push(ScriptStep::NewGroup("Topete"));
+                for (lon, drop) in [(-0.06, 0.5), (0.1, 0.55)] {
+                    steps.push(ScriptStep::Draw(lock(lon, 1.5, 0.95, 0.12, drop)));
+                }
+                steps.push(ScriptStep::SelectLast(Some(1)));
+            }
+        }
+        if name == "hair-cel" {
+            steps.push(ScriptStep::LeaveHairMode);
+        }
+        self.hair.script = Some(steps);
+        if name == "hair-cel" {
+            self.view_shading = crate::app::ViewShading::Cel;
+            self.camera.yaw = 0.35;
+            if let Some(c) = self.gpu.as_mut().and_then(|g| g.cel.as_mut()) {
+                c.light.direction = glam::Vec3::new(-0.45, 0.6, 0.65).normalize().to_array();
             }
         }
     }

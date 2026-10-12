@@ -148,6 +148,36 @@ mod tests {
     }
 
     #[test]
+    fn hair_survives_the_session_and_a_corrupted_hairstyle_is_dropped_without_losing_the_scene() {
+        use crate::modeling::hair::{HairState, ScriptStep};
+        use crate::viewport::OrbitCamera;
+        let mut m = ModelingSession::new();
+        m.add_primitive(PrimitiveKind::UvSphere, glam::Vec3::new(0.0, 1.0, 0.0));
+        m.set_mode(crate::modeling::Mode::Hair);
+        let mut cam = OrbitCamera::default();
+        cam.target = glam::Vec3::new(0.0, 1.0, 0.0);
+        cam.distance = 4.0;
+        let view = crate::modeling::sculpt::ViewInfo { camera: cam, size: glam::Vec2::new(1000.0, 800.0) };
+        let pts: Vec<glam::Vec3> = (0..=12).map(|k| {
+            let lat = 1.0 - 0.9 * k as f32 / 12.0;
+            glam::Vec3::new(lat.cos() * 0.3f32.sin(), lat.sin(), lat.cos() * 0.3f32.cos())
+        }).collect();
+        HairState::new().run_script(&mut m, &view, &[ScriptStep::NewGroup("A"), ScriptStep::Draw(pts)]);
+        assert_eq!(m.doc.hair.strand_count(), 1);
+        let mut st = sample();
+        st.document = m.doc.clone();
+        let back = SessionState::from_json(&st.to_json().unwrap()).unwrap();
+        assert_eq!(back.document.hair.strand_count(), 1);
+        assert_eq!(back.document.objects.len(), m.doc.objects.len());
+        // penteado corrompido (guia com NaN vira null no JSON): descarta só o cabelo
+        let mut v = serde_json::to_value(&st).unwrap();
+        v["document"]["hair"]["groups"][0]["strands"][0]["resolution"] = serde_json::json!(0);
+        let loaded = SessionState::from_json(&v.to_string()).unwrap();
+        assert!(loaded.document.hair.is_empty(), "cabelo inválido descartado");
+        assert_eq!(loaded.document.objects.len(), m.doc.objects.len(), "a cena fica");
+    }
+
+    #[test]
     fn file_roundtrip_is_atomic_and_creates_dirs() {
         let dir = std::env::temp_dir().join(format!("anigo_sess_{}/nested", std::process::id()));
         let path = dir.join("session.json");

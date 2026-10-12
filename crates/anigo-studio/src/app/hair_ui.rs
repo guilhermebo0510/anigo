@@ -36,7 +36,7 @@ fn rgb(c: [f32; 3]) -> Color32 {
 
 /// Cor da mecha no overlay: a do material, clareada para contrastar com o fundo escuro.
 fn overlay_color(c: [f32; 3]) -> Color32 {
-    let l = |v: f32| (0.35 + 0.65 * v).clamp(0.0, 1.0);
+    let l = |v: f32| (0.60 + 0.40 * v).clamp(0.0, 1.0);
     rgb([l(c[0]), l(c[1]), l(c[2])])
 }
 
@@ -514,9 +514,17 @@ impl StudioApp {
             ui.separator();
             ui.label(RichText::new(tr("hairtool.material")).strong());
             ui.horizontal(|ui| {
-                ui.color_edit_button_rgb(&mut mat.base_color).on_hover_text(tr("hairtool.color_base"));
-                ui.color_edit_button_rgb(&mut mat.shade_color).on_hover_text(tr("hairtool.color_shade"));
-                ui.color_edit_button_rgb(&mut mat.highlight_color).on_hover_text(tr("hairtool.color_highlight"));
+                for (c, tip) in [
+                    (&mut mat.base_color, "hairtool.color_base"),
+                    (&mut mat.shade_color, "hairtool.color_shade"),
+                    (&mut mat.highlight_color, "hairtool.color_highlight"),
+                ] {
+                    // o egui edita sRGB em u8; o material guarda 0..1 (mesma interpretação do chip do grupo)
+                    let mut b = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
+                    if ui.color_edit_button_srgb(&mut b).on_hover_text(tr(tip)).changed() {
+                        *c = [b[0] as f32 / 255.0, b[1] as f32 / 255.0, b[2] as f32 / 255.0];
+                    }
+                }
             });
             ui.add(egui::Slider::new(&mut mat.root_ao, 0.0..=1.0).text(tr("hairtool.root_ao")));
             ui.add(egui::Slider::new(&mut mat.normal_bias, 0.0..=1.0).text(tr("hairtool.normal_bias")));
@@ -756,7 +764,7 @@ impl StudioApp {
                 let line: Vec<Pos2> = samples.iter().filter_map(|c| to_screen(c.pos)).collect();
                 if line.len() > 1 {
                     painter.add(egui::Shape::line(line.clone(), Stroke::new(if is_sel { 4.0 } else { 3.0 }, Color32::from_black_alpha(150))));
-                    painter.add(egui::Shape::line(line, Stroke::new(if is_sel { 2.4 } else { 1.6 }, if is_sel { theme::SELECT } else { base })));
+                    painter.add(egui::Shape::line(line, Stroke::new(if is_sel { 2.4 } else { 1.5 }, if is_sel { theme::SELECT } else { base })));
                 }
                 if let Some(root) = to_screen(s.root()) {
                     painter.circle_filled(root, 3.2, Color32::from_rgb(0x6c, 0xc0, 0x4a));
