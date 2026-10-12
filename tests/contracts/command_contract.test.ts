@@ -19,6 +19,7 @@ import {
   type CommandWire,
   type MaterialPatchWire,
 } from "../../src/contracts/commands.v1.ts";
+import { scopeOfCommand } from "../../src/services/command_scope.ts";
 import {
   bracedBody,
   defaultedFields,
@@ -88,7 +89,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       `command kinds drifted: ${diff(rustKinds, [...COMMAND_KINDS])}`
     );
     assert.deepEqual([...wireMembers.keys()], rustKinds, "the union must cover every kind");
-    assert.equal(COMMAND_KINDS.length, 28);
+    assert.equal(COMMAND_KINDS.length, 29);
   });
 
   it("the snake_case array literal matches the exported tuple", () => {
@@ -126,6 +127,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       "SetNodeTransform",
       "DuplicateNodes",
       "PatchAssets",
+      "SetPose",
     ];
     for (const variant of variants) {
       const kind = pascalToSnake(variant);
@@ -174,6 +176,31 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       enumVariants(RUST_COMMAND, "MeshPreset").map(pascalToSnake)
     );
     assert.deepEqual(tsStringUnion(TS_COMMAND, "TonemapOperatorWire"), ["none", "reinhard", "neutral"]);
+  });
+
+  it("pose commands (Posing) mirror the Rust pose module", () => {
+    const rustPose = readRepoFile("crates/anigo-core/src/pose.rs");
+    assert.deepEqual(
+      tsStringUnion(TS_COMMAND, "PoseOpWire"),
+      enumVariants(rustPose, "PoseOp").map(pascalToSnake),
+      "PoseOp drifted"
+    );
+    assert.deepEqual(
+      sorted(tsInterfaceFields(TS_COMMAND, "PoseBoneEntryWire")),
+      sorted(fieldsOf(rustPose, "PoseBoneEntry"))
+    );
+    assert.deepEqual(sorted(tsInterfaceFields(TS_COMMAND, "HandsPoseWire")), sorted(fieldsOf(rustPose, "HandsPose")));
+    // a tabela de ossos do TS é a do Rust, na mesma ordem
+    const rustBones = [...(/pub const BONE_NAMES: \[&str; BONE_COUNT\] = \[([\s\S]*?)\];/.exec(rustPose)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.equal(rustBones.length, 24);
+    assert.deepEqual(tsStringArrayConst(TS_COMMAND, "POSE_BONE_NAMES"), rustBones);
+    const command: CommandWire = {
+      kind: "set_pose",
+      bones: [{ bone: "LeftElbow", rotation: [-0.5, 0, 0, 0.8660254] }],
+      op: "edit",
+    };
+    assert.equal(isCommandWire(command), true);
+    assert.equal(scopeOfCommand(command), "deformation");
   });
 });
 

@@ -27,6 +27,7 @@ use crate::level::{NodeAssetEntry, NodeAttrs, NodeCopy, NodePatch, NodeTransform
 use crate::math::{Camera, Transform};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
+use crate::pose::{HandsPose, PoseBoneEntry, PoseOp, PoseState};
 use crate::project::{
     AssetEntry, MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
     URI_PRESET_CUBE, URI_PRESET_SPHERE,
@@ -618,6 +619,22 @@ pub enum Command {
         #[serde(default)]
         remove: Vec<AssetId>,
     },
+    /// Workspace Posing: patcha a POSE do personagem (delta de rotação local por osso, translação do
+    /// root/quadril e curvatura dos dedos). Cada entrada traz a rotação FINAL do osso (identidade = repouso),
+    /// então o inverso é exato. Mirror/Reset/Apply/Paste/Preset/IK/Olhar são planejadores puros que
+    /// produzem este comando (`pose::plan_pose_change`); `op` só rotula o histórico.
+    SetPose {
+        #[serde(default)]
+        bones: Vec<PoseBoneEntry>,
+        #[serde(default)]
+        root_translation: Option<[f32; 3]>,
+        #[serde(default)]
+        hips_translation: Option<[f32; 3]>,
+        #[serde(default)]
+        hands: Option<HandsPose>,
+        #[serde(default)]
+        op: PoseOp,
+    },
     /// Applies several commands atomically (single undo entry).
     Batch { commands: Vec<Command> },
 }
@@ -712,6 +729,10 @@ impl Command {
             }
             Command::ReplaceNodesAsset { entries } => format!("Replace asset of {} nodes", entries.len()),
             Command::PatchAssets { put, remove } => format!("Assets +{} -{}", put.len(), remove.len()),
+            Command::SetPose { op, bones, .. } => match (op, bones.as_slice()) {
+                (PoseOp::Edit, [one]) => format!("Pose {}", one.bone),
+                _ => format!("Pose {}", op.label()),
+            },
             Command::Batch { commands } => {
                 format!("Batch of {} commands", commands.len())
             }
@@ -724,7 +745,8 @@ impl Command {
             Command::SetMorphValue { .. }
             | Command::ResetMorphs
             | Command::SetSomatotype { .. }
-            | Command::SetGenderDimorphism { .. } => ChangeScope::Deformation,
+            | Command::SetGenderDimorphism { .. }
+            | Command::SetPose { .. } => ChangeScope::Deformation,
             Command::SetBaseGender { .. }
             | Command::SetProportions { .. }
             | Command::SetNodeMesh { .. }
@@ -805,6 +827,11 @@ impl Command {
                 vec!["rnd_main".to_string()]
             }
             Command::RenameProject { .. } => vec!["prj_*".to_string()],
+            Command::SetPose { bones, .. } => {
+                let mut ids = vec!["chr_canonical".to_string()];
+                ids.extend(bones.iter().map(|b| b.bone.clone()));
+                ids
+            }
             Command::Batch { commands } => {
                 commands.iter().flat_map(Command::affected).collect()
             }
@@ -1425,6 +1452,52 @@ impl Command {
                 }
                 Ok(())
             }
+            Command::SetPose { bones, root_translation, hips_translation, hands, .. } => {
+                if bones.is_empty() && root_translation.is_none() && hips_translation.is_none() && hands.is_none() {
+                    return Err(CommandError::NoOp("empty pose patch".to_string()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                let mut next = state.character.pose.clone();
+                for entry in bones {
+                    let Some(index) = crate::pose::bone_index(&entry.bone) else {
+                        return Err(CommandError::UnknownTarget { kind: "bone", target: entry.bone.clone() });
+                    };
+                    if !seen.insert(index) {
+                        return Err(CommandError::InvalidValue {
+                            field: "bones".to_string(),
+                            detail: format!("bone '{}' listed twice", entry.bone),
+                        });
+                    }
+                    validate_quaternion(entry.rotation)?;
+                }
+                for (field, value) in [("root_translation", root_translation), ("hips_translation", hips_translation)] {
+                    if let Some(v) = value {
+                        validate_vector(field, *v)?;
+                        if v.iter().any(|c| c.abs() > crate::pose::MAX_TRANSLATION) {
+                            return Err(CommandError::InvalidValue {
+                                field: field.to_string(),
+                                detail: format!("must be within ±{} m", crate::pose::MAX_TRANSLATION),
+                            });
+                        }
+                    }
+                }
+                if let Some(h) = hands {
+                    for value in h.left.iter().chain(h.right.iter()) {
+                        require_finite("hands", *value)?;
+                        if !(0.0..=1.0).contains(value) {
+                            return Err(CommandError::InvalidValue {
+                                field: "hands".to_string(),
+                                detail: format!("finger curl must be within [0, 1], found {value}"),
+                            });
+                        }
+                    }
+                }
+                next.apply_patch(bones, *root_translation, *hips_translation, *hands);
+                if next == state.character.pose {
+                    return Err(CommandError::NoOp("pose already matches".to_string()));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1761,6 +1834,23 @@ impl Command {
                 }
                 inverses.reverse();
                 Ok(Command::Batch { commands: inverses })
+            }
+            Command::SetPose { bones, root_translation, hips_translation, hands, op } => {
+                let pose = &state.character.pose;
+                let previous = bones
+                    .iter()
+                    .map(|entry| {
+                        let rotation = crate::pose::bone_index(&entry.bone).map(|i| pose.rotation(i).to_array()).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                        PoseBoneEntry { bone: entry.bone.clone(), rotation }
+                    })
+                    .collect();
+                Ok(Command::SetPose {
+                    bones: previous,
+                    root_translation: root_translation.map(|_| pose.root_translation),
+                    hips_translation: hips_translation.map(|_| pose.hips_translation),
+                    hands: hands.map(|_| pose.hands),
+                    op: *op,
+                })
             }
         }
     }
@@ -2138,6 +2228,10 @@ impl Command {
                 for entry in put {
                     state.assets.insert(entry.asset_id.clone(), entry.clone());
                 }
+                Ok(())
+            }
+            Command::SetPose { bones, root_translation, hips_translation, hands, .. } => {
+                state.character.pose.apply_patch(bones, *root_translation, *hips_translation, *hands);
                 Ok(())
             }
             Command::Batch { commands } => {

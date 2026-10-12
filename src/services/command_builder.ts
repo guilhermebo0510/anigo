@@ -19,8 +19,12 @@
 import {
   COMMAND_KINDS,
   NODE_KINDS,
+  POSE_BONE_NAMES,
   type CameraProjectionPatchWire,
   type CommandWire,
+  type HandsPoseWire,
+  type PoseBoneEntryWire,
+  type PoseOpWire,
   type MaterialPatchWire,
   type MeshPresetWire,
   type NodeKindWire,
@@ -245,6 +249,15 @@ export type CommandIntent =
       kind: "patch_assets";
       put: Array<{ uri: string; byte_len?: number | null; content_hash?: string | null }>;
       remove_uris?: string[];
+    }
+  /** Workspace Posing: rotações finais por osso (delta sobre o repouso), translações do root/quadril e dedos. */
+  | {
+      kind: "pose";
+      bones?: PoseBoneEntryWire[];
+      root_translation?: [number, number, number];
+      hips_translation?: [number, number, number];
+      hands?: HandsPoseWire;
+      op?: PoseOpWire;
     }
   | { kind: "batch"; intents: CommandIntent[] };
 
@@ -898,6 +911,50 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
       }
       const command: CommandWire = { kind: "patch_assets", put };
       if (intent.remove_uris !== undefined) command.remove = intent.remove_uris.map(assetIdForUri);
+      return { ok: true, command };
+    }
+
+    case "pose": {
+      const bones = intent.bones ?? [];
+      if (bones.length === 0 && !intent.root_translation && !intent.hips_translation && !intent.hands) {
+        return fail("no_op", "pose sem mudanças");
+      }
+      const seen = new Set<string>();
+      for (const entry of bones) {
+        if (!(POSE_BONE_NAMES as readonly string[]).includes(entry.bone)) {
+          return fail("unknown_target", `osso desconhecido '${entry.bone}'`, "bones");
+        }
+        if (seen.has(entry.bone)) return fail("invalid_value", `osso '${entry.bone}' repetido`, "bones");
+        seen.add(entry.bone);
+        for (const c of entry.rotation) {
+          const bad = finite(c, "rotation");
+          if (bad) return bad;
+        }
+        if (entry.rotation.reduce((a, c) => a + c * c, 0) < 1e-12) {
+          return fail("invalid_value", "quaternion nulo", "rotation");
+        }
+      }
+      for (const [field, v] of [["root_translation", intent.root_translation], ["hips_translation", intent.hips_translation]] as const) {
+        if (!v) continue;
+        for (const c of v) {
+          const bad = finite(c, field);
+          if (bad) return bad;
+          if (Math.abs(c) > 50) return fail("invalid_value", `'${field}' fora de ±50 m`, field);
+        }
+      }
+      for (const curls of [intent.hands?.left, intent.hands?.right]) {
+        for (const c of curls ?? []) {
+          const bad = finite(c, "hands");
+          if (bad) return bad;
+          if (c < 0 || c > 1) return fail("invalid_value", "curvatura de dedo fora de [0, 1]", "hands");
+        }
+      }
+      const command: CommandWire = { kind: "set_pose" };
+      if (bones.length > 0) command.bones = bones;
+      if (intent.root_translation) command.root_translation = intent.root_translation;
+      if (intent.hips_translation) command.hips_translation = intent.hips_translation;
+      if (intent.hands) command.hands = intent.hands;
+      if (intent.op) command.op = intent.op;
       return { ok: true, command };
     }
 
