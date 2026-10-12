@@ -1,16 +1,31 @@
-//! Ferramenta de desenvolvimento: rasteriza a gaiola/Skin em CPU (flat shading + wireframe) para
-//! inspeção rápida. Uso: `cargo run -p anigo-charbase --example dev_view -- <saida.png> [f|m] [front|side|back|head|hand|foot|top] [wire] [cage]`
+//! Ferramenta de desenvolvimento: rasteriza o Skin em CPU (flat shading + wireframe) para
+//! inspeção rápida. Uso:
+//! `cargo run -p anigo-charbase --example dev_view -- <prefixo|arquivo.png> [f|m] <vistas,separadas,por,virgula> [wire] [skel] [wt=<osso>] [zone=<n>] [age=..] [weight=..] [muscle=..] [height=..] [gender=..]`
 
-use anigo_charbase::cage::build_cage;
+use anigo_charbase::generate_with;
 use anigo_charbase::params::Params;
 use anigo_charbase::qmesh::QuadMesh;
-use anigo_charbase::subdiv::catmull_clark;
+use anigo_charbase::topology::reference;
 use glam::{Vec2, Vec3};
 
-fn render(mesh: &QuadMesh, w: usize, h: usize, eye_dir: Vec3, center: Vec3, half_h: f32, wire: bool) -> image::RgbaImage {
+struct Opts {
+    wire: bool,
+    skel: bool,
+}
+
+fn render(
+    mesh: &QuadMesh,
+    colors: Option<&[Vec3]>,
+    skel: Option<&[(Vec3, Vec3)]>,
+    w: usize,
+    h: usize,
+    eye_dir: Vec3,
+    center: Vec3,
+    half_h: f32,
+    o: &Opts,
+) -> image::RgbaImage {
     let fwd = (-eye_dir).normalize();
-    let up0 = Vec3::Y;
-    let right = fwd.cross(up0).normalize_or_zero();
+    let right = fwd.cross(Vec3::Y).normalize_or_zero();
     let right = if right.length() < 1e-4 { Vec3::X } else { right };
     let up = right.cross(fwd).normalize();
     let scale = h as f32 / (2.0 * half_h);
@@ -50,14 +65,21 @@ fn render(mesh: &QuadMesh, w: usize, h: usize, eye_dir: Vec3, center: Vec3, half
                         let n = (nrm[ids[0] as usize] * l1 + nrm[ids[1] as usize] * l2 + nrm[ids[2] as usize] * l3).normalize_or_zero();
                         let lam = n.dot(light).max(0.0) * 0.75 + 0.25;
                         let facing = n.dot(-fwd);
-                        let base = if facing < 0.0 { [200.0, 60.0, 60.0] } else { [236.0, 196.0, 176.0] };
+                        let base = if let Some(c) = colors {
+                            let col = c[ids[0] as usize] * l1 + c[ids[1] as usize] * l2 + c[ids[2] as usize] * l3;
+                            [col.x * 255.0, col.y * 255.0, col.z * 255.0]
+                        } else if facing < 0.0 {
+                            [200.0, 60.0, 60.0]
+                        } else {
+                            [236.0, 196.0, 176.0]
+                        };
                         img.put_pixel(x as u32, y as u32, image::Rgba([(base[0] * lam) as u8, (base[1] * lam) as u8, (base[2] * lam) as u8, 255]));
                     }
                 }
             }
         }
     }
-    if wire {
+    if o.wire {
         for f in &mesh.faces {
             for k in 0..4 {
                 let a = proj(mesh.pos[f[k] as usize]);
@@ -77,6 +99,28 @@ fn render(mesh: &QuadMesh, w: usize, h: usize, eye_dir: Vec3, center: Vec3, half
             }
         }
     }
+    if let Some(lines) = skel {
+        for (a, b) in lines {
+            let (pa, pb) = (proj(*a), proj(*b));
+            let steps = ((pb.0 - pa.0).abs().max((pb.1 - pa.1).abs()) as usize).max(1);
+            for s in 0..=steps {
+                let t = s as f32 / steps as f32;
+                let (x, y) = (pa.0 + (pb.0 - pa.0) * t, pa.1 + (pb.1 - pa.1) * t);
+                for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+                    let (xx, yy) = (x + dx, y + dy);
+                    if xx >= 0.0 && yy >= 0.0 && xx < w as f32 && yy < h as f32 {
+                        img.put_pixel(xx as u32, yy as u32, image::Rgba([20, 160, 40, 255]));
+                    }
+                }
+            }
+            for (dx, dy) in [(-2.0, -2.0), (-2.0, 2.0), (2.0, -2.0), (2.0, 2.0), (0.0, 0.0)] {
+                let (xx, yy) = (pa.0 + dx, pa.1 + dy);
+                if xx >= 0.0 && yy >= 0.0 && xx < w as f32 && yy < h as f32 {
+                    img.put_pixel(xx as u32, yy as u32, image::Rgba([230, 20, 20, 255]));
+                }
+            }
+        }
+    }
     img
 }
 
@@ -85,58 +129,101 @@ fn main() {
     let out = args.first().cloned().unwrap_or_else(|| "/tmp/dev_view.png".into());
     let male = args.get(1).map(|s| s == "m").unwrap_or(false);
     let view = args.get(2).cloned().unwrap_or_else(|| "front".into());
-    let wire = args.iter().any(|a| a == "wire");
-    let cage_only = args.iter().any(|a| a == "cage");
+    let o = Opts {
+        wire: args.iter().any(|a| a == "wire"),
+        skel: args.iter().any(|a| a == "skel"),
+    };
     let mut p = Params::default();
     p.gender = if male { 0.0 } else { 1.0 };
+    let mut wt: Option<String> = None;
+    let mut zone: Option<usize> = None;
     for a in &args {
-        if let Some(v) = a.strip_prefix("age=") {
-            p.age = v.parse().unwrap_or(0.0);
+        let kv: Vec<&str> = a.splitn(2, '=').collect();
+        if kv.len() != 2 {
+            continue;
         }
-        if let Some(v) = a.strip_prefix("weight=") {
-            p.weight = v.parse().unwrap_or(0.0);
-        }
-        if let Some(v) = a.strip_prefix("muscle=") {
-            p.muscle = v.parse().unwrap_or(0.0);
-        }
-        if let Some(v) = a.strip_prefix("height=") {
-            p.height = v.parse().unwrap_or(0.0);
+        let v: f32 = kv[1].parse().unwrap_or(0.0);
+        match kv[0] {
+            "age" => p.age = v,
+            "weight" => p.weight = v,
+            "muscle" => p.muscle = v,
+            "height" => p.height = v,
+            "gender" => p.gender = v,
+            "head" => p.head_size = v,
+            "wt" => wt = Some(kv[1].to_string()),
+            "zone" => zone = Some(kv[1].parse().unwrap_or(0)),
+            _ => {}
         }
     }
-    let cage = build_cage(&p);
-    let refined = catmull_clark(&cage.mesh);
-    let mesh = if cage_only { cage.mesh.clone() } else { refined.mesh.clone() };
-    eprintln!(
-        "cage: V={} F={} euler={} boundary_loops={} | refined: V={} F={} euler={}",
-        cage.mesh.pos.len(),
-        cage.mesh.faces.len(),
-        cage.mesh.euler(),
-        cage.mesh.boundary_loops().len(),
-        refined.mesh.pos.len(),
-        refined.mesh.faces.len(),
-        refined.mesh.euler()
-    );
-    let h = cage.dims.h;
-    let hc = cage.dims.y_chin + cage.dims.head_h * 0.5;
-    for view in view.split(',') {
-    let (eye_dir, center, half_h, w, hh) = match view {
-        "side" => (Vec3::X, Vec3::new(0.0, h * 0.5, 0.0), h * 0.55, 700, 1100),
-        "back" => (-Vec3::Z, Vec3::new(0.0, h * 0.5, 0.0), h * 0.55, 1100, 1100),
-        "head" => (Vec3::Z, Vec3::new(0.0, hc, 0.0), cage.dims.head_h * 0.75, 900, 900),
-        "headside" => (Vec3::X, Vec3::new(0.0, hc, 0.0), cage.dims.head_h * 0.75, 900, 900),
-        "head34" => (Vec3::new(0.6, 0.15, 0.8).normalize(), Vec3::new(0.0, hc, 0.0), cage.dims.head_h * 0.75, 900, 900),
-        "hand" => (Vec3::Y, Vec3::new(cage.dims.h * 0.5, 1.2, 0.0), 0.16, 900, 900),
-        "handside" => (Vec3::Z, Vec3::new(cage.dims.h * 0.5, 1.2, 0.0), 0.16, 900, 900),
-        "foot" => (Vec3::X, Vec3::new(0.0, 0.06, 0.05), 0.16, 900, 900),
-        "foot34" => (Vec3::new(0.6, 0.6, 0.7).normalize(), Vec3::new(0.0, 0.05, 0.05), 0.17, 900, 900),
-        "top" => (Vec3::Y, Vec3::new(0.0, 0.0, 0.0), h * 0.55, 1100, 1100),
-        "pelvis" => (Vec3::new(0.0, -0.7, 0.7).normalize(), Vec3::new(0.0, 0.8, 0.0), 0.3, 900, 900),
-        "shoulder" => (Vec3::new(0.5, 0.4, 0.7).normalize(), Vec3::new(0.15, 1.25, 0.0), 0.2, 900, 900),
-        _ => (Vec3::Z, Vec3::new(0.0, h * 0.5, 0.0), h * 0.55, 1100, 1100),
+    let ch = generate_with(&p);
+    let topo = reference();
+    let mesh = QuadMesh {
+        pos: ch.positions.clone(),
+        faces: topo.faces.clone(),
     };
-    let img = render(&mesh, w, hh, eye_dir, center, half_h, wire);
-    let path = if out.ends_with(".png") { out.clone() } else { format!("{out}_{view}.png") };
-    img.save(&path).unwrap();
-    println!("{path}");
+    eprintln!(
+        "skin: V={} F={} euler={} boundary_loops={} bones={}",
+        mesh.pos.len(),
+        mesh.faces.len(),
+        mesh.euler(),
+        mesh.boundary_loops().len(),
+        ch.skeleton.len()
+    );
+    let colors: Option<Vec<Vec3>> = if let Some(bn) = &wt {
+        let sk = &ch.skeleton;
+        let bi = sk.index(bn).expect("osso desconhecido");
+        Some(
+            (0..mesh.pos.len())
+                .map(|v| {
+                    let wv: f32 = topo.weights[v].iter().filter(|(b, _)| *b as usize == bi).map(|(_, w)| *w).sum();
+                    Vec3::new(0.15 + 0.85 * wv, 0.2 + 0.1 * (1.0 - wv), 0.9 * (1.0 - wv) + 0.1)
+                })
+                .collect(),
+        )
+    } else if let Some(z) = zone {
+        Some((0..mesh.pos.len()).map(|v| Vec3::splat(0.2) + Vec3::new(0.8, 0.1, 0.1) * topo.zones[v][z]).collect())
+    } else {
+        None
+    };
+    let skel_lines: Option<Vec<(Vec3, Vec3)>> = if o.skel {
+        let sk = &ch.skeleton;
+        Some(
+            sk.bones
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| b.parent.map(|p| (sk.pos(i), sk.pos(p))))
+                .collect(),
+        )
+    } else {
+        None
+    };
+    let d = &ch.params;
+    let _ = d;
+    let h = ch.skeleton.pos(ch.skeleton.index("head").unwrap()).y + 0.3;
+    let hc = ch.skeleton.pos(ch.skeleton.index("head").unwrap()).y + 0.1;
+    let hand = ch.skeleton.pos(ch.skeleton.index("leftHand").unwrap());
+    let foot = ch.skeleton.pos(ch.skeleton.index("leftFoot").unwrap());
+    for view in view.split(',') {
+        let (eye_dir, center, half_h, w, hh) = match view {
+            "side" => (Vec3::X, Vec3::new(0.0, h * 0.5, 0.0), h * 0.55, 700, 1100),
+            "back" => (-Vec3::Z, Vec3::new(0.0, h * 0.5, 0.0), h * 0.55, 1100, 1100),
+            "head" => (Vec3::Z, Vec3::new(0.0, hc, 0.0), 0.19, 900, 900),
+            "headside" => (Vec3::X, Vec3::new(0.0, hc, 0.0), 0.19, 900, 900),
+            "head34" => (Vec3::new(0.6, 0.15, 0.8).normalize(), Vec3::new(0.0, hc, 0.0), 0.19, 900, 900),
+            "hand" => (Vec3::Y, hand + Vec3::new(0.08, 0.0, 0.0), 0.14, 900, 900),
+            "handside" => (Vec3::Z, hand + Vec3::new(0.08, 0.0, 0.0), 0.14, 900, 900),
+            "foot" => (Vec3::X, Vec3::new(0.0, 0.06, 0.05), 0.16, 900, 900),
+            "foot34" => (Vec3::new(0.6, 0.6, 0.7).normalize(), Vec3::new(foot.x, 0.05, 0.05), 0.17, 900, 900),
+            "top" => (Vec3::Y, Vec3::new(0.0, 0.0, 0.0), h * 0.55, 1100, 1100),
+            "pelvis" => (Vec3::new(0.0, -0.7, 0.7).normalize(), Vec3::new(0.0, 0.8, 0.0), 0.3, 900, 900),
+            "shoulder" => (Vec3::new(0.5, 0.4, 0.7).normalize(), Vec3::new(0.15, 1.25, 0.0), 0.2, 900, 900),
+            "torso" => (Vec3::Z, Vec3::new(0.0, 1.05, 0.0), 0.42, 900, 900),
+            "torsoside" => (Vec3::X, Vec3::new(0.0, 1.05, 0.0), 0.42, 900, 900),
+            _ => (Vec3::Z, Vec3::new(0.0, h * 0.5, 0.0), h * 0.55, 1100, 1100),
+        };
+        let img = render(&mesh, colors.as_deref(), skel_lines.as_deref(), w, hh, eye_dir, center, half_h, &o);
+        let path = if out.ends_with(".png") { out.clone() } else { format!("{out}_{view}.png") };
+        img.save(&path).unwrap();
+        println!("{path}");
     }
 }

@@ -36,6 +36,36 @@ impl Refined {
         out
     }
 
+    /// Média (arestas: 2 pais; faces: 4 pais) de um atributo escalar.
+    pub fn propagate_avg(&self, cage: &QuadMesh, base: &[f32]) -> Vec<f32> {
+        let mut out = vec![0.0f32; self.mesh.pos.len()];
+        out[..self.n_vert].copy_from_slice(&base[..self.n_vert]);
+        for (e, &idx) in &self.edge_point {
+            out[idx as usize] = 0.5 * (base[e.0 as usize] + base[e.1 as usize]);
+        }
+        for (fi, f) in cage.faces.iter().enumerate() {
+            out[self.face_point[fi] as usize] = 0.25 * (base[f[0] as usize] + base[f[1] as usize] + base[f[2] as usize] + base[f[3] as usize]);
+        }
+        out
+    }
+
+    pub fn propagate_avg4(&self, cage: &QuadMesh, base: &[[f32; 4]]) -> Vec<[f32; 4]> {
+        let mut out = vec![[0.0f32; 4]; self.mesh.pos.len()];
+        out[..self.n_vert].copy_from_slice(&base[..self.n_vert]);
+        for (e, &idx) in &self.edge_point {
+            for k in 0..4 {
+                out[idx as usize][k] = 0.5 * (base[e.0 as usize][k] + base[e.1 as usize][k]);
+            }
+        }
+        for (fi, f) in cage.faces.iter().enumerate() {
+            for k in 0..4 {
+                out[self.face_point[fi] as usize][k] =
+                    0.25 * (base[f[0] as usize][k] + base[f[1] as usize][k] + base[f[2] as usize][k] + base[f[3] as usize][k]);
+            }
+        }
+        out
+    }
+
     /// Expande um laço da gaiola (ciclo) para o laço correspondente no resultado,
     /// intercalando os pontos de aresta. `closed` fecha o ciclo.
     pub fn expand_loop(&self, lp: &[u32], closed: bool) -> Vec<u32> {

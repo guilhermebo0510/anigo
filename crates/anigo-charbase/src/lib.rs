@@ -9,9 +9,15 @@
 //! Nada aqui altera o mesh canônico do `anigo-core`: é uma base *nova*, ao lado dele.
 
 pub mod cage;
+pub mod character;
 pub mod dims;
 pub mod params;
 pub mod qmesh;
+pub mod skeleton;
 pub mod subdiv;
+pub mod topology;
+pub mod uv;
+pub mod weights;
 
+pub use character::{generate, generate_with, BaseCharacter};
 pub use params::{FaceParams, Gender, Params};
