@@ -53,6 +53,7 @@ impl StudioApp {
                 }
 
                 let size = Vec2::new(rect.width(), rect.height());
+                self.uv.view_aspect = size.x / size.y.max(1.0);
                 let local = |p: Pos2| to_glam(p - rect.min);
                 if let Some(p) = resp.hover_pos().or(ui.input(|i| i.pointer.latest_pos())) {
                     self.last_mouse = p;

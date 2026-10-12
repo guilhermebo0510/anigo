@@ -9,6 +9,7 @@ use glam::{Vec2, Vec3};
 pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
     "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel", "modifiers", "proportional",
+    "uv-editor", "uv-sphere", "uv-click",
 ];
 
 impl StudioApp {
@@ -197,6 +198,37 @@ impl StudioApp {
                 let sel = Selection::from_faces(mesh, (0..30u32).collect::<Vec<_>>());
                 m.set_selection(sel, None);
                 self.view_shading = crate::app::ViewShading::Cel;
+            }
+            "uv-editor" | "uv-click" => {
+                // cubo com costuras de cruz -> unwrap -> editor de UV aberto com xadrez
+                m.set_mode(Mode::Edit);
+                m.set_select_mode(SelectMode::Face);
+                self.uv_seed_tree_seams();
+                self.modeling.set_select_mode(SelectMode::Face);
+                self.modeling.select_none();
+                self.run_uv_action(crate::app::uv_ui::UvAction::Unwrap);
+                self.show_uv_editor = true;
+                self.uv.checker = crate::app::uv_ui::CheckerMode::C8;
+                if name == "uv-editor" {
+                    let mesh = &self.modeling.active_object().expect("objeto").mesh;
+                    let sel = Selection::from_faces(mesh, [2u32]);
+                    self.modeling.set_selection(sel, None);
+                }
+            }
+            "uv-sphere" => {
+                self.modeling.delete_active_object();
+                self.modeling.add_primitive(PrimitiveKind::QuadSphere, Vec3::new(0.0, 1.0, 0.0));
+                self.modeling.set_mode(Mode::Edit);
+                self.modeling.set_select_mode(SelectMode::Face);
+                self.uv.params.method = anigo_modeling::uv::unwrap::UnwrapMethod::LscmArap;
+                self.run_uv_action(crate::app::uv_ui::UvAction::AutoSeamsCharacter);
+                self.run_uv_action(crate::app::uv_ui::UvAction::Unwrap);
+                self.show_uv_editor = true;
+                self.uv.color_mode = crate::app::uv_ui::ColorMode::Distortion;
+                let mesh = &self.modeling.active_object().expect("objeto").mesh;
+                let sel = Selection::from_faces(mesh, (0..12u32).collect::<Vec<_>>());
+                self.modeling.set_selection(sel, None);
+                self.camera.distance = 4.5;
             }
             "dense-sphere" => {
                 m.add_primitive(PrimitiveKind::UvSphere, Vec3::new(0.0, 1.0, 0.0));
