@@ -27,6 +27,7 @@ pub(crate) mod inspector;
 pub mod operators;
 mod modifiers_ui;
 mod normals_ui;
+mod posing_ui;
 mod sculpt_ui;
 mod scene_ui;
 pub use scene_ui::ScenePrefs;
@@ -110,6 +111,8 @@ pub struct StudioApp {
     pub(crate) render_ui: render_ui::RenderUi,
     /// Estado do workspace Shading (alvo, preview, paleta, presets); o material vive no núcleo/Modelagem.
     pub(crate) shading_ui: shading_ui::ShadingUi,
+    /// Estado do workspace Posing (seleção de ossos, IK, gizmo, Biblioteca de poses); a pose vive em `core`.
+    pub(crate) pose_ui: posing_ui::PosingUi,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -128,6 +131,7 @@ impl StudioApp {
         let mut char_ui = character_ui::CharacterUi::default();
         let mut scene_ui = scene_ui::SceneUi::default();
         let mut render_ui = render_ui::RenderUi::default();
+        let pose_ui = posing_ui::PosingUi::default();
 
         let session_path = cli.session_file.as_ref().map(PathBuf::from);
         if !cli.no_session {
@@ -265,6 +269,22 @@ impl StudioApp {
             std::env::set_var("ANIGO_SHADING_DIR", dir.join("shading"));
         }
 
+        // cenários do Posing: abrem o workspace; o da Biblioteca de poses usa uma biblioteca temporária vazia
+        if let Some(name) = cli.scenario.as_deref().filter(|n| posing_ui::is_posing_scenario(n)) {
+            if cli.workspace.is_none() {
+                ws = WorkspaceId::Posing;
+            }
+            if name == "posing-biblioteca" {
+                match posing_ui::temp_library() {
+                    Ok((w, dir)) => {
+                        lib_ws = Some(w);
+                        lib_scenario_dir = Some(dir);
+                    }
+                    Err(e) => eprintln!("cenário {name}: {e}"),
+                }
+            }
+        }
+
         Self {
             cli,
             ws,
@@ -301,6 +321,7 @@ impl StudioApp {
             light_ui: lighting_ui::LightingUi::default(),
             render_ui,
             shading_ui: shading_ui::ShadingUi::default(),
+            pose_ui,
         }
     }
 
@@ -355,6 +376,9 @@ impl StudioApp {
             }
             return;
         }
+        if self.ws == WorkspaceId::Posing {
+            self.pose_reset_transients();
+        }
         if let Some(msg) = character_ui::route_undo_redo(self.ws, &mut self.core, &mut self.modeling, undo) {
             if self.ws == WorkspaceId::Cenario {
                 self.scene_ui.message = msg;
@@ -362,6 +386,8 @@ impl StudioApp {
                 self.light_ui.message = msg;
             } else if self.ws == WorkspaceId::Render {
                 self.render_ui.message = msg;
+            } else if self.ws == WorkspaceId::Posing {
+                self.pose_ui.message = msg;
             } else {
                 self.char_ui.message = msg;
             }
@@ -500,6 +526,8 @@ impl StudioApp {
                     self.render_ui.message.clone()
                 } else if self.ws == WorkspaceId::Shading && !self.shading_ui.message.is_empty() {
                     self.shading_ui.message.clone()
+                } else if self.ws == WorkspaceId::Posing && !self.pose_ui.message.is_empty() {
+                    self.pose_ui.message.clone()
                 } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
                 } else {
@@ -671,7 +699,8 @@ impl StudioApp {
             || (self.ws == WorkspaceId::Cenario && self.frame_count < self.cli.frames as u64 + 3000 && self.scene_ui.script.as_ref().is_some_and(|s| !s.is_done()))
             || (self.ws == WorkspaceId::Iluminacao && self.frame_count < self.cli.frames as u64 + 3000 && self.light_ui.script.as_ref().is_some_and(|s| !s.is_done()))
             || (self.ws == WorkspaceId::Render && self.frame_count < self.cli.frames as u64 + 3000 && self.render_busy())
-            || (self.ws == WorkspaceId::Shading && self.frame_count < self.cli.frames as u64 + 3000 && self.shading_ui.script.as_ref().is_some_and(|s| !s.is_done()));
+            || (self.ws == WorkspaceId::Shading && self.frame_count < self.cli.frames as u64 + 3000 && self.shading_ui.script.as_ref().is_some_and(|s| !s.is_done()))
+            || (self.ws == WorkspaceId::Posing && self.frame_count < self.cli.frames as u64 + 3000 && self.pose_ui.script.as_ref().is_some_and(|s| !s.is_done()));
         if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 && !library_busy {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -734,6 +763,11 @@ impl eframe::App for StudioApp {
             self.shading_shortcuts(&ui.ctx().clone());
             self.shading_panels(ui);
         }
+        if self.ws == WorkspaceId::Posing {
+            self.posing_script_tick();
+            self.posing_shortcuts(&ui.ctx().clone());
+            self.posing_panels(ui);
+        }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
@@ -757,6 +791,8 @@ impl eframe::App for StudioApp {
                 self.render_viewport_ui(ui, frame);
             } else if self.ws == WorkspaceId::Shading {
                 self.shading_viewport_ui(ui, frame);
+            } else if self.ws == WorkspaceId::Posing {
+                self.posing_viewport_ui(ui, frame);
             } else {
                 self.placeholder_ui(ui);
             }

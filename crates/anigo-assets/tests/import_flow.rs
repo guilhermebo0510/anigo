@@ -307,6 +307,44 @@ fn manual_material_file_becomes_a_material_asset() {
 }
 
 #[test]
+fn pose_files_become_pose_assets_with_a_stick_thumbnail() {
+    use anigo_core::pose::{bone, PoseAsset, PoseRig, PoseState};
+    let env = Env::new();
+    let src = env.src("pose");
+    let mut pose = PoseState::default();
+    pose.set_rotation(bone::L_SHOULDER, glam::Quat::from_rotation_z(1.2));
+    pose.set_rotation(bone::R_KNEE, glam::Quat::from_rotation_x(1.0));
+    let mask = [bone::L_SHOULDER, bone::R_KNEE].into_iter().collect();
+    let asset = PoseAsset::from_mask("Saudação", &pose, &mask, &PoseRig::default());
+    let p = write(&src, "saudacao.anigopose.json", asset.to_json().unwrap().as_bytes());
+    let pv = anigo_assets::preview(&p, env.lib.limits()).unwrap();
+    assert_eq!((pv.format.as_str(), pv.kind), ("anigopose", AssetKind::Pose));
+    assert_eq!(pv.stats.bones, 2);
+    let id = import_one(&env.lib, &p, ImportOptions { tags: vec!["pose".into()], ..Default::default() });
+    let row = env.lib.require_row(&id).unwrap();
+    assert_eq!(row.kind, AssetKind::Pose);
+    assert_eq!(row.name, "Saudação");
+    assert_eq!(row.format, "anigopose");
+    // o arquivo gravado volta como o mesmo ativo
+    let files = env.lib.resolve_files(&id).unwrap();
+    let back = PoseAsset::from_json(&std::fs::read(&files.primary).unwrap()).unwrap();
+    assert_eq!(back, asset);
+    // miniatura CPU: boneco de palitos não vazio (não é o placeholder)
+    let r = PoseStickRenderer.render(&ThumbRequest { id, kind: AssetKind::Pose, format: "anigopose".into(), content_hash: row.content_hash, primary: files.primary.clone(), files: vec![], asset_dir: files.asset_dir.clone(), size: 128 }).unwrap();
+    assert!(!r.placeholder);
+    let opaque = r.image.pixels().filter(|p| p.0[3] > 128).count();
+    assert!(opaque > 300, "boneco desenhado: {opaque} pixels");
+    // poses diferentes dão miniaturas diferentes
+    let other = PoseStickRenderer::draw(&PoseState::default(), 128);
+    assert_ne!(other.as_raw(), r.image.as_raw());
+    // arquivo de pose inválido não entra e diz por quê
+    let bad = write(&src, "ruim.anigopose.json", b"{\"format\":\"x\"}");
+    let rep = env.lib.import_blocking(&bad, ImportOptions::default()).unwrap();
+    assert_eq!(rep.failed.len(), 1);
+    assert!(rep.failed[0].1.contains("anigopose"), "{:?}", rep.failed);
+}
+
+#[test]
 fn preview_reports_without_importing() {
     let env = Env::new();
     let src = env.src("p");

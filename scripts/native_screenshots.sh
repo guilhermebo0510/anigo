@@ -70,6 +70,14 @@ shot shading_paleta shading shading-paleta
 shot shading_presets shading shading-presets
 shot shading_cenario shading shading-cenario
 shot shading_modelagem shading shading-modelagem
+shot posing_vazio posing posing-vazio
+shot posing_fk posing posing-fk
+shot posing_limites posing posing-limites
+shot posing_ik posing posing-ik
+shot posing_presets posing posing-presets
+shot posing_mao posing posing-mao
+shot posing_gaze posing posing-gaze
+shot posing_biblioteca posing posing-biblioteca
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)

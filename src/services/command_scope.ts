@@ -28,6 +28,8 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   set_morph_value: "deformation",
   reset_morphs: "deformation",
   set_somatotype: "deformation",
+  // Posing: a pose altera a malha avaliada (paleta de skinning), não a geometria base.
+  set_pose: "deformation",
   set_gender_dimorphism: "deformation",
   set_base_gender: "base_geometry",
   set_proportions: "base_geometry",

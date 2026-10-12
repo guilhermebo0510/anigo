@@ -105,6 +105,7 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
         put: [{ uri: "anigo://library/0190a1b2-0000-7000-8000-000000000001", byte_len: 10 }],
       },
       { kind: "render_output", patch: { width: 2480, height: 3508, dpi: 300, supersample: 2, transparent: true } },
+      { kind: "pose", bones: [{ bone: "Head", rotation: [0, 0.2588, 0, 0.9659] }], op: "edit" },
       { kind: "batch", intents: [{ kind: "zoom", factor: 1.1 }, { kind: "render_settings", tonemap: "neutral" }] },
     ];
 
@@ -118,6 +119,18 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
     for (const intent of intents) {
       assert.ok(isCommandWire(built(intent)), "o comando construído precisa passar no guard do contrato");
     }
+  });
+
+  it("pose: recusa osso desconhecido, quaternion inválido e valores fora de faixa", () => {
+    rejected({ kind: "pose" }, "no_op");
+    rejected({ kind: "pose", bones: [{ bone: "Tail", rotation: [0, 0, 0, 1] }] }, "unknown_target");
+    rejected({ kind: "pose", bones: [{ bone: "Head", rotation: [0, 0, 0, 0] }] }, "invalid_value");
+    rejected({ kind: "pose", bones: [{ bone: "Head", rotation: [NaN, 0, 0, 1] }] }, "non_finite");
+    rejected({ kind: "pose", hips_translation: [0, 999, 0] }, "invalid_value");
+    rejected({ kind: "pose", hands: { left: [2, 0, 0, 0, 0] } }, "invalid_value");
+    const twice = { bone: "Head", rotation: [0, 0, 0, 1] as [number, number, number, number] };
+    rejected({ kind: "pose", bones: [twice, twice] }, "invalid_value");
+    assert.deepEqual(built({ kind: "pose", hips_translation: [0, -0.1, 0] }), { kind: "set_pose", hips_translation: [0, -0.1, 0] });
   });
 
   it("morph: usa o id estável do slider e recusa alvo/valor/finito inválidos", () => {

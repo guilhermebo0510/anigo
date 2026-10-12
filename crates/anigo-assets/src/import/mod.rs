@@ -163,6 +163,7 @@ pub(crate) fn analyze(path: &Path, limits: &Limits) -> Result<(Format, Analysis)
             Format::Fbx => fbx::analyze_fbx(path, limits)?,
             Format::Raster | Format::OpaqueTexture => raster::analyze_texture(path, fmt, limits)?,
             Format::AnigoMat => raster::analyze_material_file(path, limits)?,
+            Format::AnigoPose => raster::analyze_pose_file(path)?,
         };
         Ok((fmt, a))
     })

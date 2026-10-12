@@ -109,7 +109,7 @@ impl ThumbnailRenderer for ChainRenderer {
 
 /// Renderizador padrao sem GPU: imagens -> miniatura real; materiais `.anigomat.json` -> esfera toon; resto -> placeholder.
 pub fn default_cpu_renderer() -> Arc<dyn ThumbnailRenderer> {
-    Arc::new(ChainRenderer::new(vec![Arc::new(ImageThumbnailRenderer::default()), Arc::new(MaterialSwatchRenderer), Arc::new(PlaceholderRenderer)]))
+    Arc::new(ChainRenderer::new(vec![Arc::new(ImageThumbnailRenderer::default()), Arc::new(MaterialSwatchRenderer), Arc::new(PoseStickRenderer), Arc::new(PlaceholderRenderer)]))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -273,6 +273,94 @@ impl ThumbnailRenderer for MaterialSwatchRenderer {
         }
         let m = ToonMaterial::from_json(&std::fs::read(&req.primary).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         Ok(Rendered { image: Self::draw(&m, req.size), placeholder: false })
+    }
+}
+
+/// Boneco de palitos desenhado na CPU a partir de um `.anigopose.json` (vista frontal, rig canonico): miniatura
+/// determinística da pose sem GPU. O studio tem um renderizador 3D cel (com a malha) que vem antes na cadeia.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PoseStickRenderer;
+
+impl PoseStickRenderer {
+    /// Desenha a pose em `size` x `size` (fundo transparente).
+    pub fn draw(pose: &anigo_core::pose::PoseState, size: u32) -> RgbaImage {
+        use anigo_core::pose::{bone, is_left_bone, is_right_bone, PoseRig, BONE_PARENTS};
+        let rig = PoseRig::canonical(1.0);
+        let joints = rig.joint_positions(pose);
+        // enquadra a caixa dos pontos (inclui o topo da cabeça) com margem
+        let mut pts: Vec<glam::Vec2> = joints.iter().map(|j| glam::Vec2::new(j.x, j.y)).collect();
+        pts.push(glam::Vec2::new(joints[bone::HEAD].x, joints[bone::HEAD].y + 0.2));
+        let (mut lo, mut hi) = (glam::Vec2::splat(f32::INFINITY), glam::Vec2::splat(f32::NEG_INFINITY));
+        for p in &pts {
+            if p.is_finite() {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+        }
+        let n = size as f32;
+        let span = (hi - lo).max_element().max(0.5);
+        let scale = n * 0.84 / span;
+        let center = (lo + hi) * 0.5;
+        let to_px = |p: glam::Vec3| glam::Vec2::new(n * 0.5 + (p.x - center.x) * scale, n * 0.5 - (p.y - center.y) * scale);
+        let mut segs: Vec<(glam::Vec2, glam::Vec2, [f32; 3])> = Vec::new();
+        for i in 2..BONE_COUNT_RE {
+            let Some(p) = BONE_PARENTS[i] else { continue };
+            if p == bone::ROOT {
+                continue;
+            }
+            let color = if is_left_bone(i) {
+                [0.35, 0.65, 1.0]
+            } else if is_right_bone(i) {
+                [1.0, 0.45, 0.45]
+            } else {
+                [0.92, 0.92, 0.95]
+            };
+            segs.push((to_px(joints[p]), to_px(joints[i]), color));
+        }
+        // pescoço→topo da cabeça
+        let head_top = joints[bone::HEAD] + glam::Vec3::new(0.0, 0.2, 0.0);
+        segs.push((to_px(joints[bone::HEAD]), to_px(head_top), [0.92, 0.92, 0.95]));
+        let radius = (n * 0.016).max(1.4);
+        let mut img = RgbaImage::new(size, size);
+        for y in 0..size {
+            for x in 0..size {
+                let p = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let mut best = (f32::INFINITY, [0.0; 3]);
+                for (a, b, c) in &segs {
+                    let ab = *b - *a;
+                    let l2 = ab.length_squared().max(1e-6);
+                    let t = ((p - *a).dot(ab) / l2).clamp(0.0, 1.0);
+                    let d = p.distance(*a + ab * t);
+                    if d < best.0 {
+                        best = (d, *c);
+                    }
+                }
+                let cover = 1.0 - smoothstep(radius - 0.8, radius + 0.8, best.0);
+                if cover > 0.0 {
+                    img.put_pixel(x, y, image::Rgba([to_u8(best.1[0]), to_u8(best.1[1]), to_u8(best.1[2]), to_u8(cover)]));
+                }
+            }
+        }
+        img
+    }
+}
+
+const BONE_COUNT_RE: usize = anigo_core::pose::BONE_COUNT;
+
+impl ThumbnailRenderer for PoseStickRenderer {
+    fn id(&self) -> &str {
+        "cpu-pose-stick"
+    }
+    fn render(&self, req: &ThumbRequest) -> std::result::Result<Rendered, String> {
+        if req.format != "anigopose" {
+            return Err("nao e um .anigopose.json".into());
+        }
+        let meta = std::fs::metadata(&req.primary).map_err(|e| e.to_string())?;
+        if meta.len() > anigo_core::pose::POSE_ASSET_MAX_BYTES as u64 {
+            return Err("pose grande demais".into());
+        }
+        let a = anigo_core::pose::PoseAsset::from_json(&std::fs::read(&req.primary).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        Ok(Rendered { image: Self::draw(&a.pose, req.size), placeholder: false })
     }
 }
 

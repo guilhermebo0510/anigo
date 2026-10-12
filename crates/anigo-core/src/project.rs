@@ -34,6 +34,7 @@ use crate::level::{NodeOverrides, NodeSource};
 use crate::math::{Camera, Transform};
 use crate::mesh::{BaseGender, Mesh};
 use crate::morph_catalog::{find_slider_def, ALL_MORPH_SLIDERS};
+use crate::pose::PoseState;
 use crate::scene::{Scene, SceneNode, StylizedLight, StylizedMaterial};
 use crate::somatotype::SomatotypeCoords;
 
@@ -184,6 +185,10 @@ pub struct CharacterState {
     /// Accessory attachment.
     #[serde(default)]
     pub accessory: AccessoryAttachment,
+    /// Pose do esqueleto (workspace Posing). Aditivo: omitido em repouso, então projetos antigos e os
+    /// fixtures não mudam. Ver `crate::pose`.
+    #[serde(default, skip_serializing_if = "PoseState::is_rest")]
+    pub pose: PoseState,
 }
 
 /// Bone-driven macro proportions of the character.
@@ -694,6 +699,7 @@ impl Default for CharacterState {
             hair: HairParameters::default(),
             cloth: ClothParameters::default(),
             accessory: AccessoryAttachment::default(),
+            pose: PoseState::default(),
         }
     }
 }
@@ -972,6 +978,11 @@ impl ProjectState {
             )?;
         }
 
+        self.character.pose.validate().map_err(|detail| ProjectError::InvalidValue {
+            field: "character.pose".to_string(),
+            detail,
+        })?;
+
         if self.scene.nodes.is_empty() {
             return Err(ProjectError::EmptyScene);
         }
@@ -1151,6 +1162,7 @@ impl ProjectState {
         }
 
         self.character.gender_dimorphism = clamp01(self.character.gender_dimorphism, 1.0);
+        self.character.pose.sanitize();
         self.character.somatotype = SomatotypeCoords::new(
             component_or(self.character.somatotype.endomorph, 1.0 / 3.0),
             component_or(self.character.somatotype.mesomorph, 1.0 / 3.0),

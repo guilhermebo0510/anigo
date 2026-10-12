@@ -14,6 +14,7 @@ watch = ["dep:notify"]
 
 [dependencies]
 anigo-core = { workspace = true }
+glam = { workspace = true }
 anigo-vrm = { workspace = true }
 anigo-native = { path = "../anigo-native", default-features = false, features = ["ufbx"], optional = true }
 serde = { workspace = true }

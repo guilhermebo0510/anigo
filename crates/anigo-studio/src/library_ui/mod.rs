@@ -10,6 +10,7 @@
 
 pub mod cel_thumb;
 pub mod data;
+pub mod pose_bridge;
 pub mod scenario;
 pub mod synth;
 pub mod thumb_service;

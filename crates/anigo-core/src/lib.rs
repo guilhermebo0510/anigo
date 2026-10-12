@@ -10,6 +10,7 @@ pub mod mesh;
 pub mod morph;
 pub mod morph_catalog;
 pub mod npr;
+pub mod pose;
 pub mod project;
 pub mod render_output;
 pub mod scene;
@@ -53,6 +54,7 @@ pub use level::{
 };
 pub use mesh::{BaseGender, Mesh, Vertex};
 pub use npr::{NprParams, RampCustom};
+pub use pose::{PoseAsset, PoseBoneEntry, PoseOp, PoseRig, PoseState};
 pub use morph::{MorphChannel, MorphTarget, SparseMorphDelta, SparseMorphHeader, SparseMorphSet};
 pub use morph_catalog::{
     ALL_MORPH_SLIDERS, AnatomicalZone, GenderDimorphism, MeshIntegrityReport, MorphCatalog,

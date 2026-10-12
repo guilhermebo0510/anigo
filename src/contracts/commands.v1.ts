@@ -156,6 +156,49 @@ export interface NodeAssetEntryWire {
   name?: string | null;
 }
 
+/** Nomes canônicos dos 24 ossos da pose, na ordem do Rust (`anigo-core::pose::BONE_NAMES`). */
+export const POSE_BONE_NAMES = [
+  "Root",
+  "Hips",
+  "Pelvis",
+  "Spine",
+  "Chest",
+  "UpperChest",
+  "Neck",
+  "Head",
+  "LeftClavicle",
+  "LeftShoulder",
+  "LeftElbow",
+  "LeftWrist",
+  "RightClavicle",
+  "RightShoulder",
+  "RightElbow",
+  "RightWrist",
+  "LeftThigh",
+  "LeftKnee",
+  "LeftAnkle",
+  "LeftToes",
+  "RightThigh",
+  "RightKnee",
+  "RightAnkle",
+  "RightToes",
+] as const;
+
+/** Um osso de `set_pose`: rotação FINAL (delta local sobre o repouso, `[x, y, z, w]`; identidade = repouso). */
+export interface PoseBoneEntryWire {
+  bone: string;
+  rotation: [number, number, number, number];
+}
+
+/** Curvatura 0–1 dos dedos (polegar, indicador, médio, anelar, mínimo) das duas mãos. */
+export interface HandsPoseWire {
+  left?: [number, number, number, number, number];
+  right?: [number, number, number, number, number];
+}
+
+/** Rótulo da operação de pose (só descrição/telemetria). */
+export type PoseOpWire = "edit" | "mirror" | "reset" | "apply" | "paste" | "preset" | "ik" | "gaze" | "hand" | "ground";
+
 export interface AssetEntryWire {
   asset_id: string;
   kind: "mesh" | "texture" | "hair" | "cloth" | "audio" | "other";
@@ -380,6 +423,14 @@ export type CommandWire =
   | { kind: "replace_nodes_asset"; entries: NodeAssetEntryWire[] }
   | { kind: "patch_assets"; put: AssetEntryWire[]; remove?: string[] }
   | { kind: "set_render_output"; patch: RenderOutputPatchWire }
+  | {
+      kind: "set_pose";
+      bones?: PoseBoneEntryWire[];
+      root_translation?: [number, number, number];
+      hips_translation?: [number, number, number];
+      hands?: HandsPoseWire;
+      op?: PoseOpWire;
+    }
   | { kind: "batch"; commands: CommandWire[] };
 
 /** Kinds known by this contract version (drift-checked against the Rust enum). */
@@ -412,6 +463,7 @@ export const COMMAND_KINDS = [
   "replace_nodes_asset",
   "patch_assets",
   "set_render_output",
+  "set_pose",
   "batch",
 ] as const;
 

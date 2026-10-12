@@ -327,6 +327,29 @@ impl CelThumbnailRenderer {
     }
 }
 
+impl CelThumbnailRenderer {
+    /// Miniatura 3D de uma POSE: o personagem canônico padrão, posado de verdade (paleta de skinning do núcleo),
+    /// enquadrado de corpo inteiro em 3/4.
+    pub fn render_pose(&self, pose: &anigo_core::pose::PoseState, size: u32) -> Result<RgbaImage, String> {
+        let size = size.clamp(16, 2048);
+        let mut session = anigo_session::CoreSession::new();
+        if let Some(cmd) = anigo_core::pose::plan_pose_change(&anigo_core::pose::PoseState::default(), pose, anigo_core::pose::PoseOp::Apply) {
+            session.apply(cmd).map_err(|e| format!("pose: {e}"))?;
+        }
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene)?;
+        scene.background_color = THUMB_BG;
+        // enquadra pela caixa da malha rígida (a pose pode levantar os braços acima da cabeça)
+        let center = Vec3::new(0.0, 0.92, 0.0);
+        scene.camera = frame_camera(center, 1.02, ViewParams { yaw: 28f32.to_radians(), pitch: 10f32.to_radians(), zoom: 1.0 });
+        scene.light = studio_light(&scene.camera);
+        self.with_gpu(|r| {
+            let (img, _) = pollster::block_on(r.render_scene(&scene, size, size)).map_err(|e| format!("{e:#}"))?;
+            Ok(img)
+        })
+    }
+}
+
 /// Se o ativo tem exatamente UM material canônico, devolve-o como `StylizedMaterial` (cor-base e sombra reais).
 pub fn single_material(asset_dir: &Path) -> Option<StylizedMaterial> {
     let rd = std::fs::read_dir(asset_dir.join("materials")).ok()?;
@@ -356,6 +379,15 @@ impl ThumbnailRenderer for CelThumbnailRenderer {
             let tm = anigo_assets::ToonMaterial::from_json(&std::fs::read(&req.primary).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             let prep = PreparedMesh::new((*crate::shading::ball::ball_mesh()).clone())?;
             let image = self.render_prepared(&prep, ViewParams::default(), Some(tm.to_stylized()), req.size)?;
+            return Ok(Rendered { image, placeholder: false });
+        }
+        if req.format == "anigopose" {
+            if self.available() == Some(false) {
+                return Err(self.failure_reason().unwrap_or_default());
+            }
+            let bytes = read_limited(&req.primary)?;
+            let asset = anigo_core::pose::PoseAsset::from_json(&bytes).map_err(|e| e.to_string())?;
+            let image = self.render_pose(&asset.pose, req.size)?;
             return Ok(Rendered { image, placeholder: false });
         }
         if !is_3d_format(&req.format) {

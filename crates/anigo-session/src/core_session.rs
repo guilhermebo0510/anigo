@@ -26,6 +26,7 @@ use anigo_core::deformation::{catalog_weights, prepare_base_mesh, DeformationInp
 use anigo_core::ids::{fnv1a64, NodeId};
 use anigo_core::mesh::Mesh;
 use anigo_core::morph::SparseMorphSet;
+use anigo_core::pose::{finger_curl_mesh, PoseRig, PoseState};
 use anigo_core::morph_catalog::build_canonical_sparse_morph_set;
 use anigo_core::project::{ProjectState, URI_BASE_FEMALE, URI_BASE_MALE};
 use anigo_core::scene::{Scene, SceneNode};
@@ -59,6 +60,8 @@ pub struct CoreSession {
     dynamic_revision: u64,
     /// Gesto de preview em curso (arrasto de slider): ver [`CoreSession::begin_preview`].
     preview: Option<PreviewGesture>,
+    /// Rig de posing ajustado à malha deformada (chave = geometria + pesos de morph).
+    rig_cache: Option<(u64, PoseRig)>,
 }
 
 /// Estado de um gesto de preview: projeto de partida + se algum passo mexeu na geometria base.
@@ -108,6 +111,7 @@ impl CoreSession {
             static_revision: 1,
             dynamic_revision: 0,
             preview: None,
+            rig_cache: None,
         }
     }
 
@@ -144,6 +148,7 @@ impl CoreSession {
         self.project = project;
         self.history = CommandHistory::new(limit);
         self.geometry = None;
+        self.rig_cache = None;
         self.static_revision += 1;
         self.dynamic_revision = 0;
         Ok(())
@@ -423,13 +428,65 @@ impl CoreSession {
         Ok(out)
     }
 
+    // ------------------------------------------------------------------ pose
+
+    /// Pose atual do personagem (somente leitura; edite com `Command::SetPose`).
+    pub fn pose(&self) -> &PoseState {
+        &self.project.character.pose
+    }
+
+    /// Rig de posing ajustado à malha deformada atual (proporções + morphs). Em cache: só recalcula quando a
+    /// geometria base ou algum peso de morph muda.
+    pub fn rig(&mut self) -> Result<PoseRig, String> {
+        self.ensure_geometry()?;
+        let weights = self.channel_weights();
+        let geometry_key = self.geometry.as_ref().map(|g| g.key).unwrap_or(0);
+        let mut key = geometry_key ^ 0xcbf2_9ce4_8422_2325;
+        for w in &weights {
+            key ^= u64::from(w.to_bits());
+            key = key.wrapping_mul(0x100_0000_01b3);
+        }
+        if let Some((cached, rig)) = &self.rig_cache {
+            if *cached == key {
+                return Ok(rig.clone());
+            }
+        }
+        let dim = self.project.character.gender_dimorphism;
+        let male = anigo_core::deformation::canonical_base_mesh(anigo_core::mesh::BaseGender::Male);
+        let female = anigo_core::deformation::canonical_base_mesh(anigo_core::mesh::BaseGender::Female);
+        let reference = anigo_core::deformation::interpolate_gender(&male, &female, dim).map_err(|e| e.to_string())?;
+        let deformed = self.deformed_mesh()?;
+        let rig = PoseRig::fit(&reference, &deformed, dim);
+        self.rig_cache = Some((key, rig.clone()));
+        Ok(rig)
+    }
+
+    /// Paleta de skinning (24 × 16 floats) da pose atual.
+    pub fn pose_palette(&mut self) -> Result<Vec<f32>, String> {
+        let rig = self.rig()?;
+        Ok(rig.palette_floats(self.pose()))
+    }
+
     /// Espelha o estado canônico na `Scene` que o renderer headless desenha.
     ///
     /// O viewport do webview consome o snapshot; esta sincronização existe para
     /// que o frame PNG do núcleo (exportação/headless) use exatamente a mesma
     /// geometria e o mesmo material do projeto.
     pub fn sync_scene(&mut self, scene: &mut Scene) -> Result<(), String> {
-        let mesh = self.deformed_mesh()?;
+        let mut mesh = self.deformed_mesh()?;
+        // Posing: dedos (CPU, antes do skinning) + paleta de skinning da pose. Em repouso a paleta é a
+        // identidade exata e a malha não muda um bit: o frame dourado e o contrato congelado ficam como estão.
+        let pose = self.project.character.pose.clone();
+        if !pose.hands.is_rest() {
+            finger_curl_mesh(&mut mesh, &pose.hands);
+        }
+        if pose.is_rest() {
+            scene.skin = anigo_core::snapshot::SkinPayload::canonical_base();
+        } else {
+            let rig = self.rig()?;
+            scene.skin.palette = rig.palette_floats(&pose);
+            scene.skin.palette_is_identity = anigo_core::skinning::flat_palette_is_identity(&scene.skin.palette);
+        }
         let material = self.project.character_material().map(|entry| entry.material.clone());
         let light = self.project.scene.lights.first().map(|slot| slot.light.clone());
         let camera = self.project.scene.camera.camera.clone();
@@ -1032,5 +1089,120 @@ mod tests {
         assert_eq!(session.project().scene.nodes[0].transform.translation.x, 2.5);
         session.undo().expect("undo");
         assert_eq!(session.project().scene.nodes[0].transform.translation.x, 0.0);
+    }
+
+    // ---------------------------------------------------------------- pose (Posing)
+
+    fn pose_cmd(bone: &str, deg: f32, axis: glam::Vec3) -> Command {
+        let q = glam::Quat::from_axis_angle(axis, deg.to_radians());
+        Command::SetPose {
+            bones: vec![anigo_core::PoseBoneEntry { bone: bone.into(), rotation: q.to_array() }],
+            root_translation: None,
+            hips_translation: None,
+            hands: None,
+            op: anigo_core::PoseOp::Edit,
+        }
+    }
+
+    #[test]
+    fn a_pose_changes_the_scene_palette_and_undo_restores_the_exact_identity() {
+        let mut session = CoreSession::new();
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(scene.skin.palette_is_identity);
+        let rest = scene.skin.palette.clone();
+        assert_eq!(rest, anigo_core::skinning::identity_palette_floats(24));
+
+        session.apply(pose_cmd("LeftElbow", -90.0, glam::Vec3::X)).expect("apply");
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(!scene.skin.palette_is_identity);
+        assert_ne!(scene.skin.palette, rest);
+        assert_eq!(scene.skin.palette.len(), 384);
+        assert!(scene.skin.palette.iter().all(|v| v.is_finite()));
+        // só o cotovelo esquerdo e a mão (descendente) saíram da identidade
+        let moved: Vec<usize> = scene
+            .skin
+            .palette
+            .chunks_exact(16)
+            .enumerate()
+            .filter(|(_, m)| !anigo_core::skinning::flat_palette_is_identity(m))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(moved, vec![anigo_core::pose::bone::L_ELBOW, anigo_core::pose::bone::L_WRIST]);
+
+        session.undo().expect("undo");
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(scene.skin.palette_is_identity);
+        assert_eq!(scene.skin.palette, rest, "desfazer volta à identidade bit a bit");
+    }
+
+    #[test]
+    fn a_pose_drag_is_one_undo_step_and_cancel_restores_rest() {
+        let mut session = CoreSession::new();
+        for deg in [10.0, 40.0, 75.0, 90.0] {
+            session.preview(pose_cmd("Head", deg, glam::Vec3::Y)).expect("preview");
+        }
+        assert_eq!(session.history().undo_depth(), 0);
+        assert!(!session.pose().is_rest());
+        session.cancel_preview();
+        assert!(session.pose().is_rest());
+        for deg in [10.0, 90.0] {
+            session.preview(pose_cmd("Head", deg, glam::Vec3::Y)).expect("preview");
+        }
+        session.commit_preview(pose_cmd("Head", 90.0, glam::Vec3::Y)).expect("commit");
+        assert_eq!(session.history().undo_depth(), 1);
+        assert_eq!(session.history().last_undo_description(), Some("Pose Head"));
+        session.undo().expect("undo");
+        assert!(session.pose().is_rest());
+    }
+
+    #[test]
+    fn the_rig_follows_proportions_morphs_and_is_cached() {
+        let mut session = CoreSession::new();
+        let a = session.rig().expect("rig");
+        let again = session.rig().expect("rig");
+        assert_eq!(a, again);
+        session
+            .apply(Command::SetProportions {
+                head_scale: None,
+                head_ratio: None,
+                shoulder_width: None,
+                leg_length: None,
+                arm_length: None,
+                neck_length: None,
+                torso_length: None,
+                height_overall: Some(1.2),
+            })
+            .expect("proportions");
+        let b = session.rig().expect("rig");
+        assert!(b.bind[anigo_core::pose::bone::HEAD].y > a.bind[anigo_core::pose::bone::HEAD].y + 0.2);
+        // um morph também desloca juntas (ajuste pelos vértices vizinhos)
+        let mut s2 = CoreSession::new();
+        let before = s2.rig().expect("rig");
+        s2.apply(morph("neck_length", 1.0)).ok();
+        let after = s2.rig().expect("rig");
+        assert!(before.bind.iter().zip(after.bind.iter()).all(|(x, y)| x.is_finite() && y.is_finite()));
+    }
+
+    #[test]
+    fn finger_curls_change_only_the_scene_mesh_and_rest_is_untouched() {
+        let mut session = CoreSession::new();
+        let mut rest_scene = Scene::new_empty();
+        session.sync_scene(&mut rest_scene).expect("sync");
+        let rest_mesh = rest_scene.nodes.iter().find_map(|n| n.mesh.clone()).expect("mesh");
+        let cmd = Command::SetPose {
+            bones: vec![],
+            root_translation: None,
+            hips_translation: None,
+            hands: Some(anigo_core::pose::HandsPose { left: [1.0; 5], right: [0.0; 5] }),
+            op: anigo_core::PoseOp::Hand,
+        };
+        session.apply(cmd).expect("hands");
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).expect("sync");
+        let mesh = scene.nodes.iter().find_map(|n| n.mesh.clone()).expect("mesh");
+        let changed = rest_mesh.vertices.iter().zip(&mesh.vertices).filter(|(a, b)| a.position != b.position).count();
+        assert!(changed > 100 && changed <= 175, "só os dedos da mão esquerda mudam: {changed}");
+        assert!(scene.skin.palette_is_identity, "mão não mexe na paleta");
     }
 }
