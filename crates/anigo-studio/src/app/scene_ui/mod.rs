@@ -485,3 +485,44 @@ pub(crate) fn describe_scene(desc: &str) -> String {
 pub(crate) fn fmt_vec3(v: Vec3) -> String {
     format!("{:.2}, {:.2}, {:.2}", v.x, v.y, v.z)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anigo_core::level::{self, PrimitiveShape};
+    use anigo_core::Transform;
+    use std::collections::BTreeSet;
+
+    /// Todo comando que o Cenário emite tem descrição traduzida (nenhum texto cru em inglês no Histórico).
+    #[test]
+    fn history_descriptions_of_real_scene_commands_are_localised() {
+        let mut core = anigo_session::CoreSession::new();
+        let (add, id) = level::plan_place_primitive(core.project(), PrimitiveShape::Cube, "Caixa", Transform::default(), &BTreeSet::new());
+        core.apply(add).unwrap();
+        let (add2, id2) = level::plan_place_primitive(core.project(), PrimitiveShape::Sphere, "Esfera", Transform::default(), &BTreeSet::new());
+        core.apply(add2).unwrap();
+        let steps: Vec<Command> = vec![
+            level::plan_set_locked(core.project(), &[id.clone()], true).unwrap(),
+            level::plan_set_visible(core.project(), &[id.clone()], false).unwrap(),
+            level::plan_duplicate(core.project(), &[id.clone()], None).unwrap().0,
+            level::plan_group(core.project(), &[id.clone(), id2.clone()]).unwrap().0,
+        ];
+        for c in steps {
+            let raw = c.description();
+            let out = describe_scene(&raw);
+            assert_ne!(out, raw, "descrição sem tradução: {raw}");
+            assert!(!out.is_empty());
+        }
+        let del = level::plan_delete(core.project(), &[id2]).unwrap();
+        let raw = del.description();
+        assert_ne!(describe_scene(&raw), raw, "descrição sem tradução: {raw}");
+    }
+
+    #[test]
+    fn undo_and_redo_messages_wrap_the_translated_description() {
+        let out = describe_scene("Undo Rename nod_x");
+        assert!(out.contains(&*crate::i18n::tr("char.undone")), "{out}");
+        let out = describe_scene("Redo Duplicate 2 nodes");
+        assert!(out.contains(&*crate::i18n::tr("char.redone")), "{out}");
+    }
+}
