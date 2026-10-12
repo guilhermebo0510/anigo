@@ -77,3 +77,84 @@ impl LibraryWorkspace {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anigo_core::pose::{bone, PoseRig, PoseState};
+    use glam::Quat;
+
+    fn pose_with(elbow_deg: f32) -> PoseState {
+        let mut p = PoseState::default();
+        p.set_rotation(bone::L_ELBOW, Quat::from_rotation_x(-elbow_deg.to_radians()));
+        p.set_rotation(bone::HEAD, Quat::from_rotation_y(0.3));
+        p
+    }
+
+    #[test]
+    fn pose_assets_are_saved_listed_revised_and_masked_through_the_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        let mut ws = LibraryWorkspace::with_library(lib.clone());
+        // vazio no começo
+        assert!(ws.list_pose_assets(50).unwrap().is_empty());
+        // salvar: vira ativo `pose` com as tags certas
+        let rig = PoseRig::default();
+        let asset = PoseAsset::from_mask("Saudação", &pose_with(80.0), &[bone::L_ELBOW].into_iter().collect(), &rig);
+        let msg = ws.save_pose_asset(&asset).unwrap();
+        assert!(msg.contains("salva"), "{msg}");
+        let rows = lib.query(&Query { kinds: vec![AssetKind::Pose], ..Default::default() }).unwrap().items;
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].name.as_str(), rows[0].format.as_str()), ("Saudação", "anigopose"));
+        assert!(lib.tags_of(&rows[0].id).unwrap().contains(&"pose".to_string()));
+        // listar devolve o ativo lido do disco, com a máscara
+        let cards = ws.list_pose_assets(50).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].asset.bones, vec!["LeftElbow"]);
+        assert!(cards[0].asset.pose.rotation(bone::HEAD).dot(Quat::IDENTITY).abs() > 0.9999, "só o cotovelo foi salvo");
+        // mesmo conteúdo: não duplica; conteúdo novo: mesma identidade, revisão 2
+        let again = ws.save_pose_asset(&asset).unwrap();
+        assert!(again.contains("já existe") || again.contains("revisão"), "{again}");
+        let changed = PoseAsset::from_mask("Saudação", &pose_with(120.0), &[bone::L_ELBOW].into_iter().collect(), &rig);
+        assert!(ws.save_pose_asset(&changed).unwrap().contains("revisão"));
+        let cards = ws.list_pose_assets(50).unwrap();
+        assert_eq!(cards.len(), 1, "ainda um ativo só");
+        assert_eq!(cards[0].revision, 2);
+        // nome vazio é recusado; pose inteira vira máscara vazia (todos os ossos)
+        let nameless = PoseAsset::new("  ", pose_with(10.0));
+        assert!(ws.save_pose_asset(&nameless).is_err());
+        let full = PoseAsset::new("Corpo inteiro", pose_with(10.0));
+        ws.save_pose_asset(&full).unwrap();
+        let cards = ws.list_pose_assets(50).unwrap();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards.iter().find(|c| c.name == "Corpo inteiro").unwrap().asset.mask().len(), 24);
+        // aplicar um ativo da Biblioteca vira um comando desfazível no núcleo
+        let card = cards.iter().find(|c| c.name == "Saudação").unwrap();
+        let mut session = anigo_session::CoreSession::new();
+        let target = card.asset.apply_to(session.pose(), 1.0, true, None);
+        let cmd = anigo_core::pose::plan_pose_change(session.pose(), &target, anigo_core::pose::PoseOp::Apply).unwrap();
+        session.apply(cmd).unwrap();
+        assert!(session.pose().rotation(bone::R_ELBOW).dot(Quat::IDENTITY).abs() < 0.9999, "espelhado: cotovelo D dobrado");
+        session.undo().unwrap();
+        assert!(session.pose().is_rest());
+    }
+
+    #[test]
+    fn a_pose_thumbnail_renders_the_posed_character_or_degrades_without_gpu() {
+        let renderer = super::super::cel_thumb::CelThumbnailRenderer::new();
+        match renderer.render_pose(&pose_with(90.0), 96) {
+            Ok(img) => {
+                let rest = renderer.render_pose(&PoseState::default(), 96).unwrap();
+                assert_ne!(img.as_raw(), rest.as_raw(), "a pose muda a miniatura");
+                if let Ok(dir) = std::env::var("ANIGO_TEST_OUT") {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = img.save(format!("{dir}/pose_thumb.png"));
+                    let _ = renderer.render_pose(&anigo_core::pose::presets::body("action", &PoseRig::default()).unwrap(), 256).map(|i| i.save(format!("{dir}/pose_thumb_action.png")));
+                }
+                let lit = img.pixels().filter(|p| p.0[0] as u32 + p.0[1] as u32 + p.0[2] as u32 > 60).count();
+                assert!(lit > 500, "personagem visível: {lit} px");
+            }
+            Err(e) => assert!(!e.is_empty(), "sem GPU a falha tem mensagem"),
+        }
+    }
+}
