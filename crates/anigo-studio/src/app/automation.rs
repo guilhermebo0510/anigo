@@ -32,6 +32,10 @@ impl StudioApp {
             self.scene_start_script(&name);
             return; // a máquina de estados vive em `scene_script_tick`
         }
+        if super::lighting_ui::is_light_scenario(&name) {
+            self.light_start_script(&name);
+            return; // a máquina de estados vive em `light_script_tick`
+        }
         if name.starts_with("sculpt-") {
             self.run_sculpt_scenario(&name);
             return;

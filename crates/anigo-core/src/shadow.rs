@@ -98,6 +98,18 @@ pub fn fit_directional(direction: [f32; 3], points: &[Vec3], focus: Option<(Vec3
     Some(LightFit { view_proj: proj * view, world_per_texel: texel, depth_range, radius, center: snapped })
 }
 
+/// Raio máximo (m) da cobertura AUTOMÁTICA: cenas maiores que isto recebem o mapa só em volta do alvo da
+/// câmera (senão o texel fica grosso demais para o personagem: 22 m de piso em 2048 texels = 1 cm).
+pub const AUTO_MAX_RADIUS: f32 = 7.0;
+
+/// Foco da sombra: `distance > 0` = esse raio em volta do alvo da câmera; `distance == 0` (automático) =
+/// o conteúdo inteiro, limitado a [`AUTO_MAX_RADIUS`] em volta do alvo. [`fit_directional`] ignora o foco
+/// quando ele não é menor que o conteúdo (cena pequena = a cena inteira).
+pub fn resolve_focus(distance: f32, camera_target: Vec3) -> Option<(Vec3, f32)> {
+    let r = if distance > 0.0 { distance } else { AUTO_MAX_RADIUS };
+    camera_target.is_finite().then_some((camera_target, r))
+}
+
 /// Projeta um ponto de mundo no mapa: `(u, v, profundidade)`, com `u,v` em 0..1 (origem no
 /// canto superior esquerdo, v para baixo, como a textura) e profundidade 0..1.
 /// WGSL: `shadow_project`. A projeção da luz é ortográfica (w = 1).
@@ -122,10 +134,11 @@ pub fn shadow_step(occlusion: f32, half_width: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Raio do filtro PCF em texels para a dureza (1 = duro: 1 texel; 0 = suave: 4 texels).
+/// Raio do filtro PCF em texels para a dureza (1 = duro: 1,5 texel; 0 = suave: 4,5 texels). O piso de
+/// 1,5 texel esconde a escada de um texel que um degrau duro mostraria na borda.
 pub fn pcf_radius_texels(hardness: f32) -> f32 {
     let h = hardness.clamp(0.0, 1.0);
-    4.0 + (1.0 - 4.0) * h
+    4.5 - 3.0 * h
 }
 
 /// Meia-largura do degrau para a dureza (1 = 0,05; 0 = 0,5).
@@ -241,6 +254,22 @@ mod tests {
     }
 
     #[test]
+    fn automatic_focus_limits_big_scenes_but_keeps_small_ones_whole() {
+        let small = cube_points(Vec3::new(0.0, 1.0, 0.0), 1.5);
+        let big: Vec<Vec3> = small.iter().copied().chain(cube_points(Vec3::new(18.0, 0.0, 0.0), 1.0)).collect();
+        let target = Vec3::new(0.0, 1.0, 0.0);
+        let dir = [0.4, 0.8, 0.4];
+        let whole = fit_directional(dir, &small, None, 2048).unwrap();
+        let auto_small = fit_directional(dir, &small, resolve_focus(0.0, target), 2048).unwrap();
+        assert_eq!(whole.radius, auto_small.radius, "cena pequena: automático = conteúdo inteiro");
+        let auto_big = fit_directional(dir, &big, resolve_focus(0.0, target), 2048).unwrap();
+        assert!(auto_big.radius <= AUTO_MAX_RADIUS * 1.04 + 0.03, "cena grande: limitada a {AUTO_MAX_RADIUS} m ({})", auto_big.radius);
+        let manual = fit_directional(dir, &big, resolve_focus(3.0, target), 2048).unwrap();
+        assert!(manual.radius < auto_big.radius);
+        assert!(resolve_focus(0.0, Vec3::NAN).is_none());
+    }
+
+    #[test]
     fn fit_rejects_empty_or_degenerate_input() {
         assert!(fit_directional([0.0, 1.0, 0.0], &[], None, 2048).is_none());
         assert!(fit_directional([0.0, 0.0, 0.0], &[Vec3::ZERO], None, 2048).is_none());
@@ -280,8 +309,8 @@ mod tests {
 
     #[test]
     fn hardness_maps_to_documented_ranges() {
-        assert_eq!(pcf_radius_texels(1.0), 1.0);
-        assert_eq!(pcf_radius_texels(0.0), 4.0);
+        assert_eq!(pcf_radius_texels(1.0), 1.5);
+        assert_eq!(pcf_radius_texels(0.0), 4.5);
         assert!((step_half_width(1.0) - 0.05).abs() < 1e-6);
         assert!((step_half_width(0.0) - 0.5).abs() < 1e-6);
         assert!(pcf_radius_texels(0.5) < pcf_radius_texels(0.2));

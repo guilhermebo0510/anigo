@@ -130,10 +130,22 @@ impl CelPreview {
                 mix(b.to_bits());
             }
             mix(n.visible as u32);
-            for b in n.material.base_color.into_iter().chain(n.material.shade_color) {
+            for b in n.material.base_color.into_iter().chain(n.material.shade_color).chain(n.material.rim_color) {
                 mix(b.to_bits());
             }
-            mix(n.material.outline_width.to_bits());
+            // parâmetros de iluminação do material (terminador e rim): mexer neles tem de redesenhar
+            for v in [
+                n.material.outline_width,
+                n.material.rim_intensity,
+                n.material.rim_spread,
+                n.material.shadow_threshold,
+                n.material.shadow_smoothness,
+                n.material.toon_steps,
+                n.material.hue_shift,
+                n.material.spec_intensity,
+            ] {
+                mix(v.to_bits());
+            }
             mix(n.geom.as_ref().map_or(0, |g| g.0.len() as u32));
             self.scene.nodes.push(node);
         }
@@ -157,10 +169,24 @@ impl CelPreview {
             mix(b.to_bits());
         }
         mix(camera.orthographic as u32);
-        for b in self.scene.light.direction {
-            mix(b.to_bits());
+        // TODOS os campos da luz entram na assinatura (cor, ambiente, tinta de sombra, sombra projetada):
+        // antes só direção e intensidade, e editar a cor/ambiente não redesenhava o quadro parado.
+        {
+            let l = &self.scene.light;
+            for v in l
+                .direction
+                .iter()
+                .chain(&l.color)
+                .chain(&l.shadow_color)
+                .chain(&l.ambient_sky)
+                .chain(&l.ambient_ground)
+                .chain([&l.intensity, &l.ambient_intensity, &l.shadow_saturation, &l.shadow.strength, &l.shadow.hardness, &l.shadow.bias, &l.shadow.normal_bias, &l.shadow.distance])
+            {
+                mix(v.to_bits());
+            }
+            mix(l.shadow.enabled as u32);
+            mix(l.shadow.resolution);
         }
-        mix(self.scene.light.intensity.to_bits());
         for b in self.scene.background_color {
             mix(b.to_bits());
         }
@@ -325,6 +351,11 @@ impl CelPreview {
             }
         }
         recreated
+    }
+
+    /// `false` no backend GL: o renderer não cria o passe de sombra projetada.
+    pub fn shadow_supported(&self) -> bool {
+        self.renderer.shadow_supported()
     }
 
     pub fn view(&self) -> Option<&wgpu::TextureView> {

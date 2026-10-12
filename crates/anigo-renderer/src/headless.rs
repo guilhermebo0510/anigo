@@ -1240,6 +1240,11 @@ impl HeadlessRenderer {
         })
     }
 
+    /// `true` quando o backend cria o passe de profundidade da luz (sombra projetada); no backend GL não.
+    pub fn shadow_supported(&self) -> bool {
+        self.shadow_pipeline.is_some()
+    }
+
     /// Issue #11: modo de apresentação explícito (`Fifo` = VSync ligado,
     /// `Immediate` = menor latência, `Mailbox` quando suportado pela GPU).
     ///
@@ -2296,7 +2301,7 @@ impl HeadlessRenderer {
                     points.push(model.transform_point3(corner));
                 }
             }
-            let focus = (shadow_settings.distance > 0.0).then_some((scene.camera.target, shadow_settings.distance));
+            let focus = anigo_core::shadow::resolve_focus(shadow_settings.distance, scene.camera.target);
             anigo_core::shadow::fit_directional(scene.light.direction, &points, focus, shadow_settings.resolution)
         } else {
             None

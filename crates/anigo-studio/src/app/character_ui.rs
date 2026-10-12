@@ -737,10 +737,11 @@ pub(crate) fn route_undo_redo(
     undo: bool,
 ) -> Option<String> {
     use crate::workspace::WorkspaceId;
-    if ws == WorkspaceId::Personagem || ws == WorkspaceId::Cenario {
+    if matches!(ws, WorkspaceId::Personagem | WorkspaceId::Cenario | WorkspaceId::Iluminacao) {
         let r = if undo { core.undo() } else { core.redo() };
         return Some(match r {
             Ok(o) if ws == WorkspaceId::Cenario => super::scene_ui::describe_scene(&o.description),
+            Ok(o) if ws == WorkspaceId::Iluminacao => super::lighting_ui::describe_light(&o.description),
             Ok(o) => describe(&o.description),
             Err(e) => e,
         });
@@ -759,7 +760,7 @@ pub(crate) fn can_undo_redo(
     modeling: &crate::modeling::ModelingSession,
 ) -> (bool, bool) {
     use crate::workspace::WorkspaceId;
-    if ws == WorkspaceId::Personagem || ws == WorkspaceId::Cenario {
+    if matches!(ws, WorkspaceId::Personagem | WorkspaceId::Cenario | WorkspaceId::Iluminacao) {
         (core.history().can_undo(), core.history().can_redo())
     } else {
         (modeling.can_undo(), modeling.can_redo())
@@ -859,6 +860,13 @@ mod tests {
         assert_eq!(modeling.doc.objects.len(), objs_now, "a modelagem não foi tocada pelo Cenário");
         assert_eq!(can_undo_redo(WorkspaceId::Cenario, &core, &modeling), (false, true));
         assert!(route_undo_redo(WorkspaceId::Cenario, &mut core, &mut modeling, false).is_some());
+        assert_eq!(core.project().character.proportions.height_overall, 1.2);
+        // Iluminação: também o núcleo (a luz e o rim são comandos do projeto), nunca a ModelingSession
+        assert_eq!(can_undo_redo(WorkspaceId::Iluminacao, &core, &modeling), (true, false));
+        assert!(route_undo_redo(WorkspaceId::Iluminacao, &mut core, &mut modeling, true).is_some());
+        assert_eq!(core.project().character.proportions.height_overall, 1.0);
+        assert_eq!(modeling.doc.objects.len(), objs_now, "a modelagem não foi tocada pela Iluminação");
+        assert!(route_undo_redo(WorkspaceId::Iluminacao, &mut core, &mut modeling, false).is_some());
         assert_eq!(core.project().character.proportions.height_overall, 1.2);
         // desfazer sem histórico não quebra
         assert!(route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, true).is_some());

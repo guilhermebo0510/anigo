@@ -133,6 +133,7 @@ pub const ILUMINACAO: &[ToolDef] = &[
     tool("sun", icons::SUN, "tool.sun"),
     tool("shadows", icons::CIRCLE, "tool.shadows"),
     tool("ambient", icons::CLOUD, "tool.ambient"),
+    tool("rigs", icons::LIGHTBULB, "tool.rigs"),
 ];
 
 /// Ferramentas do Cenário (esquema do Unreal): Q seleção, W mover, E girar, R escalar.

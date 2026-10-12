@@ -1913,11 +1913,11 @@ export const RENDER_CONTRACT_DATA = {
       "only_when": "shadow_enabled",
       "backends": "não criado no backend GL (sem leitura de profundidade com comparação)"
     },
-    "light_fit": "projeção ORTOGRÁFICA ajustada a uma esfera envolvente dos cantos de todos os nós visíveis (raio × 1.04 + 0.02), centro com snap de texel no plano da luz; o olho recua até o projetor mais próximo da luz; distance > 0 limita a esfera ao redor do alvo da câmera",
+    "light_fit": "projeção ORTOGRÁFICA ajustada a uma esfera envolvente dos cantos de todos os nós visíveis (raio × 1.04 + 0.02), centro com snap de texel no plano da luz; o olho recua até o projetor mais próximo da luz; distance > 0 limita a esfera a esse raio ao redor do alvo da câmera; distance = 0 (automático) limita a 7 m ao redor do alvo (cenas menores usam o conteúdo inteiro)",
     "receiver": "p' = p + N · normal_bias_m · saturate(1 − N·L); uv = (x/2 + 0.5, 0.5 − y/2); ref = z − bias_ndc; fora de [0,1]² ou z fora de [0,1] → sem sombra",
     "filter": "PCF 5×5 de textureSampleCompareLevel (sampler linear de comparação), espaçamento = raio_texels/2 texels; oclusão = 1 − média",
     "stylize": "sombra = smoothstep(0.5 − w, 0.5 + w, oclusão); toon_factor *= 1 − sombra · strength (herda a cor de sombra do terminador)",
-    "hardness_mapping": "raio_texels = 4 − 3·dureza; w = 0.5 − 0.45·dureza",
+    "hardness_mapping": "raio_texels = 4.5 − 3·dureza; w = 0.5 − 0.45·dureza",
     "entry_functions": [
       "shadow_project",
       "shadow_receiver_pos",
