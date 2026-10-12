@@ -198,15 +198,15 @@ jobs:
               --no-session --workspace animacao --scenario "$sc" --frames 14 --size 1440x900 \
               --screenshot "native-artifacts/studio_$sc.png"
           done
-      - name: smoke de entrada real da Animação (xdotool: clicar no tempo, I, arrastar chave, Espaço, Ctrl+Z/Ctrl+Y)
+      - name: "smoke de entrada real da Animação (xdotool: clicar no tempo, I, arrastar chave, Espaço, Ctrl+Z/Ctrl+Y)"
         run: bash scripts/native_animation_smoke.sh ./target/debug/anigo-studio native-artifacts/animation_smoke
       - name: screenshots da Biblioteca (biblioteca sintética + ativos reais; espera as miniaturas 3D)
         run: bash scripts/native_library_screens.sh ./target/debug/anigo-studio native-artifacts
-      - name: smoke de entrada real do Cenario (xdotool: arrasta card da Biblioteca, gizmo com snap, Ctrl+Z/Ctrl+Y)
+      - name: "smoke de entrada real do Cenario (xdotool: arrasta card da Biblioteca, gizmo com snap, Ctrl+Z/Ctrl+Y)"
         run: bash scripts/native_scene_smoke.sh ./target/debug/anigo-studio native-artifacts/scene_smoke
       - name: smoke de entrada real do Iluminacao (xdotool arrasta o disco do sol, Ctrl+Z/Ctrl+Y, clica um rig)
         run: bash scripts/native_lighting_smoke.sh ./target/debug/anigo-studio native-artifacts/lighting_smoke
-      - name: smoke de entrada real do Render (xdotool: trocar orientação, Ctrl+Z/Ctrl+Y, render real com alfa, determinismo, cancelar)
+      - name: "smoke de entrada real do Render (xdotool: trocar orientação, Ctrl+Z/Ctrl+Y, render real com alfa, determinismo, cancelar)"
         run: bash scripts/native_render_smoke.sh ./target/debug/anigo-studio native-artifacts/render_smoke
       - name: screenshots do Shading (rampa, rim, contorno, face SDF em vários ângulos, A/B, paleta, presets, fontes de material)
         run: |
@@ -217,11 +217,11 @@ jobs:
           done
       - name: smoke de entrada real do Shading (xdotool arrasta slider = 1 passo de undo; Ctrl+Z/Ctrl+Y; viewport idêntica)
         run: bash scripts/native_shading_smoke.sh ./target/debug/anigo-studio native-artifacts/shading_smoke
-      - name: smoke de entrada real do Posing (xdotool: clique/caixa de juntas, gizmo FK, Esc, Ctrl+Z/Ctrl+Y, IK de braço, foot lock)
+      - name: "smoke de entrada real do Posing (xdotool: clique/caixa de juntas, gizmo FK, Esc, Ctrl+Z/Ctrl+Y, IK de braço, foot lock)"
         run: bash scripts/native_posing_smoke.sh ./target/debug/anigo-studio native-artifacts/posing_smoke
       - name: smoke de entrada real da Biblioteca (xdotool rola a grade, clica num card, Ctrl+clique, Ctrl+A)
         run: bash scripts/native_library_smoke.sh ./target/debug/anigo-studio native-artifacts/library_smoke
-      - name: smoke de entrada real (xdotool: Tab, 3, clique, E, mover, clique)
+      - name: "smoke de entrada real (xdotool: Tab, 3, clique, E, mover, clique)"
         run: |
           sudo apt-get install -y --no-install-recommends xdotool
           scripts/native_input_smoke.sh native-artifacts/studio_input_smoke.png
@@ -229,7 +229,31 @@ jobs:
         run: bash scripts/native_sculpt_smoke.sh ./target/debug/anigo-studio
       - name: smoke de entrada real do Modo Cabelo (xdotool desenha uma mecha, Ctrl+Z desfaz, Ctrl+Shift+Z refaz)
         run: bash scripts/native_hair_smoke.sh ./target/debug/anigo-studio
-      - name: smoke da bridge nativa (studio --bridge + CLI do anigo-mcp: Command muda a viewport, Ctrl+Z desfaz, Biblioteca, render real)
+      - name: screenshots do layout dockável (padrão por workspace, layouts de exemplo carregados de arquivo, arquivo corrompido, menus, atalhos)
+        run: |
+          for w in personagem modelagem posing shading iluminacao cenario animacao render; do
+            XDG_DATA_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace "$w" --scenario "layout-$w" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_layout_padrao_$w.png"
+          done
+          printf '{{{ isto nao e json' > "$RUNNER_TEMP/corrompido.json"
+          for f in cenario_modelagem_de_cena:cenario:cenario-montado animacao_timeline_alta:animacao:animacao-timeline; do
+            IFS=: read -r file ws sc <<<"$f"
+            XDG_DATA_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace "$ws" --scenario "$sc" --layout-file "docs/native/layouts/$file.json" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_layout_custom_$ws.png"
+          done
+          XDG_DATA_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+            --no-session --workspace cenario --scenario cenario-montado --layout-file "$RUNNER_TEMP/corrompido.json" --frames 14 --size 1440x900 \
+            --screenshot native-artifacts/studio_layout_corrompido.png
+          for sc in layout-menu-file layout-menu-window layout-keyboard layout-keyboard-conflict layout-about; do
+            XDG_DATA_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace cenario --scenario "$sc" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_$sc.png"
+          done
+      - name: "smoke de entrada real do layout dockável (xdotool: arrastar painel, fechar/reabrir, sair, reiniciar com a sessão = layout idêntico, presets)"
+        run: bash scripts/native_layout_smoke.sh ./target/debug/anigo-studio native-artifacts/layout_smoke
+      - name: "smoke da bridge nativa (studio --bridge + CLI do anigo-mcp: Command muda a viewport, Ctrl+Z desfaz, Biblioteca, render real)"
         run: |
           cargo build -p anigo-mcp
           bash scripts/native_bridge_smoke.sh ./target/debug/anigo-studio ./target/debug/anigo-mcp native-artifacts/bridge_smoke

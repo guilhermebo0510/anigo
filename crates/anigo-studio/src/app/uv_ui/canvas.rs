@@ -8,7 +8,7 @@ use crate::modeling::Mode;
 use crate::theme;
 use anigo_modeling::convert::triangulate_polygon;
 use anigo_modeling::{edge_key, SelectMode};
-use egui::{Align2, Color32, FontId, Key, Modifiers, PointerButton, Pos2, Rect, RichText, Shape, Stroke};
+use egui::{Align2, Color32, FontId, Key, PointerButton, Pos2, Rect, RichText, Shape, Stroke};
 use glam::{Vec2, Vec3};
 
 const SELECT_FILL: Color32 = Color32::from_rgba_premultiplied(120, 72, 22, 120);
@@ -500,42 +500,43 @@ impl StudioApp {
         if !resp.hovered() || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
-        let consume = |ui: &mut egui::Ui, m: Modifiers, k: Key| ui.input_mut(|i| i.consume_key(m, k));
-        if consume(ui, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || consume(ui, Modifiers::COMMAND, Key::Y) {
+        let km = self.keymap.clone();
+        let consume = |ui: &mut egui::Ui, id: &str| km.consume(ui.ctx(), id);
+        if consume(ui, "edit.redo") {
             self.modeling.redo();
             return;
         }
-        if consume(ui, Modifiers::COMMAND, Key::Z) {
+        if consume(ui, "edit.undo") {
             self.modeling.undo();
             return;
         }
         let at = mouse_uv.unwrap_or(Vec2::splat(0.5));
-        for (key, kind) in [(Key::G, XformKind::Grab), (Key::R, XformKind::Rotate), (Key::S, XformKind::Scale)] {
-            if consume(ui, Modifiers::NONE, key) {
+        for (id, kind) in [("modelagem.uv.grab", XformKind::Grab), ("modelagem.uv.rotate", XformKind::Rotate), ("modelagem.uv.scale", XformKind::Scale)] {
+            if consume(ui, id) {
                 self.uv_begin_modal(kind, at, false);
                 return;
             }
         }
-        if consume(ui, Modifiers::ALT, Key::A) {
+        if consume(ui, "modelagem.uv.select_none") {
             self.modeling.select_none();
-        } else if consume(ui, Modifiers::NONE, Key::A) {
+        } else if consume(ui, "modelagem.uv.select_all") {
             self.modeling.select_all();
         }
-        if consume(ui, Modifiers::COMMAND, Key::I) {
+        if consume(ui, "modelagem.uv.select_invert") {
             self.modeling.select_invert();
         }
-        if consume(ui, Modifiers::NONE, Key::L) {
+        if consume(ui, "modelagem.uv.select_linked") {
             self.uv_click(at, radius, true, true);
         }
-        for (key, m) in [(Key::Num1, SelectMode::Vertex), (Key::Num2, SelectMode::Edge), (Key::Num3, SelectMode::Face)] {
-            if consume(ui, Modifiers::NONE, key) {
+        for (id, m) in [("modelagem.uv.vertex_mode", SelectMode::Vertex), ("modelagem.uv.edge_mode", SelectMode::Edge), ("modelagem.uv.face_mode", SelectMode::Face)] {
+            if consume(ui, id) {
                 self.modeling.set_select_mode(m);
             }
         }
-        if consume(ui, Modifiers::NONE, Key::Home) {
+        if consume(ui, "modelagem.uv.fit") {
             self.uv.fit_request = true;
         }
-        if consume(ui, Modifiers::NONE, Key::Period) {
+        if consume(ui, "modelagem.uv.frame_selection") {
             self.uv_frame_selection(ui);
         }
     }

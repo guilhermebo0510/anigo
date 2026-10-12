@@ -6,9 +6,10 @@ OUT=${1:-docs/native/img}
 BIN=${BIN:-./target/debug/anigo-studio}
 export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp} WGPU_BACKEND=vulkan
 mkdir -p "$OUT"
-shot() { # nome workspace cenário
-  xvfb-run -a -s "-screen 0 1600x1000x24" "$BIN" --no-session --workspace "$2" ${3:+--scenario "$3"} \
-    --frames 14 --size 1280x800 --screenshot "$OUT/$1.png" 2>&1 | grep -E "erro|panic" || true
+shot() { # nome workspace cenário [argumentos extras do studio]
+  local n=$1 w=$2 s=$3; shift 3
+  xvfb-run -a -s "-screen 0 1600x1000x24" "$BIN" --no-session --workspace "$w" ${s:+--scenario "$s"} \
+    --frames 14 --size 1280x800 --screenshot "$OUT/$n.png" "$@" 2>&1 | grep -E "erro|panic" || true
 }
 shot modelagem_objeto modelagem ""
 shot modelagem_edicao_faces modelagem edit-faces
@@ -91,6 +92,25 @@ ashot animacao_clips animacao animacao-clips
 ashot animacao_sequencia animacao animacao-sequencia
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
+# T-2.12 layout dockavel: padrao de cada workspace (projeto vazio), layouts customizados carregados de arquivo (docs/native/layouts),
+# arquivo corrompido (cai no padrao, sem panico), menus abertos, painel de atalhos (com e sem conflito) e "Sobre"
+for w in personagem modelagem posing shading iluminacao cenario animacao render; do
+  ashot "layout_padrao_$w" "$w" "layout-$w"
+done
+ashot layout_customizado_cenario cenario cenario-montado --layout-file docs/native/layouts/cenario_modelagem_de_cena.json
+ashot layout_customizado_animacao animacao animacao-timeline --layout-file docs/native/layouts/animacao_timeline_alta.json
+BAD=$(mktemp -d)/corrompido.json
+printf '{{{ isto nao e json' >"$BAD"
+ashot layout_corrompido_usa_padrao cenario cenario-montado --layout-file "$BAD"
+ashot layout_menu_arquivo cenario layout-menu-file
+ashot layout_menu_editar modelagem layout-menu-edit
+ashot layout_menu_exibir cenario layout-menu-view
+ashot layout_menu_janela cenario layout-menu-window
+ashot layout_menu_ajuda cenario layout-menu-help
+ashot layout_atalhos cenario layout-keyboard
+ashot layout_atalhos_conflito cenario layout-keyboard-conflict
+ashot layout_atalhos_modelagem modelagem layout-keyboard
+ashot layout_sobre cenario layout-about
 # reduz o tamanho (PNG otimizado, 8 bits)
 for f in "$OUT"/*.png; do convert "$f" -strip -colors 128 "PNG8:$f" 2>/dev/null || true; done
 ls -la "$OUT"

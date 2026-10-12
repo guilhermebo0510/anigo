@@ -165,6 +165,35 @@ mod tests {
         assert!(t.is_empty());
     }
 
+    /// Os layouts de exemplo versionados em `docs/native/layouts/` (usados pelas capturas `--layout-file`) são válidos:
+    /// carregam sem aviso, já estão canônicos para o workspace e atravessam o `egui_tiles` sem mudar.
+    #[test]
+    fn example_layout_files_in_docs_load_and_are_valid() {
+        use crate::layout::model::LayoutStore;
+        let files = [
+            (include_str!("../../../../docs/native/layouts/cenario_modelagem_de_cena.json"), WorkspaceId::Cenario),
+            (include_str!("../../../../docs/native/layouts/animacao_timeline_alta.json"), WorkspaceId::Animacao),
+        ];
+        for (raw, ws) in files {
+            let l = LayoutStore::parse(raw).expect("arquivo de exemplo legível");
+            assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+            let known = registry::ids(ws);
+            let req = [registry::central(ws).id];
+            let n = l.store.workspaces.get(ws.key()).cloned().expect("tem o workspace");
+            let canon = n.clone().sanitized_with_required(&known, &req).expect("válido");
+            assert_eq!(canon, n, "o exemplo de {ws:?} já é canônico");
+            assert_eq!(tree_to_node(&node_to_tree(ws, &canon)).unwrap(), canon);
+            for p in &l.store.presets {
+                assert_eq!(p.workspace, ws.key());
+                assert!(p.layout.clone().sanitized_with_required(&known, &req).is_some(), "preset {}", p.name);
+            }
+        }
+        // o exemplo do Cenário põe a gaveta embaixo do viewport e o Posicionar à direita
+        let l = LayoutStore::parse(files[0].0).unwrap();
+        let d = l.store.workspaces["cenario"].describe();
+        assert_eq!(d, "H[V[T[cenario.outliner,cenario.history]*0|cenario.details]|V[cenario.viewport|cenario.drawer]|cenario.place]");
+    }
+
     #[test]
     fn inserting_through_the_model_then_rebuilding_keeps_the_rest_of_the_tree() {
         let w = WorkspaceId::Animacao;

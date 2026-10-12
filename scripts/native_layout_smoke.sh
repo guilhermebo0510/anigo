@@ -66,6 +66,11 @@ wait_tree() { # descricao, condicao-shell que usa $T (estrutura), timeout em s
   done
   fail "tempo esgotado: $desc"
 }
+focus_app() { # sem gerenciador de janelas o foco do teclado precisa ser explicito
+  local wid
+  wid=$(xdotool search --name "ANIGO Studio" 2>/dev/null | head -1 || true)
+  [ -n "$wid" ] && xdotool windowfocus --sync "$wid" 2>/dev/null || true
+}
 diff_px() { compare -metric AE -fuzz 3% "$OUT/$1.png" "$OUT/$2.png" null: 2>&1 | awk '{print int($1)}'; }
 click() { xdotool mousemove "$1" "$2"; sleep 0.35; xdotool mousedown 1; sleep 0.15; xdotool mouseup 1; sleep 0.5; }
 drag() { # x0 y0 x1 y1
@@ -80,7 +85,22 @@ drag() { # x0 y0 x1 y1
   xdotool mouseup 1; sleep 0.8
 }
 
+
 DEFAULT='H[cenario.place|V[cenario.viewport|cenario.drawer]|V[T[cenario.outliner,cenario.history]*0|cenario.details]]'
+
+# 0. arquivos de layout ruins nunca derrubam o app: JSON corrompido e um layout valido mas SEM o viewport (ids desconhecidos) caem no padrao
+printf '{{{ isto nao e json' >"$OUT/corrompido.json"
+printf '{"schema":1,"workspaces":{"cenario":{"kind":"split","vertical":false,"children":[{"share":1,"node":{"kind":"pane","id":"painel.que.nao.existe"}},{"share":1,"node":{"kind":"pane","id":"cenario.details"}}]}}}' >"$OUT/sem_viewport.json"
+for bad in corrompido sem_viewport; do
+  : >"$LOG"
+  ANIGO_TRACE_LAYOUT=1 "$BIN" --no-session --layout-file "$OUT/$bad.json" --workspace cenario --scenario cenario-vazio --size 1280x800 >>"$LOG" 2>&1 &
+  APID=$!
+  wait_tree "padrao com o arquivo $bad" "[ \"\$T\" = '$DEFAULT' ]" 90
+  kill -0 "$APID" 2>/dev/null || fail "o app caiu com o arquivo $bad"
+  kill "$APID" 2>/dev/null; wait "$APID" 2>/dev/null; APID=""
+done
+[ -s "$OUT/corrompido.json.bak" ] || fail "o arquivo corrompido nao ganhou copia .bak"
+echo "OK 0: arquivo corrompido (com .bak) e layout sem viewport -> layout padrao, sem panico"
 
 launch "$CFG1"
 wait_tree "layout padrao do Cenario" "[ \"\$T\" = '$DEFAULT' ]" 90
@@ -151,7 +171,18 @@ echo "estrutura restaurada: $(tree) | diferenca de tela vs. antes de sair: $D2 p
 [ ! -e "$CFG2/layouts.json" ] || true
 echo "OK 5: o layout voltou identico apos reiniciar (estrutura igual; $D2 px de diferenca, <2% do quadro)"
 
-# 6. Janela > Layouts > Redefinir layout volta ao padrao (e persiste)
+# 6. Janela > Layouts > Salvar layout atual como... "meu" (preset nomeado, persistido no arquivo do usuario)
+focus_app
+click 170 11
+xdotool mousemove 185 59; sleep 0.9
+click 340 116
+click 640 413            # campo "Nome do layout"
+xdotool type --delay 80 "meu"; sleep 0.5
+xdotool key Return; sleep 1.5
+grep -q '"name": "meu"' "$CFG2/layouts.json" || fail "o preset 'meu' nao foi gravado em $CFG2/layouts.json"
+echo "OK 6: preset nomeado 'meu' salvo ($(grep -c '"name"' "$CFG2/layouts.json") preset(s) no arquivo)"
+
+# 7. Janela > Layouts > Redefinir layout volta ao padrao (e persiste)
 click 170 11
 xdotool mousemove 185 59; sleep 0.9
 click 330 59
@@ -159,5 +190,16 @@ wait_tree "layout redefinido" "[ \"\$T\" = '$DEFAULT' ]" 30
 sleep 1.2
 shot h_redefinido
 D3=$(diff_px a_padrao h_redefinido)
-echo "OK 6: Redefinir layout voltou ao padrao ($D3 px de diferenca vs. a captura inicial)"
+echo "OK 7: Redefinir layout voltou ao padrao ($D3 px de diferenca vs. a captura inicial; o preset continua salvo)"
+
+# 8. Janela > Layouts > Layouts salvos > meu aplica o preset de volta
+click 170 11
+xdotool mousemove 185 59; sleep 0.9
+xdotool mousemove 340 139; sleep 0.9
+click 535 139
+wait_tree "preset aplicado" "[ \"\$T\" = '$BEFORE_QUIT' ]" 30
+sleep 1.2
+shot i_preset_aplicado
+D4=$(diff_px e_antes_de_sair i_preset_aplicado)
+echo "OK 8: o preset 'meu' devolveu o layout customizado ($D4 px de diferenca vs. antes de sair)"
 echo "SMOKE DO LAYOUT OK"

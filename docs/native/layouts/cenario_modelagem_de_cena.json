@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "workspaces": {
+    "cenario": {
+      "kind": "split",
+      "vertical": false,
+      "children": [
+        {
+          "share": 330.0,
+          "node": {
+            "kind": "split",
+            "vertical": true,
+            "children": [
+              {
+                "share": 380.0,
+                "node": {
+                  "kind": "tabs",
+                  "active": 0,
+                  "children": [
+                    { "kind": "pane", "id": "cenario.outliner" },
+                    { "kind": "pane", "id": "cenario.history" }
+                  ]
+                }
+              },
+              { "share": 320.0, "node": { "kind": "pane", "id": "cenario.details" } }
+            ]
+          }
+        },
+        {
+          "share": 734.0,
+          "node": {
+            "kind": "split",
+            "vertical": true,
+            "children": [
+              { "share": 470.0, "node": { "kind": "pane", "id": "cenario.viewport" } },
+              { "share": 230.0, "node": { "kind": "pane", "id": "cenario.drawer" } }
+            ]
+          }
+        },
+        { "share": 170.0, "node": { "kind": "pane", "id": "cenario.place" } }
+      ]
+    }
+  },
+  "presets": []
+}

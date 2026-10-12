@@ -20,6 +20,7 @@
 | [POSING_UI.md](POSING_UI.md) | Workspace Posing: modelo de pose do núcleo (`SetPose`, `PoseRig`, `.anigopose.json`), FK/IK/limites/presets/mãos/olhar, API para a Animação, smoke xdotool |
 | [MCP_BRIDGE_NATIVA.md](MCP_BRIDGE_NATIVA.md) | Bridge local do `anigo-mcp` com o app nativo (`--bridge`): protocolo NDJSON/HTTP, ações (projeto, `Command`, undo/redo, log, Biblioteca, render, screenshot, workspace), segurança (loopback, token, Host/Origin, limites), ferramentas `anigo_native_*`, testes, smoke e o que não foi validado |
 | [ANIMACAO_UI.md](ANIMACAO_UI.md) | Workspace Animação: modelo de animação do núcleo (`EditAnimation`, canais/chaves/interpolação), timeline/dope sheet/Graph, auto-key, onion, clips na Biblioteca, glTF/VRMA/BVH, física no playback, render de sequência, smoke xdotool |
+| [LAYOUT_ATALHOS.md](LAYOUT_ATALHOS.md) | Layout dockável persistido (`egui_tiles`, painéis registráveis, presets, redefinir), atalhos configuráveis (registro de ações, conflitos por contexto, import/export JSON) e barra de menus; smoke xdotool |
 | [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 

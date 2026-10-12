@@ -4,7 +4,8 @@
 //! Sem egui aqui: só dados. A função de desenho de cada painel mora em `app/dock_ui.rs`
 //! (um `match` por id), porque os corpos são métodos de `StudioApp`.
 
-use super::model::{column, fill, resolve, row, sized, Home, LayoutNode, Spec};
+use super::model::{column, fill, insert_pane, resolve, row, sized, Home, LayoutNode, Spec};
+use std::collections::HashMap;
 use crate::icons;
 use crate::workspace::WorkspaceId;
 
@@ -157,6 +158,41 @@ pub fn default_layout(ws: WorkspaceId, area: (f32, f32), flag_on: &dyn Fn(&str) 
     n.retaining(&|id| find(id).is_none_or(|p| !p.flagged || flag_on(id))).expect("o viewport nunca é podado")
 }
 
+/// Painéis controlados por flag: faz o layout refletir `present` (a flag manda). Painel que some guarda o layout de antes em
+/// `remembered`; ao voltar, se o RESTO do layout não mudou nesse meio-tempo, reaparece exatamente onde estava; senão no "lar"
+/// do painel (`PanelSpec::home`). Devolve `Some(novo)` só se algo mudou.
+pub fn reconcile_flagged(ws: WorkspaceId, root: &LayoutNode, present: &dyn Fn(&str) -> bool, area: (f32, f32), remembered: &mut HashMap<(WorkspaceId, &'static str), LayoutNode>) -> Option<LayoutNode> {
+    let central_id = central(ws).id;
+    let mut cur = root.clone();
+    let mut changed = false;
+    for p in panels(ws).iter().filter(|p| p.flagged) {
+        let want = present(p.id);
+        let have = cur.contains(p.id);
+        if want && !have {
+            let mut now: Vec<&str> = cur.panes();
+            now.push(p.id);
+            now.sort_unstable();
+            let restored = remembered.remove(&(ws, p.id)).filter(|m| {
+                let mut ids = m.panes();
+                ids.sort_unstable();
+                ids == now
+            });
+            cur = restored.unwrap_or_else(|| insert_pane(Some(cur.clone()), p.id, p.home, p.px, area, central_id));
+            changed = true;
+        } else if !want && have {
+            remembered.insert((ws, p.id), cur.clone());
+            match cur.clone().without(p.id) {
+                Some(n) => {
+                    cur = n;
+                    changed = true;
+                }
+                None => return None,
+            }
+        }
+    }
+    changed.then_some(cur)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +265,36 @@ mod tests {
         let LayoutNode::Split { vertical: false, children } = &n else { panic!() };
         assert_eq!(children[1].share, 360.0);
         assert!(matches!(&children[0].node, LayoutNode::Split { vertical: true, .. }));
+    }
+
+    #[test]
+    fn flag_driven_panels_follow_the_flag_and_come_back_where_they_were() {
+        let ws = WorkspaceId::Cenario;
+        let area = (1234.0, 700.0);
+        let mut mem = HashMap::new();
+        let all_on = |_: &str| true;
+        let drawer_off = |id: &str| id != "cenario.drawer";
+        let base = default_layout(ws, area, &all_on);
+        // nada a fazer quando o layout já reflete as flags
+        assert!(reconcile_flagged(ws, &base, &all_on, area, &mut mem).is_none());
+        // desliga a gaveta: sai do layout e o layout anterior fica guardado
+        let hidden = reconcile_flagged(ws, &base, &drawer_off, area, &mut mem).expect("gaveta some");
+        assert!(!hidden.contains("cenario.drawer") && hidden.contains("cenario.viewport"));
+        assert!(mem.contains_key(&(ws, "cenario.drawer")));
+        // o usuário NÃO mexeu no resto: ao religar volta exatamente igual
+        let back = reconcile_flagged(ws, &hidden, &all_on, area, &mut mem).expect("gaveta volta");
+        assert_eq!(back, base, "voltou exatamente ao lugar");
+        // se o usuário reorganizou o resto enquanto a gaveta estava escondida, usa o lar (BelowViewport)
+        let hidden = reconcile_flagged(ws, &base, &drawer_off, area, &mut mem).unwrap();
+        let moved = hidden.clone().without("cenario.place").unwrap();
+        let back = reconcile_flagged(ws, &moved, &all_on, area, &mut mem).unwrap();
+        assert!(back.contains("cenario.drawer") && back.contains("cenario.place"), "o lar recoloca a gaveta e a flag reabre o Posicionar");
+        // tudo desligado: sobra só o que não é condicional
+        let none = |_: &str| false;
+        let n = reconcile_flagged(ws, &base, &none, area, &mut HashMap::new()).unwrap();
+        let mut got = n.panes();
+        got.sort_unstable();
+        assert_eq!(got, vec!["cenario.details", "cenario.history", "cenario.outliner", "cenario.viewport"]);
     }
 
     #[test]

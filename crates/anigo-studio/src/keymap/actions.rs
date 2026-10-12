@@ -15,6 +15,8 @@ pub enum Area {
     /// Ponteiro sobre o viewport (no Animação: fora da timeline).
     Viewport,
     Timeline,
+    /// Ponteiro sobre o editor de UV 2D (Modelagem, modo Edição).
+    Uv,
 }
 
 /// Um contexto: workspace (None = todos) + modo (só Modelagem; None = todos) + área.
@@ -99,6 +101,7 @@ const M_OBJECT: &[Ctx] = &[mode("object")];
 const M_EDIT: &[Ctx] = &[mode("edit")];
 const M_SCULPT: &[Ctx] = &[mode("sculpt")];
 const M_HAIR: &[Ctx] = &[mode("hair")];
+const M_UV: &[Ctx] = &[Ctx { ws: Some(WorkspaceId::Modelagem), mode: Some("edit"), area: Area::Uv }];
 
 /// Todas as ações configuráveis. A ORDEM é a de exibição no painel de atalhos (agrupada por contexto).
 pub const ACTIONS: &[ActionDef] = &[
@@ -137,6 +140,18 @@ pub const ACTIONS: &[ActionDef] = &[
     a("modelagem.edit.recalc_normals", M_EDIT, &["Ctrl+N"]),
     a("modelagem.edit.reveal", M_EDIT, &["Alt+H"]),
     a("modelagem.edit.hide", M_EDIT, &["H"]),
+    a("modelagem.uv.grab", M_UV, &["G"]),
+    a("modelagem.uv.rotate", M_UV, &["R"]),
+    a("modelagem.uv.scale", M_UV, &["S"]),
+    a("modelagem.uv.select_all", M_UV, &["A"]),
+    a("modelagem.uv.select_none", M_UV, &["Alt+A"]),
+    a("modelagem.uv.select_invert", M_UV, &["Ctrl+I"]),
+    a("modelagem.uv.select_linked", M_UV, &["L"]),
+    a("modelagem.uv.vertex_mode", M_UV, &["1"]),
+    a("modelagem.uv.edge_mode", M_UV, &["2"]),
+    a("modelagem.uv.face_mode", M_UV, &["3"]),
+    a("modelagem.uv.fit", M_UV, &["Home"]),
+    a("modelagem.uv.frame_selection", M_UV, &["Period"]),
     a("modelagem.sculpt.resize_radius", M_SCULPT, &["F"]),
     a("modelagem.sculpt.resize_strength", M_SCULPT, &["Shift+F"]),
     a("modelagem.sculpt.radius_smaller", M_SCULPT, &["OpenBracket"]),

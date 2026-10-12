@@ -329,32 +329,18 @@ impl StudioApp {
         self.dock.dirty = true;
     }
 
-    /// Painéis controlados por flag: a flag manda (entra/sai da árvore para refletir a flag).
+    /// Painéis controlados por flag: a flag manda (entra/sai da árvore para refletir a flag; ver `reconcile_flagged`).
     fn dock_sync_flags(&mut self, ws: WorkspaceId, area: (f32, f32)) {
-        let central = registry::central(ws).id;
-        for p in registry::panels(ws).iter().filter(|p| p.flagged) {
-            let Some((on, avail)) = self.dock_flag(p.id) else { continue };
-            let want = on && avail;
-            let Some(model) = self.dock_model(ws) else { return };
-            let have = model.contains(p.id);
-            if want && !have {
-                // volta ao lugar anterior se o resto do layout não mudou; senão ao "lar" do painel
-                let mut current: Vec<&str> = model.panes();
-                current.push(p.id);
-                current.sort_unstable();
-                let restored = self.dock.remembered.remove(&(ws, p.id)).filter(|m| {
-                    let mut ids = m.panes();
-                    ids.sort_unstable();
-                    ids == current
-                });
-                let node = restored.unwrap_or_else(|| insert_pane(Some(model), p.id, p.home, p.px, area, central));
-                self.dock_rebuild(ws, node);
-            } else if !want && have {
-                self.dock.remembered.insert((ws, p.id), model.clone());
-                if let Some(node) = model.without(p.id) {
-                    self.dock_rebuild(ws, node);
-                }
-            }
+        if !registry::panels(ws).iter().any(|p| p.flagged) {
+            return;
+        }
+        let Some(model) = self.dock_model(ws) else { return };
+        let present = self.dock_present_ids(ws);
+        let mut remembered = std::mem::take(&mut self.dock.remembered);
+        let next = registry::reconcile_flagged(ws, &model, &|id| present.contains(&id) || self.dock_flag(id).is_none(), area, &mut remembered);
+        self.dock.remembered = remembered;
+        if let Some(node) = next {
+            self.dock_rebuild(ws, node);
         }
     }
 

@@ -444,7 +444,7 @@ impl StudioApp {
                 Some(w) => tr(&format!("workspace.{}", w.key())).to_string(),
                 None => tr("dock.ctx.global").to_string(),
             };
-            if modes.is_empty() || modes.len() >= 4 {
+            if modes.len() != 1 {
                 parts.push(name);
             } else {
                 let ms: Vec<String> = modes.iter().map(|m| tr(&format!("mode.{m}")).to_string()).collect();
@@ -454,7 +454,11 @@ impl StudioApp {
         let areas: Vec<Area> = d.ctxs.iter().map(|c| c.area).filter(|a| *a != Area::Any).collect();
         let mut s = parts.join(", ");
         if !areas.is_empty() && areas.iter().all(|a| *a == areas[0]) && areas.len() == d.ctxs.len() {
-            s.push_str(&format!(" \u{b7} {}", tr(if areas[0] == Area::Timeline { "dock.area.timeline" } else { "dock.area.viewport" })));
+            s.push_str(&format!(" \u{b7} {}", tr(match areas[0] {
+                Area::Timeline => "dock.area.timeline",
+                Area::Uv => "dock.area.uv",
+                _ => "dock.area.viewport",
+            })));
         }
         s
     }
@@ -540,8 +544,16 @@ impl StudioApp {
                             name = name.color(theme::ACCENT);
                         }
                         let left = egui::Layout::left_to_right(egui::Align::Center);
-                        ui.allocate_ui_with_layout(egui::vec2(240.0, 20.0), left, |ui| ui.add(egui::Label::new(name).truncate())).inner.on_hover_text(d.id);
-                        ui.allocate_ui_with_layout(egui::vec2(170.0, 20.0), left, |ui| ui.add(egui::Label::new(RichText::new(Self::action_context_text(d)).size(11.0).color(theme::TEXT_DIM)).truncate()));
+                        ui.allocate_ui_with_layout(egui::vec2(240.0, 20.0), left, |ui| {
+                            ui.set_min_size(egui::vec2(240.0, 20.0));
+                            ui.add(egui::Label::new(name).truncate())
+                        })
+                        .inner
+                        .on_hover_text(d.id);
+                        ui.allocate_ui_with_layout(egui::vec2(190.0, 20.0), left, |ui| {
+                            ui.set_min_size(egui::vec2(190.0, 20.0));
+                            ui.add(egui::Label::new(RichText::new(Self::action_context_text(d)).size(11.0).color(theme::TEXT_DIM)).truncate())
+                        });
                         if chords.is_empty() {
                             ui.label(RichText::new(tr("kb.disabled")).color(theme::TEXT_DIM).size(11.5));
                         }
