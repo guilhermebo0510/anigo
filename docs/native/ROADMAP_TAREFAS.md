@@ -45,7 +45,7 @@ Validação: **A** automática (CI) · **B** render em software (lavapipe/Xvfb, 
 | T-2.8 | Escultura no viewport (pincel com raycast, simetria, máscara) | 🟡 | B+H |
 | T-2.9 | Editor de UV (painel 2D) e painel de Normais (transferência de proxy, sharp/seam) | 🟡 | B |
 | T-2.10 | Workspace **Personagem** nativo (sliders → `Command` → `CoreSession` → cel preview) | 🟡 | B |
-| T-2.11 | Workspaces Posing / Shading / Iluminação / Cenário / Animação / Render nativos — **Cenário (Fase 1 do UE5, ver `CENARIO_UI.md`): 🟡** viewport/fly, Content Drawer da Biblioteca com drag-and-drop, seleção BVH, gizmo W/E/R com snap, Outliner/Details/Histórico, câmera de cena, undo/redo via CoreSession; pendente: luzes extras (render_contract congelado), snap de vértice, validar sensação com GPU real. Demais workspaces: ⬜ | B+H |
+| T-2.11 | Workspaces Posing / Shading / Iluminação / Cenário / Animação / Render nativos — **Cenário (Fase 1 do UE5, ver `CENARIO_UI.md`): 🟡** viewport/fly, Content Drawer da Biblioteca com drag-and-drop, seleção BVH, gizmo W/E/R com snap, Outliner/Details/Histórico, câmera de cena, undo/redo via CoreSession; pendente: luzes extras (render_contract congelado), snap de vértice, validar sensação com GPU real. **Iluminação (`ILUMINACAO_UI.md`): 🟡** gizmo de direção arrastável (esfera + disco do sol), sol (az/el/cor/Kelvin/intensidade), ambiente céu/chão, tinta/dureza da sombra, rim, 7 rigs, luz presa à câmera, sombra projetada (T-3.8), tudo por comandos do núcleo com undo/redo e smoke xdotool; pendente: luzes extras (contrato), tonemap/HDR (T-3.7), gosto/sensação/GPU real. Demais workspaces: ⬜ | B+H |
 | T-2.12 | Layout dockável (egui_tiles) persistido; atalhos configuráveis; menus | ⬜ | H |
 | T-2.13 | Servidor local para `anigo-mcp` falar com o app nativo (loopback + token) | ⬜ | A |
 | T-2.14 | Aposentar `src/` Svelte e `webgpu_renderer.ts` após paridade | ⬜ | A |
@@ -60,7 +60,7 @@ Validação: **A** automática (CI) · **B** render em software (lavapipe/Xvfb, 
 | T-3.5 | Matemática NPR pura em Rust com goldens | ✅ (paridade WGSL↔Rust) | A |
 | T-3.6 | Passe de bordas (Roberts/Sobel em depth+normal+ID) para vincos | ⬜ | B+H |
 | T-3.7 | HDR + tonemap neutro no passe final (cores chapadas sem desvio de matiz do ACES) | ⬜ | H |
-| T-3.8 | Shadow map de 1 luz + sombra do cabelo no rosto | ⬜ | B+H |
+| T-3.8 | Shadow map de 1 luz + sombra do cabelo no rosto — aditivo, **desligado por padrão** (`StylizedLight.shadow`, passe de profundidade da luz, PCF + degrau estilizado, bindings 18–20 do cel; goldens intactos; ver `ILUMINACAO_UI.md` §3) | 🟡 (bias/dureza/gosto, GPU real e cabelo real) | B+H |
 | T-3.9 | Angel ring estável por tangente do fio; hair-through (olho/sobrancelha) | ⬜ | H |
 | T-3.10 | Bloom estilizado, LUT, grain; AOVs para compositing | ⬜ | B+H |
 

@@ -32,6 +32,9 @@ impl StudioApp {
             let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
             let ppp = ui.ctx().pixels_per_point();
             self.light_ui.view_size = Vec2::new(rect.width(), rect.height());
+            if !self.light_ui.entered {
+                self.light_enter();
+            }
             self.scene_refresh();
             if !self.light_ui.framed {
                 self.light_frame_character();

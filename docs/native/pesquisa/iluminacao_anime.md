@@ -80,14 +80,14 @@ O shader aplica ACES e `exp2(EV)` dentro do fragment (`tonemap_aces`, linha fina
 
 ## 6. PROPOSTA de escopo em fases
 
-### Fase 1 — MVP (feito nesta entrega, tudo validável na nuvem)
+### Fase 1 — MVP (FEITO; tudo validado na nuvem)
 - Workspace **Iluminação** nativo: viewport com o personagem + o cenário do projeto (cel canônico), e painel com a **luz principal** (sol): gizmo de direção arrastável (azimute/elevação, esfera de direção), cor, intensidade, **temperatura (K)**, ambiente (intensidade + cor de céu + cor de chão), **tinta e saturação de sombra**, dureza do terminador (material do personagem), rim.
 - **Presets de rig**: 3 pontos, contraluz/rim, dia, golden hour, noite, interior, estúdio — cada um um `Batch` de `SetLight` (+ `SetMaterialParams` do rim) = um passo de undo.
 - **Luz presa à câmera** (preview) e "Aplicar ao projeto".
 - Persistência por comandos do núcleo com undo/redo; arrasto com preview + um comando ao soltar; Ctrl+Z/Y roteados.
 - Cenários de captura `iluminacao-*` com variação de azimute/elevação/intensidade e prova de que terminador/rim respondem; smoke xdotool.
 
-### Fase 2 — Completo (feito se couber sem quebrar o contrato; ver `ILUMINACAO_UI.md` para o resultado real)
+### Fase 2 — Completo (FEITO, aditivo e desligado por padrão; resultado, provas e limites em `ILUMINACAO_UI.md` §3)
 - **Shadow map de 1 luz**, ADITIVO e DESLIGADO por padrão: passe de profundidade da luz (ortográfico, ajustado ao conteúdo com snap de texel), PCF 3×3/5×5 com degrau estilizado, bias constante + por inclinação + offset por normal, força, distância, resolução 1024/2048/4096; cor de sombra = a do terminador. Bindings 18–20 do grupo `cel` com neutros 1×1 quando desligado → quadros congelados byte a byte idênticos.
 - **Sombra do cabelo/cabeça no rosto** como consequência (auto-sombra no mesmo mapa), com controle de força.
 - Testes: layout do uniform no contrato (`gen_contract_fixtures.mjs`), `check:wgsl`, paridade WGSL×Rust das funções puras (degrau, offset por normal, projeção), matriz da luz (todos os pontos do conteúdo dentro de [−1,1]² e profundidade em [0,1]), golden desligado = golden anterior, PNGs com sombra visível.

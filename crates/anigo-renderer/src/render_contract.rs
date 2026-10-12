@@ -956,6 +956,48 @@ mod tests {
     }
 
     #[test]
+    fn shadow_uniform_and_section_match_the_core_math() {
+        use crate::uniforms::ShadowUniform;
+        use glam::{Mat4, Vec3};
+        // layout congelado: matriz da luz @0, params @64, params2 @80 (96 B)
+        assert_eq!(uniform_size("shadow") as usize, std::mem::size_of::<ShadowUniform>());
+        assert_eq!(uniform_size("shadow"), 96);
+        assert_eq!(uniform_offset("shadow", "light_view_proj"), 0);
+        assert_eq!(uniform_offset("shadow", "params"), 64);
+        assert_eq!(uniform_offset("shadow", "params2"), 80);
+        // desligado (padrão): `enabled = 0` e matriz identidade — o shader nem amostra o mapa
+        let neutral = ShadowUniform::default();
+        assert_eq!(neutral.params[0], 0.0);
+        assert_eq!(neutral.light_view_proj, Mat4::IDENTITY.to_cols_array());
+        // seção `shadow_map`: aditiva, desligada por padrão, e os números dourados são os do núcleo
+        let section = &contract()["shadow_map"];
+        assert!(section["enabled_by"].as_str().unwrap_or("").contains("padrão false"));
+        assert_eq!(section["pass"]["only_when"], "shadow_enabled");
+        let golden = section["golden"].as_array().expect("golden");
+        assert!(!golden.is_empty());
+        let v3 = |x: &Value| Vec3::new(x[0].as_f64().unwrap() as f32, x[1].as_f64().unwrap() as f32, x[2].as_f64().unwrap() as f32);
+        for g in golden {
+            match g["fn"].as_str().unwrap_or("") {
+                "shadow_step" => {
+                    let got = anigo_core::shadow::shadow_step(g["occlusion"].as_f64().unwrap() as f32, g["half_width"].as_f64().unwrap() as f32);
+                    assert!((got - g["value"].as_f64().unwrap() as f32).abs() < 1e-6, "{g}");
+                }
+                "shadow_receiver_pos" => {
+                    let off = anigo_core::shadow::receiver_position(Vec3::ZERO, v3(&g["normal"]), v3(&g["light"]), g["normal_bias"].as_f64().unwrap() as f32);
+                    assert!((off - v3(&g["offset"])).length() < 1e-6, "{g}");
+                }
+                "shadow_project" => {
+                    let uvz = anigo_core::shadow::project(&Mat4::IDENTITY, v3(&g["point"]));
+                    assert!((uvz - v3(&g["uvz"])).length() < 1e-6, "{g}");
+                }
+                other => panic!("golden desconhecido: {other}"),
+            }
+        }
+        // `passes` e o grafo canônico NÃO mudam (a sombra é um passe só-profundidade fora da ordem canônica)
+        assert!(render_pass_order().iter().all(|n| *n != "shadow_depth"));
+    }
+
+    #[test]
     fn uniform_field_bytes_land_on_the_contract_offsets() {
         let camera = CameraUniform {
             view_proj: [
