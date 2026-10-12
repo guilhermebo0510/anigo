@@ -84,6 +84,8 @@ pub struct StudioApp {
     pub(crate) frame_pending: bool,
     /// Editor 2D de UV visível (Modo Edição).
     pub(crate) show_uv_editor: bool,
+    /// Estado do editor de UV (vista 2D, parâmetros do Inspector, cache de métricas).
+    pub(crate) uv: uv_ui::UvState,
     pub(crate) box_start: Option<glam::Vec2>,
 }
 
@@ -168,6 +170,7 @@ impl StudioApp {
             last_op: None,
             frame_pending: false,
             show_uv_editor: false,
+            uv: uv_ui::UvState::default(),
             box_start: None,
         }
     }

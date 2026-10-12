@@ -576,6 +576,38 @@ impl ModelingSession {
         Ok(out)
     }
 
+    /// Edita a **malha ativa** (UVs, costuras, atributos) de forma transacional: `f` roda numa cópia;
+    /// só se der certo (e a malha validar) a cópia substitui a original. A seleção é mantida. O undo
+    /// só é registrado se a malha realmente mudou (operações sem efeito não poluem o histórico).
+    pub fn edit_uv<T, F>(&mut self, label: &str, f: F) -> Result<T, anigo_modeling::ModelError>
+    where
+        F: FnOnce(&mut EditMesh, &Selection) -> anigo_modeling::ModelResult<T>,
+    {
+        let idx = self.doc.active.ok_or(anigo_modeling::ModelError::EmptySelection("sem objeto ativo"))?;
+        let mut mesh = self.doc.objects[idx].mesh.clone();
+        let out = f(&mut mesh, &self.selection)?;
+        mesh.validate()?;
+        if mesh != self.doc.objects[idx].mesh {
+            let before = self.snapshot();
+            self.history.record(label, &before);
+            self.doc.objects[idx].mesh = mesh;
+            self.revision += 1;
+        }
+        Ok(out)
+    }
+
+    /// Registra `before` (capturado com [`capture`](Self::capture) ANTES de uma edição interativa
+    /// feita diretamente na malha, como o arrasto de UVs) como ponto de undo.
+    pub fn commit_snapshot(&mut self, label: &str, before: SnapshotPub) {
+        self.history.record(label, &before);
+        self.revision += 1;
+    }
+
+    /// Volta ao estado capturado sem mexer no histórico (cancelar uma edição interativa).
+    pub fn restore_snapshot(&mut self, snap: SnapshotPub) {
+        self.restore(snap.0);
+    }
+
     /// Estado completo atual (para o painel "ajustar última operação").
     pub fn capture(&self) -> SnapshotPub {
         self.snapshot()
