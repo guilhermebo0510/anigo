@@ -237,8 +237,8 @@ function asNode(value: unknown, where: string): number | null {
 
 /** `true` quando o documento declara e exige `VRMC_vrm` (um .vrm de fato). */
 export function isVrmDocument(gltf: Gltf): boolean {
-  const required = gltf.asset?.extensionsRequired ?? [];
-  const used = gltf.asset?.extensionsUsed ?? [];
+  const required = gltf.extensionsRequired ?? gltf.asset?.extensionsRequired ?? [];
+  const used = gltf.extensionsUsed ?? gltf.asset?.extensionsUsed ?? [];
   return required.includes("VRMC_vrm") || used.includes("VRMC_vrm");
 }
 

@@ -504,9 +504,9 @@ export function exportGltf(scene: ExportScene, vrm?: Vrm1ExportData, options: Ex
     asset: {
       version: "2.0",
       generator: "anigo-studio/0.1.0 (fase2-exporter)",
-      ...(extensionsUsed.length > 0 ? { extensionsUsed } : {}),
-      ...(extensionsRequired.length > 0 ? { extensionsRequired } : {}),
     },
+    ...(extensionsUsed.length > 0 ? { extensionsUsed } : {}),
+    ...(extensionsRequired.length > 0 ? { extensionsRequired } : {}),
     scene: 0,
     scenes: [{ name: scene.name ?? "ANIGO Scene", nodes: scene.rootNodes }],
     nodes: nodeJson,
@@ -605,7 +605,7 @@ export function summarizeImport(gltf: Gltf): ImportSummary {
       morphTargetCount += (prim.targets ?? []).length;
     }
   }
-  const used = gltf.asset.extensionsUsed ?? [];
+  const used = gltf.extensionsUsed ?? gltf.asset.extensionsUsed ?? [];
   const isVrm = used.includes("VRMC_vrm");
   let title = "";
   if (isVrm && gltf.extensions?.["VRMC_vrm"]) {

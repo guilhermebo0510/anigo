@@ -344,7 +344,9 @@ fn as_texture_index(value: Option<&Value>, where_: &str) -> Result<Option<u64>, 
 /// `true` quando o documento declara a extensão `VRMC_vrm` (um .vrm de fato).
 pub fn is_vrm_document(json: &Value) -> bool {
     let declared = |key: &str| -> bool {
-        json.pointer(&format!("/asset/{key}"))
+        // A spec glTF põe `extensionsUsed/Required` na raiz; aceita também `asset.*` (arquivos antigos do ANIGO).
+        json.pointer(&format!("/{key}"))
+            .or_else(|| json.pointer(&format!("/asset/{key}")))
             .and_then(Value::as_array)
             .map(|arr| arr.iter().any(|v| v.as_str() == Some("VRMC_vrm")))
             .unwrap_or(false)

@@ -210,7 +210,7 @@ pub fn parse_gltf(
             format!("asset.version {version} (esperado major 2)"),
         ));
     }
-    if let Some(required) = json.pointer("/asset/extensionsRequired").and_then(Value::as_array) {
+    if let Some(required) = json.pointer("/extensionsRequired").or_else(|| json.pointer("/asset/extensionsRequired")).and_then(Value::as_array) {
         for ext in required.iter().filter_map(Value::as_str) {
             if ext == "KHR_draco_mesh_compression" {
                 return Err(fail(
@@ -226,7 +226,12 @@ pub fn parse_gltf(
     for (i, spec) in buffer_specs.iter().enumerate() {
         let uri = spec.get("uri").and_then(Value::as_str);
         let declared = spec.get("byteLength").and_then(Value::as_u64).unwrap_or(0);
-        let bytes = buffer_resolver(i, uri)?;
+        let mut bytes = buffer_resolver(i, uri)?;
+        // O chunk BIN de um GLB é preenchido até múltiplo de 4 bytes (spec glTF 2.0, 4.4.3.1):
+        // até 3 bytes além do `byteLength` declarado são padding legítimo.
+        if bytes.len() as u64 > declared && (bytes.len() as u64 - declared) < 4 {
+            bytes.truncate(declared as usize);
+        }
         if bytes.len() as u64 != declared {
             return Err(fail(
                 GltfErrorCode::BufferLengthMismatch,
@@ -863,7 +868,8 @@ pub fn summarize_import(json: &Value) -> ImportSummary {
         }
     }
     let used: Vec<String> = json
-        .pointer("/asset/extensionsUsed")
+        .pointer("/extensionsUsed")
+        .or_else(|| json.pointer("/asset/extensionsUsed"))
         .and_then(Value::as_array)
         .map(|v| v.iter().filter_map(Value::as_str).map(String::from).collect())
         .unwrap_or_default();

@@ -269,6 +269,9 @@ export interface Gltf {
   lights?: unknown[];
   extensions?: Record<string, unknown>;
   extras?: unknown;
+  /** Posição correta pela spec glTF 2.0 (raiz). `asset.*` é lido só por compatibilidade com arquivos antigos do ANIGO. */
+  extensionsUsed?: string[];
+  extensionsRequired?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -420,13 +423,13 @@ export function parseGltfDocument(gltf: Gltf, source: ExternalBufferSource | nul
   const major = Number(asset.version.split(".")[0]);
   if (major !== 2) fail("UNSUPPORTED_VERSION", `asset.version ${asset.version} (esperado major 2)`);
 
-  const required = asset.extensionsRequired ?? [];
+  const required = gltf.extensionsRequired ?? asset.extensionsRequired ?? [];
   for (const ext of required) {
     if (UNSUPPORTED_EXTENSIONS.has(ext)) {
       fail("BAD_ASSET", `extensão obrigatória não suportada pelo ANIGO: ${ext}`);
     }
   }
-  const used = asset.extensionsUsed ?? [];
+  const used = gltf.extensionsUsed ?? asset.extensionsUsed ?? [];
   for (const ext of used) {
     if (UNSUPPORTED_EXTENSIONS.has(ext)) {
       warnings.push(`extensão usada não suportada (mantida crua): ${ext}`);

@@ -617,13 +617,14 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
     let mut asset = Map::new();
     asset.insert("version".into(), Value::from("2.0"));
     asset.insert("generator".into(), Value::from("anigo-core/vrm (fase2-exporter)"));
+    json.insert("asset".into(), Value::Object(asset));
+    // glTF 2.0: `extensionsUsed`/`extensionsRequired` ficam na raiz do documento, não em `asset`.
     if !extensions_used.is_empty() {
-        asset.insert("extensionsUsed".into(), Value::Array(extensions_used.iter().map(|e| Value::from(*e)).collect()));
+        json.insert("extensionsUsed".into(), Value::Array(extensions_used.iter().map(|e| Value::from(*e)).collect()));
     }
     if !extensions_required.is_empty() {
-        asset.insert("extensionsRequired".into(), Value::Array(extensions_required.iter().map(|e| Value::from(*e)).collect()));
+        json.insert("extensionsRequired".into(), Value::Array(extensions_required.iter().map(|e| Value::from(*e)).collect()));
     }
-    json.insert("asset".into(), Value::Object(asset));
     json.insert("scene".into(), Value::from(0));
     let mut scene_json = Map::new();
     scene_json.insert("name".into(), Value::from(scene.name.clone().unwrap_or_else(|| "ANIGO Scene".to_string())));
