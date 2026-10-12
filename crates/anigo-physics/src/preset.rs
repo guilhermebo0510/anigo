@@ -105,7 +105,8 @@ impl PhysicsPreset {
         match self {
             PhysicsPreset::HairShort | PhysicsPreset::Accessory => XpbdConfig { substeps: 5, ..Default::default() },
             PhysicsPreset::HairLong => XpbdConfig { substeps: 6, ..Default::default() },
-            PhysicsPreset::Skirt | PhysicsPreset::Cape => XpbdConfig { substeps: 6, ..Default::default() },
+            // 2 iteracoes por sub-passo reduzem pela metade o estiramento quando uma perna empurra a saia
+            PhysicsPreset::Skirt | PhysicsPreset::Cape => XpbdConfig { substeps: 6, iterations: 2, ..Default::default() },
         }
     }
 }

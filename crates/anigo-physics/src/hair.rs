@@ -449,34 +449,42 @@ mod tests {
     #[test]
     fn fios_nao_atravessam_a_cabeca() {
         // Cabeça = esfera r=0.1 em (0,1.5,0); fios saem do alto e caem. Balança forte do osso.
+        // Roda COM colisor e SEM (controle): o controle precisa penetrar, senão o teste não prova nada.
         let head = Vec3::new(0.0, 1.5, 0.0);
         let mut set = ColliderSet::new();
         set.add(Collider::fixed(ColliderShape::Sphere { center: head, radius: 0.1 }));
-        let strands = demo_strands(12, 8, 0.35, 0.09, 0.0);
-        let def = HairGroupDef {
-            chains: strands.into_iter().map(|g| HairChainDef { guide: g, root_bone: Some(0) }).collect(),
-            params: HairParams { stiffness_root: 0.9, stiffness_tip: 0.1, gravity_scale: 1.0, ..Default::default() },
-            ..Default::default()
-        };
-        let mut hair = HairSim::new(&def, &[bone(head, Quat::IDENTITY)]).unwrap();
-        // collider fixo no mundo; o osso gira a cabeça (esfera simétrica nao muda)
-        let mut worst = 0.0f32;
-        for f in 0..360 {
-            let t = f as f32 * DT;
-            let rot = Quat::from_euler(glam::EulerRot::YXZ, (t * 6.0).sin() * 0.9, (t * 4.0).cos() * 0.4, 0.0);
-            hair.set_pose(&[bone(head, rot)]);
-            hair.step(DT, &set);
-            for (k, p) in hair.positions().iter().enumerate() {
-                // ignora a raiz fixa (nasce na superficie)
-                if k % 8 == 0 {
-                    continue;
+        let mut results = Vec::new();
+        for with_collider in [true, false] {
+            let strands = demo_strands(12, 8, 0.35, 0.09, 0.0);
+            let def = HairGroupDef {
+                chains: strands.into_iter().map(|g| HairChainDef { guide: g, root_bone: Some(0) }).collect(),
+                params: HairParams { stiffness_root: 0.9, stiffness_tip: 0.1, gravity_scale: 1.0, ..Default::default() },
+                ..Default::default()
+            };
+            let mut hair = HairSim::new(&def, &[bone(head, Quat::IDENTITY)]).unwrap();
+            let empty = ColliderSet::new();
+            let mut worst = 0.0f32;
+            for f in 0..360 {
+                let t = f as f32 * DT;
+                let rot = Quat::from_euler(glam::EulerRot::YXZ, (t * 6.0).sin() * 0.9, (t * 4.0).cos() * 0.4, 0.0);
+                hair.set_pose(&[bone(head, rot)]);
+                hair.step(DT, if with_collider { &set } else { &empty });
+                for (k, p) in hair.positions().iter().enumerate() {
+                    if k % 8 == 0 {
+                        continue; // raiz fixa (nasce na superficie)
+                    }
+                    worst = worst.max(0.1 + hair.params().particle_radius - (*p - head).length());
                 }
-                worst = worst.max(0.1 + hair.params().particle_radius - (*p - head).length());
             }
+            results.push((worst, hair.max_stretch_ratio()));
         }
-        eprintln!("penetracao maxima na cabeca: {worst:.5} m; estiramento max {:.4}", hair.max_stretch_ratio());
-        assert!(worst < 3e-3, "penetracao {worst}");
-        assert!(hair.max_stretch_ratio() < 0.08);
+        eprintln!(
+            "cabeca: COM colisor pen {:.5} m / estiramento {:.4}; SEM colisor (controle) pen {:.5} m",
+            results[0].0, results[0].1, results[1].0
+        );
+        assert!(results[1].0 > 0.01, "o controle precisa penetrar: {}", results[1].0);
+        assert!(results[0].0 < 3e-3, "penetracao {}", results[0].0);
+        assert!(results[0].1 < 0.08);
     }
 
     #[test]
