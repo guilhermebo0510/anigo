@@ -47,6 +47,61 @@ struct CardCtx {
 impl LibraryWorkspace {
     // =============================================================== toolbar
 
+    /// Barra enxuta do Content Drawer: busca, tipo, nota, ordenação e tamanho dos cards.
+    pub(super) fn drawer_toolbar(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(icons::MAGNIFYING_GLASS).color(theme::TEXT_DIM));
+            let edit = egui::TextEdit::singleline(&mut self.search_text).hint_text(tr("lib.search_hint")).desired_width(220.0);
+            let resp = ui.add(edit);
+            if resp.changed() {
+                self.search_edited_at = Some(Instant::now());
+            }
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.search_edited_at = Some(Instant::now() - Duration::from_secs(1));
+            }
+            if !self.search_text.is_empty() && icon_button(ui, icons::X, tr("lib.search_clear")).clicked() {
+                self.search_text.clear();
+                self.search_edited_at = Some(Instant::now() - Duration::from_secs(1));
+            }
+            let kinds_label = if self.filters.kinds.is_empty() { tr("lib.filter.all_kinds").to_string() } else { format!("{} ({})", tr("lib.filter.kinds"), self.filters.kinds.len()) };
+            ui.menu_button(format!("{}  {kinds_label}", icons::FUNNEL), |ui| {
+                for k in AssetKind::ALL {
+                    let mut on = self.filters.kinds.contains(k);
+                    if ui.checkbox(&mut on, format!("{}  {}", kind_icon(*k), kind_label(*k))).changed() {
+                        if on {
+                            self.filters.kinds.push(*k);
+                        } else {
+                            self.filters.kinds.retain(|x| x != k);
+                        }
+                        self.filters_changed();
+                    }
+                }
+                if ui.button(tr("lib.filter.clear")).clicked() {
+                    self.filters.kinds.clear();
+                    self.filters_changed();
+                    ui.close();
+                }
+            });
+            let sort_options: [(SortBy, &str); 4] = [(SortBy::Name, "lib.sort.name"), (SortBy::ImportedAt, "lib.sort.imported"), (SortBy::Rating, "lib.sort.rating"), (SortBy::Tris, "lib.sort.tris")];
+            let cur = self.filters.to_query().sort;
+            let cur_label = sort_options.iter().find(|(s, _)| *s == cur.by).map(|(_, k)| tr(k)).unwrap_or("");
+            egui::ComboBox::from_id_salt("drawer_sort").selected_text(format!("{}  {cur_label}", icons::ARROWS_DOWN_UP)).show_ui(ui, |ui| {
+                for (s, key) in sort_options {
+                    if ui.selectable_label(cur.by == s, tr(key)).clicked() {
+                        self.filters.sort.by = s;
+                        self.filters.user_sorted = true;
+                        self.filters.sort.desc = matches!(s, SortBy::Rating | SortBy::Tris | SortBy::ImportedAt);
+                        self.filters_changed();
+                    }
+                }
+            });
+            ui.label(small_dim(format!("{} {}", fmt_int(self.list.total_or_last() as u64), tr("lib.items"))));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(egui::Slider::new(&mut self.card_size, 90.0..=200.0).show_value(false)).on_hover_text(tr("lib.view.card_size"));
+            });
+        });
+    }
+
     pub(super) fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(icons::MAGNIFYING_GLASS).color(theme::TEXT_DIM));
@@ -434,7 +489,13 @@ impl LibraryWorkspace {
                         self.sync_detail_target();
                     }
                 }
-                GridEvent::Double { id } => self.edit_in_modeling(id),
+                GridEvent::Double { id } => {
+                    if self.drawer_mode {
+                        self.actions.push(HostAction::PlaceAsset { id });
+                    } else {
+                        self.edit_in_modeling(id)
+                    }
+                }
                 GridEvent::Favorite { id, value } => self.set_favorite(&[id], value),
                 GridEvent::Rating { id, value } => self.set_rating(id, value),
                 GridEvent::Action(a) => self.card_action(a),

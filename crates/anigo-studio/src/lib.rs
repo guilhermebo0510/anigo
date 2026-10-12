@@ -16,6 +16,7 @@ pub mod cli;
 pub mod hot;
 pub mod i18n;
 pub mod i18n_lib;
+pub mod i18n_scene;
 pub mod icons;
 pub mod library;
 pub mod library_ui;

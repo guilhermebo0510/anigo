@@ -27,6 +27,10 @@ impl StudioApp {
         if crate::library_ui::scenario::is_library_scenario(&name) {
             return; // a máquina de estados do cenário vive em `LibraryWorkspace::scenario_tick`
         }
+        if super::scene_ui::is_scene_scenario(&name) {
+            self.scene_start_script(&name);
+            return; // a máquina de estados vive em `scene_script_tick`
+        }
         if name.starts_with("sculpt-") {
             self.run_sculpt_scenario(&name);
             return;

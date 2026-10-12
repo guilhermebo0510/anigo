@@ -26,6 +26,8 @@ pub mod operators;
 mod modifiers_ui;
 mod normals_ui;
 mod sculpt_ui;
+mod scene_ui;
+pub use scene_ui::ScenePrefs;
 mod uv_ui;
 mod viewport_ui;
 
@@ -93,6 +95,8 @@ pub struct StudioApp {
     /// Sessão canônica do núcleo (projeto + histórico) do workspace Personagem.
     pub(crate) core: anigo_session::CoreSession,
     pub(crate) char_ui: character_ui::CharacterUi,
+    /// Estado do workspace Cenário (câmera, snap, seleção, caches); o projeto vive em `core`.
+    pub(crate) scene_ui: scene_ui::SceneUi,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -109,6 +113,7 @@ impl StudioApp {
         let mut restored = false;
         let mut core = anigo_session::CoreSession::new();
         let mut char_ui = character_ui::CharacterUi::default();
+        let mut scene_ui = scene_ui::SceneUi::default();
 
         let session_path = cli.session_file.as_ref().map(PathBuf::from);
         if !cli.no_session {
@@ -141,6 +146,13 @@ impl StudioApp {
                 if let Some(c) = s.character_camera {
                     char_ui.camera = c;
                     char_ui.framed = true;
+                }
+                if let Some(c) = s.scene_camera {
+                    scene_ui.camera = c;
+                    scene_ui.framed = true;
+                }
+                if let Some(p) = &s.scene_prefs {
+                    scene_ui.apply_prefs(p);
                 }
                 restored = true;
             }
@@ -179,6 +191,22 @@ impl StudioApp {
             }
         }
 
+        // cenários do Cenário: biblioteca temporária SINTÉTICA + GLBs reais gerados pelo studio
+        if let Some(name) = cli.scenario.as_deref().filter(|n| scene_ui::is_scene_scenario(n)) {
+            if cli.workspace.is_none() {
+                ws = WorkspaceId::Cenario;
+            }
+            let n = std::env::var("ANIGO_SCENARIO_N").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+            match crate::library_ui::scenario::build_n(name, n) {
+                Ok(built) => {
+                    lib_ws = Some(LibraryWorkspace::with_library(built.lib.clone()));
+                    lib_scenario_dir = Some(built.dir.clone());
+                    scene_ui.script_assets = Some(built.assets.clone());
+                }
+                Err(e) => eprintln!("cenário {name}: {e}"),
+            }
+        }
+
         Self {
             cli,
             ws,
@@ -210,6 +238,7 @@ impl StudioApp {
             sculpt: crate::modeling::sculpt::SculptState::new(),
             core,
             char_ui,
+            scene_ui,
         }
     }
 
@@ -226,6 +255,8 @@ impl StudioApp {
             document: self.modeling.doc.clone(),
             character_document: self.core.document().ok(),
             character_camera: Some(self.char_ui.camera),
+            scene_camera: Some(self.scene_ui.camera),
+            scene_prefs: Some(self.scene_ui.prefs()),
         }
     }
 
@@ -239,8 +270,16 @@ impl StudioApp {
         if self.ws == WorkspaceId::Personagem {
             self.char_ui.gesture = None;
         }
+        if self.ws == WorkspaceId::Cenario {
+            self.scene_ui.session = None;
+            self.scene_ui.gesture = None;
+        }
         if let Some(msg) = character_ui::route_undo_redo(self.ws, &mut self.core, &mut self.modeling, undo) {
-            self.char_ui.message = msg;
+            if self.ws == WorkspaceId::Cenario {
+                self.scene_ui.message = msg;
+            } else {
+                self.char_ui.message = msg;
+            }
         }
     }
 
@@ -354,6 +393,8 @@ impl StudioApp {
                     self.lib_ws.as_ref().map(|w| w.status_text()).unwrap_or_default()
                 } else if self.ws == WorkspaceId::Personagem && !self.char_ui.message.is_empty() {
                     self.char_ui.message.clone()
+                } else if self.ws == WorkspaceId::Cenario && !self.scene_ui.message.is_empty() {
+                    self.scene_ui.message.clone()
                 } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
                 } else {
@@ -428,6 +469,9 @@ impl StudioApp {
     }
 
     fn on_tool_selected(&mut self, id: &str) {
+        if self.ws == WorkspaceId::Cenario {
+            self.on_scene_tool_selected(id);
+        }
         if self.ws == WorkspaceId::Modelagem {
             let label_key = crate::app::inspector::modeling_tools(self.modeling.mode)
                 .iter()
@@ -454,6 +498,7 @@ impl StudioApp {
             match a {
                 HostAction::EditInModeling { path, format, name } => self.edit_library_asset(&path, &format, &name),
                 HostAction::Status(s) => self.modeling.status = s,
+                HostAction::PlaceAsset { .. } => {}
             }
         }
     }
@@ -511,7 +556,8 @@ impl StudioApp {
         let Some(path) = self.cli.screenshot.clone() else {
             return;
         };
-        let library_busy = self.ws == WorkspaceId::Biblioteca && self.frame_count < self.cli.frames as u64 + 3000 && self.lib_ws.as_ref().is_some_and(|w| !w.scenario_done());
+        let library_busy = (self.ws == WorkspaceId::Biblioteca && self.frame_count < self.cli.frames as u64 + 3000 && self.lib_ws.as_ref().is_some_and(|w| !w.scenario_done()))
+            || (self.ws == WorkspaceId::Cenario && self.frame_count < self.cli.frames as u64 + 3000 && self.scene_ui.script.as_ref().is_some_and(|s| !s.is_done()));
         if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 && !library_busy {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -553,6 +599,11 @@ impl eframe::App for StudioApp {
             self.character_shortcuts(&ui.ctx().clone());
             self.inspector_character(ui);
         }
+        if self.ws == WorkspaceId::Cenario {
+            self.scene_script_tick();
+            self.scene_shortcuts(&ui.ctx().clone());
+            self.scene_panels(ui);
+        }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
@@ -568,6 +619,8 @@ impl eframe::App for StudioApp {
                 self.viewport_ui(ui, frame);
             } else if self.ws == WorkspaceId::Personagem {
                 self.character_viewport_ui(ui, frame);
+            } else if self.ws == WorkspaceId::Cenario {
+                self.scene_viewport_ui(ui, frame);
             } else {
                 self.placeholder_ui(ui);
             }

@@ -749,6 +749,118 @@ pub fn plan_ungroup(state: &ProjectState, group: &NodeId) -> Result<Command, Pla
     batch_or_single(commands)
 }
 
+/// Nós copiados (Ctrl+C): subárvores completas, com as raízes já em coordenadas de MUNDO e o registro
+/// dos ativos que elas usam (a colagem funciona mesmo depois de trocar de projeto).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardNodes {
+    pub nodes: Vec<NodeSlot>,
+    pub assets: Vec<AssetEntry>,
+}
+
+/// Copia `ids` (raízes do conjunto + descendentes). O personagem não se copia.
+pub fn clipboard_from(state: &ProjectState, ids: &[NodeId]) -> Option<ClipboardNodes> {
+    let roots: Vec<NodeId> = top_level(state, ids)
+        .into_iter()
+        .filter(|id| state.scene.node(id).is_some_and(|n| is_duplicable(n.kind)))
+        .collect();
+    if roots.is_empty() {
+        return None;
+    }
+    let world = state.scene.world_transforms().ok()?;
+    let mut nodes = Vec::new();
+    for id in closure(state, &roots) {
+        let mut slot = state.scene.node(&id)?.clone();
+        if roots.contains(&id) {
+            let (scale, rotation, translation) = world.get(&id).copied().unwrap_or(Mat4::IDENTITY).to_scale_rotation_translation();
+            slot.transform = Transform { translation, rotation: rotation.normalize(), scale };
+            slot.parent_id = None;
+        }
+        nodes.push(slot);
+    }
+    let mut registry: BTreeMap<AssetId, AssetEntry> = BTreeMap::new();
+    for n in &nodes {
+        if let Some(entry) = n.mesh.as_ref().and_then(|m| state.assets.get(&m.asset_id)) {
+            registry.insert(entry.asset_id.clone(), entry.clone());
+        }
+    }
+    Some(ClipboardNodes { nodes, assets: registry.into_values().collect() })
+}
+
+/// Plano de colagem: cria cópias com ids/nomes novos (e registra os ativos que faltam) em UM comando.
+/// Devolve também os ids das raízes coladas (a nova seleção).
+pub fn plan_paste(state: &ProjectState, clip: &ClipboardNodes, offset: [f32; 3]) -> Result<(Command, Vec<NodeId>), PlanError> {
+    if clip.nodes.is_empty() {
+        return Err(PlanError::Nothing);
+    }
+    let mut taken: BTreeSet<NodeId> = BTreeSet::new();
+    let mut names: BTreeSet<String> = state.scene.nodes.iter().map(|n| n.name.clone()).collect();
+    let mut map: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+    let mut commands = Vec::new();
+    let missing: Vec<AssetEntry> = clip.assets.iter().filter(|a| state.assets.get(&a.asset_id) != Some(a)).cloned().collect();
+    if !missing.is_empty() {
+        commands.push(Command::PatchAssets { put: missing, remove: vec![] });
+    }
+    let mut roots = Vec::new();
+    for slot in &clip.nodes {
+        let new_id = unique_node_id(state, &slot.name, &taken);
+        taken.insert(new_id.clone());
+        map.insert(slot.node_id.clone(), new_id);
+    }
+    // pais antes de filhos (a área de transferência guarda a ordem da cena, que não é topológica)
+    let depth_in_clip = |slot: &NodeSlot| -> usize {
+        let mut d = 0;
+        let mut cursor = slot.parent_id.as_ref();
+        while let Some(p) = cursor {
+            if !map.contains_key(p) || d > clip.nodes.len() {
+                break;
+            }
+            d += 1;
+            cursor = clip.nodes.iter().find(|n| &n.node_id == p).and_then(|n| n.parent_id.as_ref());
+        }
+        d
+    };
+    let mut ordered: Vec<&NodeSlot> = clip.nodes.iter().collect();
+    ordered.sort_by_key(|n| depth_in_clip(n));
+    for slot in ordered {
+        let new_id = map[&slot.node_id].clone();
+        let parent = slot.parent_id.as_ref().and_then(|p| map.get(p)).cloned();
+        let mut transform = slot.transform;
+        if parent.is_none() {
+            transform.translation += Vec3::from_array(offset);
+            roots.push(new_id.clone());
+        }
+        let stem = match slot.name.rsplit_once(' ') {
+            Some((head, tail)) if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => head.to_string(),
+            _ => slot.name.clone(),
+        };
+        let name = if names.contains(&slot.name) {
+            let mut n = 2u32;
+            loop {
+                let candidate = format!("{stem} {n}");
+                if !names.contains(&candidate) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        } else {
+            slot.name.clone()
+        };
+        names.insert(name.clone());
+        commands.push(Command::AddNode {
+            node_id: new_id,
+            name,
+            parent_id: parent,
+            node_kind: slot.kind,
+            transform,
+            mesh: slot.mesh.clone(),
+            material_id: slot.material_id.clone(),
+            index: (state.scene.nodes.len() + taken.len()) as u32 + 1000,
+            attrs: NodeAttrs::of(slot),
+        });
+    }
+    Ok((Command::Batch { commands }, roots))
+}
+
 /// Registro do ativo da Biblioteca no projeto (uma entrada por URI; `content_hash` = blake3 da revisão).
 pub fn library_asset_entry(uri: &str, byte_len: Option<u64>, content_hash: Option<String>) -> AssetEntry {
     let mut entry = AssetEntry::from_uri(AssetKind::Mesh, uri);
@@ -909,6 +1021,44 @@ mod tests {
         assert!(s.scene.node(g2).unwrap().source.is_some(), "a origem viaja na cópia");
         applied.inverse.apply(&mut s).unwrap();
         assert_eq!(s, before, "undo da duplicação restaura o estado exato");
+    }
+
+    #[test]
+    fn copy_paste_round_trips_across_projects_and_undoes_in_one_step() {
+        let mut a = base();
+        let uri = library_uri("0190a1b2-0000-7000-8000-0000000000aa");
+        let (cmds, mesa) = plan_place_library_asset(&a, &uri, 3, "Mesa", Transform { translation: Vec3::new(2.0, 0.0, 1.0), scale: Vec3::splat(1.5), ..Default::default() }, None, Some(9), Some("h".into()), &BTreeSet::new());
+        Command::Batch { commands: cmds }.apply(&mut a).unwrap();
+        let pai = add_cube(&mut a, "Pai", Vec3::new(4.0, 0.0, 0.0));
+        Command::SetNodeParent { node_id: mesa.clone(), parent_id: Some(pai.clone()) }.apply(&mut a).unwrap();
+        let world_mesa = a.scene.world_transforms().unwrap()[&mesa];
+        let clip = clipboard_from(&a, &[mesa.clone(), pai.clone()]).unwrap();
+        assert_eq!(clip.nodes.len(), 2);
+        assert_eq!(clip.assets.len(), 1, "o registro do ativo viaja junto");
+        // colar em OUTRO projeto (sem o ativo registrado)
+        let mut b = base();
+        let before = b.clone();
+        let (cmd, roots) = plan_paste(&b, &clip, [0.0, 0.0, 0.0]).unwrap();
+        let applied = cmd.apply(&mut b).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(b.scene.nodes.len(), before.scene.nodes.len() + 2);
+        assert!(b.assets.contains_key(&AssetId::for_uri(&uri)));
+        let pasted_mesa = b.scene.nodes.iter().find(|n| n.source.as_ref().and_then(NodeSource::library_uri) == Some(uri.as_str())).unwrap();
+        let w = b.scene.world_transforms().unwrap()[&pasted_mesa.node_id];
+        assert!(w.abs_diff_eq(world_mesa, 1e-4), "a pose mundial é preservada na colagem");
+        applied.inverse.apply(&mut b).unwrap();
+        assert_eq!(b, before, "um undo desfaz a colagem inteira");
+        // o personagem não vai para a área de transferência
+        assert!(clipboard_from(&a, &[NodeId::canonical_character()]).is_none());
+        // colar duas vezes gera ids e nomes distintos
+        let (c1, _) = plan_paste(&b, &clip, [0.5, 0.0, 0.0]).unwrap();
+        c1.apply(&mut b).unwrap();
+        let (c2, _) = plan_paste(&b, &clip, [0.5, 0.0, 0.0]).unwrap();
+        c2.apply(&mut b).unwrap();
+        let mut ids: Vec<_> = b.scene.nodes.iter().map(|n| n.node_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), b.scene.nodes.len());
     }
 
     #[test]

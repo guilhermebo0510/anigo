@@ -50,6 +50,8 @@ pub enum HostAction {
     EditInModeling { path: PathBuf, format: String, name: String },
     /// Mensagem curta para a barra de status.
     Status(String),
+    /// Duplo clique num card do Content Drawer do Cenário: colocar o ativo na cena.
+    PlaceAsset { id: AssetId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -214,6 +216,9 @@ pub struct LibraryWorkspace {
     pub(crate) first_card_center: egui::Pos2,
     pub(crate) trace: Option<String>,
     pub scenario: Option<scenario::Run>,
+    /// Modo "Content Drawer" (grade compacta dentro do Cenário): duplo clique coloca o ativo na cena.
+    pub(crate) drawer_mode: bool,
+    drawer_defaults_done: bool,
 }
 
 impl LibraryWorkspace {
@@ -284,6 +289,8 @@ impl LibraryWorkspace {
             first_card_center: egui::Pos2::ZERO,
             trace: None,
             scenario: None,
+            drawer_mode: false,
+            drawer_defaults_done: false,
         }
     }
 
@@ -298,6 +305,36 @@ impl LibraryWorkspace {
 
     pub fn is_ready(&self) -> bool {
         self.rt.is_some()
+    }
+
+    /// Ativos selecionados na grade (o Cenário usa para "substituir selecionados por…").
+    pub fn selected_asset_ids(&self) -> Vec<AssetId> {
+        let mut v: Vec<AssetId> = self.selection.ids.iter().copied().collect();
+        if let Some(p) = self.selection.primary {
+            if let Some(i) = v.iter().position(|x| *x == p) {
+                v.swap(0, i);
+            }
+        }
+        v
+    }
+
+    /// Primeira vez no Content Drawer: só tipos 3D colocáveis (o usuário pode mudar o filtro).
+    pub fn set_drawer_defaults(&mut self) {
+        if self.drawer_defaults_done || !self.is_ready() {
+            return;
+        }
+        self.drawer_defaults_done = true;
+        self.filters.kinds = vec![AssetKind::Model, AssetKind::Character, AssetKind::Outfit, AssetKind::Hair, AssetKind::Accessory, AssetKind::Prefab];
+        self.reload_rows(true);
+    }
+
+    /// Cenários de captura do Cenário: ordena por "mais recentes" (os ativos reais ficam no topo).
+    pub fn prepare_scene_drawer(&mut self) {
+        self.filters.sort = Sort { by: SortBy::ImportedAt, desc: true };
+        self.filters.user_sorted = true;
+        self.card_size = 118.0;
+        self.reload_rows(true);
+        self.reload_facets();
     }
 
     pub fn library(&self) -> Option<&Library> {
@@ -709,6 +746,38 @@ impl LibraryWorkspace {
         self.list.is_settled() && self.facets_loaded && rt.thumbs.is_idle() && !self.jobs.any_running() && self.search_edited_at.is_none() && (self.detail_for.is_none() || self.detail.is_some() || self.detail_error.is_some())
     }
 
+    /// Content Drawer: a grade da Biblioteca (busca, filtros, ordenação, arrastar cards) sem os painéis
+    /// laterais — usado dentro do workspace Cenário. Devolve as ações para o app.
+    pub fn drawer_ui(&mut self, ui: &mut egui::Ui) -> Vec<HostAction> {
+        let ctx = ui.ctx().clone();
+        self.drawer_mode = true;
+        self.pump(&ctx);
+        self.ensure_open();
+        match &self.open {
+            OpenState::Closed | OpenState::Opening(_) => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.spinner();
+                    ui.label(egui::RichText::new(crate::i18n::tr("lib.opening")).color(theme::TEXT_DIM));
+                });
+                return std::mem::take(&mut self.actions);
+            }
+            OpenState::Failed(e) => {
+                let e = e.clone();
+                ui.label(egui::RichText::new(format!("{}: {e}", crate::i18n::tr("lib.open_failed"))).color(egui::Color32::from_rgb(0xff, 0x70, 0x70)));
+                return std::mem::take(&mut self.actions);
+            }
+            OpenState::Ready => {}
+        }
+        self.handle_drops(&ctx);
+        self.scenario_tick();
+        self.drawer_toolbar(ui);
+        self.center(ui);
+        self.dialogs(&ctx);
+        self.drag_ghost(&ctx);
+        std::mem::take(&mut self.actions)
+    }
+
     /// Desenha o workspace inteiro e devolve as ações para o app.
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Vec<HostAction> {
         let ctx = ui.ctx().clone();
@@ -738,6 +807,7 @@ impl LibraryWorkspace {
             }
             OpenState::Ready => {}
         }
+        self.drawer_mode = false;
         self.handle_drops(&ctx);
         self.scenario_tick();
         self.handle_global_input(&ctx);

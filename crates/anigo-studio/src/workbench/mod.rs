@@ -406,6 +406,31 @@ impl Workbench {
         }
     }
 
+    /// Nova instância (matriz e tinta próprias) que COMPARTILHA os buffers de vértices de `src`:
+    /// 300 cópias da mesma cadeira custam 300 uniforms pequenos, não 300 malhas na GPU.
+    pub fn instance(&self, src: &GpuMesh, model: Mat4, tint: [f32; 4]) -> GpuMesh {
+        let object_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("workbench instance"),
+            contents: bytemuck::bytes_of(&ObjectUniform::new(model, tint)),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let object_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("workbench instance"),
+            layout: &self.object_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: object_buffer.as_entire_binding() }],
+        });
+        GpuMesh {
+            solid: src.solid.clone(),
+            solid_count: src.solid_count,
+            lines: src.lines.clone(),
+            line_count: src.line_count,
+            points: src.points.clone(),
+            point_count: src.point_count,
+            object_buffer,
+            object_bind,
+        }
+    }
+
     /// Sobrescreve vértices do sólido a partir de `first` (posições/normais/cores novas, mesma contagem).
     /// Usado pela escultura para não recriar o buffer a cada quadro do traço. `false` se não couber.
     pub fn update_solid(&self, mesh: &GpuMesh, first: usize, data: &[SolidVertex]) -> bool {
