@@ -1,4 +1,5 @@
-//! Fontes de material do Shading e escrita por comandos com desfazer.
+//! Fontes de material do Shading: delegam a `crate::shading::edit` (testado sem UI) e cuidam da lista de
+//! alvos, da seleção e das mensagens de status.
 //!
 //! * `Target::Project(id)` — `ProjectState::materials[id]` (o material do personagem): `SetMaterialParams`;
 //! * `Target::Node(id)` — instância de um nó do Cenário: `SetNodeProps { overrides.material }` (um patch
@@ -8,14 +9,11 @@
 //! Edição contínua (arrasto): `shading_change` pré-visualiza ao vivo SEM tocar o histórico e
 //! `shading_finish_gesture` (ponteiro solto) grava UM passo. Edição discreta: `shading_apply_now`.
 
-use super::{describe_shading, Gesture, Source, StudioApp, Target};
+use super::{describe_shading, Source, StudioApp, Target};
 use crate::icons;
-use crate::modeling::ObjectMaterial;
-use anigo_core::command::Command;
+use crate::shading::edit;
 use anigo_core::hierarchy::NodeKind;
-use anigo_core::ids::{MaterialId, NodeId};
-use anigo_core::level::{NodeOverrides, NodePatch};
-use anigo_core::{MaterialPatch, NodeSource, StylizedMaterial};
+use anigo_core::{NodeSource, StylizedMaterial};
 
 /// Linha da lista de alvos.
 pub(crate) struct TargetRow {
@@ -26,48 +24,10 @@ pub(crate) struct TargetRow {
     pub depth: usize,
 }
 
-fn no_effect(e: &str) -> bool {
-    e.contains("no effect") || e.contains("already")
-}
-
-/// Material que a Modelagem mostra no preview Cel para um objeto sem material completo.
-fn modeling_default(o: Option<&ObjectMaterial>) -> StylizedMaterial {
-    match o {
-        Some(m) => StylizedMaterial {
-            name: m.name.clone(),
-            base_color: [m.base_color[0], m.base_color[1], m.base_color[2], 1.0],
-            shade_color: [m.shade_color[0], m.shade_color[1], m.shade_color[2], 1.0],
-            specular_color: [m.highlight_color[0], m.highlight_color[1], m.highlight_color[2], 1.0],
-            spec_intensity: 0.9,
-            rim_intensity: 0.45,
-            ..Default::default()
-        },
-        None => StylizedMaterial::default(),
-    }
-}
-
 impl StudioApp {
-    /// Material base de um nó do Cenário (sem as substituições do Shading).
-    fn shading_node_base(&self, id: &NodeId) -> Option<StylizedMaterial> {
-        let slot = self.core.project().scene.node(id)?;
-        let mut clean = slot.clone();
-        clean.overrides = NodeOverrides::default();
-        Some(super::super::scene_ui::node_material(self.core.project(), &clean))
-    }
-
     /// O material EFETIVO do alvo (o que o renderer desenha).
     pub(crate) fn shading_read(&self, t: &Target) -> Option<StylizedMaterial> {
-        match t {
-            Target::Project(id) => self.core.project().materials.get(id).map(|e| e.material.clone()),
-            Target::Node(id) => {
-                let slot = self.core.project().scene.node(id)?;
-                Some(super::super::scene_ui::node_material(self.core.project(), slot))
-            }
-            Target::Object(id) => {
-                let o = self.modeling.doc.objects.iter().find(|o| o.id == *id)?;
-                Some(self.modeling.object_stylized(*id).cloned().unwrap_or_else(|| modeling_default(o.material.as_ref())))
-            }
-        }
+        edit::read(&self.core, &self.modeling, t)
     }
 
     pub(crate) fn shading_name(&self, t: &Target) -> String {
@@ -163,54 +123,19 @@ impl StudioApp {
         }
     }
 
-    /// Comando que leva o projeto do estado ATUAL a `to` para o alvo (`None` = nada a fazer / alvo de Modelagem).
-    fn shading_command(&self, t: &Target, to: &StylizedMaterial) -> Option<Command> {
-        match t {
-            Target::Project(id) => {
-                let cur = self.core.project().materials.get(id)?.material.clone();
-                let patch = MaterialPatch::diff(&cur, to);
-                (!patch.is_empty()).then(|| Command::SetMaterialParams { material_id: Some(id.clone()), patch })
-            }
-            Target::Node(id) => {
-                let base = self.shading_node_base(id)?;
-                let patch = MaterialPatch::diff(&base, to);
-                let ov = NodeOverrides { material: (!patch.is_empty()).then_some(patch), ..Default::default() };
-                let cur = &self.core.project().scene.node(id)?.overrides;
-                (*cur != ov).then(|| Command::SetNodeProps { node_id: id.clone(), patch: NodePatch { overrides: Some(ov), ..Default::default() } })
-            }
-            Target::Object(_) => None,
+    fn shading_report(&mut self, r: Result<Option<String>, String>) {
+        match r {
+            Ok(Some(desc)) => self.shading_ui.message = describe_shading(&desc),
+            Ok(None) => {}
+            Err(e) => self.shading_ui.message = format!("{}: {e}", crate::i18n::tr("char.error")),
         }
-    }
-
-    fn shading_say(&mut self, msg: String) {
-        self.shading_ui.message = msg;
     }
 
     /// Passo de um gesto contínuo: aplica ao vivo (sem histórico).
     pub(crate) fn shading_change(&mut self, new: StylizedMaterial) {
         let Some(t) = self.shading_ui.target.clone() else { return };
-        if self.shading_ui.gesture.as_ref().is_some_and(|g| g.target != t) {
-            self.shading_commit_now();
-        }
-        if self.shading_ui.gesture.is_none() {
-            let Some(start) = self.shading_read(&t) else { return };
-            let model_before = matches!(t, Target::Object(_)).then(|| self.modeling.capture());
-            self.shading_ui.gesture = Some(Gesture { target: t.clone(), start, last: new.clone(), model_before });
-        }
-        match &t {
-            Target::Object(id) => self.modeling.set_object_stylized_live(*id, Some(new.clone())),
-            _ => {
-                if let Some(cmd) = self.shading_command(&t, &new) {
-                    if let Err(e) = self.core.preview(cmd) {
-                        if !no_effect(&e) {
-                            self.shading_say(format!("{}: {e}", crate::i18n::tr("char.error")));
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(g) = self.shading_ui.gesture.as_mut() {
-            g.last = new;
+        if let Err(e) = edit::change(&mut self.core, &mut self.modeling, &mut self.shading_ui.gesture, &t, new) {
+            self.shading_ui.message = format!("{}: {e}", crate::i18n::tr("char.error"));
         }
     }
 
@@ -224,54 +149,15 @@ impl StudioApp {
 
     /// Grava o gesto em andamento (se houver) como um único passo.
     pub(crate) fn shading_commit_now(&mut self) {
-        let Some(g) = self.shading_ui.gesture.take() else { return };
-        match &g.target {
-            Target::Object(id) => {
-                if g.last == g.start {
-                    return;
-                }
-                if let Some(before) = g.model_before {
-                    self.modeling.commit_snapshot(crate::i18n::tr("shading.cmd.material"), before);
-                }
-                self.shading_say(crate::i18n::tr("shading.cmd.material").to_string());
-                let _ = id;
-            }
-            t => {
-                // volta ao estado de partida e aplica o comando final como um passo só
-                self.core.cancel_preview();
-                if let Some(cmd) = self.shading_command(t, &g.last) {
-                    match self.core.apply(cmd) {
-                        Ok(o) => self.shading_say(describe_shading(&o.description)),
-                        Err(e) if no_effect(&e) => {}
-                        Err(e) => self.shading_say(format!("{}: {e}", crate::i18n::tr("char.error"))),
-                    }
-                }
-            }
-        }
+        let r = edit::commit(&mut self.core, &mut self.modeling, &mut self.shading_ui.gesture);
+        self.shading_report(r);
     }
 
     /// Edição discreta (preset, colar, reset de grupo, trocar A/B): um passo de histórico agora.
     pub(crate) fn shading_apply_now(&mut self, new: StylizedMaterial) {
-        self.shading_commit_now();
         let Some(t) = self.shading_ui.target.clone() else { return };
-        match &t {
-            Target::Object(id) => {
-                let cur = self.shading_read(&t);
-                if cur.as_ref() != Some(&new) {
-                    self.modeling.set_object_stylized(crate::i18n::tr("shading.cmd.material"), *id, Some(new));
-                    self.shading_say(crate::i18n::tr("shading.cmd.material").to_string());
-                }
-            }
-            _ => {
-                if let Some(cmd) = self.shading_command(&t, &new) {
-                    match self.core.apply(cmd) {
-                        Ok(o) => self.shading_say(describe_shading(&o.description)),
-                        Err(e) if no_effect(&e) => {}
-                        Err(e) => self.shading_say(format!("{}: {e}", crate::i18n::tr("char.error"))),
-                    }
-                }
-            }
-        }
+        let r = edit::apply(&mut self.core, &mut self.modeling, &mut self.shading_ui.gesture, &t, new);
+        self.shading_report(r);
     }
 
     // ------------------------------------------------------------------ copiar / colar
@@ -279,7 +165,7 @@ impl StudioApp {
     pub(crate) fn shading_copy(&mut self) {
         if let Some(m) = self.shading_ui.target.as_ref().and_then(|t| self.shading_read(t)) {
             self.shading_ui.clipboard = Some(m);
-            self.shading_say(crate::i18n::tr("shading.copied").to_string());
+            self.shading_ui.message = crate::i18n::tr("shading.copied").to_string();
         }
     }
 
@@ -290,7 +176,7 @@ impl StudioApp {
             m.name = cur.name;
         }
         self.shading_apply_now(m);
-        self.shading_say(crate::i18n::tr("shading.pasted").to_string());
+        self.shading_ui.message = crate::i18n::tr("shading.pasted").to_string();
     }
 
     // ------------------------------------------------------------------ desfazer / refazer
@@ -322,13 +208,8 @@ impl StudioApp {
         }
     }
 
-    /// Id do material do projeto do personagem (para cenários e atalhos).
+    /// Material do projeto do personagem (para cenários e atalhos).
     pub(crate) fn shading_character_target(&self) -> Option<Target> {
         self.core.project().character_material().map(|e| Target::Project(e.material_id.clone()))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn shading_material_id(&self) -> Option<MaterialId> {
-        self.core.project().character_material().map(|e| e.material_id.clone())
     }
 }

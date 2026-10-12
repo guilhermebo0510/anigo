@@ -26,6 +26,7 @@ pub const SHADING_TABLE: &[(&str, &str, &str)] = &[
     ("shading.gate_off", "Este controle só tem efeito com o recurso acima ligado.", "This control only has an effect while the feature above is on."),
     ("shading.anime_on", "Ligar recursos anime", "Enable anime features"),
     ("shading.anime_on_tip", "Liga contorno com normais suavizadas, afinar com a distância, taper e tinta de linha por material (hoje desligados por padrão).", "Turns on smoothed-normal outline, distance thinning, taper and per-material line ink (off by default)."),
+    ("shading.scene_note", "Este objeto tem um material completo editado no workspace Shading.", "This object has a full material edited in the Shading workspace."),
     ("shading.lib_opening", "Abrindo a Biblioteca…", "Opening the Library…"),
     ("shading.g.base", "Base / Sombra", "Base / Shadow"),
     ("shading.g.ramp", "Rampa 2D", "2D Ramp"),

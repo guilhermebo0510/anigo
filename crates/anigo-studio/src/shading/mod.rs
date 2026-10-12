@@ -2,6 +2,7 @@
 //! layout do preview e presets. A UI vive em `crate::app::shading_ui`.
 
 pub mod ball;
+pub mod edit;
 pub mod palette;
 pub mod params;
 pub mod presets;

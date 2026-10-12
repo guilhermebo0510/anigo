@@ -746,6 +746,17 @@ impl StudioApp {
 
     fn material_section(&mut self, ui: &mut egui::Ui, editable: &[NodeId], slots: &[&anigo_core::NodeSlot]) {
         let first = slots[0];
+        // material completo editado no workspace Shading: os 3 campos básicos abaixo seriam sobrescritos pelo patch
+        if first.overrides.material.is_some() {
+            ui.label(RichText::new(tr("shading.scene_note")).size(11.5).color(theme::TEXT_DIM));
+            if ui.button(format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, tr("scene.material.reset"))).clicked() {
+                let cmds: Vec<Command> = editable.iter().map(|id| Command::SetNodeProps { node_id: id.clone(), patch: NodePatch { overrides: Some(NodeOverrides::default()), ..Default::default() } }).collect();
+                if let Some(c) = cmds.into_iter().next() {
+                    self.scene_apply(c);
+                }
+            }
+            return;
+        }
         let mut ov: NodeOverrides = first.overrides.clone();
         let mut changed = false;
         let mut clear = false;

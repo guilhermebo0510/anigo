@@ -16,30 +16,19 @@ mod sources;
 mod viewport;
 
 use super::StudioApp;
-use crate::modeling::SnapshotPub;
 use crate::shading::ball::{LightRig, PreviewMode};
 use crate::shading::palette::{Harmony, Palette, ShadeRecipe};
 use crate::shading::params::Group;
 use crate::shading::presets::PresetRow;
 use crate::viewport::OrbitCamera;
 use anigo_assets::AssetId;
-use anigo_core::ids::{MaterialId, NodeId};
 use anigo_core::StylizedMaterial;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) use script::is_shading_scenario;
 
-/// O que está sendo editado.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Target {
-    /// Material do projeto (o do personagem): `SetMaterialParams`.
-    Project(MaterialId),
-    /// Instância de um nó do Cenário: `SetNodeProps { overrides.material }`.
-    Node(NodeId),
-    /// Objeto da Modelagem (histórico próprio da `ModelingSession`).
-    Object(u32),
-}
+pub(crate) use crate::shading::edit::{Gesture, Target};
 
 /// Aba de origem dos alvos (a mesma ordem dos workspaces que ela serve).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -59,15 +48,6 @@ impl Source {
             Source::Modelagem => "shading.src.modeling",
         }
     }
-}
-
-/// Gesto de edição em andamento (arrasto de slider, seletor de cor…): o último material pré-visualizado.
-pub(crate) struct Gesture {
-    pub target: Target,
-    pub start: StylizedMaterial,
-    pub last: StylizedMaterial,
-    /// Estado da Modelagem antes do gesto (desfazer de objetos).
-    pub model_before: Option<SnapshotPub>,
 }
 
 /// Mapa de face SDF ativo no renderer.
