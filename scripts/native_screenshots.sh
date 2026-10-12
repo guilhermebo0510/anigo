@@ -19,7 +19,15 @@ shot modelagem_bevel_cel modelagem ops-bevel
 shot modelagem_proporcional modelagem proportional
 shot modelagem_modificadores_cel modelagem modifiers
 shot modelagem_cel_cena modelagem cel-preview
-shot biblioteca biblioteca ""
+shot biblioteca biblioteca biblioteca-grid
+shot biblioteca_detalhes biblioteca biblioteca-detalhes
+shot modelagem_escultura modelagem sculpt-draw
+shot modelagem_escultura_mascara modelagem sculpt-mask
+shot modelagem_uv modelagem uv-editor
+shot modelagem_normais_overlay modelagem normals-overlay
+shot modelagem_normais_transfer modelagem normals-transfer-clean
+shot personagem personagem character-default
+shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)
 for f in "$OUT"/*.png; do convert "$f" -strip -colors 128 "PNG8:$f" 2>/dev/null || true; done
 ls -la "$OUT"
