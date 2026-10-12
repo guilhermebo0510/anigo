@@ -149,7 +149,7 @@ jobs:
             libwayland-dev libfontconfig1-dev fonts-dejavu-core \
             xdotool imagemagick python3-pil
       - name: testes (modelagem, sessão, nativo C/C++, biblioteca de ativos, studio)
-        run: cargo test -p anigo-core -p anigo-modeling -p anigo-session -p anigo-native -p anigo-assets -p anigo-ik -p anigo-studio
+        run: cargo test -p anigo-core -p anigo-modeling -p anigo-session -p anigo-native -p anigo-assets -p anigo-ik -p anigo-bridge -p anigo-studio
       - name: grade da Biblioteca com 50 000 ativos sintéticos (headless egui; orçamento folgado em debug)
         run: ANIGO_BENCH_N=50000 cargo test -p anigo-studio grid_frame_time_with_synthetic_library -- --nocapture
       - name: testes do renderer (golden frames + render_to_texture + naga)
@@ -220,6 +220,10 @@ jobs:
         run: bash scripts/native_sculpt_smoke.sh ./target/debug/anigo-studio
       - name: smoke de entrada real do Modo Cabelo (xdotool desenha uma mecha, Ctrl+Z desfaz, Ctrl+Shift+Z refaz)
         run: bash scripts/native_hair_smoke.sh ./target/debug/anigo-studio
+      - name: smoke da bridge nativa (studio --bridge + CLI do anigo-mcp: Command muda a viewport, Ctrl+Z desfaz, Biblioteca, render real)
+        run: |
+          cargo build -p anigo-mcp
+          bash scripts/native_bridge_smoke.sh ./target/debug/anigo-studio ./target/debug/anigo-mcp native-artifacts/bridge_smoke
       - uses: actions/upload-artifact@v4
         if: always()
         with:

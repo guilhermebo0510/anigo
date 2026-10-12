@@ -103,9 +103,9 @@ canvas (latência ~100–300 ms, input difícil) — é o caminho que o app atua
 Fluxo de hot reload do Tauri atual (Vite HMR) permanece funcionando para quem editar o Svelte.
 
 ## 7. Automação / MCP
-`anigo-mcp` hoje fala com o app Tauri (`bridge.rs`). No app nativo: servidor local (loopback, porta efêmera,
-token aleatório em arquivo de sessão) exposto pelo `anigo-studio` com os mesmos comandos tipados do core +
-`capture_frame`. Mantém a regra de que telemetria reflete valores reais. (Fase 2 — contrato em `ROADMAP_TAREFAS.md` T-IPC.)
+`anigo-mcp` fala com o app Tauri (`bridge.rs`, porta 39090) **e**, desde a T-2.13, com o app nativo: `anigo-studio --bridge` sobe o servidor local do crate `anigo-bridge`
+(loopback, porta efêmera, token por sessão em `bridge.json`) e aplica os pedidos na thread da UI pela mesma `CoreSession` (comandos tipados do core, undo/redo, screenshot, render).
+Mantém a regra de que telemetria reflete valores reais. Detalhes, segurança e limites: [`MCP_BRIDGE_NATIVA.md`](MCP_BRIDGE_NATIVA.md).
 
 ## 8. Integração do modelador com o ProjectState
 Malha autoral = `AssetEntry{kind: Mesh, uri: "anigo://authored/<id>"}` + payload `EditMesh` (JSON canônico).

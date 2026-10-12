@@ -18,8 +18,9 @@
 | [RENDER_UI.md](RENDER_UI.md) | Workspace Render: câmera de render, saída (presets, supersampling, alfa, P3, PNG 8/16/JPEG), passes e AOVs, preview com máscara/guias, fila de render real (thread de GPU, cancelar/retomar), histórico com miniaturas, gancho de sequência, smoke xdotool |
 | [SHADING_UI.md](SHADING_UI.md) | Workspace Shading (editor de materiais toon/anime): alvos de Personagem/Cenário/Modelagem, parâmetros agrupados, editor de gradiente da rampa 2D, contorno por material, face SDF, paleta, presets `.anigomat.json` com miniatura em shader ball, A/B, undo, smoke xdotool |
 | [POSING_UI.md](POSING_UI.md) | Workspace Posing: modelo de pose do núcleo (`SetPose`, `PoseRig`, `.anigopose.json`), FK/IK/limites/presets/mãos/olhar, API para a Animação, smoke xdotool |
+| [MCP_BRIDGE_NATIVA.md](MCP_BRIDGE_NATIVA.md) | Bridge local do `anigo-mcp` com o app nativo (`--bridge`): protocolo NDJSON/HTTP, ações (projeto, `Command`, undo/redo, log, Biblioteca, render, screenshot, workspace), segurança (loopback, token, Host/Origin, limites), ferramentas `anigo_native_*`, testes, smoke e o que não foi validado |
 | [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 
-Crates novas: `anigo-modeling` (motor), `anigo-assets` (biblioteca), `anigo-native` (C/C++), `anigo-session` (CoreSession compartilhada), `anigo-studio` (app).
+Crates novas: `anigo-bridge` (servidor local do MCP), `anigo-modeling` (motor), `anigo-assets` (biblioteca), `anigo-native` (C/C++), `anigo-session` (CoreSession compartilhada), `anigo-studio` (app).
 Comandos úteis: `cargo run -p anigo-studio`, `scripts/dev_native.sh`, `scripts/native_input_smoke.sh`, `bacon.toml`.

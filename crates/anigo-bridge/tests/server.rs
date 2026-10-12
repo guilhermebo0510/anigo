@@ -174,8 +174,13 @@ fn ndjson_invalid_json_gets_errors_then_the_connection_is_dropped() {
     for _ in 0..3 {
         let _ = c.write_all(b"{ lixo\n");
     }
-    assert!(is_closed(&mut c) || read_line(&mut c).is_some());
-    assert!(s.metrics().invalid_frames.load(Relaxed) >= 4);
+    // 3 falhas consecutivas: o servidor responde às 3 e fecha (lemos até o EOF)
+    let mut replies = 0;
+    while read_line(&mut c).is_some() {
+        replies += 1;
+    }
+    assert_eq!(replies, 3);
+    assert_eq!(s.metrics().invalid_frames.load(Relaxed), 5);
 }
 
 #[test]
