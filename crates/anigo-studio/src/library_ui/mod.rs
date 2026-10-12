@@ -9,6 +9,7 @@
 //! O estado vive em [`LibraryWorkspace`]; o app só repassa o `Ui` e executa as [`HostAction`] devolvidas.
 
 pub mod cel_thumb;
+pub mod clip_bridge;
 pub mod data;
 pub mod pose_bridge;
 pub mod scenario;

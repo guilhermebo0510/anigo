@@ -428,6 +428,33 @@ impl CoreSession {
         Ok(out)
     }
 
+    // ------------------------------------------------------------------ animação
+
+    /// Aplica uma amostra de animação (scrub/reprodução) ao projeto **sem histórico**: pose, transform de nós,
+    /// sol e câmera de cena passam a valer o que o clip diz no quadro avaliado. É estado DERIVADO do clip + playhead
+    /// (como o Blender/Sequencer), não uma edição: não entra no undo e some quando o playhead sai do quadro.
+    ///
+    /// Recusa (devolve `false`) durante um gesto de preview aberto (arrasto): o gesto guarda o projeto de partida
+    /// e a amostra o sobrescreveria. Só mexe nas revisões quando algo mudou de fato.
+    pub fn apply_animation_sample(&mut self, sample: &anigo_core::animation::Sample) -> bool {
+        if self.preview.is_some() {
+            return false;
+        }
+        if sample.apply_to_project(&mut self.project) {
+            self.dynamic_revision += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Posição do playhead em segundos, persistida no projeto mas fora do histórico (mover o playhead não é uma edição).
+    pub fn set_playhead_seconds(&mut self, seconds: f32) {
+        if self.preview.is_none() && seconds.is_finite() && self.project.animation.playhead_seconds != seconds {
+            self.project.animation.playhead_seconds = seconds;
+        }
+    }
+
     // ------------------------------------------------------------------ pose
 
     /// Pose atual do personagem (somente leitura; edite com `Command::SetPose`).
@@ -1204,5 +1231,67 @@ mod tests {
         let changed = rest_mesh.vertices.iter().zip(&mesh.vertices).filter(|(a, b)| a.position != b.position).count();
         assert!(changed > 100 && changed <= 175, "só os dedos da mão esquerda mudam: {changed}");
         assert!(scene.skin.palette_is_identity, "mão não mexe na paleta");
+    }
+
+    // ---------------------------------------------------------------- animação
+
+    fn clip_with_elbow_keys() -> anigo_core::project::AnimationClip {
+        use anigo_core::animation::{Channel, ChannelTarget, Key, KeyValue};
+        let mut clip = anigo_core::project::AnimationClip::new(anigo_core::AnimationClipId::from_slug("walk"), "Walk");
+        clip.range = Some([0, 24]);
+        let rot = |deg: f32| KeyValue::Quat(glam::Quat::from_rotation_x(deg.to_radians()).to_array());
+        clip.channels = vec![Channel { target: ChannelTarget::bone("LeftElbow"), keys: vec![Key::new(0, rot(0.0)), Key::new(24, rot(-90.0))] }];
+        clip
+    }
+
+    #[test]
+    fn sampling_a_clip_poses_the_scene_without_touching_the_history_and_undo_resamples() {
+        use anigo_core::animation::AnimEdit;
+        let mut session = CoreSession::new();
+        let clip = clip_with_elbow_keys();
+        let id = clip.clip_id.clone();
+        session.apply(Command::EditAnimation { edit: AnimEdit::PutClip { clip } }).expect("put");
+        assert_eq!(session.history().undo_depth(), 1);
+        let rev = session.dynamic_revision();
+        let fps = session.project().animation.fps;
+        let sample = session.project().animation.clips[&id].evaluate(fps, 12.0);
+        assert!(session.apply_animation_sample(&sample));
+        assert!(session.dynamic_revision() > rev);
+        assert_eq!(session.history().undo_depth(), 1, "scrub não entra no histórico");
+        assert!(!session.pose().is_rest());
+        // a paleta do renderer acompanha a amostra
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(!scene.skin.palette_is_identity);
+        // a mesma amostra de novo não bumpa a revisão
+        let rev = session.dynamic_revision();
+        assert!(!session.apply_animation_sample(&sample));
+        assert_eq!(session.dynamic_revision(), rev);
+        // amostras diferentes dão poses diferentes (scrub muda a pose)
+        let a = session.pose().clone();
+        let s2 = session.project().animation.clips[&id].evaluate(fps, 24.0);
+        session.apply_animation_sample(&s2);
+        assert_ne!(&a, session.pose());
+        // desfazer a criação do clip remove o clip; reamostrar o clip ativo some com os canais
+        session.undo().expect("undo");
+        assert!(session.project().animation.clips.is_empty());
+    }
+
+    #[test]
+    fn sampling_is_refused_while_a_preview_gesture_is_open() {
+        use anigo_core::animation::AnimEdit;
+        let mut session = CoreSession::new();
+        let clip = clip_with_elbow_keys();
+        let id = clip.clip_id.clone();
+        session.apply(Command::EditAnimation { edit: AnimEdit::PutClip { clip } }).expect("put");
+        session.begin_preview();
+        let sample = session.project().animation.clips[&id].evaluate(24.0, 24.0);
+        assert!(!session.apply_animation_sample(&sample));
+        assert!(session.pose().is_rest());
+        session.cancel_preview();
+        assert!(session.apply_animation_sample(&sample));
+        session.set_playhead_seconds(1.0);
+        assert_eq!(session.project().animation.playhead_seconds, 1.0);
+        assert_eq!(session.history().undo_depth(), 1);
     }
 }

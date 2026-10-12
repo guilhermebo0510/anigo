@@ -350,6 +350,25 @@ impl CelThumbnailRenderer {
     }
 }
 
+impl CelThumbnailRenderer {
+    /// Miniatura 3D de um CLIP: tira 2x2 com o personagem posado em 4 instantes do clip.
+    pub fn render_clip_strip(&self, asset: &anigo_core::clip_asset::ClipAsset, size: u32) -> Result<RgbaImage, String> {
+        let size = size.clamp(32, 2048);
+        let tile = (size / 2).max(16);
+        let mut img = RgbaImage::new(size, size);
+        for (i, pose) in asset.strip_poses(4).iter().enumerate() {
+            let t = self.render_pose(pose, tile)?;
+            let (ox, oy) = ((i as u32 % 2) * tile, (i as u32 / 2) * tile);
+            for (x, y, p) in t.enumerate_pixels() {
+                if ox + x < size && oy + y < size {
+                    img.put_pixel(ox + x, oy + y, *p);
+                }
+            }
+        }
+        Ok(img)
+    }
+}
+
 /// Se o ativo tem exatamente UM material canônico, devolve-o como `StylizedMaterial` (cor-base e sombra reais).
 pub fn single_material(asset_dir: &Path) -> Option<StylizedMaterial> {
     let rd = std::fs::read_dir(asset_dir.join("materials")).ok()?;
@@ -388,6 +407,15 @@ impl ThumbnailRenderer for CelThumbnailRenderer {
             let bytes = read_limited(&req.primary)?;
             let asset = anigo_core::pose::PoseAsset::from_json(&bytes).map_err(|e| e.to_string())?;
             let image = self.render_pose(&asset.pose, req.size)?;
+            return Ok(Rendered { image, placeholder: false });
+        }
+        if req.format == "anigoclip" {
+            if self.available() == Some(false) {
+                return Err(self.failure_reason().unwrap_or_default());
+            }
+            let bytes = read_limited(&req.primary)?;
+            let asset = anigo_core::clip_asset::ClipAsset::from_json(&bytes).map_err(|e| e.to_string())?;
+            let image = self.render_clip_strip(&asset, req.size)?;
             return Ok(Rendered { image, placeholder: false });
         }
         if !is_3d_format(&req.format) {

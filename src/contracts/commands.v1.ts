@@ -199,6 +199,133 @@ export interface HandsPoseWire {
 /** Rótulo da operação de pose (só descrição/telemetria). */
 export type PoseOpWire = "edit" | "mirror" | "reset" | "apply" | "paste" | "preset" | "ik" | "gaze" | "hand" | "ground";
 
+// ---------------------------------------------------------------------------
+// Workspace Animação — espelha `crates/anigo-core/src/animation.rs`.
+// ---------------------------------------------------------------------------
+
+export type LoopModeWire = "once" | "loop" | "ping_pong";
+export type ExtrapolationWire = "constant" | "linear";
+export type HandSideWire = "left" | "right";
+export type SunPropWire = "intensity" | "direction" | "color";
+export type CameraPropWire = "fov" | "eye" | "target";
+
+/** Interpolação DA CHAVE ATÉ A PRÓXIMA; `bezier.c` = `[x1, y1, x2, y2]` normalizado no segmento (`x ∈ [0, 1]`). */
+export type InterpWire =
+  | { kind: "step" }
+  | { kind: "linear" }
+  | { kind: "ease" }
+  | { kind: "ease_in" }
+  | { kind: "ease_out" }
+  | { kind: "bezier"; c: [number, number, number, number] };
+
+/** O que um canal anima (rotação de osso, translação do root/quadril, dedos, transform de nó, sol, câmera de cena). */
+export type ChannelTargetWire =
+  | { kind: "bone"; bone: string }
+  | { kind: "root" }
+  | { kind: "hips" }
+  | { kind: "hand"; side: HandSideWire }
+  | { kind: "node_translation"; node_id: string }
+  | { kind: "node_rotation"; node_id: string }
+  | { kind: "node_scale"; node_id: string }
+  | { kind: "sun"; prop: SunPropWire }
+  | { kind: "camera"; prop: CameraPropWire };
+
+/** Valor tipado de uma chave (precisa casar com o tipo do canal). */
+export type KeyValueWire =
+  | { t: "scalar"; v: number }
+  | { t: "vec3"; v: [number, number, number] }
+  | { t: "quat"; v: [number, number, number, number] }
+  | { t: "curl"; v: [number, number, number, number, number] };
+
+export interface KeyWire {
+  frame: number;
+  value: KeyValueWire;
+  interp?: InterpWire;
+}
+
+export interface ChannelWire {
+  target: ChannelTargetWire;
+  keys: KeyWire[];
+}
+
+export interface MarkerWire {
+  frame: number;
+  name: string;
+}
+
+export interface KeyInsertWire {
+  target: ChannelTargetWire;
+  key: KeyWire;
+}
+
+export interface KeyRefWire {
+  target: ChannelTargetWire;
+  frame: number;
+}
+
+export interface KeyMoveWire {
+  target: ChannelTargetWire;
+  frame: number;
+  to_frame: number;
+}
+
+export interface TransformKeyframeWire {
+  time_seconds: number;
+  translation: [number, number, number];
+  rotation: [number, number, number, number];
+  scale: [number, number, number];
+}
+
+export interface AnimationTrackWire {
+  node_id: string;
+  keyframes?: TransformKeyframeWire[];
+}
+
+/** Clip de animação (`AnimationClip`): os campos novos são aditivos e opcionais. */
+export interface AnimationClipWire {
+  clip_id: string;
+  name: string;
+  duration_seconds: number;
+  tracks?: AnimationTrackWire[];
+  channels?: ChannelWire[];
+  range?: [number, number] | null;
+  loop_mode?: LoopModeWire;
+  extrapolation?: ExtrapolationWire;
+  hold_step?: number;
+  markers?: MarkerWire[];
+}
+
+/** Uma edição atômica da animação (inverso exato no núcleo). */
+export type AnimEditWire =
+  | { op: "put_clip"; clip: AnimationClipWire }
+  | { op: "remove_clip"; clip_id: string }
+  | { op: "set_active_clip"; clip_id?: string | null }
+  | { op: "rename_clip"; clip_id: string; name: string }
+  | { op: "insert_keys"; clip_id: string; keys: KeyInsertWire[] }
+  | { op: "delete_keys"; clip_id: string; keys: KeyRefWire[] }
+  | { op: "move_keys"; clip_id: string; moves: KeyMoveWire[] }
+  | { op: "set_interpolation"; clip_id: string; keys: KeyRefWire[]; interp: InterpWire }
+  | { op: "set_clip_range"; clip_id: string; range?: [number, number] | null }
+  | { op: "set_clip_playback"; clip_id: string; loop_mode?: LoopModeWire | null; extrapolation?: ExtrapolationWire | null; hold_step?: number | null }
+  | { op: "set_fps"; fps: number; retime?: boolean }
+  | { op: "set_markers"; clip_id: string; markers: MarkerWire[] };
+
+/** Operações de `AnimEditWire` (drift-checked contra o enum Rust `AnimEdit`). */
+export const ANIM_EDIT_OPS = [
+  "put_clip",
+  "remove_clip",
+  "set_active_clip",
+  "rename_clip",
+  "insert_keys",
+  "delete_keys",
+  "move_keys",
+  "set_interpolation",
+  "set_clip_range",
+  "set_clip_playback",
+  "set_fps",
+  "set_markers",
+] as const;
+
 export interface AssetEntryWire {
   asset_id: string;
   kind: "mesh" | "texture" | "hair" | "cloth" | "audio" | "other";
@@ -431,6 +558,7 @@ export type CommandWire =
       hands?: HandsPoseWire;
       op?: PoseOpWire;
     }
+  | { kind: "edit_animation"; edit: AnimEditWire }
   | { kind: "batch"; commands: CommandWire[] };
 
 /** Kinds known by this contract version (drift-checked against the Rust enum). */
@@ -464,6 +592,7 @@ export const COMMAND_KINDS = [
   "patch_assets",
   "set_render_output",
   "set_pose",
+  "edit_animation",
   "batch",
 ] as const;
 

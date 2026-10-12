@@ -106,6 +106,7 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
       },
       { kind: "render_output", patch: { width: 2480, height: 3508, dpi: 300, supersample: 2, transparent: true } },
       { kind: "pose", bones: [{ bone: "Head", rotation: [0, 0.2588, 0, 0.9659] }], op: "edit" },
+      { kind: "animation", edit: { op: "set_fps", fps: 30, retime: true } },
       { kind: "batch", intents: [{ kind: "zoom", factor: 1.1 }, { kind: "render_settings", tonemap: "neutral" }] },
     ];
 
@@ -119,6 +120,21 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
     for (const intent of intents) {
       assert.ok(isCommandWire(built(intent)), "o comando construído precisa passar no guard do contrato");
     }
+  });
+
+  it("animation: valida quadros inteiros, fps, alças Bézier e valores finitos", () => {
+    const target = { kind: "bone", bone: "Head" } as const;
+    rejected({ kind: "animation", edit: { op: "set_fps", fps: 0 } }, "invalid_value");
+    rejected({ kind: "animation", edit: { op: "set_fps", fps: NaN } }, "non_finite");
+    rejected({ kind: "animation", edit: { op: "insert_keys", clip_id: "ani_a", keys: [] } }, "no_op");
+    rejected({ kind: "animation", edit: { op: "insert_keys", clip_id: "ani_a", keys: [{ target, key: { frame: 1.5, value: { t: "quat", v: [0, 0, 0, 1] } } }] } }, "invalid_value");
+    rejected({ kind: "animation", edit: { op: "insert_keys", clip_id: "ani_a", keys: [{ target, key: { frame: 1, value: { t: "quat", v: [0, NaN, 0, 1] } } }] } }, "non_finite");
+    rejected({ kind: "animation", edit: { op: "set_interpolation", clip_id: "ani_a", keys: [{ target, frame: 0 }], interp: { kind: "bezier", c: [2, 0, 0.5, 1] } } }, "invalid_value");
+    rejected({ kind: "animation", edit: { op: "set_clip_playback", clip_id: "ani_a", hold_step: 0 } }, "invalid_value");
+    assert.deepEqual(
+      built({ kind: "animation", edit: { op: "move_keys", clip_id: "ani_a", moves: [{ target, frame: 2, to_frame: 5 }] } }),
+      { kind: "edit_animation", edit: { op: "move_keys", clip_id: "ani_a", moves: [{ target, frame: 2, to_frame: 5 }] } }
+    );
   });
 
   it("pose: recusa osso desconhecido, quaternion inválido e valores fora de faixa", () => {

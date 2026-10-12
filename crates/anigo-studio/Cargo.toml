@@ -15,6 +15,8 @@ anigo-renderer = { workspace = true }
 anigo-session = { path = "../anigo-session" }
 anigo-ik = { path = "../anigo-ik" }
 anigo-bridge = { path = "../anigo-bridge" }
+anigo-physics = { path = "../anigo-physics" }
+anigo-vrm = { path = "../anigo-vrm" }
 anigo-assets = { path = "../anigo-assets", default-features = false, features = ["fbx", "watch"] }
 anigo-native = { path = "../anigo-native", default-features = false, features = ["ufbx"] }
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }

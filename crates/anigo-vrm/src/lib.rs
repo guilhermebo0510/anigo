@@ -18,6 +18,7 @@
 //! Nota de ambiente: sem `cargo` no sandbox — validação de sintaxe via
 //! `scripts/check_rust_syntax.mjs`; `cargo test` roda na CI (issue #59).
 
+pub mod anim_io;
 pub mod exporter;
 pub mod gltf;
 pub mod spring_bridge;

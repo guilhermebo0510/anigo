@@ -78,6 +78,17 @@ shot posing_presets posing posing-presets
 shot posing_mao posing posing-mao
 shot posing_gaze posing posing-gaze
 shot posing_biblioteca posing posing-biblioteca
+# Animacao (estado do egui isolado por captura: as secoes abertas de uma nao vazam para a outra)
+ashot() { XDG_DATA_HOME=$(mktemp -d) shot "$@"; }
+ashot animacao_vazio animacao animacao-vazio
+ashot animacao_timeline animacao animacao-timeline
+ashot animacao_curvas animacao animacao-curvas
+ashot animacao_passo animacao animacao-passo
+ashot animacao_bezier animacao animacao-bezier
+ashot animacao_onion animacao animacao-onion
+ashot animacao_fisica animacao animacao-fisica
+ashot animacao_clips animacao animacao-clips
+ashot animacao_sequencia animacao animacao-sequencia
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)

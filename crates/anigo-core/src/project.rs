@@ -472,6 +472,17 @@ pub struct AnimationState {
     pub active_clip: Option<AnimationClipId>,
     #[serde(default)]
     pub playhead_seconds: f32,
+    /// Taxa de quadros do projeto (aditivo: 24 fps no padrão, omitido do JSON nesse caso).
+    #[serde(default = "default_animation_fps", skip_serializing_if = "is_default_animation_fps")]
+    pub fps: f32,
+}
+
+fn default_animation_fps() -> f32 {
+    crate::animation::DEFAULT_FPS
+}
+
+fn is_default_animation_fps(fps: &f32) -> bool {
+    *fps == crate::animation::DEFAULT_FPS
 }
 
 impl Default for AnimationState {
@@ -480,11 +491,21 @@ impl Default for AnimationState {
             clips: BTreeMap::new(),
             active_clip: None,
             playhead_seconds: 0.0,
+            fps: crate::animation::DEFAULT_FPS,
         }
     }
 }
 
-/// Animation clip with per-node transform tracks.
+fn is_default_hold_step(v: &u8) -> bool {
+    *v <= 1
+}
+
+fn default_hold_step() -> u8 {
+    1
+}
+
+/// Animation clip with per-node transform tracks (legado) e canais tipados por osso/nó/sol/câmera
+/// (`crate::animation`). Todos os campos novos são aditivos (`serde(default)`, omitidos no padrão).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnimationClip {
     pub clip_id: AnimationClipId,
@@ -492,6 +513,29 @@ pub struct AnimationClip {
     pub duration_seconds: f32,
     #[serde(default)]
     pub tracks: Vec<AnimationTrack>,
+    /// Canais com chaves tipadas e interpolação por chave; sempre ordenados por alvo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<crate::animation::Channel>,
+    /// Faixa do clip em quadros `[início, fim]`; `None` = automática (0 até a maior chave).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "is_default_loop_mode")]
+    pub loop_mode: crate::animation::LoopMode,
+    #[serde(default, skip_serializing_if = "is_default_extrapolation")]
+    pub extrapolation: crate::animation::Extrapolation,
+    /// "Animar em 2s/3s": o quadro avaliado é congelado em múltiplos de `hold_step` (1 = todo quadro).
+    #[serde(default = "default_hold_step", skip_serializing_if = "is_default_hold_step")]
+    pub hold_step: u8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<crate::animation::Marker>,
+}
+
+fn is_default_loop_mode(v: &crate::animation::LoopMode) -> bool {
+    *v == crate::animation::LoopMode::Once
+}
+
+fn is_default_extrapolation(v: &crate::animation::Extrapolation) -> bool {
+    *v == crate::animation::Extrapolation::Constant
 }
 
 /// Track binding keyframes to a node.
@@ -1084,6 +1128,31 @@ impl ProjectState {
                     });
                 }
             }
+            clip.validate_shape().map_err(|detail| ProjectError::InvalidValue {
+                field: format!("animation.clips.{}", clip.clip_id),
+                detail,
+            })?;
+            for ch in &clip.channels {
+                use crate::animation::ChannelTarget as T;
+                if let T::NodeTranslation { node_id } | T::NodeRotation { node_id } | T::NodeScale { node_id } = &ch.target {
+                    if !node_ids.contains(node_id.as_str()) {
+                        return Err(ProjectError::DanglingReference {
+                            field: "animation.clips[].channels[].target.node_id",
+                            kind: "scene node",
+                            target: node_id.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        if !self.animation.fps.is_finite() || !(crate::animation::MIN_FPS..=crate::animation::MAX_FPS).contains(&self.animation.fps) {
+            return Err(ProjectError::InvalidValue {
+                field: "animation.fps".to_string(),
+                detail: format!("must be within [{}, {}]", crate::animation::MIN_FPS, crate::animation::MAX_FPS),
+            });
+        }
+        if self.animation.clips.len() > crate::animation::MAX_CLIPS {
+            return Err(ProjectError::InvalidValue { field: "animation.clips".to_string(), detail: "too many clips".to_string() });
         }
         if let Some(active) = &self.animation.active_clip {
             if !self.animation.clips.contains_key(active) {
@@ -1273,6 +1342,15 @@ impl ProjectState {
             .collect();
         for clip in self.animation.clips.values_mut() {
             clip.tracks.retain(|track| known_nodes.contains(&track.node_id));
+            clip.sanitize(&known_nodes);
+        }
+        if !self.animation.fps.is_finite() || !(crate::animation::MIN_FPS..=crate::animation::MAX_FPS).contains(&self.animation.fps) {
+            self.animation.fps = crate::animation::DEFAULT_FPS;
+        }
+        while self.animation.clips.len() > crate::animation::MAX_CLIPS {
+            if let Some(last) = self.animation.clips.keys().next_back().cloned() {
+                self.animation.clips.remove(&last);
+            }
         }
         if let Some(active) = self.animation.active_clip.clone() {
             if !self.animation.clips.contains_key(&active) {

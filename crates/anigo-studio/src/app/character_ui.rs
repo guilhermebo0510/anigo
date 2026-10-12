@@ -737,12 +737,13 @@ pub(crate) fn route_undo_redo(
     undo: bool,
 ) -> Option<String> {
     use crate::workspace::WorkspaceId;
-    if matches!(ws, WorkspaceId::Personagem | WorkspaceId::Cenario | WorkspaceId::Iluminacao | WorkspaceId::Render | WorkspaceId::Posing) {
+    if matches!(ws, WorkspaceId::Personagem | WorkspaceId::Cenario | WorkspaceId::Iluminacao | WorkspaceId::Render | WorkspaceId::Posing | WorkspaceId::Animacao) {
         let r = if undo { core.undo() } else { core.redo() };
         return Some(match r {
             Ok(o) if ws == WorkspaceId::Cenario || ws == WorkspaceId::Render => super::scene_ui::describe_scene(&o.description),
             Ok(o) if ws == WorkspaceId::Iluminacao => super::lighting_ui::describe_light(&o.description),
             Ok(o) if ws == WorkspaceId::Posing => super::posing_ui::describe_pose(&o.description),
+            Ok(o) if ws == WorkspaceId::Animacao => super::animation_ui::describe_anim(&o.description),
             Ok(o) => describe(&o.description),
             Err(e) => e,
         });
@@ -761,7 +762,7 @@ pub(crate) fn can_undo_redo(
     modeling: &crate::modeling::ModelingSession,
 ) -> (bool, bool) {
     use crate::workspace::WorkspaceId;
-    if matches!(ws, WorkspaceId::Personagem | WorkspaceId::Cenario | WorkspaceId::Iluminacao | WorkspaceId::Render | WorkspaceId::Posing) {
+    if matches!(ws, WorkspaceId::Personagem | WorkspaceId::Cenario | WorkspaceId::Iluminacao | WorkspaceId::Render | WorkspaceId::Posing | WorkspaceId::Animacao) {
         (core.history().can_undo(), core.history().can_redo())
     } else {
         (modeling.can_undo(), modeling.can_redo())

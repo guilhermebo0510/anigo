@@ -345,6 +345,47 @@ fn pose_files_become_pose_assets_with_a_stick_thumbnail() {
 }
 
 #[test]
+fn clip_files_become_animation_assets_with_a_strip_thumbnail() {
+    use anigo_core::animation::{Channel, ChannelTarget, Key, KeyValue};
+    use anigo_core::clip_asset::ClipAsset;
+    use anigo_core::project::AnimationClip;
+    let env = Env::new();
+    let src = env.src("clip");
+    let mut clip = AnimationClip::new(anigo_core::AnimationClipId::from_slug("acenar"), "Acenar");
+    clip.range = Some([0, 24]);
+    let rot = |deg: f32| KeyValue::Quat(glam::Quat::from_rotation_z(deg.to_radians()).to_array());
+    clip.channels = vec![Channel {
+        target: ChannelTarget::bone("LeftShoulder"),
+        keys: vec![Key::new(0, rot(0.0)), Key::new(12, rot(80.0)), Key::new(24, rot(0.0))],
+    }];
+    let asset = ClipAsset::from_clip("Acenar", &clip, 24.0).unwrap();
+    let p = write(&src, "acenar.anigoclip.json", asset.to_json().unwrap().as_bytes());
+    let pv = anigo_assets::preview(&p, env.lib.limits()).unwrap();
+    assert_eq!((pv.format.as_str(), pv.kind), ("anigoclip", AssetKind::Animation));
+    assert_eq!(pv.stats.bones, 1);
+    let id = import_one(&env.lib, &p, ImportOptions { tags: vec!["animacao".into()], ..Default::default() });
+    let row = env.lib.require_row(&id).unwrap();
+    assert_eq!((row.kind, row.name.as_str(), row.format.as_str()), (AssetKind::Animation, "Acenar", "anigoclip"));
+    let files = env.lib.resolve_files(&id).unwrap();
+    assert_eq!(ClipAsset::from_json(&std::fs::read(&files.primary).unwrap()).unwrap(), asset);
+    // tira 2x2 de bonecos: não é o placeholder e difere de um clip parado
+    let r = ClipStripRenderer.render(&ThumbRequest { id, kind: AssetKind::Animation, format: "anigoclip".into(), content_hash: row.content_hash, primary: files.primary.clone(), files: vec![], asset_dir: files.asset_dir.clone(), size: 128 }).unwrap();
+    assert!(!r.placeholder);
+    assert!(r.image.pixels().filter(|p| p.0[3] > 128).count() > 600);
+    let still = ClipAsset::from_clip("Parado", &clip, 24.0).unwrap();
+    let mut still = still;
+    for k in &mut still.channels[0].keys {
+        k.value = rot(0.0);
+    }
+    assert_ne!(ClipStripRenderer::draw(&still, 128).as_raw(), r.image.as_raw());
+    // clip inválido não entra e diz por quê
+    let bad = write(&src, "ruim.anigoclip.json", b"{\"format\":\"x\"}");
+    let rep = env.lib.import_blocking(&bad, ImportOptions::default()).unwrap();
+    assert_eq!(rep.failed.len(), 1);
+    assert!(rep.failed[0].1.contains("anigoclip"), "{:?}", rep.failed);
+}
+
+#[test]
 fn preview_reports_without_importing() {
     let env = Env::new();
     let src = env.src("p");

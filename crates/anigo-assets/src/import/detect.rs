@@ -20,6 +20,8 @@ pub enum Format {
     AnigoMat,
     /// Pose do esqueleto canonico (`.anigopose.json`, ver `anigo_core::pose::PoseAsset`).
     AnigoPose,
+    /// Clip de animação do corpo (`.anigoclip.json`, ver `anigo_core::clip_asset::ClipAsset`).
+    AnigoClip,
 }
 
 impl Format {
@@ -38,6 +40,9 @@ pub(crate) fn extension_lower(path: &Path) -> String {
     if name.ends_with(anigo_core::pose::POSE_ASSET_SUFFIX) {
         return "anigopose.json".into();
     }
+    if name.ends_with(anigo_core::clip_asset::CLIP_ASSET_SUFFIX) {
+        return "anigoclip.json".into();
+    }
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
@@ -53,6 +58,7 @@ pub fn format_by_extension(path: &Path) -> Option<Format> {
         "tga" | "bmp" | "webp" | "dds" | "ktx2" | "exr" | "hdr" => Format::OpaqueTexture,
         "anigomat.json" => Format::AnigoMat,
         "anigopose.json" => Format::AnigoPose,
+        "anigoclip.json" => Format::AnigoClip,
         _ => return None,
     })
 }
@@ -64,6 +70,8 @@ pub(crate) fn format_label(path: &Path) -> String {
         "anigomat".into()
     } else if e == "anigopose.json" {
         "anigopose".into()
+    } else if e == "anigoclip.json" {
+        "anigoclip".into()
     } else if e == "jpeg" {
         "jpg".into()
     } else {
@@ -110,7 +118,7 @@ pub(crate) fn verify_magic(path: &Path, fmt: Format) -> Result<()> {
                 return Err(bad("imagem"));
             }
         }
-        Format::Gltf | Format::Obj | Format::OpaqueTexture | Format::AnigoMat | Format::AnigoPose => {}
+        Format::Gltf | Format::Obj | Format::OpaqueTexture | Format::AnigoMat | Format::AnigoPose | Format::AnigoClip => {}
     }
     Ok(())
 }
@@ -132,6 +140,7 @@ mod tests {
             ("a.exr", Format::OpaqueTexture),
             ("mat.anigomat.json", Format::AnigoMat),
             ("sentada.anigopose.json", Format::AnigoPose),
+            ("andar.anigoclip.json", Format::AnigoClip),
         ] {
             assert_eq!(format_by_extension(Path::new(name)), Some(fmt), "{name}");
         }
@@ -141,6 +150,7 @@ mod tests {
         assert_eq!(format_label(Path::new("x.JPEG")), "jpg");
         assert_eq!(format_label(Path::new("x.anigomat.json")), "anigomat");
         assert_eq!(format_label(Path::new("x.AnigoPose.json")), "anigopose");
+        assert_eq!(format_label(Path::new("x.AnigoClip.json")), "anigoclip");
     }
 
     #[test]

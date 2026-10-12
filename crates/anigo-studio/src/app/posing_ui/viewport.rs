@@ -1,7 +1,7 @@
 //! Viewport do Posing: navegação, seleção de juntas (clique/marquee), gizmo FK de rotação, handles de IK
 //! (mãos/pés com pole), quadril, alvo do olhar, cones de limites, equilíbrio e render cel do personagem posado.
 
-use super::{character_xf, describe_pose, DragKind, Hot, Marquee, PoseDrag, StudioApp};
+use super::{character_xf, DragKind, Hot, Marquee, PoseDrag, StudioApp};
 use crate::i18n::tr;
 use crate::icons;
 use crate::posing::edit::{self, HipsMove};
@@ -66,6 +66,10 @@ impl PoseView {
 
 impl StudioApp {
     pub(crate) fn posing_tool(&self) -> PoseTool {
+        // na Animação o índice da tool shelf escolhe o editor (dope/curvas/clips): o viewport é sempre o FK
+        if self.ws == crate::workspace::WorkspaceId::Animacao {
+            return PoseTool::Rig;
+        }
         match *self.tool_idx.get(&self.ws).unwrap_or(&0) {
             1 => PoseTool::Ik,
             2 => PoseTool::Presets,
@@ -120,6 +124,10 @@ impl StudioApp {
             }
             let view = CamView::from_orbit(&self.pose_ui.camera, Vec2::new(rect.width(), rect.height()));
             self.posing_overlays(&painter, rect, &view, &pv);
+            if self.ws == crate::workspace::WorkspaceId::Animacao {
+                self.anim_viewport_overlays(&painter, rect, &view, &pv);
+                self.anim_trace(ui.ctx());
+            }
             self.posing_header(ui, rect);
             self.posing_trace(ui.ctx(), rect, &view, &pv);
             self.posing_finish_gesture(ui.ctx());
@@ -494,9 +502,9 @@ impl StudioApp {
     fn posing_drag_finish(&mut self) {
         let Some(d) = self.pose_ui.drag.take() else { return };
         self.pose_ui.hud.clear();
-        match d.tracker.finish().filter(|_| d.tracker.moved) {
+        match d.tracker.finish().filter(|_| d.tracker.moved).map(|c| self.anim_wrap_pose_cmd(c)) {
             Some(cmd) => match self.core.commit_preview(cmd) {
-                Ok(o) => self.pose_ui.message = describe_pose(&o.description),
+                Ok(o) => self.pose_ui.message = self.pose_describe(&o.description),
                 Err(e) => self.pose_report(e),
             },
             None => self.core.cancel_preview(),
