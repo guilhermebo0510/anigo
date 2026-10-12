@@ -41,23 +41,23 @@ Validação: **A** automática (CI) · **B** render em software (lavapipe/Xvfb, 
 | T-2.4 | Preview **Cel Shading** com o renderer canônico + overlays | ✅ | B |
 | T-2.5 | Biblioteca (Asset Browser em grade, busca/categorias, medidas reais dos .glb) | ✅ | B |
 | T-2.6 | Ligar operadores do motor ao Edit Mode (E, I, Ctrl+B, Ctrl+R, X, M, F…) + painel de operadores | ver relatório do merge | A+B |
-| T-2.7 | Modificadores no inspector (pilha, subsurf/mirror/solidify…) e viewport avaliando a pilha | ⬜ | B |
-| T-2.8 | Escultura no viewport (pincel com raycast, simetria, máscara) | ⬜ | B+H |
-| T-2.9 | Editor de UV (painel 2D) e painel de Normais (transferência de proxy, sharp/seam) | ⬜ | B |
-| T-2.10 | Workspace **Personagem** nativo (sliders → `Command` → `CoreSession` → cel preview) | ⬜ | B |
+| T-2.7 | Modificadores no inspector (pilha, subsurf/mirror/solidify…) e viewport avaliando a pilha | 🟡 | B |
+| T-2.8 | Escultura no viewport (pincel com raycast, simetria, máscara) | 🟡 | B+H |
+| T-2.9 | Editor de UV (painel 2D) e painel de Normais (transferência de proxy, sharp/seam) | 🟡 | B |
+| T-2.10 | Workspace **Personagem** nativo (sliders → `Command` → `CoreSession` → cel preview) | 🟡 | B |
 | T-2.11 | Workspaces Posing / Shading / Iluminação / Cenário / Animação / Render nativos | ⬜ | B+H |
 | T-2.12 | Layout dockável (egui_tiles) persistido; atalhos configuráveis; menus | ⬜ | H |
 | T-2.13 | Servidor local para `anigo-mcp` falar com o app nativo (loopback + token) | ⬜ | A |
 | T-2.14 | Aposentar `src/` Svelte e `webgpu_renderer.ts` após paridade | ⬜ | A |
 
-## Trilha 3 — Motor Cel (anime NPR) — ver `CEL_ENGINE_FASE1.md` quando concluído
+## Trilha 3 — Motor Cel (anime NPR) — ver `CEL_ENGINE_FASE1.md` (Fase 1 concluída; padrões conservadores, afinar com artista)
 | ID | Tarefa | Estado | Val. |
 |---|---|---|---|
-| T-3.1 | Corrigir `vs_dof` degenerado; DoF com profundidade 1× | ✅ (profundidade) / ver relatório (triângulo) | A+B |
-| T-3.2 | Rampa 2D por material (ou remover amostra morta) | ver relatório | B |
-| T-3.3 | Contorno: normais suavizadas, largura por distância/FOV + taper, cor por material | ver relatório | B+H |
-| T-3.4 | Face SDF espelhado + cor de sombra do material | ver relatório | B+H |
-| T-3.5 | Matemática NPR pura em Rust com goldens | ver relatório | A |
+| T-3.1 | Corrigir `vs_dof` degenerado; DoF com profundidade 1× | ✅ | A+B |
+| T-3.2 | Rampa 2D por material (ou remover amostra morta) | ✅ | B |
+| T-3.3 | Contorno: normais suavizadas, largura por distância/FOV + taper, cor por material | 🟡 (gosto/parâmetros) | B+H |
+| T-3.4 | Face SDF espelhado + cor de sombra do material | 🟡 (gosto/parâmetros) | B+H |
+| T-3.5 | Matemática NPR pura em Rust com goldens | ✅ (paridade WGSL↔Rust) | A |
 | T-3.6 | Passe de bordas (Roberts/Sobel em depth+normal+ID) para vincos | ⬜ | B+H |
 | T-3.7 | HDR + tonemap neutro no passe final (cores chapadas sem desvio de matiz do ACES) | ⬜ | H |
 | T-3.8 | Shadow map de 1 luz + sombra do cabelo no rosto | ⬜ | B+H |
