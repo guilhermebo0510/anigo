@@ -78,3 +78,19 @@ a §1.2 (render offscreen determinístico) + screenshots do app sob Xvfb. Antes 
 3. **Subsecond/hotpatch é experimental**; não é requisito.
 4. **Hashes golden só valem em lavapipe**; GPUs reais divergem.
 5. **Reconstrução do sólido por frame** durante G/R/S/escultura em malhas grandes (item 2.4).
+
+## 9. Pendências por funcionalidade entregue (consolidado dos agentes)
+
+Marque cada item no chat local. Tudo abaixo passou nos testes automatizados e em capturas no lavapipe/Xvfb; nada foi sentido com mouse/caneta/GPU reais.
+
+**Escultura (`CEL`/Workbench)** — sensação do traço em build release, força/espaçamento por pincel, Ctrl invertendo e Shift suavizando durante o traço, pressão de caneta (só lê `Event::Touch.force`, nunca testado), Dyntopo em malha real (refaz topologia a cada quadro com mudança: pesado acima de poucos milhares de faces), gosto do anel do pincel e da cor da máscara. Wireframe em escultura cai no caminho lento.
+
+**Normais anime** — pincel de atributo NPR (espaçamento 25% do raio, sem pressão), cores do overlay/mapa de calor, fluxo de transferência de normais num rosto real (testado só em esferas), `bake_outline_normals` ainda sem destino na malha, raycast da pintura é O(faces) (falta ligar o BVH), com a pintura ativa o clique não seleciona.
+
+**UV** — arrasto/G-R-S de UVs com mouse real, cores de distorção/densidade em malha real, LSCM/ARAP em modelos grandes.
+
+**Personagem** — o manequim canônico é cru (peças segmentadas, sem feições): sliders de olhos/boca quase não têm efeito visível; arrasto ao vivo no hardware real (mudança de proporção reconstrói a geometria base a cada passo); layout do painel (350 px) e do pad de somatótipo; Salvar/Abrir é por caminho digitado (sem diálogo nativo); abrir projeto zera o undo; hair/cloth/accessories/paint ainda "Em breve".
+
+**Motor cel** — todos os recursos novos nascem DESLIGADOS (para manter os goldens): ligar suavização de normais do contorno, falloff por distância, taper e tinta por material e afinar com olho de artista (largura padrão ~0,9 px a 512 px é quase invisível); tinta de pele clara sai oliva; Face SDF só aparece de verdade acima de ~60° (mapeamento theta→limiar congelado pelos goldens) e não há textura de rosto real, só o mapa procedural de demonstração; DoF com 16 amostras mostra anéis em bokeh grande; viewport do app legado (TS) não tem os novos parâmetros. Goldens de frame (FNV-1a) são válidos só para lavapipe: em GPU real use a métrica perceptual, não o hash.
+
+**Biblioteca (backend)** — nenhum arquivo real foi importado (todos os fixtures são sintéticos): trazer VRoid/UniVRM, Blender (GLB/FBX), Sketchfab, Quixel/Fab e o corpus Khronos; nenhum FBX válido foi importado (ufbx só exercitado com lixo/truncado); mapeamento MToon e PBR→toon só conferido contra a spec (o sinal do `shift` precisa de comparação visual); Windows/macOS (nomes reservados, caminhos longos, rename de diretório, antivírus, notify fora do inotify); `index.db` em rede (SMB/NFS) pode corromper, use disco local; desempenho a frio/HDD/10^6 ativos; números do benchmark (50 k: rebuild 5,65 s, busca <16 ms) foram medidos num Xeon 2,1 GHz de nuvem.
