@@ -18,6 +18,7 @@
 | [RENDER_UI.md](RENDER_UI.md) | Workspace Render: câmera de render, saída (presets, supersampling, alfa, P3, PNG 8/16/JPEG), passes e AOVs, preview com máscara/guias, fila de render real (thread de GPU, cancelar/retomar), histórico com miniaturas, gancho de sequência, smoke xdotool |
 | [SHADING_UI.md](SHADING_UI.md) | Workspace Shading (editor de materiais toon/anime): alvos de Personagem/Cenário/Modelagem, parâmetros agrupados, editor de gradiente da rampa 2D, contorno por material, face SDF, paleta, presets `.anigomat.json` com miniatura em shader ball, A/B, undo, smoke xdotool |
 | [POSING_UI.md](POSING_UI.md) | Workspace Posing: modelo de pose do núcleo (`SetPose`, `PoseRig`, `.anigopose.json`), FK/IK/limites/presets/mãos/olhar, API para a Animação, smoke xdotool |
+| [ANIMACAO_UI.md](ANIMACAO_UI.md) | Workspace Animação: modelo de animação do núcleo (`EditAnimation`, canais/chaves/interpolação), timeline/dope sheet/Graph, auto-key, onion, clips na Biblioteca, glTF/VRMA/BVH, física no playback, render de sequência, smoke xdotool |
 | [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 

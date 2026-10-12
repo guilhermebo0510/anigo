@@ -63,7 +63,7 @@ pub const ANIMATION_TABLE: &[(&str, &str, &str)] = &[
     // seleção de chaves
     ("anim.sel.title", "Chaves selecionadas", "Selected keys"),
     ("anim.sel.none", "Nenhuma chave selecionada", "No key selected"),
-    ("anim.sel.help", "Clique numa chave ou arraste uma caixa no dope sheet. Arraste para mover, Alt arrasta uma cópia, Shift+arrasto escala.", "Click a key or drag a box in the dope sheet. Drag to move, Alt drags a copy, Shift+drag scales."),
+    ("anim.sel.help", "Clique numa chave ou arraste uma caixa no dope sheet. Arraste para mover, Shift+arrasto duplica, Alt+arrasto escala no tempo em torno do playhead.", "Click a key or drag a box in the dope sheet. Drag to move, Shift+drag duplicates, Alt+drag scales in time around the playhead."),
     ("anim.sel.count", "chave(s) selecionada(s)", "key(s) selected"),
     ("anim.sel.duplicate", "Duplicar", "Duplicate"),
     ("anim.sel.duplicate_tip", "Duplica as chaves para frente", "Duplicates the keys forward"),
