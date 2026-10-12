@@ -7,7 +7,9 @@
 //! `iluminacao-camera`, `iluminacao-ambiente`, `iluminacao-extras`.
 
 use super::{LightPatch, Section, StudioApp};
-use crate::lighting::{self, rigs};
+use crate::lighting;
+#[cfg(test)]
+use crate::lighting::rigs;
 use crate::scene::runtime::GeomState;
 use anigo_core::command::Command;
 use anigo_core::ids::NodeId;
@@ -192,6 +194,7 @@ impl StudioApp {
                 let with_floor = !name.starts_with("iluminacao-rosto");
                 let cmd = self.light_set_commands(with_floor);
                 self.light_apply(cmd);
+                self.light_ui.message.clear();
                 self.light_ui.framed = false;
                 next = true;
             }
@@ -280,11 +283,13 @@ impl StudioApp {
             "iluminacao-extras" => {
                 self.light_ui.focus = Some(Section::Extra);
             }
+            "iluminacao-base" => {
+                self.light_ui.focus = Some(Section::Rigs);
+            }
             _ => {
                 self.light_ui.focus = Some(Section::Sun);
             }
         }
-        let _ = rigs::RIGS.len();
     }
 }
 

@@ -22,7 +22,7 @@ fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) 
 }
 
 fn slider(ui: &mut egui::Ui, v: &mut f32, range: RangeInclusive<f32>, suffix: &str, decimals: usize) -> bool {
-    ui.spacing_mut().slider_width = (ui.available_width() - 66.0).max(60.0);
+    ui.spacing_mut().slider_width = (ui.available_width() - 104.0).max(60.0);
     ui.add(egui::Slider::new(v, range).suffix(suffix).max_decimals(decimals).clamping(egui::SliderClamping::Always)).changed()
 }
 
@@ -183,7 +183,7 @@ impl StudioApp {
                 self.light_edit_material(MaterialPatch { shadow_threshold: Some(threshold), ..Default::default() });
             }
             if row(ui, tr("light.penumbra"), |ui| {
-                ui.spacing_mut().slider_width = (ui.available_width() - 66.0).max(60.0);
+                ui.spacing_mut().slider_width = (ui.available_width() - 104.0).max(60.0);
                 ui.add(egui::Slider::new(&mut smooth, 0.005..=0.4).logarithmic(true).max_decimals(3).clamping(egui::SliderClamping::Always)).changed()
             }) {
                 self.light_edit_material(MaterialPatch { shadow_smoothness: Some(smooth), ..Default::default() });
