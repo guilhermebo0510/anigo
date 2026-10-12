@@ -12,6 +12,7 @@ members = [
     "crates/anigo-cloth",
     "crates/anigo-vrm",
     "crates/anigo-ai",
+    "crates/anigo-assets",
     "src-tauri",
 ]
 resolver = "2"
