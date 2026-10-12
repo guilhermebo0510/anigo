@@ -9,6 +9,7 @@
 //! * [`modeling`] — sessão do workspace de Modelagem (objetos, seleção, modos, transformações modais).
 //! * [`app`] — `eframe::App` que costura tudo.
 
+pub mod anim;
 pub mod app;
 pub mod celview;
 pub mod character;
