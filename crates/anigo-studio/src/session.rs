@@ -18,6 +18,12 @@ pub struct SessionState {
     pub lang: Lang,
     pub camera: OrbitCamera,
     pub document: Document,
+    /// Documento canônico do núcleo (`ProjectState` em JSON) do workspace Personagem.
+    /// Opcional para sessões antigas continuarem abrindo.
+    #[serde(default)]
+    pub character_document: Option<String>,
+    #[serde(default)]
+    pub character_camera: Option<OrbitCamera>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,6 +85,8 @@ mod tests {
             lang: Lang::En,
             camera: OrbitCamera::default(),
             document: m.doc.clone(),
+            character_document: None,
+            character_camera: None,
         }
     }
 
@@ -91,6 +99,29 @@ mod tests {
         assert_eq!(back.camera, s.camera);
         assert_eq!(back.document.objects.len(), 2);
         assert_eq!(back.document.objects[1].mesh, s.document.objects[1].mesh);
+    }
+
+    #[test]
+    fn old_sessions_without_character_fields_still_load() {
+        let mut v = serde_json::to_value(sample()).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("character_document");
+        o.remove("character_camera");
+        let back = SessionState::from_json(&v.to_string()).unwrap();
+        assert!(back.character_document.is_none() && back.character_camera.is_none());
+    }
+
+    #[test]
+    fn character_document_roundtrips_with_the_session() {
+        use anigo_session::CoreSession;
+        let mut core = CoreSession::new();
+        core.apply(anigo_core::command::Command::RenameProject { name: "Persistido".into() }).unwrap();
+        let mut s = sample();
+        s.character_document = Some(core.document().unwrap());
+        let back = SessionState::from_json(&s.to_json().unwrap()).unwrap();
+        let mut restored = CoreSession::new();
+        restored.load_document(back.character_document.as_deref().unwrap()).unwrap();
+        assert_eq!(restored.project(), core.project());
     }
 
     #[test]

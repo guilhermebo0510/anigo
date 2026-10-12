@@ -57,6 +57,14 @@ pub struct CoreSession {
     geometry: Option<CachedGeometry>,
     static_revision: u64,
     dynamic_revision: u64,
+    /// Gesto de preview em curso (arrasto de slider): ver [`CoreSession::begin_preview`].
+    preview: Option<PreviewGesture>,
+}
+
+/// Estado de um gesto de preview: projeto de partida + se algum passo mexeu na geometria base.
+struct PreviewGesture {
+    base: ProjectState,
+    touched_base_geometry: bool,
 }
 
 impl Default for CoreSession {
@@ -99,6 +107,7 @@ impl CoreSession {
             // então o primeiro snapshot sempre traz a parte estática.
             static_revision: 1,
             dynamic_revision: 0,
+            preview: None,
         }
     }
 
@@ -131,6 +140,7 @@ impl CoreSession {
         let project = ProjectState::from_json(raw).map_err(|error| error.to_string())?;
         project.validate().map_err(|error| error.to_string())?;
         let limit = project.settings.history_limit as usize;
+        self.preview = None;
         self.project = project;
         self.history = CommandHistory::new(limit);
         self.geometry = None;
@@ -182,6 +192,7 @@ impl CoreSession {
 
     /// Valida + aplica + empilha um comando. Estado intacto quando inválido.
     pub fn apply(&mut self, command: Command) -> Result<CommandOutcome, String> {
+        self.cancel_preview();
         let outcome = self
             .history
             .execute(&mut self.project, command)
@@ -193,6 +204,67 @@ impl CoreSession {
         Ok(outcome)
     }
 
+    // ------------------------------------------------------------------ preview
+    //
+    // Arrastar um slider precisa de feedback ao vivo SEM gerar um passo de desfazer por
+    // quadro. O gesto de preview aplica os comandos direto no projeto (mesma validação e
+    // mesma transação do núcleo), mas fora do `CommandHistory`; ao soltar, o projeto volta
+    // ao estado de partida e o comando final entra pelo caminho normal (`apply`), deixando
+    // exatamente UM passo de desfazer e UMA entrada no log de sessão.
+
+    /// `true` enquanto há um gesto de preview aberto.
+    pub fn is_previewing(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    /// Abre um gesto de preview (idempotente: já aberto = nada muda).
+    pub fn begin_preview(&mut self) {
+        if self.preview.is_none() {
+            self.preview = Some(PreviewGesture {
+                base: self.project.clone(),
+                touched_base_geometry: false,
+            });
+        }
+    }
+
+    /// Aplica `command` ao vivo, sem tocar o histórico. Abre o gesto se preciso.
+    /// Comando inválido (ou sem efeito) deixa o projeto intacto e devolve `Err`.
+    pub fn preview(&mut self, command: Command) -> Result<(), String> {
+        self.begin_preview();
+        let applied = command.apply(&mut self.project).map_err(|error| error.to_string())?;
+        self.dynamic_revision += 1;
+        if applied.scope.requires_static_rebuild() {
+            if let Some(gesture) = self.preview.as_mut() {
+                gesture.touched_base_geometry = true;
+            }
+            self.invalidate_geometry();
+        }
+        Ok(())
+    }
+
+    /// Fecha o gesto: restaura o projeto de partida e aplica `final_command` como um
+    /// único passo de histórico. Se o comando final for inválido/sem efeito (o usuário
+    /// voltou ao valor inicial), o projeto fica no estado de partida e o `Err` informa.
+    pub fn commit_preview(&mut self, final_command: Command) -> Result<CommandOutcome, String> {
+        self.restore_preview_base();
+        self.apply(final_command)
+    }
+
+    /// Descarta o gesto e volta ao estado de partida. Sem gesto aberto, não faz nada.
+    pub fn cancel_preview(&mut self) {
+        self.restore_preview_base();
+    }
+
+    fn restore_preview_base(&mut self) {
+        if let Some(gesture) = self.preview.take() {
+            self.project = gesture.base;
+            self.dynamic_revision += 1;
+            if gesture.touched_base_geometry {
+                self.invalidate_geometry();
+            }
+        }
+    }
+
     /// Aplica um comando serializado (mesma representação do contrato TS).
     pub fn apply_json(&mut self, raw: &str) -> Result<CommandOutcome, String> {
         let command = Command::from_json(raw).map_err(|error| error.to_string())?;
@@ -201,6 +273,7 @@ impl CoreSession {
 
     /// Desfaz o último comando aceito.
     pub fn undo(&mut self) -> Result<CommandOutcome, String> {
+        self.cancel_preview();
         let outcome = self.history.undo(&mut self.project).map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
         if outcome.scope.requires_static_rebuild() {
@@ -211,6 +284,7 @@ impl CoreSession {
 
     /// Refaz o último comando desfeito.
     pub fn redo(&mut self) -> Result<CommandOutcome, String> {
+        self.cancel_preview();
         let outcome = self.history.redo(&mut self.project).map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
         if outcome.scope.requires_static_rebuild() {
@@ -228,15 +302,9 @@ impl CoreSession {
         }
     }
 
-    /// Snapshot canônico para o viewport.
-    ///
-    /// `client_static_revision == Some(atual)` faz o núcleo enviar só a parte
-    /// dinâmica (pesos/câmera/luz/materiais) — é o caminho de um slider vivo.
-    pub fn snapshot(
-        &mut self,
-        include_static: bool,
-        client_static_revision: Option<u64>,
-    ) -> Result<CoreSnapshot, String> {
+    /// Reconstrói a geometria base em cache quando a chave (gênero + proporções +
+    /// dimorfismo) mudou. Não gera snapshot nem serializa nada.
+    fn ensure_geometry(&mut self) -> Result<(), String> {
         let geometry_key = geometry_key(&self.project);
         let stale = match &self.geometry {
             Some(cached) => cached.key != geometry_key,
@@ -250,7 +318,7 @@ impl CoreSession {
                 anigo_core::mesh::BaseGender::Male => URI_BASE_MALE,
                 anigo_core::mesh::BaseGender::Female => URI_BASE_FEMALE,
             };
-            tracing::info!(
+            tracing::debug!(
                 target: "anigo::core_session",
                 vertices = base_mesh.vertices.len(),
                 indices = base_mesh.indices.len(),
@@ -270,6 +338,19 @@ impl CoreSession {
             });
         }
 
+        Ok(())
+    }
+
+    /// Snapshot canônico para o viewport.
+    ///
+    /// `client_static_revision == Some(atual)` faz o núcleo enviar só a parte
+    /// dinâmica (pesos/câmera/luz/materiais) — é o caminho de um slider vivo.
+    pub fn snapshot(
+        &mut self,
+        include_static: bool,
+        client_static_revision: Option<u64>,
+    ) -> Result<CoreSnapshot, String> {
+        self.ensure_geometry()?;
         let geometry = self
             .geometry
             .as_ref()
@@ -306,7 +387,7 @@ impl CoreSession {
 
     /// Malha totalmente deformada pelo núcleo (base + morphs ativos).
     pub fn deformed_mesh(&mut self) -> Result<Mesh, String> {
-        let _ = self.snapshot(true, None)?;
+        self.ensure_geometry()?;
         let geometry = self
             .geometry
             .as_ref()
@@ -787,5 +868,105 @@ mod tests {
         );
         let snapshot = restored.snapshot(true, None).expect("snapshot");
         assert!(snapshot.static_payload.is_some());
+    }
+
+    fn morph(id: &str, value: f32) -> Command {
+        Command::SetMorphValue {
+            target: anigo_core::ids::MorphId::for_slider(id),
+            value,
+        }
+    }
+
+    #[test]
+    fn a_20_step_drag_leaves_exactly_one_undo_step() {
+        let mut session = CoreSession::new();
+        let start = session.project().content_fingerprint();
+        session.begin_preview();
+        for step in 1..=20 {
+            session.preview(morph("head_width", 1.0 + step as f32 * 0.01)).expect("preview");
+        }
+        // ao vivo: o projeto já reflete o valor do arrasto, mas o histórico não cresceu
+        assert!((session.project().morph_value("head_width") - 1.2).abs() < 1e-5);
+        assert_eq!(session.history().undo_depth(), 0);
+        assert!(session.is_previewing());
+
+        session.commit_preview(morph("head_width", 1.2)).expect("commit");
+        assert!(!session.is_previewing());
+        assert_eq!(session.history().undo_depth(), 1, "um arrasto = um passo");
+        let log = session.history().log_json().expect("log");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&log).expect("json");
+        assert_eq!(entries.len(), 1, "o log de sessão também recebe só o comando final");
+
+        session.undo().expect("undo único");
+        assert_eq!(session.project().content_fingerprint(), start);
+        assert!(!session.history().can_undo());
+        session.redo().expect("redo");
+        assert!((session.project().morph_value("head_width") - 1.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dragging_back_to_the_start_value_adds_no_history() {
+        let mut session = CoreSession::new();
+        let start = session.project().content_fingerprint();
+        session.begin_preview();
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.preview(morph("head_width", 1.0 + 1e-8)).ok();
+        let result = session.commit_preview(morph("head_width", 1.0));
+        assert!(result.is_err(), "comando sem efeito não entra no histórico");
+        assert_eq!(session.history().undo_depth(), 0);
+        assert_eq!(session.project().content_fingerprint(), start);
+    }
+
+    #[test]
+    fn cancel_restores_and_apply_or_undo_close_an_open_gesture() {
+        let mut session = CoreSession::new();
+        let start = session.project().content_fingerprint();
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.cancel_preview();
+        assert_eq!(session.project().content_fingerprint(), start);
+
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.apply(morph("eye_scale_uniform", 1.2)).expect("apply fecha o gesto");
+        assert!(!session.is_previewing());
+        assert!((session.project().morph_value("head_width") - 1.0).abs() < 1e-6);
+        assert_eq!(session.history().undo_depth(), 1);
+
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.undo().expect("undo fecha o gesto e desfaz o último passo");
+        assert!(!session.is_previewing());
+        assert_eq!(session.project().content_fingerprint(), start);
+    }
+
+    #[test]
+    fn invalid_preview_leaves_the_project_untouched() {
+        let mut session = CoreSession::new();
+        session.begin_preview();
+        let before = session.project().content_fingerprint();
+        assert!(session.preview(morph("head_width", 99.0)).is_err());
+        assert_eq!(session.project().content_fingerprint(), before);
+    }
+
+    #[test]
+    fn preview_of_proportions_rebuilds_geometry_and_cancel_restores_it() {
+        let mut session = CoreSession::new();
+        let base = session.deformed_mesh().expect("mesh");
+        let top = |m: &Mesh| m.vertices.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);
+        session
+            .preview(Command::SetProportions {
+                head_scale: None,
+                head_ratio: None,
+                shoulder_width: None,
+                leg_length: None,
+                arm_length: None,
+                neck_length: None,
+                torso_length: None,
+                height_overall: Some(1.3),
+            })
+            .expect("preview");
+        let taller = session.deformed_mesh().expect("mesh");
+        assert!(top(&taller) > top(&base) * 1.2);
+        session.cancel_preview();
+        let back = session.deformed_mesh().expect("mesh");
+        assert!((top(&back) - top(&base)).abs() < 1e-5);
     }
 }

@@ -12,6 +12,7 @@ pub const SCENARIOS: &[&str] = &[
     "uv-editor", "uv-sphere", "uv-click",
     "normals-overlay", "normals-transfer", "normals-transfer-clean", "normals-paint",
     "sculpt-ready", "sculpt-draw", "sculpt-mask",
+    "character-default", "character-sliders", "character-female", "character-front", "character-face",
 ];
 
 impl StudioApp {
@@ -241,6 +242,64 @@ impl StudioApp {
                 m.set_mode(Mode::Edit);
             }
             other if other.starts_with("normals-") && self.scenario_normals(other) => {}
+            "character-default" => {
+                self.ws = crate::workspace::WorkspaceId::Personagem;
+                self.tool_idx.insert(self.ws, 0);
+            }
+            "character-sliders" => {
+                use crate::character::{macros::{self, Proportion}, sliders};
+                use anigo_core::somatotype::SomatotypeCoords;
+                self.ws = crate::workspace::WorkspaceId::Personagem;
+                self.tool_idx.insert(self.ws, 0);
+                let eyes = anigo_core::morph_catalog::find_slider_def("eye_scale_uniform");
+                let mut cmds = vec![
+                    Proportion::Height.command(1.2),
+                    Proportion::Legs.command(1.15),
+                    macros::somatotype_command(SomatotypeCoords::new(0.1, 0.75, 0.15)),
+                ];
+                cmds.extend(eyes.map(|d| sliders::slider_command(d, 1.4)));
+                for c in cmds {
+                    if let Err(e) = self.core.apply(c) {
+                        eprintln!("character-sliders: {e}");
+                    }
+                }
+                self.char_ui.framed = false; // reenquadra a nova altura
+            }
+            "character-front" => {
+                // vista frontal sem perspectiva inclinada: base da comparação com o frame canônico headless
+                self.ws = crate::workspace::WorkspaceId::Personagem;
+                self.tool_idx.insert(self.ws, 0);
+                self.char_ui.camera.yaw = 0.0;
+                self.char_ui.camera.pitch = 0.0;
+            }
+            "character-face" => {
+                use crate::character::sliders;
+                self.ws = crate::workspace::WorkspaceId::Personagem;
+                self.tool_idx.insert(self.ws, 1);
+                for (id, v) in [("eye_scale_uniform", 1.35), ("jaw_v_line_taper", 0.7)] {
+                    if let Some(d) = anigo_core::morph_catalog::find_slider_def(id) {
+                        let _ = self.core.apply(sliders::slider_command(d, v));
+                    }
+                }
+                self.char_ui.camera.yaw = 0.25;
+                self.char_ui.camera.pitch = 0.0;
+                let b = self.gpu.as_ref().and_then(|g| g.cel.as_ref()).and_then(|c| c.character_bounds);
+                if let Some((lo, hi)) = b {
+                    super::character_ui::frame_face(&mut self.char_ui.camera, lo, hi);
+                }
+            }
+            "character-female" => {
+                self.ws = crate::workspace::WorkspaceId::Personagem;
+                self.tool_idx.insert(self.ws, 0);
+                match crate::character::macros::set_gender(self.core.project(), anigo_core::mesh::BaseGender::Female) {
+                    Ok(Some(c)) => {
+                        if let Err(e) = self.core.apply(c) {
+                            eprintln!("character-female: {e}");
+                        }
+                    }
+                    other => eprintln!("character-female: {other:?}"),
+                }
+            }
             other => {
                 eprintln!("cenário desconhecido: {other} (disponíveis: {SCENARIOS:?})");
             }

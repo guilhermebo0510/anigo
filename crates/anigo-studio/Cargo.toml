@@ -12,6 +12,7 @@ path = "src/main.rs"
 anigo-core = { workspace = true }
 anigo-modeling = { path = "../anigo-modeling" }
 anigo-renderer = { workspace = true }
+anigo-session = { path = "../anigo-session" }
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }
 egui = "0.36"
 egui-phosphor = "0.14"
