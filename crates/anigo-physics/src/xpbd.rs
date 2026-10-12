@@ -364,9 +364,13 @@ impl XpbdSystem {
             }
             self.zero_lambdas();
             // 2) restrições + colisão
-            for _ in 0..iterations {
+            for it in 0..iterations {
                 self.solve_constraints(h);
-                contacts_total += self.solve_limits_and_collisions(colliders, &old);
+                // limites e colisão só depois da última iteração: continuam sendo a última palavra
+                // do sub-passo (nada atravessa), mas custam 1x em vez de `iterations`x.
+                if it + 1 == iterations {
+                    contacts_total += self.solve_limits_and_collisions(colliders, &old);
+                }
             }
             // 3) velocidades
             for i in 0..n {

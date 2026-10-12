@@ -141,11 +141,21 @@ impl Collider {
     }
 }
 
-/// Conjunto de colliders com cache das formas no mundo.
+/// Caixa envolvente (sem margem) de uma forma no mundo; `None` para formas ilimitadas (plano, inside).
+fn shape_aabb(shape: &ColliderShape) -> Option<(Vec3, Vec3)> {
+    match *shape {
+        ColliderShape::Sphere { center, radius } => Some((center - Vec3::splat(radius), center + Vec3::splat(radius))),
+        ColliderShape::Capsule { a, b, radius } => Some((a.min(b) - Vec3::splat(radius), a.max(b) + Vec3::splat(radius))),
+        _ => None,
+    }
+}
+
+/// Conjunto de colliders com cache das formas no mundo (e caixas para descarte rápido).
 #[derive(Debug, Clone, Default)]
 pub struct ColliderSet {
     colliders: Vec<Collider>,
     world: Vec<ColliderShape>,
+    aabb: Vec<Option<(Vec3, Vec3)>>,
 }
 
 impl ColliderSet {
@@ -160,6 +170,7 @@ impl ColliderSet {
         }
         self.colliders.push(collider);
         self.world.push(collider.shape);
+        self.aabb.push(shape_aabb(&collider.shape));
         Some(self.colliders.len() - 1)
     }
 
@@ -191,7 +202,7 @@ impl ColliderSet {
     /// Atualiza as formas no mundo a partir das matrizes dos ossos. Osso inexistente/NaN = mantém a
     /// última forma válida (o personagem não "perde" o collider por um quadro ruim).
     pub fn update(&mut self, bone_world: &[Mat4]) {
-        for (collider, world) in self.colliders.iter().zip(self.world.iter_mut()) {
+        for ((collider, world), aabb) in self.colliders.iter().zip(self.world.iter_mut()).zip(self.aabb.iter_mut()) {
             match collider.bone {
                 None => *world = collider.shape,
                 Some(b) => {
@@ -205,6 +216,7 @@ impl ColliderSet {
                     }
                 }
             }
+            *aabb = shape_aabb(world);
         }
     }
 
@@ -218,6 +230,12 @@ impl ColliderSet {
             if let (Some(c), Some(shape)) = (self.colliders.get(i), self.world.get(i)) {
                 if !c.enabled {
                     return;
+                }
+                // descarte rápido pela caixa (a margem é o raio da partícula)
+                if let Some(Some((lo, hi))) = self.aabb.get(i) {
+                    if p.x < lo.x - margin || p.y < lo.y - margin || p.z < lo.z - margin || p.x > hi.x + margin || p.y > hi.y + margin || p.z > hi.z + margin {
+                        return;
+                    }
                 }
                 let (gap, dir) = shape.gap(*p, margin);
                 if gap < 0.0 {
