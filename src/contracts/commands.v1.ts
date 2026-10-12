@@ -91,6 +91,77 @@ export interface MeshRefWire {
   primitive_index?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Editor de cenário (Fase 1) — espelha `crates/anigo-core/src/level.rs`.
+// ---------------------------------------------------------------------------
+
+export type PrimitiveShapeWire = "cube" | "sphere" | "plane" | "cylinder" | "cone";
+
+/** Origem de um nó (tag `type`, snake_case). */
+export type NodeSourceWire =
+  | { type: "library_asset"; uri: string; revision?: number }
+  | { type: "primitive"; shape: PrimitiveShapeWire }
+  | { type: "light"; kind: "directional" | "point"; color: [number, number, number]; intensity: number }
+  | { type: "camera"; focal_mm: number; sensor_width_mm: number; sensor_height_mm: number }
+  | { type: "card"; texture_uri?: string | null; width_m: number; height_m: number };
+
+/** Substituições de material por instância. */
+export interface NodeOverridesWire {
+  base_color?: [number, number, number, number];
+  shade_color?: [number, number, number, number];
+  outline_width?: number;
+}
+
+/** Atributos extras de `add_node` (tudo no padrão = omitido). */
+export interface NodeAttrsWire {
+  visible?: boolean;
+  locked?: boolean;
+  tags?: string[];
+  folder?: string | null;
+  layer?: string | null;
+  source?: NodeSourceWire | null;
+  overrides?: NodeOverridesWire;
+}
+
+/** Patch de propriedades do nó; `folder`/`layer` = "" limpam. */
+export interface NodePatchWire {
+  name?: string;
+  locked?: boolean;
+  tags?: string[];
+  folder?: string;
+  layer?: string;
+  overrides?: NodeOverridesWire;
+  source?: NodeSourceWire;
+}
+
+export interface NodeTransformEntryWire {
+  node_id: string;
+  translation?: [number, number, number];
+  rotation?: [number, number, number, number];
+  scale?: [number, number, number];
+}
+
+export interface NodeCopyWire {
+  source: string;
+  copy: string;
+  name: string;
+}
+
+export interface NodeAssetEntryWire {
+  node_id: string;
+  mesh?: MeshRefWire | null;
+  source?: NodeSourceWire | null;
+  name?: string | null;
+}
+
+export interface AssetEntryWire {
+  asset_id: string;
+  kind: "mesh" | "texture" | "hair" | "cloth" | "audio" | "other";
+  uri: string;
+  byte_len?: number | null;
+  content_hash?: string | null;
+}
+
 /** Patch of the stylized material — only `Some` fields are written (Rust `Option`). */
 /**
  * Motor cel NPR (Fase 0/1): parâmetros opcionais por material — espelha
@@ -216,6 +287,7 @@ export type CommandWire =
       mesh?: MeshRefWire | null;
       material_id?: string | null;
       index: number;
+      attrs?: NodeAttrsWire | null;
     }
   | { kind: "remove_node"; node_id: string }
   | { kind: "set_node_parent"; node_id: string; parent_id?: string | null }
@@ -240,6 +312,11 @@ export type CommandWire =
       depth_prepass?: boolean;
     }
   | { kind: "rename_project"; name: string }
+  | { kind: "set_nodes_transform"; entries: NodeTransformEntryWire[] }
+  | { kind: "duplicate_nodes"; copies: NodeCopyWire[]; offset?: [number, number, number] | null }
+  | { kind: "set_node_props"; node_id: string; patch: NodePatchWire }
+  | { kind: "replace_nodes_asset"; entries: NodeAssetEntryWire[] }
+  | { kind: "patch_assets"; put: AssetEntryWire[]; remove?: string[] }
   | { kind: "batch"; commands: CommandWire[] };
 
 /** Kinds known by this contract version (drift-checked against the Rust enum). */
@@ -266,6 +343,11 @@ export const COMMAND_KINDS = [
   "set_background_color",
   "set_render_settings",
   "rename_project",
+  "set_nodes_transform",
+  "duplicate_nodes",
+  "set_node_props",
+  "replace_nodes_asset",
+  "patch_assets",
   "batch",
 ] as const;
 

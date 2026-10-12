@@ -444,6 +444,12 @@ mod tests {
             visible: true,
             parent_id: parent.map(NodeId::from_slug),
             kind: NodeKind::Mesh,
+            locked: false,
+            tags: Vec::new(),
+            folder: None,
+            layer: None,
+            source: None,
+            overrides: Default::default(),
         }
     }
 
