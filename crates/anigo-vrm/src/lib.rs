@@ -32,9 +32,11 @@ pub use gltf::{
     mip_level_count, summarize_import, GltfError, GltfErrorCode, ImportSummary, ParsedGltf,
 };
 pub use vrm1::{
-    is_vrm_document, map_mtoon_to_anime_material, parse_vrm1, MToonMaterialMapping, ParsedVrm1,
-    Vrm1Error, Vrm1ErrorCode, Vrm1Meta, Vrm1MToon, Vrm1SpringBone,
+    is_vrm_document, map_mtoon_to_anime_material, parse_spring_bone, parse_vrm1, MToonMaterialMapping,
+    ParsedVrm1, Vrm1Collider, Vrm1ColliderGroup, Vrm1ColliderShape, Vrm1Error, Vrm1ErrorCode, Vrm1Meta,
+    Vrm1MToon, Vrm1Spring, Vrm1SpringBone, Vrm1SpringJoint, SPRING_BONE_SPEC_VERSION,
 };
+pub use exporter::spring_bone_to_json;
 
 // ---------------------------------------------------------------------------
 // API de alto nível (fronteira Tauri)
@@ -278,6 +280,273 @@ mod tests {
         let result = validate_model(&corrupted);
         assert!(!result.valid);
         assert!(result.error.is_some());
+    }
+
+    // ---- VRMC_springBone (schema oficial 1.0) ------------------------------------------------
+
+    fn sample_spring_bone() -> Vrm1SpringBone {
+        Vrm1SpringBone {
+            spec_version: SPRING_BONE_SPEC_VERSION.to_string(),
+            colliders: vec![
+                Vrm1Collider { node: 0, shape: Vrm1ColliderShape::Sphere { offset: [0.0, 0.1, 0.0], radius: 0.08, inside: false } },
+                Vrm1Collider {
+                    node: 1,
+                    shape: Vrm1ColliderShape::Capsule { offset: [0.0, 0.0, 0.0], radius: 0.06, tail: [0.0, 0.3, 0.0], inside: false },
+                },
+                Vrm1Collider { node: 0, shape: Vrm1ColliderShape::Sphere { offset: [0.0; 3], radius: 0.5, inside: true } },
+                Vrm1Collider { node: 0, shape: Vrm1ColliderShape::Plane { offset: [0.0, 0.0, 0.0], normal: [0.0, 1.0, 0.0] } },
+            ],
+            collider_groups: vec![
+                Vrm1ColliderGroup { name: Some("body".into()), colliders: vec![0, 1] },
+                Vrm1ColliderGroup { name: None, colliders: vec![2, 3] },
+            ],
+            springs: vec![Vrm1Spring {
+                name: Some("hair_front".into()),
+                joints: vec![
+                    Vrm1SpringJoint { node: 1, hit_radius: 0.02, stiffness: 0.8, gravity_power: 0.5, gravity_dir: [0.0, -1.0, 0.0], drag_force: 0.4 },
+                    Vrm1SpringJoint { node: 2, hit_radius: 0.02, stiffness: 0.6, gravity_power: 0.5, gravity_dir: [0.0, -1.0, 0.0], drag_force: 0.45 },
+                    Vrm1SpringJoint { node: 3, ..Default::default() },
+                ],
+                collider_groups: vec![0, 1],
+                center: Some(0),
+            }],
+        }
+    }
+
+    fn vrm_with_spring() -> VrmExportData {
+        VrmExportData { spring_bone: Some(sample_spring_bone()), ..vrm_data() }
+    }
+
+    #[test]
+    fn spring_bone_roundtrip_schema_oficial() {
+        let bytes = export_model(&sample_scene(), Some(&vrm_with_spring()));
+        let result = parse_model(&bytes).expect("VRM com springBone deve parsear");
+        let vrm = result.vrm.expect("VRM");
+        let parsed = vrm.spring_bone.expect("springBone");
+        assert_eq!(parsed, sample_spring_bone(), "ida e volta preserva tudo (inclusive extended_collider)");
+        assert!(
+            !vrm.warnings.iter().any(|w| w.contains("legado")),
+            "formato novo não deve gerar aviso de legado: {:?}",
+            vrm.warnings
+        );
+    }
+
+    /// Validador mínimo do JSON-schema oficial `VRMC_springBone-1.0` (chaves permitidas, tipos, obrigatórios).
+    fn assert_spring_bone_schema(spring: &Value) {
+        let allowed = |obj: &Value, keys: &[&str], where_: &str| {
+            for key in obj.as_object().unwrap_or_else(|| panic!("{where_}: objeto")).keys() {
+                assert!(keys.contains(&key.as_str()), "{where_}: chave fora do schema: {key}");
+            }
+        };
+        allowed(spring, &["specVersion", "colliders", "colliderGroups", "springs", "extensions", "extras"], "VRMC_springBone");
+        assert_eq!(spring["specVersion"], "1.0", "specVersion obrigatório");
+        for (i, c) in spring["colliders"].as_array().into_iter().flatten().enumerate() {
+            allowed(c, &["node", "shape", "extensions", "extras"], "collider");
+            assert!(c["node"].is_u64(), "colliders[{i}].node");
+            let shape = &c["shape"];
+            allowed(shape, &["sphere", "capsule"], "shape");
+            assert_eq!(shape.as_object().unwrap().len(), 1, "shape exclusivo sphere|capsule");
+            if let Some(s) = shape.get("sphere") {
+                allowed(s, &["offset", "radius"], "sphere");
+            }
+            if let Some(cap) = shape.get("capsule") {
+                allowed(cap, &["offset", "radius", "tail"], "capsule");
+            }
+        }
+        for g in spring["colliderGroups"].as_array().into_iter().flatten() {
+            allowed(g, &["name", "colliders", "extras"], "colliderGroup");
+            assert!(g["colliders"].as_array().unwrap().iter().all(Value::is_u64));
+        }
+        for s in spring["springs"].as_array().into_iter().flatten() {
+            allowed(s, &["name", "joints", "colliderGroups", "center", "extras"], "spring");
+            assert!(s["joints"].as_array().unwrap().len() >= 2, "joints minItems 2");
+            for j in s["joints"].as_array().unwrap() {
+                allowed(j, &["node", "hitRadius", "stiffness", "gravityPower", "gravityDir", "dragForce", "extras"], "joint");
+                assert!(j["node"].is_u64());
+                assert!(j["dragForce"].as_f64().unwrap() >= 0.0 && j["dragForce"].as_f64().unwrap() <= 1.0);
+                assert!(j["stiffness"].as_f64().unwrap() >= 0.0);
+                assert_eq!(j["gravityDir"].as_array().unwrap().len(), 3);
+            }
+        }
+    }
+
+    #[test]
+    fn spring_bone_exportado_segue_a_spec_oficial() {
+        let (json, _) = export_gltf(&sample_scene(), Some(&vrm_with_spring()));
+        let spring = json.pointer("/extensions/VRMC_springBone").expect("VRMC_springBone");
+        assert!(spring.get("secondaryRig").is_none(), "formato legado não pode ser emitido");
+        assert_spring_bone_schema(spring);
+        // Extensão dentro de `extensionsUsed`, nunca em `extensionsRequired`.
+        let used: Vec<&str> = json["extensionsUsed"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert!(used.contains(&"VRMC_springBone"));
+        assert!(used.contains(&"VRMC_springBone_extended_collider"));
+        let required: Vec<&str> = json["extensionsRequired"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert!(!required.iter().any(|e| e.contains("springBone")), "springBone fora de extensionsRequired: {required:?}");
+        // Colliders extendidos levam fallback na spec base.
+        let inside = &spring["colliders"][2];
+        assert_eq!(inside["shape"]["sphere"]["radius"], 0.0);
+        assert_eq!(inside["extensions"]["VRMC_springBone_extended_collider"]["shape"]["sphere"]["inside"], true);
+        let plane = &spring["colliders"][3];
+        assert_eq!(plane["shape"]["sphere"]["radius"], 1000.0);
+        assert_eq!(plane["extensions"]["VRMC_springBone_extended_collider"]["shape"]["plane"]["normal"][1], 1.0);
+        // Valores curtos (sem ruído de f32 -> f64).
+        assert_eq!(spring["springs"][0]["joints"][0]["stiffness"], 0.8);
+        assert_eq!(spring["springs"][0]["joints"][0]["dragForce"], 0.4);
+        assert_eq!(spring["springs"][0]["center"], 0);
+    }
+
+    #[test]
+    fn spring_bone_sem_extended_nao_declara_extended_collider() {
+        let mut data = vrm_with_spring();
+        let sb = data.spring_bone.as_mut().unwrap();
+        sb.colliders.truncate(2);
+        sb.collider_groups = vec![Vrm1ColliderGroup { name: None, colliders: vec![0, 1] }];
+        sb.springs[0].collider_groups = vec![0];
+        let (json, _) = export_gltf(&sample_scene(), Some(&data));
+        let used: Vec<&str> = json["extensionsUsed"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert!(used.contains(&"VRMC_springBone"));
+        assert!(!used.contains(&"VRMC_springBone_extended_collider"));
+        assert_spring_bone_schema(json.pointer("/extensions/VRMC_springBone").unwrap());
+    }
+
+    #[test]
+    fn spring_bone_export_e_deterministico() {
+        let a = export_model(&sample_scene(), Some(&vrm_with_spring()));
+        let b = export_model(&sample_scene(), Some(&vrm_with_spring()));
+        assert_eq!(fnv1a64(&a), fnv1a64(&b));
+    }
+
+    fn legacy_spring_json() -> Value {
+        serde_json::json!({
+            "secondaryRig": {
+                "groups": [{
+                    "name": "HairFront",
+                    "center": { "node": 0, "distance": 0.1 },
+                    "joints": [
+                        { "node": 1, "distance": 0.1, "springStiffness": 0.8, "springDamping": 0.3, "hitRadius": 0.02 },
+                        { "node": 2, "distance": 0.12, "springStiffness": 0.6, "springDamping": 0.4 }
+                    ],
+                    "colliderGroups": [7]
+                }],
+                "colliders": [
+                    { "spheres": [{ "group": 7, "node": 0, "radius": 0.08, "offset": [0.0, 0.01, 0.0] }] },
+                    { "capsules": [{ "group": 7, "node": 1, "from": [0.0, 0.5, 0.0], "to": [0.0, 0.8, 0.0], "radius": 0.06 }] },
+                    { "spheres": [{ "group": 3, "node": 2, "radius": 0.1 }] }
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn spring_bone_legado_secondary_rig_ainda_le() {
+        let mut warnings = Vec::new();
+        let nodes: Vec<Value> = vec![
+            serde_json::json!({ "children": [1] }),
+            serde_json::json!({ "children": [2] }),
+            serde_json::json!({}),
+        ];
+        let sb = parse_spring_bone(Some(&legacy_spring_json()), &nodes, &mut warnings).expect("legado lê");
+        assert!(warnings.iter().any(|w| w.contains("legado")));
+        assert_eq!(sb.springs.len(), 1);
+        let spring = &sb.springs[0];
+        assert_eq!(spring.name.as_deref(), Some("HairFront"));
+        assert_eq!(spring.center, Some(0));
+        assert_eq!(spring.joints.len(), 2);
+        assert!((spring.joints[0].stiffness - 0.8).abs() < 1e-6, "springStiffness -> stiffness");
+        assert!((spring.joints[0].drag_force - 0.3).abs() < 1e-6, "springDamping -> dragForce");
+        assert!((spring.joints[0].hit_radius - 0.02).abs() < 1e-6);
+        assert_eq!(sb.colliders.len(), 3);
+        assert_eq!(
+            sb.colliders[1].shape,
+            Vrm1ColliderShape::Capsule { offset: [0.0, 0.5, 0.0], radius: 0.06, tail: [0.0, 0.8, 0.0], inside: false }
+        );
+        // ids legados 3 e 7 viram índices densos 0 e 1 (ordem crescente de id)
+        assert_eq!(sb.collider_groups.len(), 2);
+        assert_eq!(sb.collider_groups[0].colliders, vec![2]);
+        assert_eq!(sb.collider_groups[1].colliders, vec![0, 1]);
+        assert_eq!(spring.collider_groups, vec![1]);
+    }
+
+    #[test]
+    fn spring_bone_legado_em_arquivo_vrm_converte_e_reexporta_no_formato_novo() {
+        let (mut json, bin) = export_gltf(&sample_scene(), Some(&vrm_data()));
+        json["extensions"]["VRMC_springBone"] = legacy_spring_json();
+        let glb = build_glb(&json, &bin);
+        let result = parse_model(&glb).expect("arquivo antigo ainda abre");
+        let vrm = result.vrm.expect("VRM");
+        let sb = vrm.spring_bone.clone().expect("springBone convertido");
+        assert!(vrm.warnings.iter().any(|w| w.contains("legado")));
+        // Reexportar grava o schema oficial.
+        let data = VrmExportData { spring_bone: Some(sb.clone()), ..vrm_data() };
+        let (new_json, _) = export_gltf(&sample_scene(), Some(&data));
+        let spring = new_json.pointer("/extensions/VRMC_springBone").unwrap();
+        assert!(spring.get("secondaryRig").is_none());
+        assert_spring_bone_schema(spring);
+        let again = parse_model(&export_model(&sample_scene(), Some(&data))).unwrap().vrm.unwrap().spring_bone.unwrap();
+        assert_eq!(again, sb);
+    }
+
+    #[test]
+    fn spring_bone_malformado_gera_erro_estavel_sem_panic() {
+        let nodes: Vec<Value> = vec![serde_json::json!({ "children": [1] }), serde_json::json!({})];
+        let cases = [
+            serde_json::json!(42),
+            serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": [{ "stiffness": 1.0 }] }] }),
+            serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": [{ "node": 0, "stiffness": -1.0 }, { "node": 1 }] }] }),
+            serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": [{ "node": 0, "dragForce": 2.0 }, { "node": 1 }] }] }),
+            serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": [{ "node": 0, "gravityDir": [0, 1] }, { "node": 1 }] }] }),
+            serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": [{ "node": 0, "hitRadius": "x" }, { "node": 1 }] }] }),
+            serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": "nope" }] }),
+            serde_json::json!({ "specVersion": "1.0", "colliders": [{ "node": 0 }] }),
+            serde_json::json!({ "specVersion": "1.0", "colliders": [{ "node": 0, "shape": {} }] }),
+            serde_json::json!({ "specVersion": "1.0", "colliders": [{ "node": 0, "shape": { "sphere": { "radius": -1 } } }] }),
+            serde_json::json!({ "specVersion": "1.0", "colliders": [{ "node": -3, "shape": { "sphere": {} } }] }),
+            serde_json::json!({ "specVersion": "1.0", "colliderGroups": [{ "colliders": ["a"] }] }),
+            serde_json::json!({ "secondaryRig": 5 }),
+        ];
+        for (i, case) in cases.iter().enumerate() {
+            let mut warnings = Vec::new();
+            let err = parse_spring_bone(Some(case), &nodes, &mut warnings).expect_err(&format!("caso {i} deve falhar: {case}"));
+            assert_eq!(err.code, Vrm1ErrorCode::BadSpringBone, "caso {i}");
+        }
+        let mut warnings = Vec::new();
+        assert!(parse_spring_bone(None, &nodes, &mut warnings).is_err());
+    }
+
+    #[test]
+    fn spring_bone_referencias_invalidas_viram_aviso_e_sao_descartadas() {
+        let nodes: Vec<Value> = vec![serde_json::json!({ "children": [1] }), serde_json::json!({}), serde_json::json!({})];
+        let raw = serde_json::json!({
+            "colliders": [{ "node": 99, "shape": { "sphere": { "radius": 0.1 } } }],
+            "colliderGroups": [{ "colliders": [0, 5] }],
+            "springs": [
+                { "joints": [{ "node": 0 }, { "node": 2 }], "colliderGroups": [0, 9] },
+                { "joints": [{ "node": 1 }] }
+            ]
+        });
+        let mut warnings = Vec::new();
+        let sb = parse_spring_bone(Some(&raw), &nodes, &mut warnings).expect("tolerante");
+        assert_eq!(sb.collider_groups[0].colliders, vec![0]);
+        assert_eq!(sb.springs[0].collider_groups, vec![0]);
+        let all = warnings.join(" | ");
+        assert!(all.contains("specVersion ausente"), "{all}");
+        assert!(all.contains("fora da faixa"), "{all}");
+        assert!(all.contains("não é descendente"), "{all}");
+        assert!(all.contains("collider inexistente"), "{all}");
+        assert!(all.contains("grupo inexistente"), "{all}");
+        assert!(all.contains(">= 2"), "{all}");
+    }
+
+    #[test]
+    fn spring_bone_defaults_da_spec() {
+        let nodes: Vec<Value> = vec![serde_json::json!({ "children": [1] }), serde_json::json!({})];
+        let raw = serde_json::json!({ "specVersion": "1.0", "springs": [{ "joints": [{ "node": 0 }, { "node": 1 }] }] });
+        let mut warnings = Vec::new();
+        let sb = parse_spring_bone(Some(&raw), &nodes, &mut warnings).unwrap();
+        let j = sb.springs[0].joints[0];
+        assert_eq!((j.hit_radius, j.stiffness, j.gravity_power, j.drag_force), (0.0, 1.0, 0.0, 0.5));
+        assert_eq!(j.gravity_dir, [0.0, -1.0, 0.0]);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
