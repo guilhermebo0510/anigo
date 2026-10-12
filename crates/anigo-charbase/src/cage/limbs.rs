@@ -273,7 +273,7 @@ fn build_hand(b: &mut B, d: &Dims, wrist: &[u32], s: f32, yc: f32, zc: f32, x_w_
 
     // --- dedos ---
     let x_base = x_w_abs + 0.092 * sc;
-    let fan = [4.0f32, 1.0, -2.5, -7.0];
+    let fan = [5.0f32, 1.5, -3.0, -8.5];
     let lens = [0.071f32, 0.079, 0.073, 0.057];
     let fnames = ["index", "middle", "ring", "little"];
     let fregions = [Region::Index, Region::Middle, Region::Ring, Region::Little];
@@ -281,7 +281,7 @@ fn build_hand(b: &mut B, d: &Dims, wrist: &[u32], s: f32, yc: f32, zc: f32, x_w_
     let fr = [0.0f32, 0.225, 0.45, 0.60, 0.75, 0.875, 1.0];
     let ry_t = [0.0108f32, 0.0099, 0.0092, 0.0085, 0.0079, 0.0073, 0.0060];
     let rz_t = [0.0096f32, 0.0090, 0.0087, 0.0083, 0.0078, 0.0072, 0.0058];
-    let fat = 1.0 + 0.22 * wk;
+    let fat = 1.0 + 0.10 * wk;
     for f in 0..4usize {
         let base_ring = vec![grid(f, 0), grid(f + 1, 0), grid(f + 1, 1), grid(f + 1, 2), grid(f, 2), grid(f, 1)];
         let bc = b.centroid(&base_ring);

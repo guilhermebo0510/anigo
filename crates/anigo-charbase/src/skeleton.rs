@@ -95,11 +95,7 @@ pub fn bone_defs(t: &Topology) -> Vec<BoneDef> {
 
     // olhos: centro do globo = anel interno da pálpebra recuado ao longo da normal do contorno
     for (s, side) in [("L", "left"), ("R", "right")] {
-        let c3 = lp(&format!("eye_{s}_ring3"));
-        let c0 = lp(&format!("eye_{s}_ring0"));
-        let k = 4.5;
-        let eye = Locator::combine(&[(&c3, 1.0 + k), (&c0, -k)]);
-        add(&mut defs, &format!("{side}Eye"), Some("head"), true, eye);
+        add(&mut defs, &format!("{side}Eye"), Some("head"), true, t.eye_center_locator(s));
     }
     let ear_mid = Locator::combine(&[(&ring("ear_L_center"), 0.5), (&ring("ear_R_center"), 0.5)]);
     let jaw = Locator::combine(&[(&ear_mid, 0.8), (&ring("neck_top_ring"), 0.2)]);

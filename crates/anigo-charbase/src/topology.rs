@@ -246,7 +246,25 @@ impl Topology {
         Ok(t)
     }
 
-    fn loop_ids(&self, name: &str) -> Vec<u32> {
+    /// Centro do globo ocular: o centro do anel interno da pálpebra recuado em direção ao centro
+    /// da cabeça (combinação afim fixa, funciona para qualquer forma de rosto).
+    pub fn eye_center_locator(&self, side: &str) -> Locator {
+        let c3 = Locator::centroid(&self.loop_ids(&format!("eye_{side}_ring3")));
+        Locator::lerp(&c3, &self.head_center_locator(), 0.16)
+    }
+
+    /// Centro aproximado do crânio.
+    pub fn head_center_locator(&self) -> Locator {
+        let ears = Locator::combine(&[
+            (&Locator::centroid(self.mark("ear_L_center")), 0.5),
+            (&Locator::centroid(self.mark("ear_R_center")), 0.5),
+        ]);
+        let top = Locator::centroid(self.mark("head_top"));
+        let chin = Locator::centroid(self.mark("chin"));
+        Locator::combine(&[(&ears, 0.5), (&top, 0.25), (&chin, 0.25)])
+    }
+
+    pub fn loop_ids(&self, name: &str) -> Vec<u32> {
         self.loop_by_name(name).map(|l| l.verts.clone()).unwrap_or_default()
     }
 

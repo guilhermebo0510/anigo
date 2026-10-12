@@ -108,7 +108,7 @@ impl HeadShape {
             chin_down: 0.012 * f.chin_length * d.sc,
             face_len: 0.10 * f.face_length,
             cheek: 0.006 * (1.0 + 0.8 * f.cheek_fullness + 0.7 * d.p.weight.max(0.0) * 0.6 - 0.5 * d.p.age) * d.sc,
-            nose_amp: lerp(0.0190, 0.0170, g) * nose_scale * d.sc,
+            nose_amp: lerp(0.0230, 0.0205, g) * nose_scale * d.sc,
             nose_sx: 0.0105 * (1.0 + 0.25 * f.nose_size),
             nose_y: d.y_chin + (0.352 + 0.030 * f.nose_height) * d.head_h,
             lip_amp: (0.0042 + 0.0022 * f.lip_fullness) * d.sc,
@@ -133,7 +133,8 @@ impl HeadShape {
         let mut x = d.x * self.r.x;
         let mut y = d.y * self.r.y;
         let mut z = d.z * self.r.z;
-        y *= 1.0 + 0.035 * up;
+        y *= 1.0 + 0.020 * up - 0.050 * smoothstep(0.62, 1.0, d.y);
+        x *= 1.0 + 0.045 * smoothstep(0.0, 0.7, d.y) * (1.0 - smoothstep(0.7, 1.0, d.y));
         z *= 1.0 + 0.05 * back;
         // comprimento do rosto: estica a metade de baixo
         y *= 1.0 + self.face_len * low;
@@ -382,7 +383,7 @@ pub(crate) fn build_head(b: &mut B, d: &Dims) -> HeadOut {
             &specs,
             (0.0, 0.0),
             0.0,
-            &|k, nu, nv| if k == 1 { 0.0035 * smoothstep(0.2, 1.0, nv) * (1.0 + 2.2 * pt.max(0.0)) } else { 0.0 },
+            &|k, nu, nv| if k == 1 { 0.0035 * smoothstep(0.2, 1.0, nv) * (1.0 + 2.2 * pt) } else { 0.0 },
             0.45,
         );
         for (k, r) in rings.iter().enumerate() {

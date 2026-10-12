@@ -50,7 +50,7 @@ pub fn compute_weights(t: &Topology, pos: &[Vec3], skel: &Skeleton) -> Vec<[(u16
         let side = if left { "left" } else { "right" };
         let (o, b): (usize, usize) = match r {
             Region::Head => {
-                if p.y < mouth_y + 0.004 && p.z > jaw_p.z + 0.012 {
+                if p.y < mouth_y - 0.0003 && p.z > jaw_p.z + 0.012 {
                     (idx("jaw"), 6)
                 } else {
                     (idx("head"), 6)

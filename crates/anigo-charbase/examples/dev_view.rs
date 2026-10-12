@@ -155,8 +155,25 @@ fn main() {
             _ => {}
         }
     }
-    let ch = generate_with(&p);
+    let mut ch = generate_with(&p);
     let topo = reference();
+    let morph_args: Vec<(String, f32)> = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("morph=").map(|s| {
+            let mut it = s.splitn(2, ':');
+            let n = it.next().unwrap().to_string();
+            let w = it.next().and_then(|x| x.parse().ok()).unwrap_or(1.0);
+            (n, w)
+        }))
+        .collect();
+    let base_positions = ch.positions.clone();
+    let morph_set = if morph_args.is_empty() { None } else { Some(anigo_charbase::morphs::build_morphs(&ch)) };
+    if let Some(ms) = &morph_set {
+        let w: Vec<(&str, f32)> = morph_args.iter().map(|(n, w)| (n.as_str(), *w)).collect();
+        ch.positions = ms.apply(&base_positions, &w);
+        // o esqueleto também é re-derivado da malha morfada
+        ch.skeleton = anigo_charbase::skeleton::Skeleton::derive(&anigo_charbase::skeleton::bone_defs(topo), &ch.positions);
+    }
     let mesh = QuadMesh {
         pos: ch.positions.clone(),
         faces: topo.faces.clone(),
@@ -185,6 +202,36 @@ fn main() {
     } else {
         None
     };
+    // peças auxiliares (olhos, cílios...) anexadas como quads degenerados com cor própria
+    let mut mesh = mesh;
+    let mut colors = colors;
+    if args.iter().any(|a| a == "parts") {
+        let mut parts = anigo_charbase::parts::build_parts(topo, &base_positions, &base_positions, 0.0);
+        if let Some(ms) = &morph_set {
+            let w: Vec<(&str, f32)> = morph_args.iter().map(|(n, w)| (n.as_str(), *w)).collect();
+            parts = ms.apply_parts(&parts, &w);
+        }
+        let mut cols: Vec<Vec3> = colors.take().unwrap_or_else(|| vec![Vec3::new(0.925, 0.77, 0.69); mesh.pos.len()]);
+        for p in &parts {
+            let col = match p.material {
+                "eye_white" => Vec3::new(0.97, 0.97, 0.98),
+                "eye_iris" => Vec3::new(0.15, 0.5, 0.8),
+                "eye_highlight" => Vec3::new(1.0, 1.0, 1.0),
+                "lash" => Vec3::new(0.08, 0.06, 0.08),
+                "brow" => Vec3::new(0.25, 0.15, 0.1),
+                "mouth_inside" => Vec3::new(0.45, 0.12, 0.14),
+                "teeth" => Vec3::new(0.98, 0.97, 0.93),
+                _ => Vec3::new(0.85, 0.35, 0.4),
+            };
+            let base = mesh.pos.len() as u32;
+            mesh.pos.extend(p.positions.iter().copied());
+            cols.extend(std::iter::repeat(col).take(p.positions.len()));
+            for t in &p.tris {
+                mesh.faces.push([base + t[0], base + t[1], base + t[2], base + t[2]]);
+            }
+        }
+        colors = Some(cols);
+    }
     let skel_lines: Option<Vec<(Vec3, Vec3)>> = if o.skel {
         let sk = &ch.skeleton;
         Some(
