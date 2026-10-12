@@ -85,6 +85,10 @@ pub struct StudioApp {
     /// Editor 2D de UV visível (Modo Edição).
     pub(crate) show_uv_editor: bool,
     pub(crate) box_start: Option<glam::Vec2>,
+    /// Estado do painel de normais (overlay, transferência, relatório, pincel de atributo).
+    pub(crate) normals_ui: normals_ui::NormalsUi,
+    /// Ferramenta "Pintar atributo" ativa: LMB no viewport pinta o canal NPR (Modo Edição).
+    pub(crate) paint_attr_active: bool,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -169,6 +173,8 @@ impl StudioApp {
             frame_pending: false,
             show_uv_editor: false,
             box_start: None,
+            normals_ui: normals_ui::NormalsUi::default(),
+            paint_attr_active: false,
         }
     }
 

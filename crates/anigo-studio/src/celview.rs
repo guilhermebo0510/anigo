@@ -5,7 +5,6 @@
 use crate::modeling::Document;
 use crate::viewport::OrbitCamera;
 use anigo_core::{scene::SceneNode, Camera, Scene, StylizedLight};
-use anigo_modeling::convert::{to_core_mesh, ToCoreOptions};
 use anigo_renderer::{HeadlessRenderer, RenderMetrics};
 use eframe::wgpu;
 use std::sync::Arc;
@@ -47,13 +46,13 @@ impl CelPreview {
             .objects
             .iter()
             .filter(|o| o.visible)
-            .map(|o| (o.id, o.mesh.content_hash()))
+            .map(|o| (o.id, o.render_hash()))
             .collect();
         if wanted != self.node_keys {
             self.scene.nodes.clear();
             for o in doc.objects.iter().filter(|o| o.visible) {
                 let mut node = SceneNode::new(format!("obj{}", o.id), o.name.clone());
-                match to_core_mesh(&o.mesh, &ToCoreOptions::default()) {
+                match o.to_core() {
                     Ok(m) => node.mesh = Some(m),
                     Err(e) => self.last_error = Some(format!("{}: {e}", o.name)),
                 }
@@ -120,6 +119,7 @@ impl CelPreview {
 mod tests {
     use super::*;
     use crate::modeling::{ModelingSession, PrimitiveKind};
+    use anigo_modeling::convert::{to_core_mesh, ToCoreOptions};
     use anigo_core::Scene;
 
     /// Todo primitiva do editor precisa produzir pixels no renderer canônico (nenhuma some por
@@ -158,6 +158,7 @@ mod tests {
 mod multi_tests {
     use super::*;
     use crate::modeling::{ModelingSession, PrimitiveKind};
+    use anigo_modeling::convert::{to_core_mesh, ToCoreOptions};
 
     #[test]
     fn three_objects_are_all_drawn_not_culled() {

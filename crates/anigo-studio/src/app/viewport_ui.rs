@@ -71,6 +71,8 @@ impl StudioApp {
         }
         let size_px = crate::workbench::px_size(Vec2::new(rect.width(), rect.height()), ppp);
         let session = &self.modeling;
+        let nui_hash = self.normals_ui.view_hash();
+        let (nui_overlay, nui_channel) = (self.normals_ui.overlay(), self.normals_ui.channel_view());
         let edit_obj = (session.mode == Mode::Edit).then_some(session.doc.active).flatten();
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -87,12 +89,16 @@ impl StudioApp {
             let is_active = session.doc.active == Some(i);
             let hover_wire = self.overlay_wire;
             let key = hash_u64(&[
-                obj.mesh.content_hash(),
+                obj.render_hash(),
                 if is_edit { session.revision } else { 0 },
                 is_edit as u64,
                 (is_active && !is_edit) as u64,
                 hover_wire as u64,
                 session.select_mode as u64,
+                if is_edit { nui_hash[0] } else { 0 },
+                if is_edit { nui_hash[1] } else { 0 },
+                if is_edit { nui_hash[2] } else { 0 },
+                if is_edit { nui_hash[3] } else { 0 },
             ]);
             let prev = gpu.cache.iter().position(|c| c.id == obj.id && c.key == key);
             let model = obj.model_matrix();
@@ -111,6 +117,9 @@ impl StudioApp {
                         active_vert: session.active_vert,
                         object_wire: hover_wire,
                         highlight_object: is_active && !is_edit && std::env::var("ANIGO_NOHL").is_err(),
+                        normals: obj.normal_params(),
+                        show_normals: if is_edit { nui_overlay } else { None },
+                        channel_view: if is_edit { nui_channel } else { None },
                         ..Default::default()
                     },
                 );
@@ -180,6 +189,7 @@ impl StudioApp {
 
         let (shift, ctrl, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.command, i.modifiers.alt));
         let sculpt_consumed = self.modeling.mode == Mode::Sculpt && self.sculpt_input(ui, resp, rect, size);
+        let paint_consumed = self.paint_attr_input(ui, resp, rect, size);
 
         // ---- câmera
         if resp.hovered() {
@@ -192,7 +202,7 @@ impl StudioApp {
         }
         let delta = ui.input(|i| i.pointer.delta());
         let mid = resp.dragged_by(PointerButton::Middle);
-        let alt_orbit = alt && !sculpt_consumed && resp.dragged_by(PointerButton::Primary);
+        let alt_orbit = alt && !sculpt_consumed && !paint_consumed && resp.dragged_by(PointerButton::Primary);
         if mid || alt_orbit {
             if shift {
                 self.camera.pan(delta.x, delta.y, size.y);
@@ -203,7 +213,7 @@ impl StudioApp {
             }
         }
 
-        if sculpt_consumed {
+        if sculpt_consumed || paint_consumed {
             return;
         }
         // ---- gizmo / seleção
@@ -546,6 +556,7 @@ impl StudioApp {
         if self.modeling.mode == Mode::Sculpt {
             self.sculpt_overlay(ui, rect, size);
         }
+        self.normals_overlay(ui, rect, size);
         self.draw_axis_widget(ui, rect);
         self.draw_header(ui, rect);
     }

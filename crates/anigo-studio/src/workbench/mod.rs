@@ -12,7 +12,7 @@ use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
 use glam::{Mat3, Mat4, Vec2};
-pub use mesh_data::{build_draw_data, BuildOptions, LineInstance, MeshDrawData, PointInstance, SolidVertex};
+pub use mesh_data::{build_draw_data, heat_color, BuildOptions, LineInstance, MeshDrawData, NormalOverlay, PointInstance, SolidVertex};
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
