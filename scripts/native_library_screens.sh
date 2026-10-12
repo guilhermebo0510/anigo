@@ -6,7 +6,7 @@ set -u
 BIN=${1:-./target/debug/anigo-studio}
 OUT=${2:-native-artifacts}
 shift 2 2>/dev/null || true
-SCENARIOS=${*:-"biblioteca-grid biblioteca-lista biblioteca-detalhes biblioteca-3d biblioteca-busca biblioteca-import biblioteca-gestao biblioteca-duplicados biblioteca-lixeira biblioteca-ausentes"}
+SCENARIOS=${*:-"biblioteca-grid biblioteca-lista biblioteca-detalhes biblioteca-3d biblioteca-busca biblioteca-import biblioteca-gestao biblioteca-duplicados biblioteca-lixeira biblioteca-ausentes biblioteca-importar biblioteca-seletor biblioteca-relink"}
 mkdir -p "$OUT"
 export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}

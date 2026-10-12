@@ -16,6 +16,9 @@ pub const SCENARIOS: &[&str] = &[
     "biblioteca-duplicados",
     "biblioteca-lixeira",
     "biblioteca-ausentes",
+    "biblioteca-importar",
+    "biblioteca-seletor",
+    "biblioteca-relink",
 ];
 
 pub fn is_library_scenario(name: &str) -> bool {
@@ -141,6 +144,26 @@ impl LibraryWorkspace {
                         self.start_verify(VerifyOptions { rehash: false, fix: false });
                     }
                     "biblioteca-duplicados" => self.open_duplicates(),
+                    "biblioteca-importar" => {
+                        // janela de importação com arquivos na fila e a análise (preview) de um deles
+                        self.dlg.open_import();
+                        self.dlg.import_paths = vec![run.assets.import_dir.clone(), run.assets.import_dir.join("pilar_novo.glb"), run.assets.import_dir.join("textura_nova.png")];
+                        self.dlg.import_form.tags = "estilo/cel, loja".into();
+                        let p = run.assets.import_dir.join("pilar_novo.glb");
+                        let limits = self.rt.as_ref().map(|r| r.lib.limits().clone());
+                        if let Some(limits) = limits {
+                            self.spawn_task(move |_| TaskOut::Preview { path: p.clone(), result: preview(&p, &limits).map_err(|e| e.to_string()) });
+                        }
+                    }
+                    "biblioteca-seletor" => self.dlg.open_picker(dialogs::PickPurpose::ImportPaths, Some(run.assets.work_dir.join("fontes"))),
+                    "biblioteca-relink" => {
+                        if let Some(id) = run.assets.linked_missing {
+                            self.dlg.open_relink(id, "referencia_cenario".into());
+                            if let Some(s) = &mut self.dlg.relink {
+                                s.search_dir = run.assets.work_dir.join("fontes").display().to_string();
+                            }
+                        }
+                    }
                     "biblioteca-ausentes" => {
                         if let Some(id) = run.assets.linked_missing {
                             self.selection.set_one(id, 0);
@@ -155,8 +178,9 @@ impl LibraryWorkspace {
             3 => {
                 let preview_ok = run.name != "biblioteca-3d" || self.preview3d.is_shown();
                 let dups_ok = run.name != "biblioteca-duplicados" || self.dlg.dups.is_some();
+                let import_ok = run.name != "biblioteca-importar" || self.dlg.import_preview.is_some();
                 let disk_ok = run.name != "biblioteca-gestao" || self.dlg.disk.is_some();
-                if settled && preview_ok && dups_ok && disk_ok && waited > 4 {
+                if settled && preview_ok && dups_ok && disk_ok && import_ok && waited > 4 {
                     next = true;
                 }
             }

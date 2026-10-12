@@ -715,6 +715,7 @@ impl LibraryWorkspace {
             return;
         }
         if self.rt.is_none() {
+            self.error(tr("lib.opening"));
             return;
         }
         self.info(format!("{} {}", dropped.len(), tr("lib.imp.dropped")));

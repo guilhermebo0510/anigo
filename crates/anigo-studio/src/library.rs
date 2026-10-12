@@ -16,8 +16,11 @@ pub fn studio_assets_dir() -> PathBuf {
 
 /// `Documents/ANIGO` (dados do usuário do studio).
 pub fn studio_data_dir() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
-    home.join("Documents").join("ANIGO")
+    match std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()) {
+        Some(home) => home.join("Documents").join("ANIGO"),
+        // sem HOME (CI mínimo, serviço): nunca criar a biblioteca relativa ao diretório de trabalho
+        None => std::env::temp_dir().join("ANIGO"),
+    }
 }
 
 /// Pasta da biblioteca gerenciada padrão. `ANIGO_LIBRARY_DIR` sobrescreve.

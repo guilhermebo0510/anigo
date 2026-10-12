@@ -33,11 +33,15 @@ struct Harness {
 
 impl Harness {
     fn new(lib: Library) -> Self {
+        Self::with_renderer(lib, Arc::new(cel_thumb::CelThumbnailRenderer::new()), default_cpu_renderer())
+    }
+
+    fn with_renderer(lib: Library, cel: Arc<cel_thumb::CelThumbnailRenderer>, renderer: Arc<dyn ThumbnailRenderer>) -> Self {
         let mut ws = LibraryWorkspace::empty(None);
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
         ws.set_context(&ctx);
-        ws.attach_with_renderer(lib, Arc::new(cel_thumb::CelThumbnailRenderer::new()), default_cpu_renderer());
+        ws.attach_with_renderer(lib, cel, renderer);
         Self { ctx, ws, t: 0.0, size: Vec2::new(1440.0, 900.0), last_shapes: 0, frame_ms: Vec::new(), actions: Vec::new() }
     }
 
@@ -484,4 +488,89 @@ fn run_frame_time_bench(n: usize, debug_build: bool) {
     let (budget_p95, budget_med) = if debug_build { (120.0, 60.0) } else { (8.0, 4.0) };
     assert!(q(&moving, 0.95) < budget_p95, "p95 {:.2} ms acima de {budget_p95} ms", q(&moving, 0.95));
     assert!(q(&moving, 0.5) < budget_med, "mediana {:.2} ms acima de {budget_med} ms", q(&moving, 0.5));
+}
+
+#[test]
+fn thumbnails_degrade_to_icons_when_the_gpu_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path().join("lib")).unwrap();
+    let glb = write_cube_glb(dir.path(), "cubo.glb", 1.0);
+    let png = dir.path().join("t.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([200, 20, 20, 255])).save(&png).unwrap();
+    let id_g = lib.import_blocking(&glb, ImportOptions::default()).unwrap().imported[0];
+    let id_p = lib.import_blocking(&png, ImportOptions::default()).unwrap().imported[0];
+    let (hg, hp) = (lib.require_row(&id_g).unwrap().content_hash, lib.require_row(&id_p).unwrap().content_hash);
+    let cel = Arc::new(cel_thumb::CelThumbnailRenderer::unavailable("sem adaptador (teste)"));
+    let chain: Arc<dyn ThumbnailRenderer> = Arc::new(ChainRenderer::new(vec![cel.clone(), default_cpu_renderer()]));
+    let mut h = Harness::with_renderer(lib, cel.clone(), chain);
+    h.run_until("miniaturas", |h| {
+        h.frame();
+        h.ws.tex.best_available(&hp).is_some() && h.ws.tex.unavailable.contains(&hg)
+    });
+    assert_eq!(cel.available(), Some(false));
+    assert!(h.ws.tex.best_available(&hg).is_none(), "o modelo fica com o ícone do tipo, sem miniatura inventada");
+    h.settle();
+}
+
+#[test]
+fn real_3d_thumbnail_is_rendered_and_cached_when_a_gpu_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path().join("lib")).unwrap();
+    let glb = write_cube_glb(dir.path(), "cubo.glb", 1.0);
+    let id = lib.import_blocking(&glb, ImportOptions::default()).unwrap().imported[0];
+    let hash = lib.require_row(&id).unwrap().content_hash;
+    let cel = Arc::new(cel_thumb::CelThumbnailRenderer::new());
+    let chain: Arc<dyn ThumbnailRenderer> = Arc::new(ChainRenderer::new(vec![cel.clone(), default_cpu_renderer()]));
+    let mut h = Harness::with_renderer(lib.clone(), cel.clone(), chain);
+    h.run_until("miniatura", |h| h.ws.tex.best_available(&hash).is_some() || h.ws.tex.unavailable.contains(&hash));
+    if cel.available() != Some(true) {
+        eprintln!("sem GPU neste ambiente: {:?}; teste da miniatura 3D real pulado", cel.failure_reason());
+        return;
+    }
+    let path = lib.thumbnails().cached_path(&hash, 512).expect("master de 512 no cache de disco");
+    let img = image::open(path).unwrap().to_rgba8();
+    let bg = img.get_pixel(0, 0).0;
+    let fg = img.pixels().filter(|p| p.0 != bg).count();
+    assert!(fg > 20_000, "o cubo cobre boa parte do quadro: {fg} px");
+    // as quatro escalas existem em disco (64/128/256/512)
+    for size in anigo_assets::THUMB_SIZES {
+        assert!(lib.thumbnails().cached_path(&hash, size).is_some(), "falta o tamanho {size}");
+    }
+}
+
+#[test]
+fn dropping_cards_on_the_side_panel_targets_edits_the_library() {
+    let (_d, lib) = synthetic(120);
+    let mut h = Harness::new(lib.clone());
+    h.settle();
+    let ids = lib.query_ids(&Query::default(), 3).unwrap();
+    let coll = lib.create_collection("Alvo").unwrap();
+    h.ws.drop_on(side::DropTarget::Collection(coll, "Alvo".into()), ids.clone());
+    h.run_until("coleção", |_| lib.query_ids(&Query { collection: Some(coll), ..Default::default() }, 10).unwrap().len() == 3);
+    h.ws.drop_on(side::DropTarget::Tag("cena/arrastada".into()), ids.clone());
+    h.run_until("tag", |_| lib.query_ids(&Query { tags: vec!["cena/arrastada".into()], ..Default::default() }, 10).unwrap().len() == 3);
+    h.settle();
+    let node = h.ws.facets.tags.iter().find(|n| n.path == "cena").expect("pai sintetizado na árvore");
+    assert_eq!(node.total, 3, "o pai conta os descendentes");
+    h.ws.drop_on(side::DropTarget::Favorites, ids.clone());
+    h.run_until("favoritos", |_| ids.iter().all(|i| lib.require_row(i).unwrap().favorite));
+    h.ws.drop_on(side::DropTarget::Trash, ids.clone());
+    h.run_until("lixeira", |_| ids.iter().all(|i| lib.require_row(i).unwrap().state == AssetState::Trashed));
+}
+
+#[test]
+fn metadata_edits_reach_the_manifest_and_the_search_index() {
+    let (_d, lib) = synthetic(80);
+    let mut h = Harness::new(lib.clone());
+    h.settle();
+    let id = h.ws.list.row(0).unwrap().id;
+    h.ws.update_info(id, InfoPatch { name: Some("Nome totalmente novo".into()), description: Some("uma descricao unica zebra".into()), author: Some("Eu".into()), ..Default::default() });
+    h.run_until("gravar", |_| lib.manifest(&id).unwrap().name == "Nome totalmente novo");
+    let m = lib.manifest(&id).unwrap();
+    assert_eq!((m.description.as_str(), m.author.as_str()), ("uma descricao unica zebra", "Eu"));
+    // o índice FTS enxerga o nome e a descrição novos
+    for q in ["totalmente", "zebra", "desc:unica"] {
+        let found = lib.query_ids(&Query { text: Some(q.into()), ..Default::default() }, 10).unwrap();
+        assert!(found.contains(&id), "busca {q:?} deveria achar o ativo editado");
+    }
 }

@@ -161,7 +161,8 @@ pub struct LibraryWorkspace {
     pub(crate) open: OpenState,
     pub(crate) rt: Option<Runtime>,
     pub(crate) wake: Wake,
-    pub(crate) ctx: Option<egui::Context>,
+    /// Contexto egui compartilhado com `wake`: as threads de fundo acordam a UI mesmo quando foram criadas antes do 1º quadro.
+    pub(crate) ctx_cell: Arc<std::sync::Mutex<Option<egui::Context>>>,
 
     // consulta e visão
     pub(crate) filters: Filters,
@@ -232,12 +233,21 @@ impl LibraryWorkspace {
 
     fn empty(spec: Option<LibrarySpec>) -> Self {
         let (tasks_tx, tasks_rx) = crossbeam_channel::unbounded();
+        let ctx_cell: Arc<std::sync::Mutex<Option<egui::Context>>> = Arc::new(std::sync::Mutex::new(None));
+        let wake_cell = ctx_cell.clone();
+        let wake: Wake = Arc::new(move || {
+            if let Ok(g) = wake_cell.lock() {
+                if let Some(c) = g.as_ref() {
+                    c.request_repaint();
+                }
+            }
+        });
         Self {
             spec,
             open: OpenState::Closed,
             rt: None,
-            wake: Arc::new(|| {}),
-            ctx: None,
+            wake,
+            ctx_cell,
             filters: Filters::default(),
             list: PagedList::new(),
             view: ViewMode::Grid,
@@ -277,12 +287,12 @@ impl LibraryWorkspace {
         }
     }
 
-    /// Liga o acordar da UI (chamado quando uma thread de fundo termina algo).
+    /// Liga o acordar da UI (idempotente; chamado no primeiro quadro).
     pub fn set_context(&mut self, ctx: &egui::Context) {
-        if self.ctx.is_none() {
-            let c = ctx.clone();
-            self.wake = Arc::new(move || c.request_repaint());
-            self.ctx = Some(ctx.clone());
+        if let Ok(mut g) = self.ctx_cell.lock() {
+            if g.is_none() {
+                *g = Some(ctx.clone());
+            }
         }
     }
 

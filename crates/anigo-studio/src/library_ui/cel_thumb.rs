@@ -270,6 +270,11 @@ impl CelThumbnailRenderer {
         Self { gpu: Mutex::new(Gpu::Unready) }
     }
 
+    /// Renderer que já nasce "sem GPU" (testes do caminho de degradação; o app usa `new`).
+    pub fn unavailable(reason: &str) -> Self {
+        Self { gpu: Mutex::new(Gpu::Failed(reason.to_string())) }
+    }
+
     /// `Some(false)` se a GPU falhou ao iniciar; `None` se ainda não tentou.
     pub fn available(&self) -> Option<bool> {
         match &*self.gpu.lock().unwrap_or_else(|e| e.into_inner()) {

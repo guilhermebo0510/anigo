@@ -36,7 +36,7 @@ enum SideAction {
 }
 
 #[derive(Clone)]
-enum DropTarget {
+pub(super) enum DropTarget {
     Collection(CollectionId, String),
     Tag(String),
     Favorites,
@@ -378,7 +378,7 @@ impl LibraryWorkspace {
         }
     }
 
-    fn drop_on(&mut self, target: DropTarget, ids: Vec<AssetId>) {
+    pub(super) fn drop_on(&mut self, target: DropTarget, ids: Vec<AssetId>) {
         if ids.is_empty() {
             return;
         }
