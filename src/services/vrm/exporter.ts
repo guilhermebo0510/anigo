@@ -524,7 +524,7 @@ export function exportGltf(scene: ExportScene, vrm?: Vrm1ExportData, options: Ex
     if (vrm.springBone) {
       // A spec não exige que o leitor conheça springBone: vai só em `extensionsUsed`.
       extensionsUsed.push("VRMC_springBone");
-      if (vrm.springBone.colliders.some((collider) => isExtendedColliderShape(collider.shape))) {
+      if (vrm.springBone.colliders.some((collider: Vrm1Collider) => isExtendedColliderShape(collider.shape))) {
         extensionsUsed.push("VRMC_springBone_extended_collider");
       }
       gltfExtensions["VRMC_springBone"] = springBoneToJson(vrm.springBone);

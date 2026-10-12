@@ -157,7 +157,7 @@ fn bench() {
     let rest = mgr.compute_world_transforms();
     let frames = 600usize;
 
-    let mut case = |name: &str, strands: usize, points: usize, columns: usize, rings: usize, bodies: bool| {
+    let case = |name: &str, strands: usize, points: usize, columns: usize, rings: usize, bodies: bool| {
         let mut world = PhysicsWorld::new(WorldConfig::default());
         if bodies {
             world.add_body_colliders(&rest, 1.0, 0.2).expect("colliders");
