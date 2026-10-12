@@ -16,7 +16,6 @@ pub struct SideUi {
     pub rename: Option<(CollectionId, String)>,
     pub root_path: String,
     pub root_linked: bool,
-    pub root_name: String,
 }
 
 enum SideAction {

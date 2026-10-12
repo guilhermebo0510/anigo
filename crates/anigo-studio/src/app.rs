@@ -599,6 +599,10 @@ impl eframe::App for StudioApp {
     }
 
     fn on_exit(&mut self) {
+        // a biblioteca temporária de um cenário não sobrevive ao app (ANIGO_SCENARIO_KEEP=1 preserva para inspeção)
+        if let (Some(dir), None) = (self.lib_scenario_dir.take(), std::env::var_os("ANIGO_SCENARIO_KEEP")) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         if let (Some(p), false) = (&self.session_path, self.cli.no_session) {
             let _ = self.session_state().save_to(p);
         }

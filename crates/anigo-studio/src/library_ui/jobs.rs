@@ -2,7 +2,6 @@
 //! integridade e reconstrução do índice. Os eventos são recolhidos a cada quadro (`poll_jobs`).
 
 use super::*;
-use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -68,7 +67,6 @@ pub struct ImportRun {
     pub done: usize,
     pub total: usize,
     pub bytes: u64,
-    pub started: Instant,
     pub cancel_requested: bool,
 }
 
@@ -86,12 +84,10 @@ pub struct VerifyRun {
     pub done: usize,
     pub issues: Vec<VerifyIssue>,
     pub report: Option<VerifyReport>,
-    pub opts: VerifyOptions,
 }
 
 pub struct RebuildRun {
     pub job: Option<Job<(), RebuildReport>>,
-    pub started: Instant,
 }
 
 #[derive(Default)]
@@ -144,7 +140,7 @@ impl LibraryWorkspace {
         let Some((path, opts)) = self.jobs.queue.pop_front() else { return };
         let label = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
         let job = rt.lib.import(&path, opts);
-        self.jobs.import = Some(ImportRun { job: Some(job), label, discovered: 0, done: 0, total: 0, bytes: 0, started: Instant::now(), cancel_requested: false });
+        self.jobs.import = Some(ImportRun { job: Some(job), label, discovered: 0, done: 0, total: 0, bytes: 0, cancel_requested: false });
         self.jobs.log.open = true;
     }
 
@@ -195,7 +191,7 @@ impl LibraryWorkspace {
         }
         let Some(rt) = &self.rt else { return };
         let job = rt.lib.verify(opts.clone());
-        self.jobs.verify = Some(VerifyRun { job: Some(job), total: 0, done: 0, issues: Vec::new(), report: None, opts });
+        self.jobs.verify = Some(VerifyRun { job: Some(job), total: 0, done: 0, issues: Vec::new(), report: None });
     }
 
     pub(crate) fn start_rebuild(&mut self) {
@@ -203,7 +199,7 @@ impl LibraryWorkspace {
             return;
         }
         let Some(rt) = &self.rt else { return };
-        self.jobs.rebuild = Some(RebuildRun { job: Some(rt.lib.rebuild_index_job()), started: Instant::now() });
+        self.jobs.rebuild = Some(RebuildRun { job: Some(rt.lib.rebuild_index_job()) });
     }
 
     // ----------------------------------------------------------------- polling

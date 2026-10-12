@@ -15,8 +15,15 @@ fail=0
 for sc in $SCENARIOS; do
   png="$OUT/studio_$sc.png"
   rm -f "$png"
-  # o ponteiro do Xvfb comeca no centro (sobre a janela e gera hover/tooltip); estaciona-o fora da janela do app
-  timeout 240 xvfb-run -a -s "-screen 0 1600x1000x24" bash -c 'xdotool mousemove 1599 999 2>/dev/null; exec "$@"' _ "$BIN" \
+  # o ponteiro do Xvfb comeca no centro, sobre a janela (hover/tooltip em algum card): depois que a janela do app
+  # existe, estaciona o ponteiro fora dela (xdotool so age no Xvfb criado aqui; o display do usuario nunca e tocado)
+  timeout 240 xvfb-run -a -s "-screen 0 1600x1000x24" bash -c '
+    "$@" &
+    APP=$!
+    for i in $(seq 1 60); do xdotool search --name "ANIGO Studio" >/dev/null 2>&1 && break; sleep 0.25; done
+    sleep 0.5
+    xdotool mousemove 1599 999 2>/dev/null
+    wait $APP' _ "$BIN" \
     --no-session --workspace biblioteca --scenario "$sc" --frames 14 --size 1440x900 \
     --screenshot "$png" 2>"$OUT/studio_$sc.log"
   if [ -s "$png" ]; then

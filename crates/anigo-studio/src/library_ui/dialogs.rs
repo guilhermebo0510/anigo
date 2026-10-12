@@ -27,9 +27,9 @@ pub enum PickPurpose {
     AddRootLinked,
     AddRootManaged,
     ImportPaths,
-    RelinkFile(AssetId),
-    RelinkSearchDir(AssetId),
-    RelinkRoot(RootId),
+    RelinkFile,
+    RelinkSearchDir,
+    RelinkRoot,
     RelinkBatch,
 }
 
@@ -169,7 +169,7 @@ impl Dialogs {
         self.manage_open = true;
     }
     pub fn open_picker(&mut self, purpose: PickPurpose, start: Option<PathBuf>) {
-        let files = matches!(purpose, PickPurpose::ImportPaths | PickPurpose::RelinkFile(_));
+        let files = matches!(purpose, PickPurpose::ImportPaths | PickPurpose::RelinkFile);
         self.picker = Some(FolderPicker::new(purpose, files, start));
     }
     pub fn open_relink(&mut self, id: AssetId, name: String) {
@@ -409,7 +409,7 @@ impl LibraryWorkspace {
         let mut result: Option<Vec<PathBuf>> = None;
         let mut close = false;
         let title = match p.purpose {
-            PickPurpose::ImportPaths | PickPurpose::RelinkFile(_) => tr("lib.pick.files"),
+            PickPurpose::ImportPaths | PickPurpose::RelinkFile => tr("lib.pick.files"),
             _ => tr("lib.pick.folder"),
         };
         let resp = egui::Modal::new(egui::Id::new("lib_picker")).show(ctx, |ui| {
@@ -519,17 +519,17 @@ impl LibraryWorkspace {
                 }
                 self.dlg.import_open = true;
             }
-            PickPurpose::RelinkFile(_) => {
+            PickPurpose::RelinkFile => {
                 if let Some(s) = &mut self.dlg.relink {
                     s.file = first.display().to_string();
                 }
             }
-            PickPurpose::RelinkSearchDir(_) => {
+            PickPurpose::RelinkSearchDir => {
                 if let Some(s) = &mut self.dlg.relink {
                     s.search_dir = first.display().to_string();
                 }
             }
-            PickPurpose::RelinkRoot(_) => {
+            PickPurpose::RelinkRoot => {
                 if let Some(s) = &mut self.dlg.relink_root {
                     s.new_path = first.display().to_string();
                 }
@@ -552,7 +552,7 @@ impl LibraryWorkspace {
             ui.label(small_dim(tr("lib.imp.hint")));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let w = ui.available_width() - 190.0;
+                let w = 300.0;
                 let r = ui.add(egui::TextEdit::singleline(&mut self.dlg.import_path).hint_text(tr("lib.imp.path_hint")).desired_width(w));
                 let add = (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || ui.button(format!("{}  {}", icons::PLUS, tr("lib.imp.add_path"))).clicked();
                 if add && !self.dlg.import_path.trim().is_empty() {
@@ -1102,7 +1102,7 @@ impl LibraryWorkspace {
                 ui.add_space(6.0);
                 ui.label(small_dim(tr("lib.relink.new_file")));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.file).desired_width(ui.available_width() - 150.0));
+                    ui.add(egui::TextEdit::singleline(&mut s.file).desired_width(330.0));
                     if ui.button(tr("lib.imp.browse")).clicked() {
                         pick_file = true;
                     }
@@ -1113,7 +1113,7 @@ impl LibraryWorkspace {
                 ui.add_space(6.0);
                 ui.label(small_dim(tr("lib.relink.search_folder")));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.search_dir).desired_width(ui.available_width() - 150.0));
+                    ui.add(egui::TextEdit::singleline(&mut s.search_dir).desired_width(330.0));
                     if ui.button(tr("lib.pick.folder")).clicked() {
                         pick_dir = true;
                     }
@@ -1150,10 +1150,10 @@ impl LibraryWorkspace {
             let id = s.id;
             if pick_file {
                 self.dlg.relink = Some(s);
-                self.dlg.open_picker(PickPurpose::RelinkFile(id), None);
+                self.dlg.open_picker(PickPurpose::RelinkFile, None);
             } else if pick_dir {
                 self.dlg.relink = Some(s);
-                self.dlg.open_picker(PickPurpose::RelinkSearchDir(id), None);
+                self.dlg.open_picker(PickPurpose::RelinkSearchDir, None);
             } else if let Some(file) = do_link {
                 self.command("relink", Refresh::ALL, move |lib| lib.relink(&id, &file).map(|_| tr("lib.relink.done").to_string()).map_err(|e| e.to_string()));
             } else if search {
@@ -1179,7 +1179,7 @@ impl LibraryWorkspace {
                 ui.label(small_dim(format!("{}: {}", tr("lib.root.current_path"), s.root.path.display())));
                 ui.label(small_dim(tr("lib.root.relink.hint")));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.new_path).desired_width(ui.available_width() - 150.0));
+                    ui.add(egui::TextEdit::singleline(&mut s.new_path).desired_width(330.0));
                     if ui.button(tr("lib.pick.folder")).clicked() {
                         pick = true;
                     }
@@ -1191,7 +1191,7 @@ impl LibraryWorkspace {
             let rid = s.root.id;
             if pick {
                 self.dlg.relink_root = Some(s);
-                self.dlg.open_picker(PickPurpose::RelinkRoot(rid), None);
+                self.dlg.open_picker(PickPurpose::RelinkRoot, None);
             } else if go {
                 let path = PathBuf::from(s.new_path.trim());
                 self.command("relink", Refresh::ALL, move |lib| lib.relink_root(rid, &path).map(|(found, missing)| format!("{} {} \u{00b7} {} {}", found.len(), tr("lib.msg.found"), missing.len(), tr("lib.scan.missing"))).map_err(|e| e.to_string()));
@@ -1207,7 +1207,7 @@ impl LibraryWorkspace {
             egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.relink.batch"))).id(egui::Id::new("lib_relink_batch_win")).open(&mut open).collapsible(false).default_width(480.0).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
                 ui.label(small_dim(format!("{} {}", self.facets.n_missing, tr("lib.relink.batch.hint"))));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut dir).hint_text(tr("lib.relink.search_folder")).desired_width(ui.available_width() - 150.0));
+                    ui.add(egui::TextEdit::singleline(&mut dir).hint_text(tr("lib.relink.search_folder")).desired_width(330.0));
                     if ui.button(tr("lib.pick.folder")).clicked() {
                         pick = true;
                     }
