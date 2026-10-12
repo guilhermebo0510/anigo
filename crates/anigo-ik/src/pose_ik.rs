@@ -43,6 +43,23 @@ impl Default for IkOptions {
     }
 }
 
+/// Rotação que leva o par (eixo `dir_rest`, eixo lateral `side_rest`) ao par (`dir_new`, `side_new`): `dir` exato e o
+/// lateral projetado no plano perpendicular a `dir` (os dois pares viram bases ortonormais).
+fn frame_rotation(dir_rest: Vec3, side_rest: Vec3, dir_new: Vec3, side_new: Vec3) -> Quat {
+    let basis = |dir: Vec3, side: Vec3| -> Option<Mat3> {
+        let e1 = dir.normalize_or_zero();
+        let e2 = (side - e1 * side.dot(e1)).normalize_or_zero();
+        if e1 == Vec3::ZERO || e2 == Vec3::ZERO {
+            return None;
+        }
+        Some(Mat3::from_cols(e1, e2, e1.cross(e2)))
+    };
+    match (basis(dir_rest, side_rest), basis(dir_new, side_new)) {
+        (Some(r), Some(n)) => Quat::from_mat3(&(n * r.transpose())).normalize(),
+        _ => arc(dir_rest, dir_new),
+    }
+}
+
 /// Rotação mínima que leva `a` a `b` (vetores não necessariamente unitários).
 pub fn arc(a: Vec3, b: Vec3) -> Quat {
     let (a, b) = (a.normalize_or_zero(), b.normalize_or_zero());
@@ -131,13 +148,28 @@ pub fn solve_limb(rig: &PoseRig, pose: &PoseState, limb: Limb, target: Vec3, pol
     let b_new = a + u * (len_a * cos_a) + bend * (len_a * sin_a);
     let c_new = a + u * d;
 
-    // rotações: raiz alinha A→B; meio alinha B→C (já com a rotação da raiz aplicada)
-    let d1 = arc(b - a, b_new - a);
-    let d2 = arc(d1 * (c - b), c_new - b_new);
+    // Dobradiça anatômica: o eixo X local do osso-raiz e do osso do meio fica sobre a normal do plano de dobra
+    // (joelho/cotovelo giram só em X, sem torção), e a raiz recebe a torção necessária para isso.
+    let d1 = (b_new - a).normalize_or_zero();
+    let d2 = (c_new - b_new).normalize_or_zero();
+    let mut hinge = d1.cross(d2);
+    if hinge.length() < 1e-4 {
+        hinge = u.cross(bend);
+    }
+    let mut hinge = hinge.normalize_or_zero();
+    if hinge == Vec3::ZERO {
+        hinge = e.rot[r] * Vec3::X;
+    }
+    // mantém o sentido do eixo X atual do osso (evita inversão de 180° na torção)
+    if hinge.dot(e.rot[r] * Vec3::X) < 0.0 {
+        hinge = -hinge;
+    }
+    let rest_r = (rig.bind[m] - rig.bind[r]).normalize_or_zero();
+    let rest_m = (rig.bind[t] - rig.bind[m]).normalize_or_zero();
+    let root_world = frame_rotation(rest_r, Vec3::X, d1, hinge);
+    let mid_world = frame_rotation(rest_m, Vec3::X, d2, hinge);
     let mut out = pose.clone();
-    let root_world = d1 * e.rot[r];
     set_world_rotation(&mut out, &e, r, root_world);
-    let mid_world = d2 * d1 * e.rot[m];
     out.set_rotation(m, (root_world.inverse() * mid_world).normalize());
     if opts.keep_end_orientation {
         out.set_rotation(t, (mid_world.inverse() * e.rot[t]).normalize());
