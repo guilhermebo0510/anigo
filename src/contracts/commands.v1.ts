@@ -92,6 +92,26 @@ export interface MeshRefWire {
 }
 
 /** Patch of the stylized material — only `Some` fields are written (Rust `Option`). */
+/**
+ * Motor cel NPR (Fase 0/1): parâmetros opcionais por material — espelha
+ * `anigo-core::npr::NprParams`. O viewport TS não os consome (o renderer nativo
+ * sim); existem aqui só para o patch de material ser completo. Todos no padrão
+ * = comportamento anterior.
+ */
+export interface NprParamsWire {
+  ramp_blend: number;
+  ramp_row: number;
+  outline_smooth_normals: number;
+  outline_distance_falloff: number;
+  outline_ref_distance: number;
+  outline_min_width_scale: number;
+  outline_taper: number;
+  outline_ink_blend: number;
+  outline_ink_darken: number;
+  outline_ink_saturation: number;
+  face_sdf_mirror_center: number;
+}
+
 export interface MaterialPatchWire {
   base_color?: [number, number, number, number];
   shade_color?: [number, number, number, number];
@@ -139,6 +159,8 @@ export interface MaterialPatchWire {
   gaze_tracking_enabled?: boolean;
   gaze_saccade_amplitude?: number;
   gaze_damping?: number;
+  /** Motor cel NPR: substitui o grupo inteiro (omitido = não mexe). */
+  npr?: NprParamsWire;
 }
 
 export type CommandWire =

@@ -36,11 +36,11 @@ struct MaterialUniform {
     emission_color: vec4<f32>,  // MToon subEmission (cor, HDR via intensity)
     params4: vec4<f32>,         // x: emission_intensity, y: second_shade_shift, z: second_shade_softness, w: matcap_intensity
     params5: vec4<f32>,         // x: main_tex_enabled, y: shade_tex_enabled, z: second_shade_enabled, w: emission_enabled
-    params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: reserved
+    params6: vec4<f32>,         // x: matcap_enabled, y: matcap_mode (0 normal / 1 additive), z: shade_toony, w: ramp_blend (0 = rampa 2D off)
     // ── Fase 2 (#17) — sombra facial SDF ──────────────────────────────────
-    params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: reserved
+    params7: vec4<f32>,         // x: face_shadow_offset, y: face_shadow_smoothness, z: face_sdf_enabled, w: ramp_row (0..3)
     // ── Fase 2 (#43) — olho anime (parallax + highlights) ─────────────────
-    params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: reserved
+    params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: face_sdf_mirror_center (0 = off)
 };
 
 @group(0) @binding(0)
@@ -154,7 +154,15 @@ struct VertexOutput {
     @location(1) world_position: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) anime_attr: vec4<f32>,
+    // Eixos X e Z (frente) do rosto no mundo, a partir do osso da cabeça — flat:
+    // constantes por draw. Ver face_sdf.wgsl.
+    @location(4) @interpolate(flat) face_right: vec3<f32>,
+    @location(5) @interpolate(flat) face_forward: vec3<f32>,
 };
+
+// Junta da cabeça na paleta de skinning canônica (esqueleto de 24 ossos:
+// Root, Hips, Pelvis, Spine, Chest, UpperChest, Neck, Head = 7).
+const FACE_HEAD_JOINT: u32 = 7u;
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
@@ -170,6 +178,11 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.world_normal = normalize((camera.normal_mat * vec4<f32>(skinned_normal, 0.0)).xyz);
     out.uv = in.uv;
     out.anime_attr = in.color;
+    // Frame do rosto: eixos X/Z da cabeça (osso 7) levados ao mundo. Paleta
+    // identidade → colunas 0 e 2 da matriz de modelo (como antes da pose).
+    let head_skin = bones.matrices[FACE_HEAD_JOINT];
+    out.face_right = (camera.model * (head_skin * vec4<f32>(1.0, 0.0, 0.0, 0.0))).xyz;
+    out.face_forward = (camera.model * (head_skin * vec4<f32>(0.0, 0.0, 1.0, 0.0))).xyz;
     return out;
 }
 
@@ -280,6 +293,17 @@ fn face_sdf_factor(sdf: f32, threshold: f32, softness: f32) -> f32 {
     let s = max(softness, 0.001);
     return 1.0 - smoothstep(threshold - s, threshold + s, sdf);
 }
+fn face_sdf_mirror_uv(uv: vec2<f32>, theta: f32, mirror_center: f32) -> vec2<f32> {
+    // Espelhamento esquerda/direita pelo sinal do ângulo da luz. O mapa SDF é
+    // autorado para luz vinda de +X local (theta >= 0); com a luz em -X local
+    // (theta < 0) o mapa é amostrado espelhado em torno de u = mirror_center
+    // (eixo de simetria do rosto no mapa; 0.5 para mapas centrados).
+    // mirror_center <= 0 desliga (sombra simétrica, o comportamento anterior).
+    if (mirror_center > 0.0 && theta < 0.0) {
+        return vec2<f32>(2.0 * mirror_center - uv.x, uv.y);
+    }
+    return uv;
+}
 // ANIGO-FACE-SDF-END
 
 // Fase 2 (#43): olho anime — a mesma definição canônica que está em
@@ -307,6 +331,25 @@ fn eye_highlight_rgb(mask: f32, intensity: f32) -> vec3<f32> {
     return vec3<f32>(mask * intensity);
 }
 // ANIGO-ANIME-EYE-END
+
+// ── Rampa 2D (pura; espelhada em anigo-core::npr com testes que executam ESTE
+// texto numa GPU e comparam com o Rust) ─────────────────────────────────────
+
+// V do centro da linha `row` (0..3, fração interpola entre linhas): (row + 0.5) / 4.
+fn ramp_v(row: f32) -> f32 {
+    return (clamp(row, 0.0, 3.0) + 0.5) * 0.25;
+}
+
+// U da coluna: half-lambert deslocado pelo limiar de sombra (o degrau cai em 0.5
+// quando half_lambert == threshold).
+fn ramp_u(half_lambert: f32, threshold: f32) -> f32 {
+    return clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
+}
+
+// Fator de luz final: mix(analítico, rampa, blend); blend 0 → analítico exato.
+fn blend_toon_factor(analytic: f32, ramp_value: f32, blend: f32) -> f32 {
+    return mix(analytic, ramp_value, blend);
+}
 
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
@@ -338,16 +381,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let threshold = material.params.x + shadow_shift;
     let smoothness = max(material.params.y, 0.001);
 
-    // 3. Toon Ramp 1D/2D Texture Sampling with Analytical Fallback
+    // 3. Analytical toon factor (default) — the 2D ramp is an optional override (3b)
     let toon_steps = material.params2.w;
-    let ramp_v = select(
-        select(0.125, 0.375, toon_steps >= 0.5),
-        select(0.625, 0.875, toon_steps >= 2.5),
-        toon_steps >= 1.5
-    );
-    let u_coord = clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
-    let ramp_sample = textureSample(toon_ramp_tex, toon_ramp_sampler, vec2<f32>(u_coord, ramp_v));
-
     var analytical_toon: f32;
     if (toon_steps < 0.5) {
         // Continuous / Smooth anime gradient
@@ -369,7 +404,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // P1-03: single analytical model (smoothness controls penumbra only, not model switch)
-    let toon_factor = analytical_toon; // ramp_sample kept for validation but not mixed
+    var toon_factor = analytical_toon;
+
+    // 3b. Rampa 2D opcional por material (UTS / Genshin / Star Rail): linha da
+    // rampa = material (params7.w, 0..3; fração interpola entre linhas), coluna
+    // = half-lambert deslocado pelo limiar de sombra (o degrau cai em 0.5 quando
+    // half_lambert == threshold). `ramp_blend` (params6.w) = 0 → nem amostra:
+    // fator 100% analítico, byte a byte igual ao motor anterior (frame
+    // congelado). Matemática espelhada em anigo-core::npr (ramp_v/ramp_u/
+    // blend_toon_factor). `material` é um uniform → o desvio é uniforme e o
+    // textureSample é legal aqui.
+    let ramp_blend = clamp(material.params6.w, 0.0, 1.0);
+    if (ramp_blend > 0.0) {
+        let ramp_value = textureSample(
+            toon_ramp_tex,
+            toon_ramp_sampler,
+            vec2<f32>(ramp_u(half_lambert, threshold), ramp_v(material.params7.w))
+        ).r;
+        toon_factor = blend_toon_factor(analytical_toon, ramp_value, ramp_blend);
+    }
 
     // 4. Stylized Ambient Occlusion (R channel) — P2-05 applied to diffuse/ambient only
     let ao_raw = clamp(in.anime_attr.r, 0.0, 1.0);
@@ -438,15 +491,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Fase 2 (#17): sombra facial SDF — azimut da luz projetado no espaço
-    // local da cabeça (eixo Z local = frente do rosto). A região do SDF
-    // (nasal/olhos/queixo) escurece 28% — sem textura real ancorada o fator
-    // fica 0 e o resultado é idêntico ao frame congelado.
+    // local da cabeça (eixo Z local = frente do rosto; eixos do osso da cabeça).
+    // O lado da luz (sinal de theta) espelha o mapa (params8.w = eixo de
+    // simetria; 0 = sem espelhamento) e a região do SDF (nasal/olhos/queixo)
+    // recebe a COR DE SOMBRA do material — a mesma do terminador — em vez de um
+    // escurecimento fixo; `min` garante que nunca clareia uma banda já mais
+    // profunda. Sem textura real ancorada o fator é 0 e o resultado é idêntico
+    // ao frame congelado.
     if (material.params7.z > 0.5) {
-        let face_sdf = textureSample(face_sdf_tex, face_sdf_sampler, in.uv).r;
-        let face_theta = face_sdf_theta(camera.model[0].xyz, camera.model[2].xyz, L);
+        let face_theta = face_sdf_theta(in.face_right, in.face_forward, L);
+        let face_uv = face_sdf_mirror_uv(in.uv, face_theta, material.params8.w);
+        let face_sdf = textureSample(face_sdf_tex, face_sdf_sampler, face_uv).r;
         let face_thr = face_sdf_threshold(face_theta, material.params7.x);
         let face_factor = face_sdf_factor(face_sdf, face_thr, material.params7.y);
-        base_cel = mix(base_cel, base_cel * 0.72, face_factor);
+        base_cel = mix(base_cel, min(base_cel, shadow_color), face_factor);
     }
 
     // 7. Anisotropic Specular with Stylized Anime Jitter ("Angel Ring")

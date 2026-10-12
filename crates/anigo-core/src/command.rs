@@ -172,6 +172,10 @@ pub struct MaterialPatch {
     pub gaze_tracking_enabled: Option<bool>,
     pub gaze_saccade_amplitude: Option<f32>,
     pub gaze_damping: Option<f32>,
+    /// Motor cel NPR: substitui o grupo inteiro (rampa 2D, contorno, SDF facial).
+    /// Omitido quando `None` para não mudar o formato dos logs de comando antigos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npr: Option<crate::npr::NprParams>,
 }
 
 impl MaterialPatch {
@@ -306,6 +310,9 @@ impl MaterialPatch {
         if let Some(value) = self.gaze_damping {
             material.gaze_damping = value;
         }
+        if let Some(value) = self.npr {
+            material.npr = value;
+        }
     }
 
     /// Builds the inverse patch from the current material values.
@@ -382,6 +389,7 @@ impl MaterialPatch {
                 .gaze_saccade_amplitude
                 .map(|_| material.gaze_saccade_amplitude),
             gaze_damping: self.gaze_damping.map(|_| material.gaze_damping),
+            npr: self.npr.map(|_| material.npr),
         }
     }
 

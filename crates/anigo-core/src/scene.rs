@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::hierarchy::{self, HierarchyError, NodeKind};
 use crate::math::{Camera, Transform};
 use crate::mesh::Mesh;
+use crate::npr::NprParams;
 use crate::snapshot::SkinPayload;
 use glam::Mat4;
 use serde::{Deserialize, Serialize};
@@ -169,6 +170,11 @@ pub struct StylizedMaterial {
     /// Damping do tracking (exponencial, 1/s) — quanto maior, mais rígido.
     #[serde(default = "default_gaze_damping")]
     pub gaze_damping: f32,
+    /// Motor cel NPR (rampa 2D, contorno de alta qualidade, espelhamento do
+    /// SDF facial). Tudo no padrão = comportamento anterior; omitido da
+    /// serialização enquanto estiver no padrão (ver [`NprParams`]).
+    #[serde(default, skip_serializing_if = "NprParams::is_default")]
+    pub npr: NprParams,
 }
 
 impl Default for StylizedMaterial {
@@ -217,6 +223,7 @@ impl Default for StylizedMaterial {
             gaze_tracking_enabled: false,
             gaze_saccade_amplitude: default_gaze_saccade_amplitude(),
             gaze_damping: default_gaze_damping(),
+            npr: NprParams::default(),
         }
     }
 }

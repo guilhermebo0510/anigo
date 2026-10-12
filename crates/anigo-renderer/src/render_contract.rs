@@ -276,6 +276,34 @@ pub fn vertex_stride() -> u64 {
     contract()["vertex_layout"]["stride"].as_u64().unwrap_or(0)
 }
 
+/// Motor cel (Fase 1): stride (bytes) do SEGUNDO stream de vértices do pipeline
+/// de contorno (normal de extrusão suavizada). 0 se o contrato não declarar.
+pub fn outline_stream_stride() -> u64 {
+    contract()["vertex_layout"]["outline_stream"]["stride"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// `(shader_location, offset, formato)` dos atributos do segundo stream do
+/// contorno (`vertex_layout.outline_stream`).
+pub fn outline_stream_attributes() -> Vec<(u32, u64, wgpu::VertexFormat)> {
+    contract()["vertex_layout"]["outline_stream"]["attributes"]
+        .as_array()
+        .map(|attributes| {
+            attributes
+                .iter()
+                .map(|attribute| {
+                    (
+                        attribute["shader_location"].as_u64().unwrap_or(0) as u32,
+                        attribute["offset"].as_u64().unwrap_or(0),
+                        vertex_format(attribute["format"].as_str().unwrap_or("")),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `(shader_location, offset, formato)` de cada atributo, na ordem declarada.
 pub fn vertex_attributes() -> Vec<(u32, u64, wgpu::VertexFormat)> {
     let attributes = match contract()["vertex_layout"]["attributes"].as_array() {
@@ -957,6 +985,7 @@ mod tests {
             color: [1.0, 2.0, 3.0, 4.0],
             params: [5.0, 6.0, 7.0, 8.0],
             params2: [9.0, 10.0, 11.0, 12.0],
+            params3: [13.0, 14.0, 15.0, 16.0],
         };
         let bytes = bytemuck::bytes_of(&outline);
         let read = |offset: usize| {
@@ -970,6 +999,19 @@ mod tests {
         assert_eq!(read(uniform_offset("outline", "color") as usize + 12), 4.0);
         assert_eq!(read(uniform_offset("outline", "params") as usize), 5.0);
         assert_eq!(read(uniform_offset("outline", "params2") as usize + 12), 12.0);
+        assert_eq!(read(uniform_offset("outline", "params3") as usize), 13.0);
+        assert_eq!(read(uniform_offset("outline", "params3") as usize + 12), 16.0);
+    }
+
+    #[test]
+    fn outline_stream_is_a_separate_12_byte_normal_stream() {
+        // O 2º stream só existe no pipeline de contorno; o vértice de 72 B não muda.
+        assert_eq!(vertex_stride(), 72);
+        assert_eq!(outline_stream_stride(), 12);
+        assert_eq!(
+            outline_stream_attributes(),
+            vec![(6, 0, wgpu::VertexFormat::Float32x3)]
+        );
     }
 
     #[test]

@@ -124,10 +124,12 @@ test("shaders WGSL: bloco de skinning idêntico e LBS sem repetição de conta",
   assert.equal(block.match(/blend \* inv_total/g)?.length, 1, "a normalização aparece uma vez só");
 
   // posição (w = 1) e direção (w = 0) passam pela mesma matriz, nos dois passes
-  for (const source of [cel, outline]) {
+  // (o contorno extruda pela normal do 2º stream — `in.outline_normal`: a suavizada
+  // do motor cel ou, sem suavização, a própria normal da malha)
+  for (const [source, normalField] of [[cel, "normal"], [outline, "outline_normal"]] as const) {
     assert.match(source, /skin_palette\(in\.joints, in\.weights\)/);
     assert.match(source, /\(skin \* vec4<f32>\(in\.position, 1\.0\)\)\.xyz/);
-    assert.match(source, /\(skin \* vec4<f32>\(in\.normal, 0\.0\)\)\.xyz/);
+    assert.match(source, new RegExp(`\\(skin \\* vec4<f32>\\(in\\.${normalField}, 0\\.0\\)\\)\\.xyz`));
   }
   // um único struct de entrada de vértice por shader (sem cópia divergente)
   assert.equal(cel.match(/struct VertexInput/g)?.length, 1);
