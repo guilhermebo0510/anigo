@@ -676,7 +676,7 @@ pub fn bone_limit(bone: usize, profile: LimitProfile) -> Option<BoneLimit> {
             HEAD => BoneLimit::new([-40.0, 30.0], [-23.0, 23.0], [-40.0, 40.0]),
             L_CLAVICLE => BoneLimit::new([-5.0, 5.0], [-12.0, 20.0], [-15.0, 10.0]),
             L_SHOULDER => BoneLimit::new([-180.0, 50.0], [-50.0, 180.0], [-90.0, 90.0]),
-            L_ELBOW => BoneLimit::new([-150.0, 3.0], [-4.0, 4.0], [-85.0, 85.0]),
+            L_ELBOW => BoneLimit::new([-150.0, 3.0], [-12.0, 12.0], [-85.0, 85.0]), // sz: folga p/ a inclinação do osso de repouso do braço
             L_WRIST => BoneLimit::new([-60.0, 60.0], [-20.0, 20.0], [-20.0, 20.0]),
             L_THIGH => BoneLimit::new([-120.0, 30.0], [-20.0, 45.0], [-45.0, 45.0]),
             L_KNEE => BoneLimit::new([-3.0, 150.0], [-3.0, 3.0], [-8.0, 8.0]),
