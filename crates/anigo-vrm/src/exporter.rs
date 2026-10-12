@@ -39,12 +39,19 @@ pub struct ExportPrimitive {
     pub indices: Vec<u32>,
     pub material_index: i64,
     pub morph_targets: Vec<Vec<ExportMorphDelta>>,
+    /// Escreve os alvos de morph como accessors esparsos (glTF `sparse`) e acrescenta `min`/`max`
+    /// ao POSITION. Padrão `false`: a saída dos chamadores existentes não muda um byte.
+    #[serde(default)]
+    pub sparse_morphs: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExportMesh {
     pub name: Option<String>,
     pub primitives: Vec<ExportPrimitive>,
+    /// Nomes dos morph targets, gravados em `mesh.extras.targetNames` (recomendação da spec VRM/glTF).
+    #[serde(default)]
+    pub target_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -368,6 +375,15 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         (accessors.len() - 1) as u64
     };
 
+    let push_accessor_nobuf = |accessors: &mut Vec<Value>, component_type: u64, count: u64, tpe: &str| -> u64 {
+        let mut entry = Map::new();
+        entry.insert("componentType".into(), Value::from(component_type));
+        entry.insert("count".into(), Value::from(count));
+        entry.insert("type".into(), Value::from(tpe));
+        accessors.push(Value::Object(entry));
+        (accessors.len() - 1) as u64
+    };
+
     let mut max_index = 0u32;
     for mesh in &scene.meshes {
         for prim in &mesh.primitives {
@@ -388,7 +404,23 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             let position_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.position).collect();
             let __offset_1 = bin.write_f32(&position_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_1, position_values.len() * 4, Some(34962));
-            attributes.insert("POSITION".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC3")));
+            let pos_acc = push_accessor(&mut accessors, view, 5126, count, "VEC3");
+            if prim.sparse_morphs && !prim.vertices.is_empty() {
+                // glTF exige min/max no POSITION do primitivo
+                let mut mn = [f32::MAX; 3];
+                let mut mx = [f32::MIN; 3];
+                for v in &prim.vertices {
+                    for k in 0..3 {
+                        mn[k] = mn[k].min(v.position[k]);
+                        mx[k] = mx[k].max(v.position[k]);
+                    }
+                }
+                if let Value::Object(o) = &mut accessors[pos_acc as usize] {
+                    o.insert("min".into(), Value::Array(mn.iter().map(|x| json_num(*x)).collect()));
+                    o.insert("max".into(), Value::Array(mx.iter().map(|x| json_num(*x)).collect()));
+                }
+            }
+            attributes.insert("POSITION".into(), Value::from(pos_acc));
 
             let normal_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.normal).collect();
             let __offset_2 = bin.write_f32(&normal_values);
@@ -439,18 +471,62 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
                 primitive_json.insert("material".into(), Value::from(prim.material_index as u64));
             }
             if !prim.morph_targets.is_empty() {
+                let sparse = prim.sparse_morphs;
+                let n_verts = prim.vertices.len();
+                let use_u16_sparse = n_verts <= 65535;
                 let targets: Vec<Value> = prim
                     .morph_targets
                     .iter()
                     .map(|target| {
-                        let position_values: Vec<f32> = target.iter().flat_map(|d| d.position).collect();
-                        let normal_values: Vec<f32> = target.iter().flat_map(|d| d.normal).collect();
-                        let __offset_7 = bin.write_f32(&position_values);
-                        let pos_view = push_view(&mut bin, &mut buffer_views, __offset_7, position_values.len() * 4, Some(34962));
-                        let pos_accessor = push_accessor(&mut accessors, pos_view, 5126, target.len() as u64, "VEC3");
-                        let __offset_8 = bin.write_f32(&normal_values);
-                        let norm_view = push_view(&mut bin, &mut buffer_views, __offset_8, normal_values.len() * 4, Some(34962));
-                        let norm_accessor = push_accessor(&mut accessors, norm_view, 5126, target.len() as u64, "VEC3");
+                        let write_vec3 = |values: Vec<[f32; 3]>, bin: &mut BinWriter, buffer_views: &mut Vec<Value>, accessors: &mut Vec<Value>| -> u64 {
+                            if !sparse {
+                                let flat: Vec<f32> = values.iter().flat_map(|d| *d).collect();
+                                let off = bin.write_f32(&flat);
+                                let view = push_view(bin, buffer_views, off, flat.len() * 4, Some(34962));
+                                return push_accessor(accessors, view, 5126, values.len() as u64, "VEC3");
+                            }
+                            // esparso: só os deltas não nulos; alvo sem deltas = accessor zerado (sem bufferView)
+                            let mut nz: Vec<usize> = (0..values.len()).filter(|&i| values[i].iter().any(|c| c.abs() > 1e-9)).collect();
+                            if nz.is_empty() {
+                                // alvo sem deltas: um único valor nulo (sparse.count >= 1; leitores exigem bufferView ou sparse)
+                                if values.is_empty() {
+                                    return push_accessor_nobuf(accessors, 5126, 0, "VEC3");
+                                }
+                                nz.push(0);
+                            }
+                            let flat: Vec<f32> = nz.iter().flat_map(|&i| values[i]).collect();
+                            let off_v = bin.write_f32(&flat);
+                            let view_v = push_view(bin, buffer_views, off_v, flat.len() * 4, None);
+                            let (view_i, comp_i) = if use_u16_sparse {
+                                let idx: Vec<u16> = nz.iter().map(|&i| i as u16).collect();
+                                let off = bin.write_u16(&idx);
+                                (push_view(bin, buffer_views, off, idx.len() * 2, None), 5123u64)
+                            } else {
+                                let idx: Vec<u32> = nz.iter().map(|&i| i as u32).collect();
+                                let off = bin.write_u32(&idx);
+                                (push_view(bin, buffer_views, off, idx.len() * 4, None), 5125u64)
+                            };
+                            let mut entry = Map::new();
+                            entry.insert("componentType".into(), Value::from(5126));
+                            entry.insert("count".into(), Value::from(values.len() as u64));
+                            entry.insert("type".into(), Value::from("VEC3"));
+                            let mut sp = Map::new();
+                            sp.insert("count".into(), Value::from(nz.len() as u64));
+                            let mut ix = Map::new();
+                            ix.insert("bufferView".into(), Value::from(view_i));
+                            ix.insert("componentType".into(), Value::from(comp_i));
+                            let mut vl = Map::new();
+                            vl.insert("bufferView".into(), Value::from(view_v));
+                            sp.insert("indices".into(), Value::Object(ix));
+                            sp.insert("values".into(), Value::Object(vl));
+                            entry.insert("sparse".into(), Value::Object(sp));
+                            accessors.push(Value::Object(entry));
+                            (accessors.len() - 1) as u64
+                        };
+                        let pos_vals: Vec<[f32; 3]> = target.iter().map(|d| d.position).collect();
+                        let nrm_vals: Vec<[f32; 3]> = target.iter().map(|d| d.normal).collect();
+                        let pos_accessor = write_vec3(pos_vals, &mut bin, &mut buffer_views, &mut accessors);
+                        let norm_accessor = write_vec3(nrm_vals, &mut bin, &mut buffer_views, &mut accessors);
                         let mut entry = Map::new();
                         entry.insert("POSITION".into(), Value::from(pos_accessor));
                         entry.insert("NORMAL".into(), Value::from(norm_accessor));
@@ -464,6 +540,11 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         let mut mesh_json = Map::new();
         mesh_json.insert("name".into(), Value::from(mesh.name.clone().unwrap_or_else(|| format!("mesh_{mesh_index}"))));
         mesh_json.insert("primitives".into(), Value::Array(primitives_json));
+        if !mesh.target_names.is_empty() {
+            let mut extras = Map::new();
+            extras.insert("targetNames".into(), Value::Array(mesh.target_names.iter().map(|n| Value::from(n.clone())).collect()));
+            mesh_json.insert("extras".into(), Value::Object(extras));
+        }
         meshes_json.push(Value::Object(mesh_json));
     }
 

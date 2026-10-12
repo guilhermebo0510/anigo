@@ -163,7 +163,9 @@ mod tests {
                         ExportMorphDelta { position: [0.04, 0.0, 0.0], normal: [0.1, 0.0, 0.0] },
                         ExportMorphDelta { position: [0.0, -0.01, 0.0], normal: [0.0, 0.0, 0.1] },
                     ]],
+                    sparse_morphs: false,
                 }],
+                target_names: Vec::new(),
             }],
             skins: vec![ExportSkin {
                 name: Some("Rig".into()),

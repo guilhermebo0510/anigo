@@ -236,7 +236,7 @@ pub fn build_parts(topo: &Topology, rest: &[Vec3], current: &[Vec3], jaw: f32) -
                 // côncava: a borda fica 1.3 mm acima da esclera e o centro 0.3 mm
                 let lift = 0.0003 + 0.0013 * (rho / r_iris).powi(2);
                 let p = g.center + dir * (g.radius + lift);
-                let q = rho / r_iris;
+                let q = ri as f32 / rings as f32; // exato: o UV não depende da geometria
                 ids.push(ib.v(p, [0.5 + 0.5 * q * ph.cos(), 0.5 + 0.5 * q * ph.sin()]));
             }
             ring_ids.push(ids);
