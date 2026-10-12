@@ -1,0 +1,19 @@
+[package]
+name = "anigo-charbase"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO character base meshes (Gen-0): procedural anime male/female Skin, VRM humanoid skeleton, skin weights, macro morphs, topology contract"
+
+[dependencies]
+anigo-core = { workspace = true }
+anigo-vrm = { workspace = true }
+anigo-modeling = { path = "../anigo-modeling" }
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anigo-renderer = { workspace = true }
+image = { workspace = true }
+pollster = { workspace = true }
