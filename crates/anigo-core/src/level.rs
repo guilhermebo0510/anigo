@@ -192,11 +192,15 @@ pub struct NodeOverrides {
     pub shade_color: Option<[f32; 4]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline_width: Option<f32>,
+    /// Material completo da instância (workspace Shading): patch sobre o material base do nó,
+    /// aplicado DEPOIS dos três campos acima. Aditivo: omitido enquanto vazio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<crate::command::MaterialPatch>,
 }
 
 impl NodeOverrides {
     pub fn is_default(&self) -> bool {
-        self.base_color.is_none() && self.shade_color.is_none() && self.outline_width.is_none()
+        self.base_color.is_none() && self.shade_color.is_none() && self.outline_width.is_none() && self.material.is_none()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -212,7 +216,26 @@ impl NodeOverrides {
                 return Err("override outline_width must be within [0, 0.05]".into());
             }
         }
+        if let Some(m) = &self.material {
+            m.validate()?;
+        }
         Ok(())
+    }
+
+    /// Aplica as substituições a um material já montado a partir do ativo/padrão do nó.
+    pub fn apply_to_material(&self, m: &mut crate::scene::StylizedMaterial) {
+        if let Some(c) = self.base_color {
+            m.base_color = c;
+        }
+        if let Some(c) = self.shade_color {
+            m.shade_color = c;
+        }
+        if let Some(w) = self.outline_width {
+            m.outline_width = w;
+        }
+        if let Some(p) = &self.material {
+            p.apply_to(m);
+        }
     }
 }
 
@@ -1506,5 +1529,39 @@ mod tests {
         assert!(NodeSource::Camera { focal_mm: 0.1, sensor_width_mm: 24.0, sensor_height_mm: 18.0 }.validate().is_err());
         assert!(NodeSource::LibraryAsset { uri: "file:///x".into(), revision: 1 }.validate().is_err());
         assert!(NodeSource::Primitive { shape: PrimitiveShape::Cone }.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod override_material_tests {
+    use super::*;
+    use crate::command::MaterialPatch;
+    use crate::scene::StylizedMaterial;
+
+    #[test]
+    fn default_overrides_serialize_to_nothing_and_old_json_still_reads() {
+        let o = NodeOverrides::default();
+        assert!(o.is_default());
+        assert_eq!(serde_json::to_string(&o).unwrap(), "{}");
+        let back: NodeOverrides = serde_json::from_str("{\"outline_width\":0.01}").unwrap();
+        assert_eq!(back.outline_width, Some(0.01));
+        assert!(back.material.is_none());
+    }
+
+    #[test]
+    fn material_patch_override_applies_after_the_basic_fields_and_validates() {
+        let mut o = NodeOverrides { base_color: Some([0.1, 0.1, 0.1, 1.0]), ..Default::default() };
+        o.material = Some(MaterialPatch { base_color: Some([0.9, 0.2, 0.2, 1.0]), rim_intensity: Some(2.0), ..Default::default() });
+        assert!(!o.is_default());
+        o.validate().unwrap();
+        let mut m = StylizedMaterial::default();
+        o.apply_to_material(&mut m);
+        assert_eq!(m.base_color, [0.9, 0.2, 0.2, 1.0], "o patch completo vence o campo básico");
+        assert_eq!(m.rim_intensity, 2.0);
+        let json = serde_json::to_string(&o).unwrap();
+        let back: NodeOverrides = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, o);
+        o.material = Some(MaterialPatch { spec_power: Some(f32::NAN), ..Default::default() });
+        assert!(o.validate().is_err());
     }
 }

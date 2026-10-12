@@ -399,6 +399,123 @@ impl MaterialPatch {
     pub fn is_empty(&self) -> bool {
         *self == MaterialPatch::default()
     }
+
+    /// Todos os números do patch precisam ser finitos (NaN/inf não entram no projeto).
+    pub fn validate(&self) -> Result<(), String> {
+        let mut scratch = StylizedMaterial::default();
+        self.apply_to(&mut scratch);
+        let value = serde_json::to_value(&scratch).map_err(|e| e.to_string())?;
+        fn has_null(v: &serde_json::Value) -> bool {
+            match v {
+                serde_json::Value::Null => true,
+                serde_json::Value::Array(a) => a.iter().any(has_null),
+                serde_json::Value::Object(o) => o.values().any(has_null),
+                _ => false,
+            }
+        }
+        if has_null(&value) {
+            return Err("material patch has a non-finite number".into());
+        }
+        Ok(())
+    }
+
+    /// Patch que escreve TODOS os campos com os valores de `m` (colar material, aplicar preset).
+    pub fn from_material(m: &StylizedMaterial) -> MaterialPatch {
+        MaterialPatch {
+            base_color: Some(m.base_color),
+            shade_color: Some(m.shade_color),
+            outline_color: Some(m.outline_color),
+            outline_width: Some(m.outline_width),
+            shadow_threshold: Some(m.shadow_threshold),
+            shadow_smoothness: Some(m.shadow_smoothness),
+            spec_intensity: Some(m.spec_intensity),
+            spec_power: Some(m.spec_power),
+            rim_intensity: Some(m.rim_intensity),
+            rim_spread: Some(m.rim_spread),
+            hue_shift: Some(m.hue_shift),
+            toon_steps: Some(m.toon_steps),
+            specular_color: Some(m.specular_color),
+            specular_softness: Some(m.specular_softness),
+            specular_offset: Some(m.specular_offset),
+            rim_color: Some(m.rim_color),
+            outline_opacity: Some(m.outline_opacity),
+            outline_smoothness: Some(m.outline_smoothness),
+            outline_depth_bias: Some(m.outline_depth_bias),
+            specular_size: Some(m.specular_size),
+            ao_intensity: Some(m.ao_intensity),
+            mtoon_emission_color: Some(m.mtoon_emission_color),
+            mtoon_emission_intensity: Some(m.mtoon_emission_intensity),
+            mtoon_second_shade_shift: Some(m.mtoon_second_shade_shift),
+            mtoon_second_shade_softness: Some(m.mtoon_second_shade_softness),
+            mtoon_matcap_intensity: Some(m.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: Some(m.mtoon_main_texture_enabled),
+            mtoon_shade_texture_enabled: Some(m.mtoon_shade_texture_enabled),
+            mtoon_second_shade_texture_enabled: Some(m.mtoon_second_shade_texture_enabled),
+            mtoon_emission_texture_enabled: Some(m.mtoon_emission_texture_enabled),
+            mtoon_matcap_enabled: Some(m.mtoon_matcap_enabled),
+            mtoon_matcap_mode: Some(m.mtoon_matcap_mode),
+            mtoon_shade_toony: Some(m.mtoon_shade_toony),
+            face_shadow_offset: Some(m.face_shadow_offset),
+            face_shadow_smoothness: Some(m.face_shadow_smoothness),
+            face_sdf_enabled: Some(m.face_sdf_enabled),
+            eye_depth_scale: Some(m.eye_depth_scale),
+            eye_highlight_intensity: Some(m.eye_highlight_intensity),
+            eye_enabled: Some(m.eye_enabled),
+            gaze_tracking_enabled: Some(m.gaze_tracking_enabled),
+            gaze_saccade_amplitude: Some(m.gaze_saccade_amplitude),
+            gaze_damping: Some(m.gaze_damping),
+            npr: Some(m.npr),
+        }
+    }
+
+    /// Patch mínimo que leva `old` a `new` (só os campos que diferem). Vazio se forem iguais.
+    pub fn diff(old: &StylizedMaterial, new: &StylizedMaterial) -> MaterialPatch {
+        MaterialPatch {
+            base_color: (old.base_color != new.base_color).then_some(new.base_color),
+            shade_color: (old.shade_color != new.shade_color).then_some(new.shade_color),
+            outline_color: (old.outline_color != new.outline_color).then_some(new.outline_color),
+            outline_width: (old.outline_width != new.outline_width).then_some(new.outline_width),
+            shadow_threshold: (old.shadow_threshold != new.shadow_threshold).then_some(new.shadow_threshold),
+            shadow_smoothness: (old.shadow_smoothness != new.shadow_smoothness).then_some(new.shadow_smoothness),
+            spec_intensity: (old.spec_intensity != new.spec_intensity).then_some(new.spec_intensity),
+            spec_power: (old.spec_power != new.spec_power).then_some(new.spec_power),
+            rim_intensity: (old.rim_intensity != new.rim_intensity).then_some(new.rim_intensity),
+            rim_spread: (old.rim_spread != new.rim_spread).then_some(new.rim_spread),
+            hue_shift: (old.hue_shift != new.hue_shift).then_some(new.hue_shift),
+            toon_steps: (old.toon_steps != new.toon_steps).then_some(new.toon_steps),
+            specular_color: (old.specular_color != new.specular_color).then_some(new.specular_color),
+            specular_softness: (old.specular_softness != new.specular_softness).then_some(new.specular_softness),
+            specular_offset: (old.specular_offset != new.specular_offset).then_some(new.specular_offset),
+            rim_color: (old.rim_color != new.rim_color).then_some(new.rim_color),
+            outline_opacity: (old.outline_opacity != new.outline_opacity).then_some(new.outline_opacity),
+            outline_smoothness: (old.outline_smoothness != new.outline_smoothness).then_some(new.outline_smoothness),
+            outline_depth_bias: (old.outline_depth_bias != new.outline_depth_bias).then_some(new.outline_depth_bias),
+            specular_size: (old.specular_size != new.specular_size).then_some(new.specular_size),
+            ao_intensity: (old.ao_intensity != new.ao_intensity).then_some(new.ao_intensity),
+            mtoon_emission_color: (old.mtoon_emission_color != new.mtoon_emission_color).then_some(new.mtoon_emission_color),
+            mtoon_emission_intensity: (old.mtoon_emission_intensity != new.mtoon_emission_intensity).then_some(new.mtoon_emission_intensity),
+            mtoon_second_shade_shift: (old.mtoon_second_shade_shift != new.mtoon_second_shade_shift).then_some(new.mtoon_second_shade_shift),
+            mtoon_second_shade_softness: (old.mtoon_second_shade_softness != new.mtoon_second_shade_softness).then_some(new.mtoon_second_shade_softness),
+            mtoon_matcap_intensity: (old.mtoon_matcap_intensity != new.mtoon_matcap_intensity).then_some(new.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: (old.mtoon_main_texture_enabled != new.mtoon_main_texture_enabled).then_some(new.mtoon_main_texture_enabled),
+            mtoon_shade_texture_enabled: (old.mtoon_shade_texture_enabled != new.mtoon_shade_texture_enabled).then_some(new.mtoon_shade_texture_enabled),
+            mtoon_second_shade_texture_enabled: (old.mtoon_second_shade_texture_enabled != new.mtoon_second_shade_texture_enabled).then_some(new.mtoon_second_shade_texture_enabled),
+            mtoon_emission_texture_enabled: (old.mtoon_emission_texture_enabled != new.mtoon_emission_texture_enabled).then_some(new.mtoon_emission_texture_enabled),
+            mtoon_matcap_enabled: (old.mtoon_matcap_enabled != new.mtoon_matcap_enabled).then_some(new.mtoon_matcap_enabled),
+            mtoon_matcap_mode: (old.mtoon_matcap_mode != new.mtoon_matcap_mode).then_some(new.mtoon_matcap_mode),
+            mtoon_shade_toony: (old.mtoon_shade_toony != new.mtoon_shade_toony).then_some(new.mtoon_shade_toony),
+            face_shadow_offset: (old.face_shadow_offset != new.face_shadow_offset).then_some(new.face_shadow_offset),
+            face_shadow_smoothness: (old.face_shadow_smoothness != new.face_shadow_smoothness).then_some(new.face_shadow_smoothness),
+            face_sdf_enabled: (old.face_sdf_enabled != new.face_sdf_enabled).then_some(new.face_sdf_enabled),
+            eye_depth_scale: (old.eye_depth_scale != new.eye_depth_scale).then_some(new.eye_depth_scale),
+            eye_highlight_intensity: (old.eye_highlight_intensity != new.eye_highlight_intensity).then_some(new.eye_highlight_intensity),
+            eye_enabled: (old.eye_enabled != new.eye_enabled).then_some(new.eye_enabled),
+            gaze_tracking_enabled: (old.gaze_tracking_enabled != new.gaze_tracking_enabled).then_some(new.gaze_tracking_enabled),
+            gaze_saccade_amplitude: (old.gaze_saccade_amplitude != new.gaze_saccade_amplitude).then_some(new.gaze_saccade_amplitude),
+            gaze_damping: (old.gaze_damping != new.gaze_damping).then_some(new.gaze_damping),
+            npr: (old.npr != new.npr).then_some(new.npr),
+        }
+    }
 }
 
 /// Failures produced while validating or applying a command.
@@ -1033,6 +1150,10 @@ impl Command {
                 if patch.is_empty() {
                     return Err(CommandError::NoOp("empty material patch".to_string()));
                 }
+                patch.validate().map_err(|detail| CommandError::InvalidValue {
+                    field: "patch".to_string(),
+                    detail,
+                })?;
                 Ok(())
             }
             Command::SetNodeVisibility { node_id, .. } | Command::SetNodeMesh { node_id, .. } => {
@@ -4341,5 +4462,51 @@ mod tests {
         // repetir o mesmo valor é NoOp
         let again = Command::SetRenderOutput { patch: RenderOutputPatch { dpi: Some(300), ..Default::default() } };
         assert!(matches!(again.apply(&mut state), Err(CommandError::NoOp(_))));
+    }
+}
+
+#[cfg(test)]
+mod material_patch_diff_tests {
+    use super::*;
+    use crate::npr::NprParams;
+
+    #[test]
+    fn diff_of_equal_materials_is_empty_and_diff_lists_only_changes() {
+        let a = StylizedMaterial::default();
+        assert!(MaterialPatch::diff(&a, &a).is_empty());
+        let mut b = a.clone();
+        b.shade_color = [0.1, 0.2, 0.3, 1.0];
+        b.rim_intensity = 2.0;
+        b.npr.ramp_blend = 1.0;
+        let d = MaterialPatch::diff(&a, &b);
+        assert_eq!(d.shade_color, Some([0.1, 0.2, 0.3, 1.0]));
+        assert_eq!(d.rim_intensity, Some(2.0));
+        assert_eq!(d.npr.map(|n| n.ramp_blend), Some(1.0));
+        assert!(d.base_color.is_none() && d.outline_width.is_none());
+        let mut applied = a.clone();
+        d.apply_to(&mut applied);
+        assert_eq!(applied, b);
+    }
+
+    #[test]
+    fn from_material_replaces_everything_and_its_inverse_restores_it() {
+        let mut target = StylizedMaterial::default();
+        target.base_color = [0.9, 0.1, 0.1, 1.0];
+        target.outline_width = 0.01;
+        target.npr = NprParams { outline_taper: 0.5, ..NprParams::default() };
+        target.mtoon_matcap_enabled = true;
+        let mut other = StylizedMaterial::default();
+        other.hue_shift = 40.0;
+        other.spec_power = 90.0;
+        let patch = MaterialPatch::from_material(&target);
+        let inverse = patch.inverse_of(&other);
+        let mut m = other.clone();
+        patch.apply_to(&mut m);
+        // o nome não faz parte do patch; todo o resto vira o alvo
+        m.name = target.name.clone();
+        assert_eq!(m, target);
+        inverse.apply_to(&mut m);
+        m.name = other.name.clone();
+        assert_eq!(m, other);
     }
 }

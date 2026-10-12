@@ -110,6 +110,8 @@ export interface NodeOverridesWire {
   base_color?: [number, number, number, number];
   shade_color?: [number, number, number, number];
   outline_width?: number;
+  /** Material completo da instância (workspace Shading): patch aplicado depois dos campos acima. */
+  material?: MaterialPatchWire;
 }
 
 /** Atributos extras de `add_node` (tudo no padrão = omitido). */
@@ -222,6 +224,13 @@ export interface NprParamsWire {
   outline_ink_darken: number;
   outline_ink_saturation: number;
   face_sdf_mirror_center: number;
+  /** Gradiente próprio por linha da rampa 2D (workspace Shading); omitido no padrão. */
+  ramp_custom?: {
+    count: [number, number, number, number];
+    constant: [boolean, boolean, boolean, boolean];
+    pos: number[][];
+    val: number[][];
+  };
 }
 
 /** Sombra projetada da luz principal (espelha `anigo_core::scene::LightShadow`). */

@@ -16,7 +16,8 @@
 | [CENARIO_UI.md](CENARIO_UI.md) | Workspace Cenário (editor de níveis estilo UE5): viewport/fly, Content Drawer da Biblioteca, seleção BVH, gizmo e snap, Outliner/Details/Histórico, smoke xdotool |
 | [ILUMINACAO_UI.md](ILUMINACAO_UI.md) | Workspace Iluminação: gizmo de direção da luz, sol/Kelvin/ambiente/sombra/rim, 7 rigs, luz presa à câmera, shadow map de 1 luz (aditivo, desligado por padrão), provas por pixels e smoke xdotool |
 | [RENDER_UI.md](RENDER_UI.md) | Workspace Render: câmera de render, saída (presets, supersampling, alfa, P3, PNG 8/16/JPEG), passes e AOVs, preview com máscara/guias, fila de render real (thread de GPU, cancelar/retomar), histórico com miniaturas, gancho de sequência, smoke xdotool |
-| [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets, iluminação para anime 3D, saída de render) |
+| [SHADING_UI.md](SHADING_UI.md) | Workspace Shading (editor de materiais toon/anime): alvos de Personagem/Cenário/Modelagem, parâmetros agrupados, editor de gradiente da rampa 2D, contorno por material, face SDF, paleta, presets `.anigomat.json` com miniatura em shader ball, A/B, undo, smoke xdotool |
+| [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets, materiais toon/anime) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 
 Crates novas: `anigo-modeling` (motor), `anigo-assets` (biblioteca), `anigo-native` (C/C++), `anigo-session` (CoreSession compartilhada), `anigo-studio` (app).

@@ -34,7 +34,7 @@ fn index() -> &'static std::collections::HashMap<&'static str, (&'static str, &'
     static IDX: std::sync::OnceLock<std::collections::HashMap<&'static str, (&'static str, &'static str)>> = std::sync::OnceLock::new();
     IDX.get_or_init(|| {
         let mut m = std::collections::HashMap::with_capacity(
-            TABLE.len() + crate::i18n_lib::LIB_TABLE.len() + crate::i18n_hair::HAIR_TABLE.len() + crate::i18n_scene::SCENE_TABLE.len() + crate::i18n_lighting::LIGHT_TABLE.len() + crate::i18n_render::RENDER_TABLE.len(),
+            TABLE.len() + crate::i18n_lib::LIB_TABLE.len() + crate::i18n_hair::HAIR_TABLE.len() + crate::i18n_scene::SCENE_TABLE.len() + crate::i18n_lighting::LIGHT_TABLE.len() + crate::i18n_render::RENDER_TABLE.len() + crate::i18n_shading::SHADING_TABLE.len(),
         );
         for (k, pt, en) in TABLE
             .iter()
@@ -43,6 +43,7 @@ fn index() -> &'static std::collections::HashMap<&'static str, (&'static str, &'
             .chain(crate::i18n_scene::SCENE_TABLE.iter())
             .chain(crate::i18n_lighting::LIGHT_TABLE.iter())
             .chain(crate::i18n_render::RENDER_TABLE.iter())
+            .chain(crate::i18n_shading::SHADING_TABLE.iter())
         {
             m.entry(*k).or_insert((*pt, *en));
         }

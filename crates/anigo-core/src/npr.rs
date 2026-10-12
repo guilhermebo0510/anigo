@@ -74,6 +74,13 @@ pub struct NprParams {
     /// simetria do rosto no mapa SDF (0.5 para mapas centrados); o mapa é
     /// sampleado espelhado quando a luz vem do lado oposto ao autorado.
     pub face_sdf_mirror_center: f32,
+
+    // ── Rampa 2D personalizada (editor de gradiente por linha do workspace Shading) ──
+    /// Gradiente próprio por linha da rampa (paradas posição/valor). Linha sem
+    /// paradas (`count = 0`, o padrão) usa a linha do contrato; o formato da
+    /// textura (256×4 RGBA8) e o shader NÃO mudam. Omitido da serialização no padrão.
+    #[serde(skip_serializing_if = "RampCustom::is_default")]
+    pub ramp_custom: RampCustom,
 }
 
 impl Default for NprParams {
@@ -90,6 +97,7 @@ impl Default for NprParams {
             outline_ink_darken: 0.7,
             outline_ink_saturation: 2.5,
             face_sdf_mirror_center: 0.0,
+            ramp_custom: RampCustom::DEFAULT,
         }
     }
 }
@@ -122,7 +130,211 @@ impl NprParams {
             outline_ink_darken: c(self.outline_ink_darken, 0.0, 1.0, d.outline_ink_darken),
             outline_ink_saturation: c(self.outline_ink_saturation, 0.0, 3.0, d.outline_ink_saturation),
             face_sdf_mirror_center: c(self.face_sdf_mirror_center, 0.0, 1.0, d.face_sdf_mirror_center),
+            ramp_custom: self.ramp_custom.sanitized(),
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rampa 2D personalizada (gradiente por linha)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Máximo de paradas (stops) por linha do gradiente personalizado.
+pub const RAMP_MAX_STOPS: usize = 6;
+
+/// Largura (texels) da textura de rampa do contrato (256×4).
+pub const RAMP_TEX_WIDTH: usize = 256;
+
+/// Gradiente próprio por linha da rampa 2D: até [`RAMP_MAX_STOPS`] paradas
+/// `(posição, valor)` por linha, interpoladas linearmente ou em degraus
+/// (constante). `count[row] == 0` mantém a linha do contrato. Pura e `Copy`
+/// (vive dentro de [`NprParams`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RampCustom {
+    /// Paradas usadas por linha: 0 = linha do contrato; 2..=6 = gradiente próprio.
+    pub count: [u8; 4],
+    /// `true` = degraus (cada parada vale até a próxima); `false` = linear.
+    pub constant: [bool; 4],
+    /// Posição (coluna, 0..1) de cada parada, em ordem crescente.
+    pub pos: [[f32; RAMP_MAX_STOPS]; 4],
+    /// Valor (0..1) do fator de luz em cada parada.
+    pub val: [[f32; RAMP_MAX_STOPS]; 4],
+}
+
+impl RampCustom {
+    /// Valor padrão como constante (usado em `NprParams::default`).
+    pub const DEFAULT: RampCustom = RampCustom {
+        count: [0; 4],
+        constant: [false; 4],
+        pos: [[0.0; RAMP_MAX_STOPS]; 4],
+        val: [[0.0; RAMP_MAX_STOPS]; 4],
+    };
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::DEFAULT
+    }
+
+    /// A linha `row` tem gradiente próprio?
+    pub fn is_custom(&self, row: usize) -> bool {
+        row < 4 && self.count[row] >= 2
+    }
+
+    /// Paradas da linha como pares `(pos, val)` (vazio se a linha é a do contrato).
+    pub fn stops(&self, row: usize) -> Vec<(f32, f32)> {
+        if !self.is_custom(row) {
+            return Vec::new();
+        }
+        let n = (self.count[row] as usize).min(RAMP_MAX_STOPS);
+        (0..n).map(|i| (self.pos[row][i], self.val[row][i])).collect()
+    }
+
+    /// Define as paradas de uma linha (ordenadas por posição, valores limitados a 0..1,
+    /// no máximo [`RAMP_MAX_STOPS`]). Menos de 2 paradas devolve a linha ao contrato.
+    pub fn set_stops(&mut self, row: usize, constant: bool, stops: &[(f32, f32)]) {
+        if row >= 4 {
+            return;
+        }
+        let mut v: Vec<(f32, f32)> = stops
+            .iter()
+            .take(RAMP_MAX_STOPS)
+            .filter(|(p, q)| p.is_finite() && q.is_finite())
+            .map(|(p, q)| (p.clamp(0.0, 1.0), q.clamp(0.0, 1.0)))
+            .collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if v.len() < 2 {
+            self.count[row] = 0;
+            self.constant[row] = false;
+            self.pos[row] = [0.0; RAMP_MAX_STOPS];
+            self.val[row] = [0.0; RAMP_MAX_STOPS];
+            return;
+        }
+        self.count[row] = v.len() as u8;
+        self.constant[row] = constant;
+        self.pos[row] = [0.0; RAMP_MAX_STOPS];
+        self.val[row] = [0.0; RAMP_MAX_STOPS];
+        for (i, (p, q)) in v.iter().enumerate() {
+            self.pos[row][i] = *p;
+            self.val[row][i] = *q;
+        }
+    }
+
+    /// Devolve a linha ao contrato.
+    pub fn clear_row(&mut self, row: usize) {
+        self.set_stops(row, false, &[]);
+    }
+
+    /// Gradientes que representam as linhas do contrato (para começar a editar a partir delas):
+    /// 0 contínua, 1 um degrau (0.5), 2 dois (0.35→0.5, 0.65→1), 3 três (0.25/0.5/0.75 → 0.35/0.7/1).
+    pub fn contract_stops(row: usize) -> (bool, Vec<(f32, f32)>) {
+        match row {
+            0 => (false, vec![(0.0, 0.0), (1.0, 1.0)]),
+            1 => (true, vec![(0.0, 0.0), (0.5, 1.0)]),
+            2 => (true, vec![(0.0, 0.0), (0.35, 0.5), (0.65, 1.0)]),
+            _ => (true, vec![(0.0, 0.0), (0.25, 0.35), (0.5, 0.7), (0.75, 1.0)]),
+        }
+    }
+
+    /// Valores seguros: contagem 0 ou 2..=6, posições ordenadas em 0..1, valores em 0..1;
+    /// não finito vira o padrão da linha (contrato).
+    pub fn sanitized(&self) -> Self {
+        let mut out = Self::DEFAULT;
+        for row in 0..4 {
+            let n = self.count[row] as usize;
+            if !(2..=RAMP_MAX_STOPS).contains(&n) {
+                continue;
+            }
+            let stops: Vec<(f32, f32)> = (0..n).map(|i| (self.pos[row][i], self.val[row][i])).collect();
+            if stops.iter().any(|(p, q)| !p.is_finite() || !q.is_finite()) {
+                continue;
+            }
+            out.set_stops(row, self.constant[row], &stops);
+        }
+        out
+    }
+
+    /// Valor do gradiente da linha na coluna `u` (0..1). `None` se a linha é a do contrato.
+    pub fn eval(&self, row: usize, u: f32) -> Option<f32> {
+        let stops = self.stops(row);
+        if stops.is_empty() {
+            return None;
+        }
+        let u = u.clamp(0.0, 1.0);
+        let constant = self.constant[row];
+        if u <= stops[0].0 {
+            return Some(stops[0].1);
+        }
+        for w in stops.windows(2) {
+            let ((p0, v0), (p1, v1)) = (w[0], w[1]);
+            if u < p1 {
+                if constant {
+                    return Some(v0);
+                }
+                let span = (p1 - p0).max(1e-6);
+                return Some(v0 + (v1 - v0) * ((u - p0) / span).clamp(0.0, 1.0));
+            }
+        }
+        Some(stops[stops.len() - 1].1)
+    }
+
+    /// Bytes RGBA8 (R=G=B=valor, A=255) de uma linha de `width` texels, `None` se a linha é a do contrato.
+    /// Mesma amostragem do contrato: `u = x / (width − 1)`, `round(v·255)`.
+    pub fn row_bytes(&self, row: usize, width: usize) -> Option<Vec<u8>> {
+        if !self.is_custom(row) || width == 0 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(width * 4);
+        for x in 0..width {
+            let u = if width > 1 { x as f32 / (width as f32 - 1.0) } else { 0.0 };
+            let v = self.eval(row, u).unwrap_or(0.0);
+            let b = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            out.extend_from_slice(&[b, b, b, 255]);
+        }
+        Some(out)
+    }
+
+    /// Substitui, num buffer RGBA8 `width × 4` do contrato, as linhas com gradiente próprio.
+    /// Devolve `true` se alguma linha foi trocada.
+    pub fn apply_to_ramp_bytes(&self, bytes: &mut [u8], width: usize) -> bool {
+        let mut any = false;
+        for row in 0..4 {
+            if let Some(r) = self.row_bytes(row, width) {
+                let start = row * width * 4;
+                if start + r.len() <= bytes.len() {
+                    bytes[start..start + r.len()].copy_from_slice(&r);
+                    any = true;
+                }
+            }
+        }
+        any
+    }
+
+    /// Chave estável (FNV-1a) do gradiente, para cache de texturas por material.
+    pub fn cache_key(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for row in 0..4 {
+            mix(self.count[row]);
+            mix(self.constant[row] as u8);
+            for i in 0..RAMP_MAX_STOPS {
+                for b in self.pos[row][i].to_bits().to_le_bytes() {
+                    mix(b);
+                }
+                for b in self.val[row][i].to_bits().to_le_bytes() {
+                    mix(b);
+                }
+            }
+        }
+        h
+    }
+}
+
+impl Default for RampCustom {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 
@@ -872,5 +1084,98 @@ mod tests {
         // paleta curta → identidade
         let (r, f) = face_frame(&[], Mat4::IDENTITY);
         assert_eq!((r, f), (Vec3::X, Vec3::Z));
+    }
+}
+
+#[cfg(test)]
+mod ramp_custom_tests {
+    use super::*;
+
+    #[test]
+    fn default_ramp_custom_is_omitted_and_leaves_the_contract_untouched() {
+        let p = NprParams::default();
+        assert!(p.ramp_custom.is_default());
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("ramp_custom"), "{json}");
+        // JSON antigo (sem o campo) lê normalmente
+        let back: NprParams = serde_json::from_str("{\"ramp_blend\":0.5}").unwrap();
+        assert_eq!(back.ramp_blend, 0.5);
+        assert!(back.ramp_custom.is_default());
+        let mut bytes = vec![7u8; RAMP_TEX_WIDTH * 4 * 4];
+        let before = bytes.clone();
+        assert!(!p.ramp_custom.apply_to_ramp_bytes(&mut bytes, RAMP_TEX_WIDTH));
+        assert_eq!(bytes, before);
+    }
+
+    #[test]
+    fn linear_and_constant_rows_evaluate_as_expected() {
+        let mut r = RampCustom::default();
+        r.set_stops(1, false, &[(0.0, 0.0), (1.0, 1.0)]);
+        assert_eq!(r.eval(1, 0.0), Some(0.0));
+        assert!((r.eval(1, 0.25).unwrap() - 0.25).abs() < 1e-6);
+        assert_eq!(r.eval(0, 0.5), None, "linha do contrato");
+        r.set_stops(2, true, &[(0.0, 0.1), (0.4, 0.6), (0.8, 1.0)]);
+        assert_eq!(r.eval(2, 0.39), Some(0.1));
+        assert_eq!(r.eval(2, 0.4), Some(0.6));
+        assert_eq!(r.eval(2, 0.79), Some(0.6));
+        assert_eq!(r.eval(2, 0.95), Some(1.0));
+        // antes da primeira parada vale a primeira
+        r.set_stops(3, false, &[(0.3, 0.2), (0.7, 0.9)]);
+        assert_eq!(r.eval(3, 0.0), Some(0.2));
+        assert_eq!(r.eval(3, 1.0), Some(0.9));
+    }
+
+    #[test]
+    fn contract_rows_roundtrip_through_stops_monotonic() {
+        for row in 0..4usize {
+            let (constant, stops) = RampCustom::contract_stops(row);
+            let mut r = RampCustom::default();
+            r.set_stops(row, constant, &stops);
+            let bytes = r.row_bytes(row, RAMP_TEX_WIDTH).unwrap();
+            assert_eq!(bytes.len(), RAMP_TEX_WIDTH * 4);
+            let reds: Vec<u8> = bytes.chunks(4).map(|p| p[0]).collect();
+            assert!(reds.windows(2).all(|w| w[0] <= w[1]), "linha {row} não monotônica");
+            assert_eq!(*reds.last().unwrap(), 255);
+            assert_eq!(reds[0], 0);
+        }
+    }
+
+    #[test]
+    fn set_stops_sorts_clamps_limits_and_drops_nonfinite() {
+        let mut r = RampCustom::default();
+        r.set_stops(0, false, &[(0.9, 2.0), (0.1, -1.0), (f32::NAN, 0.5), (0.5, 0.5)]);
+        assert_eq!(r.stops(0), vec![(0.1, 0.0), (0.5, 0.5), (0.9, 1.0)]);
+        let many: Vec<(f32, f32)> = (0..10).map(|i| (i as f32 / 10.0, 0.5)).collect();
+        r.set_stops(0, false, &many);
+        assert_eq!(r.count[0] as usize, RAMP_MAX_STOPS);
+        r.set_stops(0, false, &[(0.5, 0.5)]);
+        assert!(!r.is_custom(0), "menos de 2 paradas volta ao contrato");
+        r.set_stops(9, false, &many); // linha inexistente: ignora
+        assert!(r.is_default());
+    }
+
+    #[test]
+    fn sanitized_repairs_hostile_data_and_apply_replaces_only_custom_rows() {
+        let mut r = RampCustom::default();
+        r.count = [0, 9, 2, 1];
+        r.pos[1] = [f32::NAN; 6];
+        r.pos[2] = [0.8, 0.2, 0.0, 0.0, 0.0, 0.0];
+        r.val[2] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let s = r.sanitized();
+        assert_eq!(s.count, [0, 0, 2, 0]);
+        assert_eq!(s.stops(2), vec![(0.2, 0.0), (0.8, 1.0)]);
+        let mut bytes = vec![0u8; RAMP_TEX_WIDTH * 4 * 4];
+        assert!(s.apply_to_ramp_bytes(&mut bytes, RAMP_TEX_WIDTH));
+        let row2 = &bytes[2 * RAMP_TEX_WIDTH * 4..3 * RAMP_TEX_WIDTH * 4];
+        assert_eq!(row2[0], 0);
+        assert_eq!(row2[(RAMP_TEX_WIDTH - 1) * 4], 255);
+        assert!(bytes[..2 * RAMP_TEX_WIDTH * 4].iter().all(|b| *b == 0), "linhas 0/1 intactas");
+        assert_eq!(s.cache_key(), s.cache_key());
+        assert_ne!(s.cache_key(), RampCustom::default().cache_key());
+        let mut p = NprParams::default();
+        p.ramp_custom = s;
+        let back: NprParams = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.sanitized(), p.sanitized());
     }
 }

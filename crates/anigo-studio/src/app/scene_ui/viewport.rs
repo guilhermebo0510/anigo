@@ -58,25 +58,8 @@ pub(crate) fn letterbox(outer: Rect, aspect: f32) -> Rect {
 }
 
 pub(crate) fn node_material(project: &anigo_core::ProjectState, slot: &anigo_core::NodeSlot) -> StylizedMaterial {
-    if slot.kind == NodeKind::CharacterRoot {
-        return project.character_material().map(|m| m.material.clone()).unwrap_or_default();
-    }
-    let mut m = StylizedMaterial {
-        base_color: [0.70, 0.73, 0.82, 1.0],
-        shade_color: [0.36, 0.38, 0.56, 1.0],
-        outline_color: [0.12, 0.10, 0.16, 1.0],
-        ..Default::default()
-    };
-    if let Some(c) = slot.overrides.base_color {
-        m.base_color = c;
-    }
-    if let Some(c) = slot.overrides.shade_color {
-        m.shade_color = c;
-    }
-    if let Some(w) = slot.overrides.outline_width {
-        m.outline_width = w;
-    }
-    m
+    // fonte única da regra (também usada pelo workspace Shading)
+    crate::shading::edit::node_material(project, slot)
 }
 
 fn placeholder_draw() -> MeshDrawData {

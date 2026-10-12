@@ -194,6 +194,15 @@ jobs:
         run: bash scripts/native_lighting_smoke.sh ./target/debug/anigo-studio native-artifacts/lighting_smoke
       - name: smoke de entrada real do Render (xdotool: trocar orientação, Ctrl+Z/Ctrl+Y, render real com alfa, determinismo, cancelar)
         run: bash scripts/native_render_smoke.sh ./target/debug/anigo-studio native-artifacts/render_smoke
+      - name: screenshots do Shading (rampa, rim, contorno, face SDF em vários ângulos, A/B, paleta, presets, fontes de material)
+        run: |
+          for sc in shading-ball shading-rampa shading-rim shading-contorno shading-face-sdf shading-face-sdf-frente shading-face-sdf-espelho shading-ab shading-paleta shading-presets shading-cenario shading-modelagem; do
+            xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace shading --scenario "$sc" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_$sc.png"
+          done
+      - name: smoke de entrada real do Shading (xdotool arrasta slider = 1 passo de undo; Ctrl+Z/Ctrl+Y; viewport idêntica)
+        run: bash scripts/native_shading_smoke.sh ./target/debug/anigo-studio native-artifacts/shading_smoke
       - name: smoke de entrada real da Biblioteca (xdotool rola a grade, clica num card, Ctrl+clique, Ctrl+A)
         run: bash scripts/native_library_smoke.sh ./target/debug/anigo-studio native-artifacts/library_smoke
       - name: smoke de entrada real (xdotool: Tab, 3, clique, E, mover, clique)

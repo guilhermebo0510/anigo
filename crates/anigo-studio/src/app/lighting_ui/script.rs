@@ -95,7 +95,7 @@ impl StudioApp {
             taken.insert(id);
             if let (Some((base, shade)), Command::AddNode { attrs, .. }) = (colors, &mut cmd) {
                 let a = attrs.get_or_insert_with(NodeAttrs::default);
-                a.overrides = NodeOverrides { base_color: Some(base), shade_color: Some(shade), outline_width: None };
+                a.overrides = NodeOverrides { base_color: Some(base), shade_color: Some(shade), outline_width: None, ..Default::default() };
             }
             cmds.push(cmd);
         };
@@ -125,7 +125,7 @@ impl StudioApp {
         );
         if let Command::AddNode { attrs, .. } = &mut cmd {
             let a = attrs.get_or_insert_with(NodeAttrs::default);
-            a.overrides = NodeOverrides { base_color: Some([0.78, 0.80, 0.86, 1.0]), shade_color: Some([0.42, 0.45, 0.62, 1.0]), outline_width: None };
+            a.overrides = NodeOverrides { base_color: Some([0.78, 0.80, 0.86, 1.0]), shade_color: Some([0.42, 0.45, 0.62, 1.0]), outline_width: None, ..Default::default() };
         }
         self.light_apply(cmd);
     }
@@ -156,7 +156,7 @@ impl StudioApp {
         );
         if let Command::AddNode { attrs, .. } = &mut cmd {
             let a = attrs.get_or_insert_with(NodeAttrs::default);
-            a.overrides = NodeOverrides { base_color: Some([0.20, 0.14, 0.30, 1.0]), shade_color: Some([0.09, 0.07, 0.16, 1.0]), outline_width: None };
+            a.overrides = NodeOverrides { base_color: Some([0.20, 0.14, 0.30, 1.0]), shade_color: Some([0.09, 0.07, 0.16, 1.0]), outline_width: None, ..Default::default() };
         }
         self.light_apply(cmd);
     }

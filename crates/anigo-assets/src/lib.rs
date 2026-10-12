@@ -44,7 +44,7 @@ pub use integrity::{DuplicateGroup, IssueKind, VerifyEvent, VerifyIssue, VerifyJ
 pub use job::{CancelToken, Job};
 pub use library::{layout, Library, OpenOptions, RootInfo, HOME_ROOT};
 pub use limits::Limits;
-pub use material::{ToonMaterial, MATERIAL_SUFFIX};
+pub use material::{StylizedExtras, ToonMaterial, MATERIAL_SUFFIX};
 pub use meta::{InfoPatch, ResolvedFiles, TagInfo};
 pub use model::*;
 pub use query::{parse_text, Cursor, Page, Query, Sort, SortBy, StateFilter};
