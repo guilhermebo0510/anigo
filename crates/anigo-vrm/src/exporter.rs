@@ -408,7 +408,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             let joints_values: Vec<u16> = prim.vertices.iter().flat_map(|v| v.joints).collect();
             let __offset_5 = bin.write_u16(&joints_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_5, joints_values.len() * 2, Some(34962));
-            attributes.insert("JOINTS_0".into(), Value::from(push_accessor(&mut accessors, view, 5122, count, "VEC4")));
+            attributes.insert("JOINTS_0".into(), Value::from(push_accessor(&mut accessors, view, 5123, count, "VEC4"))); // UNSIGNED_SHORT
 
             let weights_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.weights).collect();
             let __offset_6 = bin.write_f32(&weights_values);
@@ -420,13 +420,13 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
                 let offset = bin.write_u16(&indices_u16);
                 (
                     push_view(&mut bin, &mut buffer_views, offset, indices_u16.len() * 2, Some(34963)),
-                    5122,
+                    5123, // UNSIGNED_SHORT
                 )
             } else {
                 let offset = bin.write_u32(&prim.indices);
                 (
                     push_view(&mut bin, &mut buffer_views, offset, prim.indices.len() * 4, Some(34963)),
-                    5123,
+                    5125, // UNSIGNED_INT
                 )
             };
             let indices_accessor = push_accessor(&mut accessors, indices_view, indices_component, prim.indices.len() as u64, "SCALAR");

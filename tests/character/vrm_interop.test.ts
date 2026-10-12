@@ -357,7 +357,7 @@ test("parse GLB hostil: interleaved + quantizado + uint32 + sparse + constraint"
   // COLOR_0 u8 normalized: [255,128,0,255], [0,255,0,255], [0,0,255,255]
   const binStartColor = binParts.length;
   binParts.push(255, 128, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255);
-  // Índices uint32 (5123 = UNSIGNED_INT na spec): 0,1,2
+  // Índices uint32 (5125 = UNSIGNED_INT na spec): 0,1,2
   const binStartIdx = binParts.length;
   for (const index of [0, 1, 2]) {
     binParts.push(index & 0xff, (index >> 8) & 0xff, (index >> 16) & 0xff, (index >> 24) & 0xff);
@@ -389,7 +389,7 @@ test("parse GLB hostil: interleaved + quantizado + uint32 + sparse + constraint"
       { bufferView: 0, byteOffset: 0, componentType: 5126, count: 3, type: "VEC3" },
       { bufferView: 0, byteOffset: 12, componentType: 5126, count: 3, type: "VEC3" },
       { bufferView: 1, componentType: 5121, normalized: true, count: 3, type: "VEC4" },
-      { bufferView: 2, componentType: 5123, count: 3, type: "SCALAR" },
+      { bufferView: 2, componentType: 5125, count: 3, type: "SCALAR" },
     ],
     meshes: [
       {
