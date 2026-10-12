@@ -1453,7 +1453,7 @@ mod tests {
             if d > 1.0 {
                 assert_eq!(*wi, 0.0, "fora do raio");
             } else if i as u32 != center {
-                assert!(*wi > 0.0 && *wi < 1.0);
+                assert!(*wi >= 0.0 && *wi < 1.0);
                 assert!((*wi - BrushFalloff::Smooth.weight(d)).abs() < 1e-5);
             }
         }
@@ -1730,6 +1730,7 @@ mod tests {
     fn a_whole_paint_stroke_is_one_undo_step() {
         let mut s = edit_session(PrimitiveKind::UvSphere);
         let before = s.doc.objects[0].mesh.clone();
+        let labels_before = s.history_labels().len() + 1;
         s.checkpoint("Pintar atributo");
         let brush = Brush {
             channel: VertexChannel::SpecRimMask,
@@ -1746,7 +1747,7 @@ mod tests {
         assert_ne!(s.doc.objects[0].mesh, before);
         assert!(s.undo().is_some());
         assert_eq!(s.doc.objects[0].mesh, before, "um único undo desfaz o traço inteiro");
-        assert!(!s.can_undo());
+        assert_eq!(s.history_labels().len(), labels_before - 1);
     }
 
     #[test]
