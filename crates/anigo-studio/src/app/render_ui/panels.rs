@@ -49,29 +49,35 @@ fn fmt_bytes(b: u64) -> String {
 }
 
 impl StudioApp {
-    pub(crate) fn render_panels(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        self.render_enter(&ctx);
-        self.render_poll(&ctx);
+    /// Início do quadro do Render (antes dos painéis): entra no workspace, avança a fila e fixa a aba da ferramenta.
+    pub(crate) fn render_frame_begin(&mut self, ctx: &egui::Context) {
+        self.render_enter(ctx);
+        self.render_poll(ctx);
         self.render_ui.tab = RenderTab::from_tool_index(*self.tool_idx.get(&crate::workspace::WorkspaceId::Render).unwrap_or(&0));
-        if self.render_ui.prefs.queue_open {
-            egui::Panel::bottom("render_queue").default_size(230.0).size_range(120.0..=520.0).resizable(true).show(ui, |ui| self.queue_panel(ui, &ctx));
-        }
-        egui::Panel::right("render_right").default_size(370.0).size_range(310.0..=600.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new(tr(match self.render_ui.tab {
-                RenderTab::Camera => "tool.camera",
-                RenderTab::Passes => "tool.passes",
-                RenderTab::Output => "tool.export",
-            })).strong().size(14.0));
-            self.render_button(ui, &ctx);
-            ui.separator();
-            egui::ScrollArea::vertical().id_salt("render_scroll").auto_shrink([false, false]).show(ui, |ui| match self.render_ui.tab {
-                RenderTab::Camera => self.camera_tab(ui),
-                RenderTab::Passes => self.passes_tab(ui),
-                RenderTab::Output => self.output_tab(ui),
-            });
+    }
+
+    /// Painel Ajustes de render (corpo): botão Renderizar + abas Câmera/Passes/Saída.
+    pub(crate) fn render_settings_body(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        ui.add_space(6.0);
+        ui.label(RichText::new(tr(match self.render_ui.tab {
+            RenderTab::Camera => "tool.camera",
+            RenderTab::Passes => "tool.passes",
+            RenderTab::Output => "tool.export",
+        })).strong().size(14.0));
+        self.render_button(ui, &ctx);
+        ui.separator();
+        egui::ScrollArea::vertical().id_salt("render_scroll").auto_shrink([false, false]).show(ui, |ui| match self.render_ui.tab {
+            RenderTab::Camera => self.camera_tab(ui),
+            RenderTab::Passes => self.passes_tab(ui),
+            RenderTab::Output => self.output_tab(ui),
         });
+    }
+
+    /// Painel Fila de render (corpo).
+    pub(crate) fn render_queue_body(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.queue_panel(ui, &ctx);
     }
 
     // ============================================================ botão Renderizar

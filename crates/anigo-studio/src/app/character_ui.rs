@@ -14,6 +14,7 @@ use crate::i18n::{lang, tr};
 use crate::icons;
 use crate::theme;
 use crate::viewport::OrbitCamera;
+use crate::workspace::WorkspaceId;
 use crate::workbench::{px_size, ShadingMode, ViewSettings};
 use anigo_core::command::Command;
 use anigo_core::morph_catalog::MorphSliderDef;
@@ -149,48 +150,98 @@ impl StudioApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        use egui::{Key, Modifiers};
-        let redo = ctx.input_mut(|i| {
-            i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y)
-        });
-        if redo {
+        if self.hk(ctx, "edit.redo") {
             self.undo_redo(false);
             return;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+        if self.hk(ctx, "edit.undo") {
             self.undo_redo(true);
         }
     }
 
     // ---------------------------------------------------------------- painel direito
 
-    pub(crate) fn inspector_character(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("char_inspector")
-            .default_size(350.0)
-            .size_range(290.0..=540.0)
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr(&format!("tool.{}", self.char_tool_id()))).strong().size(14.0));
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    let st = self.core.project().clone();
-                    self.char_project_section(ui);
-                    match self.char_tool_id() {
-                        "body" => {
-                            self.char_macro_sections(ui, &st);
-                            self.char_slider_list(ui, &st, Region::Body);
-                        }
-                        "face" => self.char_slider_list(ui, &st, Region::Face),
-                        other => self.char_soon_panel(ui, &st, other),
-                    }
-                    self.char_history_section(ui);
-                });
-            });
-        let ctx = ui.ctx().clone();
-        self.char_project_dialog(&ctx);
-        self.char_finish_gesture(&ctx);
+    /// Corpo do painel Inspetor do Personagem (o dock fornece o quadro e o cabeçalho).
+    pub(crate) fn char_inspector_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr(&format!("tool.{}", self.char_tool_id()))).strong().size(14.0));
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let st = self.core.project().clone();
+            self.char_project_section(ui);
+            match self.char_tool_id() {
+                "body" => {
+                    self.char_macro_sections(ui, &st);
+                    self.char_slider_list(ui, &st, Region::Body);
+                }
+                "face" => self.char_slider_list(ui, &st, Region::Face),
+                other => self.char_soon_panel(ui, &st, other),
+            }
+            self.char_history_section(ui);
+        });
+    }
+
+    /// Fim do quadro do Personagem: fecha o gesto de slider (depois de desenhar os painéis).
+    pub(crate) fn char_frame_end(&mut self, ctx: &egui::Context) {
+        self.char_finish_gesture(ctx);
+    }
+
+    // ---------------------------------------------------------------- menu Arquivo (projeto do núcleo)
+
+    /// Caminho do último projeto aberto/salvo (Cenário e demais workspaces guardam o seu).
+    pub(crate) fn file_last_path(&self) -> &str {
+        if self.ws == WorkspaceId::Cenario {
+            &self.scene_ui.last_path
+        } else {
+            &self.char_ui.last_path
+        }
+    }
+
+    /// Abre o diálogo de abrir/salvar do workspace atual (o Cenário tem o próprio; os demais usam o do Personagem).
+    pub(crate) fn file_open_dialog(&mut self, save: bool) {
+        if self.ws == WorkspaceId::Cenario {
+            self.scene_ui.dialog = Some(super::scene_ui::SceneDialog { save, path: self.scene_ui.last_path.clone(), error: None });
+        } else {
+            let kind = if save { DialogKind::Save } else { DialogKind::Open };
+            self.char_ui.dialog = Some(ProjectDialog { kind, path: self.char_ui.last_path.clone(), error: None });
+        }
+    }
+
+    /// Salva direto no último caminho (o menu só habilita com um caminho conhecido).
+    pub(crate) fn file_save_quick(&mut self) {
+        let raw = self.file_last_path().to_string();
+        let msg = match persist::normalize_path(&raw).and_then(|p| persist::save_project(&self.core, &p).map(|_| p)) {
+            Ok(p) => format!("{}: {}", tr("char.saved"), p.display()),
+            Err(e) => e,
+        };
+        if self.ws == WorkspaceId::Cenario {
+            self.scene_ui.message = msg;
+        } else {
+            self.char_ui.message = msg;
+        }
+    }
+
+    /// Novo projeto: troca o documento do núcleo por um vazio (mesmo caminho do Abrir) e limpa os estados transitórios.
+    pub(crate) fn file_new_project(&mut self) {
+        self.core.cancel_preview();
+        let fresh = anigo_session::CoreSession::new().document().and_then(|doc| self.core.load_document(&doc));
+        let msg = match fresh {
+            Ok(()) => tr("menu.file.new_done").to_string(),
+            Err(e) => e,
+        };
+        self.char_ui.gesture = None;
+        self.char_ui.last_path.clear();
+        self.scene_ui.last_path.clear();
+        self.scene_ui.selection.clear();
+        self.scene_ui.session = None;
+        self.scene_ui.gesture = None;
+        if self.ws == WorkspaceId::Cenario {
+            self.scene_ui.message = msg;
+        } else {
+            self.char_ui.message = msg;
+        }
     }
 
     fn char_project_section(&mut self, ui: &mut egui::Ui) {
@@ -496,7 +547,7 @@ impl StudioApp {
 
     // ------------------------------------------------------------------ salvar/abrir
 
-    fn char_project_dialog(&mut self, ctx: &egui::Context) {
+    pub(crate) fn char_project_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dlg) = self.char_ui.dialog.take() else {
             return;
         };

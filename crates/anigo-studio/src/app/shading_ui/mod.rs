@@ -276,33 +276,33 @@ impl StudioApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        use egui::{Key, Modifiers};
-        let redo = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y));
-        if redo {
+        if self.hk(ctx, "edit.redo") {
             self.undo_redo(false);
             return;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+        if self.hk(ctx, "edit.undo") {
             self.undo_redo(true);
             return;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::C)) {
+        if self.hk(ctx, "material.copy") {
             self.shading_copy();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V)) {
+        if self.hk(ctx, "material.paste") {
             self.shading_paste();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+        if self.hk(ctx, "material.frame") {
             self.shading_ui.framed = false;
         }
     }
 
-    pub(crate) fn shading_panels(&mut self, ui: &mut egui::Ui) {
+    /// Início do quadro do Shading (antes dos painéis).
+    pub(crate) fn shading_frame_begin(&mut self) {
         self.shading_enter();
-        self.shading_left_panel(ui);
-        self.shading_right_panel(ui);
-        let ctx = ui.ctx().clone();
-        self.shading_finish_gesture(&ctx);
+    }
+
+    /// Fim do quadro do Shading: fecha o gesto de edição e emite o trace (depois dos painéis).
+    pub(crate) fn shading_frame_end(&mut self, ctx: &egui::Context) {
+        self.shading_finish_gesture(ctx);
         self.shading_trace("");
     }
 }

@@ -152,19 +152,17 @@ impl StudioApp {
 
     // ============================================================ painel inferior
 
-    pub(crate) fn animation_bottom_panel(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn animation_timeline_body(&mut self, ui: &mut egui::Ui) {
         let editor = Editor::from_tool_index(*self.tool_idx.get(&self.ws).unwrap_or(&0));
-        egui::Panel::bottom("anim_timeline").resizable(true).default_size(330.0).size_range(190.0..=720.0).show(ui, |ui| {
-            self.anim_toolbar(ui);
-            ui.separator();
-            let rect = ui.available_rect_before_wrap();
-            self.anim_ui.timeline_hovered = ui.rect_contains_pointer(rect) || self.anim_ui.drag.is_some();
-            match editor {
-                Editor::Dope => self.dope_sheet(ui),
-                Editor::Curves => self.graph_editor(ui),
-                Editor::Clips => self.clips_editor(ui),
-            }
-        });
+        self.anim_toolbar(ui);
+        ui.separator();
+        let rect = ui.available_rect_before_wrap();
+        self.anim_ui.timeline_hovered = ui.rect_contains_pointer(rect) || self.anim_ui.drag.is_some();
+        match editor {
+            Editor::Dope => self.dope_sheet(ui),
+            Editor::Curves => self.graph_editor(ui),
+            Editor::Clips => self.clips_editor(ui),
+        }
     }
 
     // ============================================================ régua

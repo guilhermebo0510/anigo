@@ -12,7 +12,7 @@ use crate::viewport::picking::{self, ClickHit, PickContext};
 use crate::workbench::{build_draw_data, build_draw_data_eval, BuildOptions, DrawItem, ShadingMode};
 use anigo_modeling::{SelectMode, Selection, Topology};
 use eframe::wgpu;
-use egui::{Color32, Key, Modifiers, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
+use egui::{Color32, Key, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
 use glam::{Mat4, Vec2, Vec3};
 
 fn to_glam(p: egui::Vec2) -> Vec2 {
@@ -361,81 +361,82 @@ impl StudioApp {
     }
 
     fn handle_hotkeys(&mut self, ui: &mut egui::Ui, mouse: Vec2, size: Vec2) {
-        let consume = |ui: &mut egui::Ui, mods: Modifiers, key: Key| ui.input_mut(|i| i.consume_key(mods, key));
+        let km = self.keymap.clone();
+        let consume = |ui: &mut egui::Ui, id: &str| km.consume(ui.ctx(), id);
         // undo/redo
-        if consume(ui, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || consume(ui, Modifiers::COMMAND, Key::Y) {
+        if consume(ui, "edit.redo") {
             self.modeling.redo();
             return;
         }
-        if consume(ui, Modifiers::COMMAND, Key::Z) {
+        if consume(ui, "edit.undo") {
             self.modeling.undo();
             return;
         }
-        if consume(ui, Modifiers::NONE, Key::Tab) {
+        if consume(ui, "modelagem.toggle_edit") {
             self.modeling.toggle_edit_mode();
         }
         if self.modeling.mode == Mode::Hair {
             self.hair_hotkeys(ui);
-            if consume(ui, Modifiers::ALT, Key::Z) {
+            if consume(ui, "modelagem.xray") {
                 self.modeling.xray = !self.modeling.xray;
             }
-            if consume(ui, Modifiers::NONE, Key::Period) || consume(ui, Modifiers::NONE, Key::Home) {
+            if consume(ui, "modelagem.frame") {
                 self.frame_selected_or_all();
             }
             return;
         }
-        for (key, kind) in [(Key::G, TransformKind::Grab), (Key::R, TransformKind::Rotate), (Key::S, TransformKind::Scale)] {
-            if consume(ui, Modifiers::NONE, key) {
+        for (id, kind) in [("modelagem.grab", TransformKind::Grab), ("modelagem.rotate", TransformKind::Rotate), ("modelagem.scale", TransformKind::Scale)] {
+            if consume(ui, id) {
                 self.modeling.begin_modal(kind, mouse);
                 return;
             }
         }
-        if consume(ui, Modifiers::ALT, Key::A) {
+        if consume(ui, "modelagem.select_none") {
             self.modeling.select_none();
-        } else if consume(ui, Modifiers::NONE, Key::A) {
+        } else if consume(ui, "modelagem.select_all") {
             self.modeling.select_all();
         }
-        if consume(ui, Modifiers::COMMAND, Key::I) {
+        if consume(ui, "modelagem.select_invert") {
             self.modeling.select_invert();
         }
-        if consume(ui, Modifiers::COMMAND, Key::Plus) {
+        if consume(ui, "modelagem.select_more") {
             self.modeling.select_more();
         }
-        if consume(ui, Modifiers::COMMAND, Key::Minus) {
+        if consume(ui, "modelagem.select_less") {
             self.modeling.select_less();
         }
         if self.modeling.mode == Mode::Edit {
-            for (key, m) in [(Key::Num1, SelectMode::Vertex), (Key::Num2, SelectMode::Edge), (Key::Num3, SelectMode::Face)] {
-                if consume(ui, Modifiers::NONE, key) {
+            for (id, m) in [("modelagem.edit.vertex_mode", SelectMode::Vertex), ("modelagem.edit.edge_mode", SelectMode::Edge), ("modelagem.edit.face_mode", SelectMode::Face)] {
+                if consume(ui, id) {
                     self.modeling.set_select_mode(m);
                 }
             }
-            if consume(ui, Modifiers::NONE, Key::L) {
+            if consume(ui, "modelagem.edit.select_linked") {
                 self.modeling.select_linked();
             }
-            if consume(ui, Modifiers::NONE, Key::O) {
+            if consume(ui, "modelagem.edit.proportional") {
                 self.modeling.proportional.enabled = !self.modeling.proportional.enabled;
             }
             self.edit_hotkeys(ui);
         } else if self.modeling.mode == Mode::Object {
-            if consume(ui, Modifiers::NONE, Key::X) || consume(ui, Modifiers::NONE, Key::Delete) {
+            if consume(ui, "modelagem.object.delete") {
                 self.modeling.delete_active_object();
             }
-            if consume(ui, Modifiers::SHIFT, Key::D) {
+            if consume(ui, "modelagem.object.duplicate") {
                 self.modeling.duplicate_active_object();
                 self.modeling.begin_modal(TransformKind::Grab, mouse);
             }
         }
-        if consume(ui, Modifiers::ALT, Key::Z) {
+        if consume(ui, "modelagem.xray") {
             self.modeling.xray = !self.modeling.xray;
         }
-        if consume(ui, Modifiers::SHIFT, Key::Z) {
+        if consume(ui, "modelagem.shading_toggle") {
             self.view_shading = match self.view_shading {
                 ViewShading::Solid => ViewShading::Wireframe,
                 _ => ViewShading::Solid,
             };
         }
-        if consume(ui, Modifiers::NONE, Key::Period) || consume(ui, Modifiers::NONE, Key::Home) {
+        if consume(ui, "modelagem.frame") {
             self.frame_selected_or_all();
         }
         let _ = size;

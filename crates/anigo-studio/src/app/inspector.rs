@@ -76,32 +76,28 @@ fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 impl StudioApp {
-    pub(crate) fn inspector_modeling(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("inspector")
-            .default_size(300.0)
-            .size_range(240.0..=460.0)
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.label(RichText::new(tr("panel.inspector")).strong().size(14.0));
-                ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    match self.modeling.mode {
-                        Mode::Object => self.inspector_object(ui),
-                        Mode::Edit => self.inspector_edit(ui),
-                        Mode::Sculpt => self.inspector_sculpt(ui),
-                        Mode::Hair => self.inspector_hair(ui),
-                    }
-                    section(ui, tr("panel.history"), |ui| {
-                        let labels = self.modeling.history_labels();
-                        if labels.is_empty() {
-                            ui.label(RichText::new("—").color(theme::TEXT_DIM));
-                        }
-                        for l in labels.iter().rev().take(8) {
-                            ui.label(RichText::new(*l).size(12.0).color(theme::TEXT_DIM));
-                        }
-                    });
-                });
+    /// Painel Inspetor da Modelagem (corpo): cena/edição/escultura/cabelo conforme o modo + histórico.
+    pub(crate) fn modeling_inspector_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.label(RichText::new(tr("panel.inspector")).strong().size(14.0));
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            match self.modeling.mode {
+                Mode::Object => self.inspector_object(ui),
+                Mode::Edit => self.inspector_edit(ui),
+                Mode::Sculpt => self.inspector_sculpt(ui),
+                Mode::Hair => self.inspector_hair(ui),
+            }
+            section(ui, tr("panel.history"), |ui| {
+                let labels = self.modeling.history_labels();
+                if labels.is_empty() {
+                    ui.label(RichText::new("—").color(theme::TEXT_DIM));
+                }
+                for l in labels.iter().rev().take(8) {
+                    ui.label(RichText::new(*l).size(12.0).color(theme::TEXT_DIM));
+                }
             });
+        });
     }
 
     fn inspector_object(&mut self, ui: &mut egui::Ui) {

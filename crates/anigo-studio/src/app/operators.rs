@@ -399,36 +399,36 @@ impl StudioApp {
     }
 
     pub(crate) fn edit_hotkeys(&mut self, ui: &mut egui::Ui) {
-        use egui::{Key, Modifiers};
-        let consume = |ui: &mut egui::Ui, m: Modifiers, k: Key| ui.input_mut(|i| i.consume_key(m, k));
-        if consume(ui, Modifiers::NONE, Key::E) {
+        let km = self.keymap.clone();
+        let consume = |ui: &mut egui::Ui, id: &str| km.consume(ui.ctx(), id);
+        if consume(ui, "modelagem.edit.extrude") {
             self.run_op(OpKind::Extrude);
-        } else if consume(ui, Modifiers::NONE, Key::I) {
+        } else if consume(ui, "modelagem.edit.inset") {
             self.run_op(OpKind::Inset);
-        } else if consume(ui, Modifiers::COMMAND, Key::B) {
+        } else if consume(ui, "modelagem.edit.bevel") {
             self.run_op(OpKind::Bevel);
-        } else if consume(ui, Modifiers::COMMAND, Key::R) {
+        } else if consume(ui, "modelagem.edit.loop_cut") {
             self.run_op(OpKind::LoopCut);
-        } else if consume(ui, Modifiers::NONE, Key::K) {
+        } else if consume(ui, "modelagem.edit.bisect") {
             self.run_op(OpKind::Bisect);
-        } else if consume(ui, Modifiers::NONE, Key::X) || consume(ui, Modifiers::NONE, Key::Delete) {
+        } else if consume(ui, "modelagem.edit.delete") {
             let kind = match self.modeling.select_mode {
                 anigo_modeling::SelectMode::Vertex => OpKind::DeleteVerts,
                 anigo_modeling::SelectMode::Edge => OpKind::DeleteEdges,
                 anigo_modeling::SelectMode::Face => OpKind::DeleteFaces,
             };
             self.run_op(kind);
-        } else if consume(ui, Modifiers::NONE, Key::M) {
+        } else if consume(ui, "modelagem.edit.merge") {
             self.run_op(OpKind::MergeCenter);
-        } else if consume(ui, Modifiers::NONE, Key::F) {
+        } else if consume(ui, "modelagem.edit.fill") {
             self.run_op(OpKind::FillHole);
-        } else if consume(ui, Modifiers::COMMAND, Key::T) {
+        } else if consume(ui, "modelagem.edit.triangulate") {
             self.run_op(OpKind::Triangulate);
-        } else if consume(ui, Modifiers::COMMAND, Key::N) {
+        } else if consume(ui, "modelagem.edit.recalc_normals") {
             self.run_op(OpKind::RecalcOutside);
-        } else if consume(ui, Modifiers::ALT, Key::H) {
+        } else if consume(ui, "modelagem.edit.reveal") {
             self.run_op(OpKind::RevealAll);
-        } else if consume(ui, Modifiers::NONE, Key::H) {
+        } else if consume(ui, "modelagem.edit.hide") {
             self.run_op(OpKind::HideSelected);
         }
     }

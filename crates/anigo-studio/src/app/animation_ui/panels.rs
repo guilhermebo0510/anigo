@@ -26,26 +26,27 @@ const FIELD_W: f32 = 300.0;
 const FPS_PRESETS: [f32; 9] = [8.0, 12.0, 15.0, 24.0, 25.0, 30.0, 48.0, 50.0, 60.0];
 
 impl StudioApp {
-    pub(crate) fn animation_panels(&mut self, ui: &mut egui::Ui) {
+    /// Início do quadro da Animação: histórico profundo (como o Cenário).
+    pub(crate) fn anim_frame_begin(&mut self) {
         if self.core.history().limit() < 400 {
             self.core.set_history_limit(400);
         }
-        // o painel inferior (timeline) vem antes do central; o inspetor à direita
-        egui::Panel::right("anim_inspector").default_size(360.0).size_range(290.0..=560.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Clip, format!("{}  {}", icons::FILM_STRIP, tr("anim.tab.clip")));
-                ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Bone, format!("{}  {}", icons::BONE, tr("anim.tab.bone")));
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| match self.anim_ui.side_tab {
-                    SideTab::Clip => self.inspector_clip_tab(ui),
-                    SideTab::Bone => self.rig_panel(ui),
-                });
+    }
+
+    /// Painel Inspetor da Animação (corpo): abas Clip/Osso.
+    pub(crate) fn animation_inspector_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Clip, format!("{}  {}", icons::FILM_STRIP, tr("anim.tab.clip")));
+            ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Bone, format!("{}  {}", icons::BONE, tr("anim.tab.bone")));
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| match self.anim_ui.side_tab {
+                SideTab::Clip => self.inspector_clip_tab(ui),
+                SideTab::Bone => self.rig_panel(ui),
             });
         });
-        self.animation_bottom_panel(ui);
     }
 
     // ============================================================ barra de transporte

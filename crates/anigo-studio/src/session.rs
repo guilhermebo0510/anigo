@@ -33,6 +33,29 @@ pub struct SessionState {
     /// Pasta de saída, template de nome, contador e guias do workspace Render.
     #[serde(default)]
     pub render_prefs: Option<crate::app::RenderPrefs>,
+    /// Layout dockável de cada workspace + presets (T-2.12). Opcional: sessões antigas abrem com o layout padrão.
+    /// Tolerante: um bloco de layouts ilegível/de esquema futuro vira `None` (layout padrão) e NUNCA derruba a sessão.
+    #[serde(default, deserialize_with = "lenient_layouts")]
+    pub layouts: Option<crate::layout::LayoutStore>,
+}
+
+fn lenient_layouts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<crate::layout::LayoutStore>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    match crate::layout::LayoutStore::parse(&v.to_string()) {
+        Ok(l) => {
+            for w in &l.warnings {
+                tracing::warn!("layout da sessão: {w}");
+            }
+            Ok(Some(l.store))
+        }
+        Err(e) => {
+            tracing::warn!("layouts da sessão ignorados: {e}");
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +127,7 @@ mod tests {
             scene_camera: None,
             scene_prefs: None,
             render_prefs: None,
+            layouts: None,
         }
     }
 
@@ -126,6 +150,42 @@ mod tests {
         o.remove("character_camera");
         let back = SessionState::from_json(&v.to_string()).unwrap();
         assert!(back.character_document.is_none() && back.character_camera.is_none());
+    }
+
+    #[test]
+    fn layouts_roundtrip_with_the_session_and_old_sessions_have_none() {
+        use crate::layout::{registry, LayoutStore};
+        let mut store = LayoutStore::default();
+        let n = registry::default_layout(WorkspaceId::Cenario, (1234.0, 700.0), &|_| true);
+        store.workspaces.insert("cenario".into(), n.clone());
+        store.save_preset("meu layout", "cenario", n.clone());
+        let mut s = sample();
+        s.layouts = Some(store.clone());
+        let back = SessionState::from_json(&s.to_json().unwrap()).unwrap();
+        assert_eq!(back.layouts, Some(store));
+        // sessão antiga (sem o campo) abre sem layouts
+        let mut v = serde_json::to_value(sample()).unwrap();
+        v.as_object_mut().unwrap().remove("layouts");
+        assert!(SessionState::from_json(&v.to_string()).unwrap().layouts.is_none());
+    }
+
+    #[test]
+    fn garbage_or_future_layouts_never_break_the_session() {
+        let base = serde_json::to_value(sample()).unwrap();
+        for bad in [
+            serde_json::json!("lixo"),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!({"schema": 99, "workspaces": {}}),
+            serde_json::json!({"schema": 1, "workspaces": {"cenario": {"kind": "bolo"}}}),
+            serde_json::json!(42),
+        ] {
+            let mut v = base.clone();
+            v["layouts"] = bad.clone();
+            let s = SessionState::from_json(&v.to_string()).unwrap_or_else(|e| panic!("sessão quebrou com layouts={bad}: {e}"));
+            // entradas ruins viram "sem layout"; o resto da sessão continua inteiro
+            assert_eq!(s.workspace, WorkspaceId::Modelagem);
+            assert!(s.layouts.is_none() || s.layouts.as_ref().is_some_and(|l| l.workspaces.is_empty()), "{bad}");
+        }
     }
 
     #[test]

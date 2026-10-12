@@ -86,16 +86,19 @@ fn section_header(ui: &mut Ui, text: &str) -> Rect {
 
 impl LibraryWorkspace {
     pub(super) fn left_panel(&mut self, ui: &mut Ui) {
+        egui::Panel::left("lib_left").default_size(250.0).size_range(190.0..=420.0).resizable(true).show(ui, |ui| self.left_body(ui));
+    }
+
+    /// Corpo da barra lateral (navegação, locais, tags, coleções) — usado pelo painel fixo e pelo dock.
+    pub(super) fn left_body(&mut self, ui: &mut Ui) {
         let mut actions: Vec<SideAction> = Vec::new();
-        egui::Panel::left("lib_left").default_size(250.0).size_range(190.0..=420.0).resizable(true).show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("lib_left_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                self.side_library(ui, &mut actions);
-                self.side_roots(ui, &mut actions);
-                self.side_tags(ui, &mut actions);
-                self.side_collections(ui, &mut actions);
-                ui.add_space(12.0);
-            });
+        egui::ScrollArea::vertical().id_salt("lib_left_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            self.side_library(ui, &mut actions);
+            self.side_roots(ui, &mut actions);
+            self.side_tags(ui, &mut actions);
+            self.side_collections(ui, &mut actions);
+            ui.add_space(12.0);
         });
         for a in actions {
             self.apply_side_action(a);

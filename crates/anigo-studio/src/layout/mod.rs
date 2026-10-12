@@ -3,6 +3,7 @@
 
 pub mod model;
 pub mod registry;
+pub mod tiles;
 
 pub use model::{Home, LayoutError, LayoutNode, LayoutPreset, LayoutStore, Loaded, LAYOUT_SCHEMA};
 pub use registry::{PanelKind, PanelSpec};

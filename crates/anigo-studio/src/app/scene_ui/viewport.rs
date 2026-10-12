@@ -22,7 +22,7 @@ use anigo_core::ids::NodeId;
 use anigo_core::level;
 use anigo_core::{NodeKind, NodeSource, NodeTransformEntry, StylizedMaterial};
 use eframe::wgpu;
-use egui::{Color32, Key, Modifiers, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
+use egui::{Color32, Key, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
 use glam::{Mat4, Quat, Vec2, Vec3};
 use std::collections::{BTreeSet, HashSet};
 
@@ -749,53 +749,55 @@ impl StudioApp {
         if self.scene_ui.fly_active {
             return;
         }
-        let consume = |mods: Modifiers, key: Key| ctx.input_mut(|i| i.consume_key(mods, key));
+        let km = self.keymap.clone();
+        let consume = |id: &str| km.consume(ctx, id);
+        // o atalho com Shift antes do sem Shift (Shift+E antes de E): o egui ignora Shift extra e a primeira consome a tecla
+        if consume("cenario.select_same") {
+            self.scene_select_same();
+        }
         // ferramentas (Q W E R, Espaço)
-        if consume(Modifiers::NONE, Key::Q) {
+        if consume("cenario.tool.select") {
             self.set_scene_tool(GizmoMode::Select);
         }
-        if consume(Modifiers::NONE, Key::W) {
+        if consume("cenario.tool.move") {
             self.set_scene_tool(GizmoMode::Translate);
         }
-        if consume(Modifiers::NONE, Key::E) {
+        if consume("cenario.tool.rotate") {
             self.set_scene_tool(GizmoMode::Rotate);
         }
-        if consume(Modifiers::NONE, Key::R) {
+        if consume("cenario.tool.scale") {
             self.set_scene_tool(GizmoMode::Scale);
         }
-        if consume(Modifiers::NONE, Key::Space) {
+        if consume("cenario.tool.cycle") {
             self.scene_cycle_tool();
         }
-        if consume(Modifiers::COMMAND, Key::Backtick) {
+        if consume("cenario.space_toggle") {
             self.scene_ui.space = if self.scene_ui.space == GizmoSpace::World { GizmoSpace::Local } else { GizmoSpace::World };
         }
-        if consume(Modifiers::COMMAND, Key::Space) {
+        if consume("cenario.drawer_toggle") {
             self.scene_ui.drawer_open = !self.scene_ui.drawer_open;
         }
         // edição
-        if consume(Modifiers::NONE, Key::Delete) || consume(Modifiers::NONE, Key::Backspace) {
+        if consume("cenario.delete") {
             self.scene_delete();
         }
-        if consume(Modifiers::COMMAND, Key::W) {
+        if consume("cenario.duplicate") {
             self.scene_duplicate();
         }
-        if consume(Modifiers::COMMAND, Key::A) {
+        if consume("cenario.select_all") {
             self.scene_select_all();
         }
-        if consume(Modifiers::COMMAND, Key::I) {
+        if consume("cenario.select_invert") {
             self.scene_invert_selection();
         }
-        if consume(Modifiers::SHIFT, Key::E) {
-            self.scene_select_same();
-        }
-        if consume(Modifiers::COMMAND, Key::H) {
+        if consume("cenario.unhide_all") {
             self.scene_unhide_all();
-        } else if consume(Modifiers::NONE, Key::H) {
+        } else if consume("cenario.hide") {
             self.scene_set_hidden(true);
         }
-        if consume(Modifiers::COMMAND | Modifiers::SHIFT, Key::G) || consume(Modifiers::SHIFT, Key::G) {
+        if consume("cenario.ungroup") {
             self.scene_ungroup();
-        } else if consume(Modifiers::COMMAND, Key::G) {
+        } else if consume("cenario.group") {
             self.scene_group();
         }
         let (copy, cut, paste) = ctx.input(|i| {
@@ -805,73 +807,73 @@ impl StudioApp {
                 i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
             )
         });
-        if copy || consume(Modifiers::COMMAND, Key::C) {
+        if copy || consume("cenario.copy") {
             self.scene_copy();
         }
-        if cut || consume(Modifiers::COMMAND, Key::X) {
+        if cut || consume("cenario.cut") {
             self.scene_cut();
         }
-        if paste || consume(Modifiers::COMMAND, Key::V) {
+        if paste || consume("cenario.paste") {
             self.scene_paste();
         }
-        if consume(Modifiers::NONE, Key::Escape) {
+        if consume("cenario.deselect") {
             if self.scene_ui.session.is_none() {
                 self.scene_ui.selection.clear();
             }
             self.scene_ui.marquee = None;
         }
-        if consume(Modifiers::NONE, Key::F2) {
+        if consume("cenario.rename") {
             if let Some(a) = self.scene_ui.selection.active().cloned() {
                 let name = self.core.project().scene.node(&a).map(|n| n.name.clone()).unwrap_or_default();
                 self.scene_ui.rename = Some((a, name, true));
             }
         }
         // snap
-        if consume(Modifiers::COMMAND, Key::End) {
+        if consume("cenario.snap_origin") {
             self.scene_snap_origin_to_grid();
-        } else if consume(Modifiers::NONE, Key::End) {
+        } else if consume("cenario.snap_floor") {
             self.scene_snap_to_floor();
         }
-        if consume(Modifiers::NONE, Key::Z) {
+        if consume("cenario.snap_surface") {
             self.scene_ui.snap.surface_on = !self.scene_ui.snap.surface_on;
             let on = self.scene_ui.snap.surface_on;
             self.scene_say(format!("{}: {}", tr("scene.snap.surface"), if on { tr("scene.on") } else { tr("scene.off") }));
         }
-        if consume(Modifiers::NONE, Key::V) {
+        if consume("cenario.snap_vertex") {
             self.scene_say(tr("scene.msg.vertex_snap_phase2"));
         }
         let steps = &snap::GRID_STEPS_M;
         let rsteps = &snap::ROT_STEPS_DEG;
-        if consume(Modifiers::NONE, Key::CloseBracket) {
-            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(4);
-            self.scene_ui.snap.grid_m = steps[(i + 1).min(steps.len() - 1)];
-        }
-        if consume(Modifiers::NONE, Key::OpenBracket) {
-            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(4);
-            self.scene_ui.snap.grid_m = steps[i.saturating_sub(1)];
-        }
-        if consume(Modifiers::SHIFT, Key::CloseBracket) {
+        if consume("cenario.rot_coarser") {
             let i = rsteps.iter().position(|s| (*s - self.scene_ui.snap.rot_deg).abs() < 1e-6).unwrap_or(2);
             self.scene_ui.snap.rot_deg = rsteps[(i + 1).min(rsteps.len() - 1)];
         }
-        if consume(Modifiers::SHIFT, Key::OpenBracket) {
+        if consume("cenario.rot_finer") {
             let i = rsteps.iter().position(|s| (*s - self.scene_ui.snap.rot_deg).abs() < 1e-6).unwrap_or(2);
             self.scene_ui.snap.rot_deg = rsteps[i.saturating_sub(1)];
         }
+        if consume("cenario.grid_coarser") {
+            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(4);
+            self.scene_ui.snap.grid_m = steps[(i + 1).min(steps.len() - 1)];
+        }
+        if consume("cenario.grid_finer") {
+            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(4);
+            self.scene_ui.snap.grid_m = steps[i.saturating_sub(1)];
+        }
         // visão
-        if consume(Modifiers::NONE, Key::F) {
+        if consume("cenario.focus") {
             self.scene_focus();
         }
-        if consume(Modifiers::NONE, Key::G) {
+        if consume("cenario.game_view") {
             self.scene_ui.game_view = !self.scene_ui.game_view;
         }
-        for (key, view) in [(Key::G, SceneViewKind::Perspective), (Key::H, SceneViewKind::Front), (Key::J, SceneViewKind::Top), (Key::K, SceneViewKind::Right)] {
-            if consume(Modifiers::ALT, key) {
+        for (id, view) in [("cenario.view_perspective", SceneViewKind::Perspective), ("cenario.view_front", SceneViewKind::Front), ("cenario.view_top", SceneViewKind::Top), ("cenario.view_right", SceneViewKind::Right)] {
+            if consume(id) {
                 self.scene_set_view(view);
             }
         }
-        for (key, sh) in [(Key::Num2, SceneShading::Wire), (Key::Num3, SceneShading::Solid), (Key::Num4, SceneShading::Cel)] {
-            if consume(Modifiers::ALT, key) {
+        for (id, sh) in [("cenario.shading_wire", SceneShading::Wire), ("cenario.shading_solid", SceneShading::Solid), ("cenario.shading_cel", SceneShading::Cel)] {
+            if consume(id) {
                 self.scene_ui.shading = sh;
             }
         }

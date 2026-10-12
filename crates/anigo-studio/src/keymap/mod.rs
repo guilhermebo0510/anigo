@@ -460,16 +460,16 @@ mod tests {
     #[test]
     fn defaults_reproduce_the_blender_and_unreal_schemes() {
         let km = Keymap::default();
-        assert_eq!(km.chords("modeling.grab"), &[chord("G")]);
-        assert_eq!(km.chords("modeling.edit.loop_cut"), &[chord("Ctrl+R")]);
-        assert_eq!(km.chords("modeling.toggle_edit"), &[chord("Tab")]);
-        assert_eq!(km.chords("scene.tool.select"), &[chord("Q")]);
-        assert_eq!(km.chords("scene.tool.move"), &[chord("W")]);
-        assert_eq!(km.chords("scene.tool.rotate"), &[chord("E")]);
-        assert_eq!(km.chords("scene.tool.scale"), &[chord("R")]);
-        assert_eq!(km.chords("scene.duplicate"), &[chord("Ctrl+W")]);
+        assert_eq!(km.chords("modelagem.grab"), &[chord("G")]);
+        assert_eq!(km.chords("modelagem.edit.loop_cut"), &[chord("Ctrl+R")]);
+        assert_eq!(km.chords("modelagem.toggle_edit"), &[chord("Tab")]);
+        assert_eq!(km.chords("cenario.tool.select"), &[chord("Q")]);
+        assert_eq!(km.chords("cenario.tool.move"), &[chord("W")]);
+        assert_eq!(km.chords("cenario.tool.rotate"), &[chord("E")]);
+        assert_eq!(km.chords("cenario.tool.scale"), &[chord("R")]);
+        assert_eq!(km.chords("cenario.duplicate"), &[chord("Ctrl+W")]);
         assert_eq!(km.chords("edit.redo"), &[chord("Ctrl+Shift+Z"), chord("Ctrl+Y")]);
-        assert_eq!(km.chords("anim.play"), &[chord("Space")]);
+        assert_eq!(km.chords("animacao.play"), &[chord("Space")]);
         assert_eq!(km.label("edit.undo"), "Ctrl+Z");
     }
 
@@ -477,75 +477,75 @@ mod tests {
     fn conflicts_are_detected_per_context_not_globally() {
         let mut km = Keymap::default();
         // mesmo atalho em workspaces diferentes: sem conflito (R é girar no Cenário e na Modelagem por padrão)
-        assert!(km.chords("scene.tool.scale").contains(&chord("R")) && km.chords("modeling.rotate").contains(&chord("R")));
+        assert!(km.chords("cenario.tool.scale").contains(&chord("R")) && km.chords("modelagem.rotate").contains(&chord("R")));
         assert!(km.conflicts().is_empty());
         // dois comandos do Cenário na mesma tecla: conflito
-        km.set("scene.tool.scale", vec![chord("W")]);
+        km.set("cenario.tool.scale", vec![chord("W")]);
         let c = km.conflicts();
         assert_eq!(c.len(), 1);
-        assert_eq!((c[0].a, c[0].b), ("scene.tool.move", "scene.tool.scale"));
-        assert_eq!(km.conflicts_with("scene.tool.move", &chord("W")), vec!["scene.tool.scale"]);
+        assert_eq!((c[0].a, c[0].b), ("cenario.tool.move", "cenario.tool.scale"));
+        assert_eq!(km.conflicts_with("cenario.tool.move", &chord("W")), vec!["cenario.tool.scale"]);
         // um atalho GLOBAL colide com qualquer contexto
         let mut km = Keymap::default();
         km.set("edit.undo", vec![chord("Q")]);
-        assert!(km.conflicts().iter().any(|c| c.a == "edit.undo" && c.b == "scene.tool.select"));
+        assert!(km.conflicts().iter().any(|c| c.a == "edit.undo" && c.b == "cenario.tool.select"));
         // modos diferentes da Modelagem não colidem (X = excluir em Objeto e em Edição por padrão)
         assert!(Keymap::default().conflicts().is_empty());
         // áreas diferentes no Animação (M = marcador na timeline x espelhar pose fora dela)
         let km = Keymap::default();
-        assert!(km.chords("anim.marker").contains(&chord("M")) && km.chords("pose.mirror").contains(&chord("M")));
+        assert!(km.chords("animacao.marker").contains(&chord("M")) && km.chords("posing.mirror").contains(&chord("M")));
         assert!(km.conflicts().is_empty());
         // ...mas virar "Any" colidiria
         let mut km = Keymap::default();
-        km.set("anim.key_insert", vec![chord("M")]);
-        assert!(km.conflicts().iter().any(|c| (c.a == "anim.marker" || c.b == "anim.marker") && c.chord == chord("M")));
+        km.set("animacao.key_insert", vec![chord("M")]);
+        assert!(km.conflicts().iter().any(|c| (c.a == "animacao.marker" || c.b == "animacao.marker") && c.chord == chord("M")));
     }
 
     #[test]
     fn routing_depends_on_workspace_mode_and_area() {
         let km = Keymap::default();
         let cen = Active { ws: WorkspaceId::Cenario, mode: None, area: Area::Viewport };
-        assert_eq!(km.route(&chord("Q"), &cen), vec!["scene.tool.select"]);
-        assert_eq!(km.route(&chord("W"), &cen), vec!["scene.tool.move"]);
+        assert_eq!(km.route(&chord("Q"), &cen), vec!["cenario.tool.select"]);
+        assert_eq!(km.route(&chord("W"), &cen), vec!["cenario.tool.move"]);
         assert_eq!(km.route(&chord("Ctrl+Z"), &cen), vec!["edit.undo"], "global em qualquer lugar");
         let mo = Active { ws: WorkspaceId::Modelagem, mode: Some("object"), area: Area::Viewport };
         assert!(km.route(&chord("Q"), &mo).is_empty(), "Q não é nada na Modelagem");
-        assert_eq!(km.route(&chord("X"), &mo), vec!["modeling.object.delete"]);
+        assert_eq!(km.route(&chord("X"), &mo), vec!["modelagem.object.delete"]);
         let me = Active { mode: Some("edit"), ..mo };
-        assert_eq!(km.route(&chord("X"), &me), vec!["modeling.edit.delete"]);
+        assert_eq!(km.route(&chord("X"), &me), vec!["modelagem.edit.delete"]);
         let mh = Active { mode: Some("hair"), ..mo };
-        assert_eq!(km.route(&chord("X"), &mh), vec!["hair.delete"]);
+        assert_eq!(km.route(&chord("X"), &mh), vec!["modelagem.hair.delete"]);
         assert!(km.route(&chord("G"), &mh).is_empty(), "G (grab) não vale no modo cabelo");
         let an_tl = Active { ws: WorkspaceId::Animacao, mode: None, area: Area::Timeline };
         let an_vp = Active { area: Area::Viewport, ..an_tl };
-        assert_eq!(km.route(&chord("M"), &an_tl), vec!["anim.marker"]);
-        assert_eq!(km.route(&chord("M"), &an_vp), vec!["pose.mirror"]);
-        assert_eq!(km.route(&chord("Space"), &an_tl), vec!["anim.play"]);
+        assert_eq!(km.route(&chord("M"), &an_tl), vec!["animacao.marker"]);
+        assert_eq!(km.route(&chord("M"), &an_vp), vec!["posing.mirror"]);
+        assert_eq!(km.route(&chord("Space"), &an_tl), vec!["animacao.play"]);
     }
 
     #[test]
     fn overrides_replace_defaults_and_only_the_delta_is_saved() {
         let mut km = Keymap::default();
-        km.set("scene.tool.move", vec![chord("T")]);
-        assert_eq!(km.chords("scene.tool.move"), &[chord("T")]);
-        assert!(km.is_modified("scene.tool.move") && km.modified_count() == 1);
+        km.set("cenario.tool.move", vec![chord("T")]);
+        assert_eq!(km.chords("cenario.tool.move"), &[chord("T")]);
+        assert!(km.is_modified("cenario.tool.move") && km.modified_count() == 1);
         let j = km.to_json(false);
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert_eq!(v["bindings"].as_object().unwrap().len(), 1);
-        assert_eq!(v["bindings"]["scene.tool.move"], serde_json::json!(["T"]));
+        assert_eq!(v["bindings"]["cenario.tool.move"], serde_json::json!(["T"]));
         // voltar ao padrão remove o override
-        km.set("scene.tool.move", vec![chord("W")]);
+        km.set("cenario.tool.move", vec![chord("W")]);
         assert_eq!(km.modified_count(), 0);
         // desligar uma ação
-        km.set("scene.hide", vec![]);
-        assert!(km.chords("scene.hide").is_empty() && km.is_modified("scene.hide"));
-        assert_eq!(km.label("scene.hide"), "");
-        km.reset("scene.hide");
-        assert_eq!(km.chords("scene.hide"), &[chord("H")]);
+        km.set("cenario.hide", vec![]);
+        assert!(km.chords("cenario.hide").is_empty() && km.is_modified("cenario.hide"));
+        assert_eq!(km.label("cenario.hide"), "");
+        km.reset("cenario.hide");
+        assert_eq!(km.chords("cenario.hide"), &[chord("H")]);
         // add não duplica
-        km.add("scene.hide", chord("H"));
-        km.add("scene.hide", chord("Shift+H"));
-        assert_eq!(km.chords("scene.hide"), &[chord("H"), chord("Shift+H")]);
+        km.add("cenario.hide", chord("H"));
+        km.add("cenario.hide", chord("Shift+H"));
+        assert_eq!(km.chords("cenario.hide"), &[chord("H"), chord("Shift+H")]);
         km.reset_all();
         assert_eq!(km.modified_count(), 0);
     }
@@ -553,8 +553,8 @@ mod tests {
     #[test]
     fn export_import_roundtrip_full_and_delta() {
         let mut km = Keymap::default();
-        km.set("scene.tool.move", vec![chord("T"), chord("Ctrl+T")]);
-        km.set("modeling.edit.extrude", vec![chord("Shift+E")]);
+        km.set("cenario.tool.move", vec![chord("T"), chord("Ctrl+T")]);
+        km.set("modelagem.edit.extrude", vec![chord("Shift+E")]);
         for all in [false, true] {
             let (back, warns) = Keymap::from_json(&km.to_json(all)).unwrap();
             assert!(warns.is_empty(), "{warns:?}");
@@ -569,15 +569,15 @@ mod tests {
     #[test]
     fn import_is_tolerant_but_not_silent() {
         let raw = r#"{"schema":1,"bindings":{
-            "scene.tool.move":["T"],
+            "cenario.tool.move":["T"],
             "acao.que.nao.existe":["A"],
-            "scene.hide":["Ctrl+Nada"],
-            "scene.rename":"F3",
-            "scene.focus":[7]}}"#;
+            "cenario.hide":["Ctrl+Nada"],
+            "cenario.rename":"F3",
+            "cenario.focus":[7]}}"#;
         let (km, warns) = Keymap::from_json(raw).unwrap();
-        assert_eq!(km.chords("scene.tool.move"), &[chord("T")]);
-        assert_eq!(km.chords("scene.hide"), &[chord("H")], "lista inválida mantém o padrão");
-        assert_eq!(km.chords("scene.rename"), &[chord("F2")]);
+        assert_eq!(km.chords("cenario.tool.move"), &[chord("T")]);
+        assert_eq!(km.chords("cenario.hide"), &[chord("H")], "lista inválida mantém o padrão");
+        assert_eq!(km.chords("cenario.rename"), &[chord("F2")]);
         assert_eq!(warns.len(), 4, "{warns:?}");
         // arquivo escrito à mão sem schema vale; futuro é recusado; lixo é recusado
         assert!(Keymap::from_json(r#"{"bindings":{}}"#).is_ok());
@@ -600,9 +600,9 @@ mod tests {
         assert!(km.modified_count() == 0 && warns.is_empty());
         // ida e volta em arquivo
         let mut km = Keymap::default();
-        km.set("anim.play", vec![chord("P")]);
+        km.set("animacao.play", vec![chord("P")]);
         km.save_to(&p, false).unwrap();
-        assert_eq!(Keymap::load_file(&p).0.chords("anim.play"), &[chord("P")]);
+        assert_eq!(Keymap::load_file(&p).0.chords("animacao.play"), &[chord("P")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -628,13 +628,13 @@ mod tests {
     fn consume_uses_the_resolved_chords_and_consumes_once() {
         let mut km = Keymap::default();
         // padrão: W move
-        let (a, b) = run_with(vec![key_event(Key::W, egui::Modifiers::NONE)], |ctx| (km.consume(ctx, "scene.tool.move"), km.consume(ctx, "scene.tool.move")));
+        let (a, b) = run_with(vec![key_event(Key::W, egui::Modifiers::NONE)], |ctx| (km.consume(ctx, "cenario.tool.move"), km.consume(ctx, "cenario.tool.move")));
         assert!(a && !b, "consome uma única vez");
         // com W trocado para T: W não dispara mais, T dispara
-        km.set("scene.tool.move", vec![chord("T")]);
-        let r = run_with(vec![key_event(Key::W, egui::Modifiers::NONE)], |ctx| km.consume(ctx, "scene.tool.move"));
+        km.set("cenario.tool.move", vec![chord("T")]);
+        let r = run_with(vec![key_event(Key::W, egui::Modifiers::NONE)], |ctx| km.consume(ctx, "cenario.tool.move"));
         assert!(!r);
-        let r = run_with(vec![key_event(Key::T, egui::Modifiers::NONE)], |ctx| km.consume(ctx, "scene.tool.move"));
+        let r = run_with(vec![key_event(Key::T, egui::Modifiers::NONE)], |ctx| km.consume(ctx, "cenario.tool.move"));
         assert!(r);
         // Ctrl+Shift+Z e Ctrl+Y são Refazer; Ctrl+Z puro não
         let km = Keymap::default();
@@ -647,6 +647,66 @@ mod tests {
         let mut km = Keymap::default();
         km.set("edit.undo", vec![]);
         assert!(!run_with(vec![key_event(Key::Z, egui::Modifiers::COMMAND)], |ctx| km.consume(ctx, "edit.undo")));
+    }
+
+    fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                rs_files(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// Todo id consultado em `hk(...)`/`consume(...)` existe no registro, e toda ação do registro é consultada em algum
+    /// handler (nenhuma ação "morta" que o usuário reconfigura sem efeito).
+    #[test]
+    fn every_registry_action_is_wired_to_a_handler_and_every_handler_id_exists() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&root, &mut files);
+        let mut used: HashSet<String> = HashSet::new();
+        let mut referenced_anywhere = String::new();
+        for f in &files {
+            let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            if rel.starts_with("keymap/") || rel == "i18n_dock.rs" {
+                continue;
+            }
+            let src = std::fs::read_to_string(f).unwrap();
+            referenced_anywhere.push_str(&src);
+            // chamadas diretas: hk(ctx, "id") / consume(ui, "id") / consume("id") / km_label("id")
+            for call in ["hk(", "consume(", "km_label("] {
+                let mut rest = src.as_str();
+                while let Some(i) = rest.find(call) {
+                    let tail = &rest[i + call.len()..];
+                    let head: String = tail.chars().take(40).collect();
+                    if let Some(q) = head.find('"') {
+                        // só se não houver `)` antes da aspa que não seja de `ui.ctx()`
+                        let before = &head[..q];
+                        if before.replace("ui.ctx()", "").replace("&ctx", "").replace("ctx", "").replace("ui", "").chars().all(|c| c == ',' || c == ' ') {
+                            let after = &head[q + 1..];
+                            if let Some(e) = after.find('"') {
+                                used.insert(after[..e].to_string());
+                            }
+                        }
+                    }
+                    rest = tail;
+                }
+            }
+        }
+        // listas de pares `("id", valor)` nos handlers: conta como uso qualquer literal exatamente igual a um id
+        for d in ACTIONS {
+            if referenced_anywhere.contains(&format!("\"{}\"", d.id)) {
+                used.insert(d.id.to_string());
+            }
+        }
+        let ids: HashSet<&str> = ACTIONS.iter().map(|d| d.id).collect();
+        let unknown: Vec<&String> = used.iter().filter(|u| !ids.contains(u.as_str())).collect();
+        assert!(unknown.is_empty(), "ids consultados que não existem no registro: {unknown:?}");
+        let dead: Vec<&&str> = ids.iter().filter(|i| !used.contains(**i)).collect();
+        assert!(dead.is_empty(), "ações do registro sem handler: {dead:?}");
     }
 
     #[test]

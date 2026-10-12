@@ -346,13 +346,11 @@ impl StudioApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        use egui::{Key, Modifiers};
-        let redo = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y));
-        if redo {
+        if self.hk(ctx, "edit.redo") {
             self.undo_redo(false);
             return;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+        if self.hk(ctx, "edit.undo") {
             self.undo_redo(true);
             return;
         }
@@ -360,29 +358,29 @@ impl StudioApp {
         let (copy, paste, shift) = ctx.input(|i| {
             (i.events.iter().any(|e| matches!(e, egui::Event::Copy)), i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))), i.modifiers.shift)
         });
-        if copy || ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::C)) {
+        if copy || self.hk(ctx, "posing.copy") {
             self.pose_copy();
         }
-        if paste || ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V)) {
+        if paste || self.hk(ctx, "posing.paste") {
             self.pose_paste(shift);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::V)) {
+        if self.hk(ctx, "posing.paste_mirrored") {
             self.pose_paste(true);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A)) {
+        if self.hk(ctx, "posing.select_all") {
             self.pose_ui.selection = (0..BONE_COUNT).filter(|b| *b != bone::ROOT).collect();
             self.pose_ui.active = self.pose_ui.selection.iter().next().copied();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::R)) {
+        // o atalho mais específico primeiro (Alt+Shift+R antes de Alt+R: o egui ignora Shift extra e a primeira consome a tecla)
+        if self.hk(ctx, "posing.reset_all") {
+            self.pose_reset_all();
+        } else if self.hk(ctx, "posing.reset_selection") {
             self.pose_reset_selection();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::ALT | Modifiers::SHIFT, Key::R)) {
-            self.pose_reset_all();
-        }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::M)) {
+        if self.hk(ctx, "posing.mirror") {
             self.pose_mirror();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+        if self.hk(ctx, "posing.frame") {
             self.pose_ui.framed = false;
         }
     }

@@ -8,7 +8,7 @@ fn main() -> eframe::Result {
     let cli = match cli::parse(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("erro: {e}\nuso: anigo-studio [--workspace <chave>] [--screenshot <png>] [--frames <n>] [--size LxA] [--scenario <nome>] [--session-file <json>] [--no-session] [--lang pt|en] [--bridge] [--bridge-port <n>] [--bridge-discovery <arquivo>]");
+            eprintln!("erro: {e}\nuso: anigo-studio [--workspace <chave>] [--screenshot <png>] [--frames <n>] [--size LxA] [--scenario <nome>] [--session-file <json>] [--no-session] [--lang pt|en] [--bridge] [--bridge-port <n>] [--bridge-discovery <arquivo>] [--layout-file <json>] [--keymap-file <json>]");
             std::process::exit(2);
         }
     };

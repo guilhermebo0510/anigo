@@ -755,78 +755,75 @@ impl StudioApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        use egui::{Key, Modifiers};
         // desfazer/refazer (qualquer área)
-        let redo = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y));
-        if redo {
+        if self.hk(ctx, "edit.redo") {
             self.undo_redo(false);
             return;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+        if self.hk(ctx, "edit.undo") {
             self.undo_redo(true);
             return;
         }
         let span = self.anim_span();
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space)) {
+        if self.hk(ctx, "animacao.play") {
             self.anim_ui.transport.toggle(span);
             self.anim_ui.phys.last_raw = None;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)) {
+        // com Shift antes do sem Shift (o egui ignora Shift extra e a primeira consome a tecla)
+        if self.hk(ctx, "animacao.step_next_10") {
+            self.anim_ui.transport.step(10, span);
+        } else if self.hk(ctx, "animacao.step_next") {
             self.anim_ui.transport.step(1, span);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)) {
+        if self.hk(ctx, "animacao.step_prev_10") {
+            self.anim_ui.transport.step(-10, span);
+        } else if self.hk(ctx, "animacao.step_prev") {
             self.anim_ui.transport.step(-1, span);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::ArrowRight)) {
-            self.anim_ui.transport.step(10, span);
-        }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::ArrowLeft)) {
-            self.anim_ui.transport.step(-10, span);
-        }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Home)) {
+        if self.hk(ctx, "animacao.home") {
             self.anim_ui.transport.home(span);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::End)) {
+        if self.hk(ctx, "animacao.end") {
             self.anim_ui.transport.end(span);
         }
         if let Some(clip) = self.anim_clip().cloned() {
-            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+            if self.hk(ctx, "animacao.key_next") {
                 self.anim_ui.transport.jump_key(&clip, span, true);
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+            if self.hk(ctx, "animacao.key_prev") {
                 self.anim_ui.transport.jump_key(&clip, span, false);
             }
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::I)) {
+        if self.hk(ctx, "animacao.key_delete_here") {
             self.anim_delete_key_at_frame();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::I)) {
+        if self.hk(ctx, "animacao.key_insert") {
             self.anim_insert_key();
         }
         if self.anim_ui.timeline_hovered {
-            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::X)) {
+            if self.hk(ctx, "animacao.keys_delete") {
                 self.anim_delete_selected();
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::C)) {
+            if self.hk(ctx, "animacao.keys_copy") {
                 self.anim_copy_keys();
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::V)) {
+            if self.hk(ctx, "animacao.keys_paste_mirrored") {
                 self.anim_paste_keys(true);
-            } else if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V)) {
+            } else if self.hk(ctx, "animacao.keys_paste") {
                 self.anim_paste_keys(false);
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::M)) {
+            if self.hk(ctx, "animacao.keys_mirror") {
                 self.anim_mirror_selected();
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::M)) {
+            if self.hk(ctx, "animacao.marker") {
                 self.anim_add_marker();
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A)) {
+            if self.hk(ctx, "animacao.keys_select_all") {
                 if let Some(c) = self.anim_clip() {
                     self.anim_ui.selection = c.channels.iter().flat_map(|ch| ch.keys.iter().map(|k| (ch.target.clone(), k.frame))).collect();
                 }
             }
-            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+            if self.hk(ctx, "animacao.view_frame") {
                 self.anim_frame_view();
             }
         } else {

@@ -25,6 +25,10 @@ impl StudioApp {
         if self.frame_count != 3 {
             return;
         }
+        if name.starts_with("layout-") {
+            self.run_layout_scenario(&name);
+            return;
+        }
         if crate::library_ui::scenario::is_library_scenario(&name) {
             return; // a máquina de estados do cenário vive em `LibraryWorkspace::scenario_tick`
         }

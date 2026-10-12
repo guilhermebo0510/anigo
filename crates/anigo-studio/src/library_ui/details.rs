@@ -60,16 +60,19 @@ fn commit_field(ui: &mut Ui, value: &mut String, multiline: bool, hint: &str) ->
 
 impl LibraryWorkspace {
     pub(super) fn right_panel(&mut self, ui: &mut Ui) {
-        egui::Panel::right("lib_right").default_size(330.0).size_range(260.0..=560.0).resizable(true).show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("lib_right_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                ui.add_space(6.0);
-                match self.selection.len() {
-                    0 => self.details_empty(ui),
-                    1 => self.details_single(ui),
-                    _ => self.details_multi(ui),
-                }
-                ui.add_space(12.0);
-            });
+        egui::Panel::right("lib_right").default_size(330.0).size_range(260.0..=560.0).resizable(true).show(ui, |ui| self.right_body(ui));
+    }
+
+    /// Corpo do painel de detalhes — usado pelo painel fixo e pelo dock.
+    pub(super) fn right_body(&mut self, ui: &mut Ui) {
+        egui::ScrollArea::vertical().id_salt("lib_right_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(6.0);
+            match self.selection.len() {
+                0 => self.details_empty(ui),
+                1 => self.details_single(ui),
+                _ => self.details_multi(ui),
+            }
+            ui.add_space(12.0);
         });
     }
 

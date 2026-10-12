@@ -14,31 +14,33 @@ use egui::{Color32, RichText, Sense, Stroke};
 use glam::Vec3;
 
 impl StudioApp {
-    pub(crate) fn posing_panels(&mut self, ui: &mut egui::Ui) {
+    /// Início do quadro do Posing: histórico profundo (como o Cenário).
+    pub(crate) fn pose_frame_begin(&mut self) {
         if self.core.history().limit() < 400 {
             self.core.set_history_limit(400);
         }
-        egui::Panel::right("pose_inspector").default_size(360.0).size_range(300.0..=560.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            let tool = self.posing_tool();
-            let (title, icon) = match tool {
-                PoseTool::Rig => ("tool.rig", icons::BONE),
-                PoseTool::Ik => ("tool.ik", icons::TARGET),
-                PoseTool::Presets => ("tool.poses_preset", icons::PERSON_SIMPLE_RUN),
-            };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{icon}  {}", tr(title))).strong().size(14.0));
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                match tool {
-                    PoseTool::Rig => self.rig_panel(ui),
-                    PoseTool::Ik => self.ik_panel(ui),
-                    PoseTool::Presets => self.presets_panel(ui),
-                }
-                ui.add_space(8.0);
-                self.pose_history_section(ui);
-            });
+    }
+
+    pub(crate) fn pose_inspector_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        let tool = self.posing_tool();
+        let (title, icon) = match tool {
+            PoseTool::Rig => ("tool.rig", icons::BONE),
+            PoseTool::Ik => ("tool.ik", icons::TARGET),
+            PoseTool::Presets => ("tool.poses_preset", icons::PERSON_SIMPLE_RUN),
+        };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{icon}  {}", tr(title))).strong().size(14.0));
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            match tool {
+                PoseTool::Rig => self.rig_panel(ui),
+                PoseTool::Ik => self.ik_panel(ui),
+                PoseTool::Presets => self.presets_panel(ui),
+            }
+            ui.add_space(8.0);
+            self.pose_history_section(ui);
         });
     }
 

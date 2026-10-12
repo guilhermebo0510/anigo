@@ -22,9 +22,11 @@ mod animation_ui;
 mod automation;
 mod bridge_host;
 mod character_ui;
+mod dock_ui;
 mod gizmo;
 mod hair_ui;
 mod lighting_ui;
+mod menu_ui;
 pub(crate) mod inspector;
 pub mod operators;
 mod modifiers_ui;
@@ -119,6 +121,13 @@ pub struct StudioApp {
     pub(crate) bridge: Option<bridge_host::BridgeHost>,
     /// Estado do workspace Animação (timeline, clips, auto-key, onion, física); o clip vive no projeto de `core`.
     pub(crate) anim_ui: animation_ui::AnimUi,
+    /// Layout dockável por workspace (árvores do `egui_tiles`, layouts salvos, presets).
+    pub(crate) dock: dock_ui::DockState,
+    /// Atalhos em vigor (padrão + delta do usuário); `Arc` para os handlers consultarem sem travar `self`.
+    pub(crate) keymap: std::sync::Arc<crate::keymap::Keymap>,
+    pub(crate) keymap_path: Option<PathBuf>,
+    /// Estado dos menus, diálogos e da janela de atalhos.
+    pub(crate) menu: menu_ui::MenuState,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -138,6 +147,21 @@ impl StudioApp {
         let mut scene_ui = scene_ui::SceneUi::default();
         let mut render_ui = render_ui::RenderUi::default();
         let pose_ui = posing_ui::PosingUi::default();
+        // layouts: arquivo do usuário (padrão; `--no-session` não lê nem grava), sessão por cima, `--layout-file` explícito por cima de tudo
+        let mut layout_warnings: Vec<String> = Vec::new();
+        let mut layouts = crate::layout::LayoutStore::default();
+        let layout_path: Option<PathBuf> = match (&cli.layout_file, cli.no_session) {
+            (Some(p), _) => Some(PathBuf::from(p)),
+            (None, false) => Some(crate::layout::default_layouts_path()),
+            (None, true) => None,
+        };
+        if cli.layout_file.is_none() {
+            if let Some(p) = &layout_path {
+                let l = crate::layout::LayoutStore::load_file(p);
+                layout_warnings.extend(l.warnings);
+                layouts = l.store;
+            }
+        }
 
         let session_path = cli.session_file.as_ref().map(PathBuf::from);
         if !cli.no_session {
@@ -181,8 +205,29 @@ impl StudioApp {
                 if let Some(p) = &s.render_prefs {
                     render_ui.apply_prefs(p);
                 }
+                if let Some(l) = s.layouts {
+                    layouts.merge_over(l);
+                }
                 restored = true;
             }
+        }
+        // atalhos: arquivo do usuário (`--no-session` não lê nem grava, salvo `--keymap-file` explícito)
+        let keymap_path: Option<PathBuf> = match (&cli.keymap_file, cli.no_session) {
+            (Some(p), _) => Some(PathBuf::from(p)),
+            (None, false) => Some(crate::keymap::default_keymap_path()),
+            (None, true) => None,
+        };
+        let (keymap, keymap_warnings) = keymap_path.as_deref().map(crate::keymap::Keymap::load_file).unwrap_or_default();
+        for w in &keymap_warnings {
+            tracing::warn!("{w}");
+        }
+        if let (Some(_), Some(p)) = (&cli.layout_file, &layout_path) {
+            let l = crate::layout::LayoutStore::load_file(p);
+            layout_warnings.extend(l.warnings);
+            layouts.merge_over(l.store);
+        }
+        for w in &layout_warnings {
+            tracing::warn!("{w}");
         }
         if let Some(w) = cli.workspace {
             ws = w;
@@ -199,6 +244,13 @@ impl StudioApp {
             camera.distance *= 1.9;
         }
         let shader_watcher = dev_shader_path().and_then(|p| ShaderWatcher::new(p).ok());
+
+        // cenários `layout-<workspace>`: só abrem o workspace (o layout padrão ou o do `--layout-file`)
+        if let Some(w) = cli.scenario.as_deref().and_then(StudioApp::layout_scenario_workspace) {
+            if cli.workspace.is_none() {
+                ws = w;
+            }
+        }
 
         // cenários da Biblioteca: monta uma biblioteca temporária SINTÉTICA antes do primeiro quadro
         let mut lib_ws = None;
@@ -347,6 +399,10 @@ impl StudioApp {
             pose_ui,
             bridge,
             anim_ui: animation_ui::AnimUi::default(),
+            dock: dock_ui::DockState::new(layout_path, layouts, layout_warnings),
+            keymap: std::sync::Arc::new(keymap),
+            keymap_path,
+            menu: menu_ui::MenuState { keymap_warnings, ..Default::default() },
         }
     }
 
@@ -366,6 +422,7 @@ impl StudioApp {
             scene_camera: Some(self.scene_ui.camera),
             scene_prefs: Some(self.scene_ui.prefs()),
             render_prefs: Some(self.render_ui.prefs.clone()),
+            layouts: Some(self.dock.snapshot()),
         }
     }
 
@@ -671,8 +728,8 @@ impl StudioApp {
         self.lib_ws.get_or_insert_with(|| LibraryWorkspace::new(library::default_spec()))
     }
 
-    fn library_ui(&mut self, ui: &mut egui::Ui) {
-        let actions = self.lib_workspace().ui(ui);
+    /// Ações que a Biblioteca devolve ao app (abrir na Modelagem, status).
+    fn library_actions(&mut self, actions: Vec<HostAction>) {
         for a in actions {
             match a {
                 HostAction::EditInModeling { path, format, name } => self.edit_library_asset(&path, &format, &name),
@@ -719,16 +776,63 @@ impl StudioApp {
         };
     }
 
-    fn placeholder_ui(&mut self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() * 0.35);
-                ui.label(RichText::new(self.ws.icon()).size(48.0).color(theme::ACCENT));
-                ui.label(RichText::new(tr(&format!("workspace.{}", self.ws.key()))).size(22.0).strong());
-                ui.add_space(6.0);
-                ui.label(RichText::new(tr("placeholder.not_ported")).color(theme::TEXT_DIM));
-            });
-        });
+    /// O corpo do workspace atual: lógica de início de quadro (roteiros, atalhos), o dock com os painéis e a viewport,
+    /// e a lógica de fim de quadro (diálogos, fechamento de gestos).
+    fn workspace_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        match self.ws {
+            WorkspaceId::Personagem => self.character_shortcuts(&ctx),
+            WorkspaceId::Cenario => {
+                self.scene_script_tick();
+                self.scene_shortcuts(&ctx);
+                self.scene_frame_begin();
+            }
+            WorkspaceId::Iluminacao => {
+                self.light_script_tick();
+                self.light_shortcuts(&ctx);
+            }
+            WorkspaceId::Render => {
+                self.render_script_tick(&ctx);
+                self.render_shortcuts(&ctx);
+                self.render_frame_begin(&ctx);
+            }
+            WorkspaceId::Shading => {
+                self.shading_script_tick();
+                self.shading_shortcuts(&ctx);
+                self.shading_frame_begin();
+            }
+            WorkspaceId::Posing => {
+                self.posing_script_tick();
+                self.posing_shortcuts(&ctx);
+                self.pose_frame_begin();
+            }
+            WorkspaceId::Animacao => {
+                self.anim_script_tick(&ctx);
+                self.anim_tick(&ctx);
+                self.animation_shortcuts(&ctx);
+                self.anim_frame_begin();
+            }
+            WorkspaceId::Modelagem => {}
+            WorkspaceId::Biblioteca => {
+                self.lib_workspace().dock_begin(&ctx);
+                self.lib_workspace().dock_strip(ui);
+            }
+        }
+        self.dock_ui(ui, frame);
+        match self.ws {
+            WorkspaceId::Personagem => self.char_frame_end(&ctx),
+            WorkspaceId::Cenario => self.scene_frame_end(&ctx),
+            WorkspaceId::Shading => self.shading_frame_end(&ctx),
+            WorkspaceId::Biblioteca => {
+                let actions = self.lib_workspace().dock_end(&ctx);
+                self.library_actions(actions);
+            }
+            _ => {}
+        }
+        // diálogo de abrir/salvar projeto (Personagem e menu Arquivo); o Cenário tem o próprio
+        if self.ws != WorkspaceId::Cenario {
+            self.char_project_dialog(&ctx);
+        }
     }
 
     fn handle_screenshot(&mut self, ctx: &egui::Context) {
@@ -776,80 +880,13 @@ impl eframe::App for StudioApp {
         self.run_scenario();
         self.bridge_tick(&ui.ctx().clone());
 
+        self.menu_bar(ui);
         self.top_bar(ui);
         self.status_bar(ui);
         if self.ws.has_viewport() {
             self.tool_shelf(ui);
         }
-        if self.ws == WorkspaceId::Personagem {
-            self.character_shortcuts(&ui.ctx().clone());
-            self.inspector_character(ui);
-        }
-        if self.ws == WorkspaceId::Cenario {
-            self.scene_script_tick();
-            self.scene_shortcuts(&ui.ctx().clone());
-            self.scene_panels(ui);
-        }
-        if self.ws == WorkspaceId::Iluminacao {
-            self.light_script_tick();
-            self.light_shortcuts(&ui.ctx().clone());
-            self.light_panels(ui);
-        }
-        if self.ws == WorkspaceId::Render {
-            let ctx = ui.ctx().clone();
-            self.render_script_tick(&ctx);
-            self.render_shortcuts(&ctx);
-            self.render_panels(ui);
-        }
-        if self.ws == WorkspaceId::Shading {
-            self.shading_script_tick();
-            self.shading_shortcuts(&ui.ctx().clone());
-            self.shading_panels(ui);
-        }
-        if self.ws == WorkspaceId::Posing {
-            self.posing_script_tick();
-            self.posing_shortcuts(&ui.ctx().clone());
-            self.posing_panels(ui);
-        }
-        if self.ws == WorkspaceId::Animacao {
-            let ctx = ui.ctx().clone();
-            self.anim_script_tick(&ctx);
-            self.anim_tick(&ctx);
-            self.animation_shortcuts(&ctx);
-            self.animation_panels(ui);
-        }
-        if self.ws == WorkspaceId::Modelagem {
-            self.inspector_modeling(ui);
-            if self.show_uv_editor && self.modeling.mode == Mode::Edit {
-                egui::Panel::bottom("uv_editor")
-                    .default_size(360.0)
-                    .size_range(160.0..=700.0)
-                    .show(ui, |ui| self.uv_editor_panel(ui));
-            }
-        }
-
-        self.bridge_note_viewport(ui.available_rect_before_wrap());
-        if self.ws.has_viewport() {
-            if self.ws == WorkspaceId::Modelagem {
-                self.viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Personagem {
-                self.character_viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Cenario {
-                self.scene_viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Iluminacao {
-                self.light_viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Render {
-                self.render_viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Shading {
-                self.shading_viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Posing || self.ws == WorkspaceId::Animacao {
-                self.posing_viewport_ui(ui, frame);
-            } else {
-                self.placeholder_ui(ui);
-            }
-        } else {
-            self.library_ui(ui);
-        }
+        self.workspace_ui(ui, frame);
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
         if self.shader_watcher.is_some() {

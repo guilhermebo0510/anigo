@@ -13,7 +13,7 @@ use crate::modeling::sculpt::{
 use crate::theme;
 use anigo_modeling::sculpt::brush::{BrushKind, Dab};
 use anigo_modeling::sculpt::falloff::{CurveProfile, Falloff};
-use egui::{Color32, Key, Modifiers, Pos2, Rect, RichText, Stroke};
+use egui::{Color32, Key, Pos2, Rect, RichText, Stroke};
 use glam::{Vec2, Vec3};
 
 fn gv(p: egui::Vec2) -> Vec2 {
@@ -502,18 +502,18 @@ impl StudioApp {
         }
         if keys_ok && !alt {
             let kind = self.sculpt.active;
-            if ui.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F)) {
+            if self.hk(ui.ctx(), "modelagem.sculpt.resize_strength") {
                 let s = self.sculpt.slot(kind).brush.strength;
                 self.sculpt.resize = Some(Resize::strength(mouse, s));
-            } else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+            } else if self.hk(ui.ctx(), "modelagem.sculpt.resize_radius") {
                 let r = self.sculpt.slot(kind).radius_px;
                 self.sculpt.resize = Some(Resize::radius(mouse, r));
             }
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::OpenBracket)) {
+            if self.hk(ui.ctx(), "modelagem.sculpt.radius_smaller") {
                 let s = self.sculpt.slot_mut(kind);
                 s.radius_px = (s.radius_px / 1.12).clamp(RADIUS_MIN_PX, RADIUS_MAX_PX);
             }
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::CloseBracket)) {
+            if self.hk(ui.ctx(), "modelagem.sculpt.radius_larger") {
                 let s = self.sculpt.slot_mut(kind);
                 s.radius_px = (s.radius_px * 1.12).clamp(RADIUS_MIN_PX, RADIUS_MAX_PX);
             }

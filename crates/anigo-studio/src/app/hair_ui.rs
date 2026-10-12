@@ -16,7 +16,7 @@ use crate::modeling::hair::{HairPick, HairTool};
 use crate::modeling::sculpt::ViewInfo;
 use crate::theme;
 use anigo_modeling::hair::{SectionKind, StrandParams, StrandRef, UvLayout};
-use egui::{Color32, Key, Modifiers, Pos2, Rect, RichText, Stroke};
+use egui::{Color32, Key, Pos2, Rect, RichText, Stroke};
 use glam::{Vec2, Vec3};
 
 fn gv(p: egui::Vec2) -> Vec2 {
@@ -161,32 +161,34 @@ impl StudioApp {
 
     /// Atalhos do Modo Cabelo (o chamador já garantiu ponteiro no viewport e nenhum campo de texto em foco).
     pub(crate) fn hair_hotkeys(&mut self, ui: &mut egui::Ui) {
-        let consume = |ui: &mut egui::Ui, mods: Modifiers, key: Key| ui.input_mut(|i| i.consume_key(mods, key));
-        for (key, tool) in [(Key::D, HairTool::Draw), (Key::V, HairTool::Edit), (Key::C, HairTool::Comb)] {
-            if consume(ui, Modifiers::NONE, key) {
-                self.hair_set_tool(tool);
-            }
-        }
-        if consume(ui, Modifiers::SHIFT, Key::D) {
+        let km = self.keymap.clone();
+        let consume = |ui: &mut egui::Ui, id: &str| km.consume(ui.ctx(), id);
+        // o atalho com Shift antes do sem Shift (Shift+D antes de D): o egui ignora Shift extra e a primeira consome a tecla
+        if consume(ui, "modelagem.hair.duplicate") {
             let r = self.hair.duplicate_selected(&mut self.modeling);
             self.hair_report(r);
         }
-        if consume(ui, Modifiers::SHIFT, Key::X) {
+        for (id, tool) in [("modelagem.hair.tool_draw", HairTool::Draw), ("modelagem.hair.tool_edit", HairTool::Edit), ("modelagem.hair.tool_comb", HairTool::Comb)] {
+            if consume(ui, id) {
+                self.hair_set_tool(tool);
+            }
+        }
+        if consume(ui, "modelagem.hair.delete_hard") {
             let r = self.hair.delete_selected(&mut self.modeling, true);
             self.hair_report(r);
-        } else if consume(ui, Modifiers::NONE, Key::X) || consume(ui, Modifiers::NONE, Key::Delete) {
+        } else if consume(ui, "modelagem.hair.delete") {
             let r = self.hair.delete_selected(&mut self.modeling, false);
             self.hair_report(r);
         }
-        if consume(ui, Modifiers::SHIFT, Key::M) {
+        if consume(ui, "modelagem.hair.flip_group") {
             self.hair_flip_active_group();
-        } else if consume(ui, Modifiers::NONE, Key::M) {
+        } else if consume(ui, "modelagem.hair.symmetry") {
             self.hair_toggle_symmetry();
         }
-        if consume(ui, Modifiers::NONE, Key::OpenBracket) {
+        if consume(ui, "modelagem.hair.comb_smaller") {
             self.hair.comb_radius_px = (self.hair.comb_radius_px / 1.12).clamp(10.0, 400.0);
         }
-        if consume(ui, Modifiers::NONE, Key::CloseBracket) {
+        if consume(ui, "modelagem.hair.comb_larger") {
             self.hair.comb_radius_px = (self.hair.comb_radius_px * 1.12).clamp(10.0, 400.0);
         }
     }

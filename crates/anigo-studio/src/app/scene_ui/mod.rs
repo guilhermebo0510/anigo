@@ -80,14 +80,6 @@ pub struct ScenePrefs {
     pub place_open: bool,
 }
 
-/// Alvo do painel direito (aba de cima).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum RightTab {
-    #[default]
-    Outliner,
-    History,
-}
-
 /// Arrastar da lista "Colocar atores".
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum PlaceKind {
@@ -185,7 +177,6 @@ pub(crate) struct SceneUi {
     pub gpu: SceneGpu,
     pub view_size: Vec2,
     // ---- painéis
-    pub right_tab: RightTab,
     pub query: String,
     pub expansion: Expansion,
     pub rename: Option<(NodeId, String, bool)>,
@@ -239,7 +230,6 @@ impl Default for SceneUi {
             char_geom: None,
             gpu: SceneGpu::default(),
             view_size: Vec2::new(900.0, 600.0),
-            right_tab: RightTab::Outliner,
             query: String::new(),
             expansion: Expansion::default(),
             rename: None,

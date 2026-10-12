@@ -59,21 +59,19 @@ fn rgb8(c: [f32; 3]) -> Color32 {
 }
 
 impl StudioApp {
-    pub(crate) fn light_panels(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("light_inspector").default_size(350.0).size_range(300.0..=540.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new(format!("{}  {}", icons::SUN, tr("light.title"))).strong().size(14.0));
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let focus = self.light_ui.focus.take();
-                section(ui, icons::LIGHTBULB, "light.section.rigs", true, focus == Some(Section::Rigs), |ui| self.light_rigs_body(ui));
-                section(ui, icons::SUN, "light.section.sun", true, focus == Some(Section::Sun), |ui| self.light_sun_body(ui));
-                section(ui, icons::CIRCLE_HALF, "light.section.shadows", true, focus == Some(Section::Shadows), |ui| self.light_shadows_body(ui));
-                section(ui, icons::CLOUD_SUN, "light.section.ambient", true, focus == Some(Section::Ambient), |ui| self.light_ambient_body(ui));
-                section(ui, icons::SPARKLE, "light.section.rim", false, false, |ui| self.light_rim_body(ui));
-                section(ui, icons::FLASHLIGHT, "light.section.extra", false, focus == Some(Section::Extra), |ui| Self::light_extra_body(ui));
-                section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
-            });
+    pub(crate) fn light_inspector_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.label(RichText::new(format!("{}  {}", icons::SUN, tr("light.title"))).strong().size(14.0));
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let focus = self.light_ui.focus.take();
+            section(ui, icons::LIGHTBULB, "light.section.rigs", true, focus == Some(Section::Rigs), |ui| self.light_rigs_body(ui));
+            section(ui, icons::SUN, "light.section.sun", true, focus == Some(Section::Sun), |ui| self.light_sun_body(ui));
+            section(ui, icons::CIRCLE_HALF, "light.section.shadows", true, focus == Some(Section::Shadows), |ui| self.light_shadows_body(ui));
+            section(ui, icons::CLOUD_SUN, "light.section.ambient", true, focus == Some(Section::Ambient), |ui| self.light_ambient_body(ui));
+            section(ui, icons::SPARKLE, "light.section.rim", false, false, |ui| self.light_rim_body(ui));
+            section(ui, icons::FLASHLIGHT, "light.section.extra", false, focus == Some(Section::Extra), |ui| Self::light_extra_body(ui));
+            section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
         });
     }
 

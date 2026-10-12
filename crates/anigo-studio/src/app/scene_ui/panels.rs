@@ -2,7 +2,7 @@
 //! diálogo de salvar/abrir cena.
 
 use super::actions::prim_label_key;
-use super::{describe_scene, OutlinerDragPayload, PlaceDragPayload, PlaceKind, RightTab, SceneDialog, StudioApp};
+use super::{describe_scene, OutlinerDragPayload, PlaceDragPayload, PlaceKind, SceneDialog, StudioApp};
 use crate::character::persist;
 use crate::i18n::tr;
 use crate::icons;
@@ -58,38 +58,26 @@ fn quat_from_deg(v: [f32; 3]) -> Quat {
 impl StudioApp {
     // ============================================================ orquestração
 
-    pub(crate) fn scene_panels(&mut self, ui: &mut egui::Ui) {
+    /// Início do quadro do Cenário (antes dos painéis).
+    pub(crate) fn scene_frame_begin(&mut self) {
         self.scene_enter();
-        if self.scene_ui.place_open {
-            egui::Panel::left("scene_place").exact_size(150.0).resizable(false).show(ui, |ui| self.place_panel(ui));
-        }
-        egui::Panel::right("scene_right").default_size(340.0).size_range(300.0..=560.0).show(ui, |ui| {
-            self.right_header(ui);
-            ui.separator();
-            let h = (ui.available_height() * 0.45).clamp(150.0, 560.0);
-            ui.allocate_ui(egui::vec2(ui.available_width(), h), |ui| {
-                ui.set_min_height(h);
-                match self.scene_ui.right_tab {
-                    RightTab::Outliner => self.outliner_panel(ui),
-                    RightTab::History => self.history_panel(ui),
-                }
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().id_salt("scene_details").auto_shrink([false, false]).show(ui, |ui| self.details_panel(ui));
-        });
-        if self.scene_ui.drawer_open {
-            egui::Panel::bottom("scene_drawer").default_size(250.0).size_range(130.0..=560.0).resizable(true).show(ui, |ui| self.drawer_panel(ui));
-        }
-        let ctx = ui.ctx().clone();
-        self.scene_dialog(&ctx);
-        self.place_drag_ghost(&ctx);
     }
 
-    fn right_header(&mut self, ui: &mut egui::Ui) {
+    /// Fim do quadro: diálogo de abrir/salvar cena e o "fantasma" do arrasto de Posicionar.
+    pub(crate) fn scene_frame_end(&mut self, ctx: &egui::Context) {
+        self.scene_dialog(ctx);
+        self.place_drag_ghost(ctx);
+    }
+
+    /// Painel Posicionar (corpo; o dock fornece quadro e cabeçalho).
+    pub(crate) fn scene_place_body(&mut self, ui: &mut egui::Ui) {
+        self.place_panel(ui);
+    }
+
+    /// Painel Outliner: abrir/salvar a cena + busca + árvore.
+    pub(crate) fn scene_outliner_body(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.scene_ui.right_tab, RightTab::Outliner, format!("{}  {}", icons::LIST_BULLETS, tr("scene.outliner")));
-            ui.selectable_value(&mut self.scene_ui.right_tab, RightTab::History, format!("{}  {}", icons::CLOCK_COUNTER_CLOCKWISE, tr("scene.history")));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(icons::FOLDER_OPEN).on_hover_text(tr("char.open")).clicked() {
                     self.scene_ui.dialog = Some(SceneDialog { save: false, path: self.scene_ui.last_path.clone(), error: None });
@@ -99,6 +87,24 @@ impl StudioApp {
                 }
             });
         });
+        ui.separator();
+        self.outliner_panel(ui);
+    }
+
+    /// Painel Histórico da cena.
+    pub(crate) fn scene_history_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        self.history_panel(ui);
+    }
+
+    /// Painel Detalhes do nó selecionado.
+    pub(crate) fn scene_details_body(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().id_salt("scene_details").auto_shrink([false, false]).show(ui, |ui| self.details_panel(ui));
+    }
+
+    /// Content Drawer (a grade da Biblioteca dentro do Cenário).
+    pub(crate) fn scene_drawer_body(&mut self, ui: &mut egui::Ui) {
+        self.drawer_panel(ui);
     }
 
     // ============================================================ Outliner

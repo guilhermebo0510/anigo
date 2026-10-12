@@ -807,6 +807,80 @@ impl LibraryWorkspace {
         std::mem::take(&mut self.actions)
     }
 
+    // ------------------------------------------------------------------ modo dock (T-2.12)
+
+    /// Começo do quadro no modo dock: bombeia tarefas, abre a biblioteca e trata entrada global.
+    /// Devolve `true` quando a biblioteca está pronta (os painéis só desenham conteúdo nesse caso).
+    pub fn dock_begin(&mut self, ctx: &egui::Context) -> bool {
+        self.pump(ctx);
+        self.ensure_open();
+        if !matches!(self.open, OpenState::Ready) {
+            return false;
+        }
+        self.drawer_mode = false;
+        self.handle_drops(ctx);
+        self.scenario_tick();
+        self.handle_global_input(ctx);
+        true
+    }
+
+    /// Painel de navegação (locais, tags, coleções).
+    pub fn dock_sidebar(&mut self, ui: &mut egui::Ui) {
+        if matches!(self.open, OpenState::Ready) {
+            self.left_body(ui);
+        }
+    }
+
+    /// Painel de detalhes do ativo selecionado.
+    pub fn dock_details(&mut self, ui: &mut egui::Ui) {
+        if matches!(self.open, OpenState::Ready) {
+            self.right_body(ui);
+        }
+    }
+
+    /// Navegador de ativos (barra de ferramentas + grade); mostra o estado "abrindo/falhou" enquanto não está pronto.
+    pub fn dock_browser(&mut self, ui: &mut egui::Ui) {
+        match &self.open {
+            OpenState::Closed | OpenState::Opening(_) => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.4);
+                    ui.spinner();
+                    ui.label(egui::RichText::new(crate::i18n::tr("lib.opening")).color(theme::TEXT_DIM));
+                });
+            }
+            OpenState::Failed(e) => {
+                let e = e.clone();
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.4);
+                    ui.label(egui::RichText::new(crate::i18n::tr("lib.open_failed")).strong().size(18.0));
+                    ui.label(egui::RichText::new(e).color(egui::Color32::from_rgb(0xff, 0x70, 0x70)));
+                });
+            }
+            OpenState::Ready => {
+                self.toolbar(ui);
+                ui.add_space(2.0);
+                self.center(ui);
+            }
+        }
+    }
+
+    /// Faixa de status fixa (importações em andamento), fora do dock.
+    pub fn dock_strip(&mut self, ui: &mut egui::Ui) {
+        if matches!(self.open, OpenState::Ready) {
+            self.bottom_strip(ui);
+        }
+    }
+
+    /// Fim do quadro no modo dock: diálogos, overlay de soltar arquivos e fantasma do arrasto. Devolve as ações.
+    pub fn dock_end(&mut self, ctx: &egui::Context) -> Vec<HostAction> {
+        if matches!(self.open, OpenState::Ready) {
+            self.dialogs(ctx);
+            self.drop_overlay(ctx);
+            self.drag_ghost(ctx);
+        }
+        std::mem::take(&mut self.actions)
+    }
+
     /// Desenha o workspace inteiro e devolve as ações para o app.
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Vec<HostAction> {
         let ctx = ui.ctx().clone();

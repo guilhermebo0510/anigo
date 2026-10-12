@@ -148,22 +148,20 @@ impl StudioApp {
 
     // =================================================================== esquerda
 
-    pub(crate) fn shading_left_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("shading_left").default_size(250.0).size_range(210.0..=380.0).show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                for s in Source::ALL {
-                    if ui.selectable_label(self.shading_ui.source == s, tr(s.key())).clicked() {
-                        self.shading_set_source(s);
-                    }
+    pub(crate) fn shading_targets_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            for s in Source::ALL {
+                if ui.selectable_label(self.shading_ui.source == s, tr(s.key())).clicked() {
+                    self.shading_set_source(s);
                 }
-            });
-            ui.separator();
-            let h = (ui.available_height() * 0.38).clamp(110.0, 420.0);
-            self.shading_target_list(ui, h);
-            ui.separator();
-            egui::ScrollArea::vertical().id_salt("shading_left_scroll").auto_shrink([false, false]).show(ui, |ui| self.shading_presets_section(ui));
+            }
         });
+        ui.separator();
+        let h = (ui.available_height() * 0.38).clamp(110.0, 420.0);
+        self.shading_target_list(ui, h);
+        ui.separator();
+        egui::ScrollArea::vertical().id_salt("shading_left_scroll").auto_shrink([false, false]).show(ui, |ui| self.shading_presets_section(ui));
     }
 
     fn shading_target_list(&mut self, ui: &mut egui::Ui, height: f32) {
@@ -396,46 +394,44 @@ impl StudioApp {
 
     // =================================================================== direita
 
-    pub(crate) fn shading_right_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("shading_right").default_size(350.0).size_range(300.0..=540.0).show(ui, |ui| {
-            ui.add_space(4.0);
-            self.shading_header(ui);
-            ui.separator();
-            let Some(target) = self.shading_ui.target.clone() else {
-                ui.add_space(12.0);
-                ui.label(RichText::new(tr("shading.no_target")).color(theme::TEXT_DIM));
-                return;
-            };
-            let Some(mat) = self.shading_read(&target) else { return };
-            let mut trace_rects: Vec<(String, egui::Rect)> = Vec::new();
-            let mut edit: Option<Edit> = None;
-            egui::ScrollArea::vertical().id_salt("shading_params").auto_shrink([false, false]).show(ui, |ui| {
-                if self.shading_ui.palette_open {
-                    if let Some(e) = self.shading_palette_section(ui, &mat) {
-                        edit = Some(e);
-                    }
-                }
-                let link = self.shading_ui.link_shade.then_some(self.shading_ui.recipe);
-                for g in Group::ALL {
-                    if let Some(e) = self.shading_group(ui, g, &mat, link, &mut trace_rects) {
-                        edit = Some(e);
-                    }
-                }
-                self.shading_textures_section(ui);
-            });
-            if let Some(e) = edit {
-                self.shading_apply_edit(e);
-            }
-            if std::env::var_os("ANIGO_TRACE_SHADING").is_some() {
-                for (id, r) in trace_rects {
-                    let line = format!("shaderect {id} x={:.0} y={:.0} w={:.0} h={:.0}", r.min.x, r.min.y, r.width(), r.height());
-                    if self.shading_ui.rect_log.get(&id) != Some(&line) {
-                        eprintln!("{line}");
-                        self.shading_ui.rect_log.insert(id, line);
-                    }
+    pub(crate) fn shading_params_body(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        self.shading_header(ui);
+        ui.separator();
+        let Some(target) = self.shading_ui.target.clone() else {
+            ui.add_space(12.0);
+            ui.label(RichText::new(tr("shading.no_target")).color(theme::TEXT_DIM));
+            return;
+        };
+        let Some(mat) = self.shading_read(&target) else { return };
+        let mut trace_rects: Vec<(String, egui::Rect)> = Vec::new();
+        let mut edit: Option<Edit> = None;
+        egui::ScrollArea::vertical().id_salt("shading_params").auto_shrink([false, false]).show(ui, |ui| {
+            if self.shading_ui.palette_open {
+                if let Some(e) = self.shading_palette_section(ui, &mat) {
+                    edit = Some(e);
                 }
             }
+            let link = self.shading_ui.link_shade.then_some(self.shading_ui.recipe);
+            for g in Group::ALL {
+                if let Some(e) = self.shading_group(ui, g, &mat, link, &mut trace_rects) {
+                    edit = Some(e);
+                }
+            }
+            self.shading_textures_section(ui);
         });
+        if let Some(e) = edit {
+            self.shading_apply_edit(e);
+        }
+        if std::env::var_os("ANIGO_TRACE_SHADING").is_some() {
+            for (id, r) in trace_rects {
+                let line = format!("shaderect {id} x={:.0} y={:.0} w={:.0} h={:.0}", r.min.x, r.min.y, r.width(), r.height());
+                if self.shading_ui.rect_log.get(&id) != Some(&line) {
+                    eprintln!("{line}");
+                    self.shading_ui.rect_log.insert(id, line);
+                }
+            }
+        }
     }
 
     fn shading_header(&mut self, ui: &mut egui::Ui) {

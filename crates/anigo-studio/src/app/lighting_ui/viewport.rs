@@ -8,7 +8,7 @@ use crate::lighting::gizmo::{self, LineKind};
 use crate::lighting::{self, ArcballHemisphere};
 use crate::scene::camview::CamView;
 use crate::theme;
-use egui::{Color32, Key, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
+use egui::{Color32, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
 use glam::{Vec2, Vec3};
 
 /// Raio (px) da esfera de direção na tela.
@@ -106,7 +106,7 @@ impl StudioApp {
         } else if alt && resp.hovered() {
             ctx.set_cursor_icon(egui::CursorIcon::Move);
         }
-        if resp.hovered() && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::F)) {
+        if resp.hovered() && !ctx.egui_wants_keyboard_input() && self.hk(&ctx, "iluminacao.frame") {
             self.light_frame_character();
         }
 

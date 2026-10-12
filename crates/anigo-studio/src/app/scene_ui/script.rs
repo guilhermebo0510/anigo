@@ -140,7 +140,6 @@ impl StudioApp {
                     }
                     "cenario-outliner" => {
                         self.build_set(true);
-                        self.scene_ui.right_tab = super::RightTab::Outliner;
                         let nodes: Vec<(NodeId, String)> = self.core.project().scene.nodes.iter().map(|n| (n.node_id.clone(), n.name.clone())).collect();
                         let pillars: Vec<NodeId> = nodes.iter().filter(|(_, n)| n.starts_with("Pilar")).map(|(i, _)| i.clone()).collect();
                         if pillars.len() >= 2 {

@@ -4,6 +4,7 @@
 //! anigo-studio [--workspace <chave>] [--screenshot <png>] [--frames <n>] [--size <LxA>]
 //!              [--scenario <nome>] [--session-file <json>] [--no-session] [--lang pt|en]
 //!              [--bridge] [--bridge-port <n>] [--bridge-discovery <arquivo>]
+//!              [--layout-file <json>] [--keymap-file <json>]
 //! ```
 //!
 //! `--bridge` liga a bridge local do `anigo-mcp` (loopback + token; desligada por padrão; `ANIGO_BRIDGE=1` também liga).
@@ -28,6 +29,10 @@ pub struct Cli {
     pub bridge_port: Option<u16>,
     /// Arquivo de descoberta (padrão: pasta de dados do usuário; ver `anigo_bridge::discovery`).
     pub bridge_discovery: Option<String>,
+    /// Arquivo de layouts dockáveis (padrão: `<ANIGO>/Config/layouts.json`; explícito vence a sessão e vale com `--no-session`).
+    pub layout_file: Option<String>,
+    /// Arquivo de atalhos configuráveis (padrão: `<ANIGO>/Config/keymap.json`; explícito vale com `--no-session`).
+    pub keymap_file: Option<String>,
 }
 
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
@@ -67,6 +72,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 cli.bridge_discovery = Some(value("--bridge-discovery")?);
                 cli.bridge = true;
             }
+            "--layout-file" => cli.layout_file = Some(value("--layout-file")?),
+            "--keymap-file" => cli.keymap_file = Some(value("--keymap-file")?),
             "--lang" => {
                 cli.lang = Some(match value("--lang")?.as_str() {
                     "pt" | "pt-BR" => Lang::PtBr,
@@ -122,6 +129,16 @@ mod tests {
         assert!(c.bridge && c.bridge_discovery.as_deref() == Some("/tmp/b.json"));
         assert!(p(&["--bridge-port", "99999"]).is_err());
         assert!(p(&["--bridge-port"]).is_err());
+    }
+
+    #[test]
+    fn layout_and_keymap_files_are_parsed() {
+        let c = p(&["--layout-file", "/tmp/l.json", "--keymap-file", "/tmp/k.json"]).unwrap();
+        assert_eq!(c.layout_file.as_deref(), Some("/tmp/l.json"));
+        assert_eq!(c.keymap_file.as_deref(), Some("/tmp/k.json"));
+        assert!(p(&["--layout-file"]).is_err());
+        let d = p(&[]).unwrap();
+        assert!(d.layout_file.is_none() && d.keymap_file.is_none());
     }
 
     #[test]
