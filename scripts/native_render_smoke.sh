@@ -4,7 +4,7 @@
 #   2. Ctrl+Z desfaz (w/h originais) e Ctrl+Y refaz (por trace E por diferenca de screenshot da viewport);
 #   3. desfaz de novo e clica em "Renderizar quadro"      -> job termina, PNG real em disco (RGBA, tamanho certo, alfa nos cantos);
 #   4. renderiza de novo                                  -> segundo arquivo com os MESMOS bytes de pixels (determinismo);
-#   5. enfileira mais um e cancela pelo botao da fila     -> job "cancelled", nenhum arquivo novo.
+#   5. enfileira 4 em rajada e cancela o mais novo pelo botao da fila -> job "cancelled", nenhum arquivo novo.
 # O app imprime uma linha `rendertrace ...` por mudanca de estado (ANIGO_TRACE_RENDER=1; espacos dos caminhos viram %20); o script confere os valores.
 # Teclas com modificador: sequencia explicita keydown/key/keyup (o winit pode entregar a tecla antes do modificador).
 # Uso: scripts/native_render_smoke.sh [binario] [pasta-de-saida]
@@ -155,10 +155,13 @@ echo "determinismo: $(basename "$F1") == $(basename "$F2") (mesmos bytes)"
 N2=$(ls "$RDIR"/*.png 2>/dev/null | wc -l)
 [ "$N2" -eq $((N1 + 1)) ] || fail "o contador deveria criar um arquivo novo (antes $N1, depois $N2)"
 
-# ---- 5. cancelar pela fila (o 2o job fica na fila atras do 1o e e cancelado antes de comecar)
-click "$RX" "$RY"
-click "$RX" "$RY"
-wait_trace "dois jobs novos enfileirados" '[ "$(field "$T" jobs)" = "4" ]' 30
+# ---- 5. cancelar pela fila (o job mais novo fica atras dos outros e e cancelado antes de comecar).
+# O botao de cancelar aponta para o job MAIS NOVO ainda em fila/rodando. Com so 2 jobs enfileirados por
+# cliques separados (~1 s cada) a corrida era perdida em runner rapido: os dois renders terminavam antes do
+# clique e o botao apontava para nada. Rajada de 4 cliques: o ultimo so comeca depois de 3 renders.
+xdotool mousemove "$RX" "$RY"; sleep 0.35
+xdotool click --repeat 4 --delay 120 1
+wait_trace "quatro jobs novos enfileirados" '[ "$(field "$T" jobs)" = "6" ]' 30
 T=$(last)
 XY=$(field "$T" cancel_btn); CX=${XY%,*}; CY=${XY#*,}
 [ "$CX" != "0" ] || fail "botao de cancelar da fila nao apareceu"
