@@ -301,8 +301,10 @@ impl Library {
     pub fn tags(&self) -> Result<Vec<TagInfo>> {
         self.inner.db.read(|c| {
             let mut st = c.prepare(
-                "SELECT t.path, t.color, (SELECT count(*) FROM asset_tag at JOIN asset a ON a.seq = at.asset_seq \
-                 WHERE at.tag_id = t.id AND a.state = 0) FROM tag t ORDER BY t.path",
+                "SELECT t.path, t.color, count(a.seq) FROM tag t \
+                 LEFT JOIN asset_tag at ON at.tag_id = t.id \
+                 LEFT JOIN asset a ON a.seq = at.asset_seq AND a.state = 0 \
+                 GROUP BY t.id ORDER BY t.path",
             )?;
             let rows = st.query_map([], |r| Ok(TagInfo { path: r.get(0)?, color: r.get(1)?, count: r.get::<_, i64>(2)?.max(0) as u64 }))?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

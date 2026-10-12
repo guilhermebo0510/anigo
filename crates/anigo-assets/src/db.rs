@@ -151,7 +151,10 @@ fn apply_pragmas(conn: &Connection, writer: bool) -> Result<()> {
     } else {
         conn.execute_batch("PRAGMA query_only = ON;")?;
     }
-    conn.execute_batch("PRAGMA mmap_size = 268435456; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -32768;")?;
+    // Memoria: cache de paginas por conexao (escritora 32 MiB, leitoras 8 MiB) + mmap de ate 128 MiB (compartilhado,
+    // pagina reclamavel pelo SO). O pool tem no maximo MAX_POOLED_READERS leitoras.
+    let cache_kib = if writer { 32 * 1024 } else { 8 * 1024 };
+    conn.execute_batch(&format!("PRAGMA mmap_size = 134217728; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -{cache_kib};"))?;
     Ok(())
 }
 
@@ -161,7 +164,7 @@ pub(crate) struct Db {
     readers: Mutex<Vec<Connection>>,
 }
 
-const MAX_POOLED_READERS: usize = 8;
+const MAX_POOLED_READERS: usize = 6;
 
 impl Db {
     /// Abre (criando e migrando) o banco em `path`.

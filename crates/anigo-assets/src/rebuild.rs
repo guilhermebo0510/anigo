@@ -126,7 +126,6 @@ impl Library {
     pub fn rebuild_index(&self) -> Result<RebuildReport> {
         let started = Instant::now();
         let dirs = self.all_found_dirs(None)?;
-        let loaded = self.load_all(dirs);
         let mut report = RebuildReport::default();
 
         // estado anterior que nao esta nos manifestos
@@ -140,37 +139,43 @@ impl Library {
             let tx = c.transaction()?;
             tx.execute_batch("DELETE FROM asset_fts; DELETE FROM asset_tag; DELETE FROM dep; DELETE FROM file_claim; DELETE FROM asset;")?;
             let mut cache = TagCache::default();
-            for l in &loaded {
-                let m = match &l.manifest {
-                    Ok(m) => m,
-                    Err(e) => {
-                        report.bad_manifests.push((l.base.join(&l.found.rel), e.clone()));
+            // Em lotes: le/parseia em paralelo um lote por vez (memoria limitada), insere na MESMA transacao.
+            let mut dirs = dirs;
+            while !dirs.is_empty() {
+                let rest = dirs.split_off(dirs.len().min(4096));
+                let batch = std::mem::replace(&mut dirs, rest);
+                for l in self.load_all(batch) {
+                    let m = match &l.manifest {
+                        Ok(m) => m,
+                        Err(e) => {
+                            report.bad_manifests.push((l.base.join(&l.found.rel), e.clone()));
+                            continue;
+                        }
+                    };
+                    let Some(root_id) = self.index_root_of(&l, m) else {
+                        report.orphan_linked += 1;
                         continue;
+                    };
+                    let (mtime, prev_state) = prev.get(m.asset_id.as_bytes().as_slice()).copied().unwrap_or((0, 0));
+                    let state = if l.found.trashed {
+                        AssetState::Trashed
+                    } else if matches!(AssetState::from_db(prev_state), AssetState::Missing | AssetState::Corrupt) {
+                        AssetState::from_db(prev_state)
+                    } else {
+                        AssetState::Active
+                    };
+                    store::upsert_asset(
+                        &tx,
+                        &mut cache,
+                        &IndexEntry { manifest: m, root_id, manifest_dir: l.found.rel.clone(), state, file_mtime_ns: mtime, trashed_at: m.trashed_at },
+                    )?;
+                    report.assets += 1;
+                    if l.found.trashed {
+                        report.trashed += 1;
                     }
-                };
-                let Some(root_id) = self.index_root_of(l, m) else {
-                    report.orphan_linked += 1;
-                    continue;
-                };
-                let (mtime, prev_state) = prev.get(m.asset_id.as_bytes().as_slice()).copied().unwrap_or((0, 0));
-                let state = if l.found.trashed {
-                    AssetState::Trashed
-                } else if matches!(AssetState::from_db(prev_state), AssetState::Missing | AssetState::Corrupt) {
-                    AssetState::from_db(prev_state)
-                } else {
-                    AssetState::Active
-                };
-                store::upsert_asset(
-                    &tx,
-                    &mut cache,
-                    &IndexEntry { manifest: m, root_id, manifest_dir: l.found.rel.clone(), state, file_mtime_ns: mtime, trashed_at: m.trashed_at },
-                )?;
-                report.assets += 1;
-                if l.found.trashed {
-                    report.trashed += 1;
-                }
-                if m.storage == StorageMode::Linked {
-                    report.linked += 1;
+                    if m.storage == StorageMode::Linked {
+                        report.linked += 1;
+                    }
                 }
             }
             tx.commit()?;
