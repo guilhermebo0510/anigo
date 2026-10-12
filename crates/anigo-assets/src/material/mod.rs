@@ -382,6 +382,75 @@ impl Default for PbrFallback {
     }
 }
 
+/// Parametros do `StylizedMaterial` do renderer cel que o formato estruturado nao modela (ficam fora dos
+/// blocos acima) e o grupo NPR (rampa 2D, contorno de alta qualidade, espelho do SDF facial). Opcional e
+/// aditivo: ausente em arquivos antigos; quando presente sobrescreve o que `to_stylized` derivou dos blocos.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StylizedExtras {
+    pub ao_intensity: f32,
+    pub mtoon_matcap_enabled: bool,
+    pub mtoon_shade_toony: bool,
+    pub face_sdf_enabled: bool,
+    pub face_shadow_offset: f32,
+    pub face_shadow_smoothness: f32,
+    pub eye_enabled: bool,
+    pub eye_depth_scale: f32,
+    pub eye_highlight_intensity: f32,
+    pub gaze_tracking_enabled: bool,
+    pub gaze_saccade_amplitude: f32,
+    pub gaze_damping: f32,
+    pub npr: anigo_core::NprParams,
+}
+
+impl Default for StylizedExtras {
+    fn default() -> Self {
+        Self::from_stylized(&StylizedMaterial::default())
+    }
+}
+
+impl StylizedExtras {
+    pub fn from_stylized(s: &StylizedMaterial) -> Self {
+        Self {
+            ao_intensity: s.ao_intensity,
+            mtoon_matcap_enabled: s.mtoon_matcap_enabled,
+            mtoon_shade_toony: s.mtoon_shade_toony,
+            face_sdf_enabled: s.face_sdf_enabled,
+            face_shadow_offset: s.face_shadow_offset,
+            face_shadow_smoothness: s.face_shadow_smoothness,
+            eye_enabled: s.eye_enabled,
+            eye_depth_scale: s.eye_depth_scale,
+            eye_highlight_intensity: s.eye_highlight_intensity,
+            gaze_tracking_enabled: s.gaze_tracking_enabled,
+            gaze_saccade_amplitude: s.gaze_saccade_amplitude,
+            gaze_damping: s.gaze_damping,
+            npr: s.npr,
+        }
+    }
+
+    fn apply_to(&self, s: &mut StylizedMaterial) {
+        s.ao_intensity = self.ao_intensity;
+        s.mtoon_matcap_enabled = self.mtoon_matcap_enabled;
+        s.mtoon_shade_toony = self.mtoon_shade_toony;
+        s.face_sdf_enabled = self.face_sdf_enabled;
+        s.face_shadow_offset = self.face_shadow_offset;
+        s.face_shadow_smoothness = self.face_shadow_smoothness;
+        s.eye_enabled = self.eye_enabled;
+        s.eye_depth_scale = self.eye_depth_scale;
+        s.eye_highlight_intensity = self.eye_highlight_intensity;
+        s.gaze_tracking_enabled = self.gaze_tracking_enabled;
+        s.gaze_saccade_amplitude = self.gaze_saccade_amplitude;
+        s.gaze_damping = self.gaze_damping;
+        s.npr = self.npr.sanitized();
+    }
+
+    fn all_finite(&self) -> bool {
+        [self.ao_intensity, self.face_shadow_offset, self.face_shadow_smoothness, self.eye_depth_scale, self.eye_highlight_intensity, self.gaze_saccade_amplitude, self.gaze_damping]
+            .iter()
+            .all(|v| v.is_finite())
+    }
+}
+
 /// O material canonico.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -405,6 +474,9 @@ pub struct ToonMaterial {
     pub pbr_fallback: PbrFallback,
     pub transparent_with_zwrite: bool,
     pub render_queue_offset: i32,
+    /// Extras do renderer cel e grupo NPR (aditivo; ver [`StylizedExtras`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stylized: Option<StylizedExtras>,
     /// Dados sem equivalente (extensoes desconhecidas etc.), preservados.
     pub extras: serde_json::Value,
 }
@@ -430,6 +502,7 @@ impl Default for ToonMaterial {
             pbr_fallback: PbrFallback::default(),
             transparent_with_zwrite: false,
             render_queue_offset: 0,
+            stylized: None,
             extras: serde_json::Value::Null,
         }
     }
@@ -508,6 +581,11 @@ impl ToonMaterial {
         }
         if let Some(m) = &self.shade.mtoon {
             finite("shade.mtoon", &[m.shading_shift, m.shading_toony, m.gi_equalization])?;
+        }
+        if let Some(x) = &self.stylized {
+            if !x.all_finite() {
+                return Err(AssetError::InvalidInput("valor nao finito em 'stylized'".into()));
+            }
         }
         for t in self.textures() {
             t.validate()?;
@@ -591,7 +669,7 @@ impl ToonMaterial {
         s.outline_opacity = self.outline.opacity;
         s.outline_smoothness = self.outline.smoothness;
         s.outline_depth_bias = self.outline.depth_bias;
-        s.mtoon_emission_color = [self.emission.color[0], self.emission.color[1], self.emission.color[2], 1.0];
+        s.mtoon_emission_color = [self.emission.color[0], self.emission.color[1], self.emission.color[2], StylizedMaterial::default().mtoon_emission_color[3]];
         s.mtoon_emission_intensity = self.emission.intensity;
         s.mtoon_emission_texture_enabled = self.emission.texture.is_some();
         s.mtoon_matcap_enabled = self.matcap.texture.is_some();
@@ -604,6 +682,9 @@ impl ToonMaterial {
             s.face_sdf_enabled = true;
             s.face_shadow_offset = f.offset;
             s.face_shadow_smoothness = f.smoothness;
+        }
+        if let Some(x) = &self.stylized {
+            x.apply_to(&mut s);
         }
         s
     }
@@ -640,6 +721,9 @@ impl ToonMaterial {
         m.emission.intensity = s.mtoon_emission_intensity;
         m.matcap.intensity = s.mtoon_matcap_intensity;
         m.matcap.mode = if s.mtoon_matcap_mode == 1 { MatcapMode::Additive } else { MatcapMode::Multiply };
+        // os extras só entram quando `to_stylized` NÃO reproduziria sozinho esses campos
+        let extras = StylizedExtras::from_stylized(s);
+        m.stylized = (StylizedExtras::from_stylized(&m.to_stylized()) != extras).then_some(extras);
         m
     }
 }
@@ -766,5 +850,79 @@ mod tests {
         assert_eq!(TextureRole::FaceSdf.default_color_space(), ColorSpace::Linear);
         assert_eq!(TextureRole::Ilm.default_color_space(), ColorSpace::Linear);
         assert_eq!(TextureRole::Emission.default_color_space(), ColorSpace::Srgb);
+    }
+}
+
+#[cfg(test)]
+mod stylized_roundtrip_tests {
+    use super::*;
+
+    fn tweaked() -> StylizedMaterial {
+        let mut s = StylizedMaterial { name: "Roupa".into(), ..Default::default() };
+        s.base_color = [0.2, 0.4, 0.8, 1.0];
+        s.shade_color = [0.1, 0.2, 0.5, 1.0];
+        s.outline_color = [0.05, 0.05, 0.1, 1.0];
+        s.outline_width = 0.007;
+        s.rim_intensity = 1.7;
+        s.spec_power = 77.0;
+        s.hue_shift = 22.0;
+        s.toon_steps = 2.0;
+        s.ao_intensity = 0.3;
+        s.mtoon_matcap_enabled = true;
+        s.mtoon_matcap_intensity = 0.6;
+        s.mtoon_matcap_mode = 1;
+        s.mtoon_emission_intensity = 0.4;
+        s.face_sdf_enabled = true;
+        s.face_shadow_offset = 0.05;
+        s.face_shadow_smoothness = 0.04;
+        s.eye_enabled = true;
+        s.eye_depth_scale = 0.2;
+        s.npr.ramp_blend = 1.0;
+        s.npr.ramp_row = 2.0;
+        s.npr.outline_taper = 0.5;
+        s.npr.face_sdf_mirror_center = 0.5;
+        s.npr.ramp_custom.set_stops(2, true, &[(0.0, 0.0), (0.4, 0.6), (0.8, 1.0)]);
+        s
+    }
+
+    #[test]
+    fn stylized_material_survives_the_anigomat_json_roundtrip_including_npr() {
+        let s = tweaked();
+        let m = ToonMaterial::from_stylized(&s);
+        assert!(m.stylized.is_some());
+        let bytes = m.to_json().unwrap();
+        let back = ToonMaterial::from_json(&bytes).unwrap();
+        assert_eq!(back, m);
+        let s2 = back.to_stylized();
+        assert_eq!(s2, s, "preset deve devolver exatamente o material do renderer");
+    }
+
+    #[test]
+    fn default_material_has_no_stylized_block_and_old_files_still_load() {
+        let m = ToonMaterial::from_stylized(&StylizedMaterial::default());
+        assert!(m.stylized.is_none());
+        let text = String::from_utf8(m.to_json().unwrap()).unwrap();
+        assert!(!text.contains("\"stylized\":"), "aditivo: omitido no padrao");
+        let old = ToonMaterial::from_json(br#"{"schema":"anigo.toon-material","schema_ver":1}"#).unwrap();
+        assert!(old.stylized.is_none());
+        assert_eq!(old.to_stylized().npr, anigo_core::NprParams::default());
+    }
+
+    #[test]
+    fn hostile_stylized_block_is_rejected_or_clamped() {
+        let mut m = ToonMaterial::default();
+        let mut x = StylizedExtras::default();
+        x.ao_intensity = f32::NAN;
+        m.stylized = Some(x);
+        assert!(m.validate().is_err());
+        let mut m = ToonMaterial::default();
+        let mut x = StylizedExtras::default();
+        x.npr.ramp_blend = 9.0;
+        x.npr.ramp_custom.count = [9, 9, 9, 9];
+        m.stylized = Some(x);
+        m.validate().unwrap();
+        let s = m.to_stylized();
+        assert_eq!(s.npr.ramp_blend, 1.0);
+        assert!(s.npr.ramp_custom.is_default(), "contagem invalida volta ao contrato");
     }
 }

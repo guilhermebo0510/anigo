@@ -240,8 +240,8 @@ impl RampCustom {
     pub fn sanitized(&self) -> Self {
         let mut out = Self::DEFAULT;
         for row in 0..4 {
-            let n = (self.count[row] as usize).min(RAMP_MAX_STOPS);
-            if n < 2 {
+            let n = self.count[row] as usize;
+            if !(2..=RAMP_MAX_STOPS).contains(&n) {
                 continue;
             }
             let stops: Vec<(f32, f32)> = (0..n).map(|i| (self.pos[row][i], self.val[row][i])).collect();
