@@ -510,6 +510,9 @@ pub enum Command {
         ambient_sky: Option<[f32; 3]>,
         #[serde(default)]
         ambient_ground: Option<[f32; 3]>,
+        /// Sombra projetada (substitui o grupo inteiro). Omitida do JSON quando `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadow: Option<crate::scene::LightShadow>,
     },
     /// Patches a material (defaults to the character material).
     SetMaterialParams {
@@ -980,8 +983,15 @@ impl Command {
                 shadow_saturation,
                 ambient_sky,
                 ambient_ground,
+                shadow,
             } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
+                if let Some(shadow) = shadow {
+                    shadow.validate().map_err(|detail| CommandError::InvalidValue {
+                        field: "shadow".to_string(),
+                        detail,
+                    })?;
+                }
                 if state.light(&id).is_none() && id != LightId::canonical_key() {
                     return Err(CommandError::UnknownTarget {
                         kind: "light",
@@ -996,6 +1006,7 @@ impl Command {
                     && shadow_saturation.is_none()
                     && ambient_sky.is_none()
                     && ambient_ground.is_none()
+                    && shadow.is_none()
                 {
                     return Err(CommandError::NoOp("empty light patch".to_string()));
                 }
@@ -1514,7 +1525,7 @@ impl Command {
                 dx: -*dx,
                 dy: -*dy,
             }),
-            Command::SetLight { light_id, .. } => {
+            Command::SetLight { light_id, shadow: patch_shadow, .. } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
                 let light = state
                     .light(&id)
@@ -1530,6 +1541,8 @@ impl Command {
                     shadow_saturation: Some(light.shadow_saturation),
                     ambient_sky: Some(light.ambient_sky),
                     ambient_ground: Some(light.ambient_ground),
+                    // só restaura a sombra quando o comando a tocou (JSON de logs antigos intacto)
+                    shadow: patch_shadow.is_some().then_some(light.shadow),
                 })
             }
             Command::SetMaterialParams {
@@ -1897,9 +1910,13 @@ impl Command {
                 shadow_saturation,
                 ambient_sky,
                 ambient_ground,
+                shadow,
             } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
                 let light = state.key_light_mut_for(&id);
+                if let Some(value) = shadow {
+                    light.shadow = *value;
+                }
                 if let Some(value) = direction {
                     light.direction = *value;
                 }
@@ -2905,6 +2922,7 @@ mod tests {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             },
             Command::SetMaterialParams {
                 material_id: None,
@@ -3748,6 +3766,7 @@ mod tests {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             },
             Command::SetMaterialParams {
                 material_id: None,
@@ -3864,6 +3883,7 @@ mod tests {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             },
             Command::SetRenderSettings {
                 msaa_samples: None,
@@ -4176,5 +4196,79 @@ mod tests {
         assert_eq!(scene_of(&state).nodes.len(), state.scene.nodes.len());
         let overrides = morph_overrides(&state);
         assert_eq!(overrides.get("mrf_head_width"), Some(&1.2));
+    }
+
+    // ---------------------------------------------------------------- sombra da luz principal
+
+    fn set_shadow(shadow: crate::scene::LightShadow) -> Command {
+        Command::SetLight {
+            light_id: None,
+            direction: None,
+            color: None,
+            intensity: None,
+            shadow_color: None,
+            ambient_intensity: None,
+            shadow_saturation: None,
+            ambient_sky: None,
+            ambient_ground: None,
+            shadow: Some(shadow),
+        }
+    }
+
+    #[test]
+    fn set_light_shadow_applies_undoes_and_redoes_exactly() {
+        let mut state = project();
+        let mut history = CommandHistory::new(16);
+        let before = state.content_fingerprint();
+        let on = crate::scene::LightShadow { enabled: true, hardness: 0.4, resolution: 1024, ..Default::default() };
+        history.execute(&mut state, set_shadow(on)).expect("liga a sombra");
+        assert_eq!(state.light(&crate::ids::LightId::canonical_key()).unwrap().shadow, on);
+        assert_ne!(state.content_fingerprint(), before);
+        history.undo(&mut state).unwrap();
+        assert_eq!(state.content_fingerprint(), before, "undo restaura a sombra desligada");
+        history.redo(&mut state).unwrap();
+        assert_eq!(state.light(&crate::ids::LightId::canonical_key()).unwrap().shadow, on);
+    }
+
+    #[test]
+    fn set_light_shadow_rejects_invalid_values_without_touching_the_project() {
+        let mut state = project();
+        let mut history = CommandHistory::new(4);
+        let before = state.content_fingerprint();
+        for bad in [
+            crate::scene::LightShadow { strength: 2.0, ..Default::default() },
+            crate::scene::LightShadow { bias: f32::NAN, ..Default::default() },
+            crate::scene::LightShadow { resolution: 777, ..Default::default() },
+            crate::scene::LightShadow { distance: -1.0, ..Default::default() },
+        ] {
+            assert!(history.execute(&mut state, set_shadow(bad)).is_err());
+        }
+        assert_eq!(state.content_fingerprint(), before);
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn set_light_without_shadow_keeps_the_command_json_unchanged() {
+        let cmd = Command::SetLight {
+            light_id: None,
+            direction: Some([0.0, 1.0, 0.0]),
+            color: None,
+            intensity: None,
+            shadow_color: None,
+            ambient_intensity: None,
+            shadow_saturation: None,
+            ambient_sky: None,
+            ambient_ground: None,
+            shadow: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains("shadow\":"), "campo shadow omitido quando None: {json}");
+        // o inverso de um SetLight que NÃO tocou a sombra também não a carrega
+        let state = project();
+        let inverse = cmd.inverse(&state).unwrap();
+        assert!(!serde_json::to_string(&inverse).unwrap().contains("\"shadow\":{"));
+        // e um JSON antigo (sem o campo) ainda desserializa
+        let old: Command = serde_json::from_str(&json).unwrap();
+        assert_eq!(old, cmd);
     }
 }

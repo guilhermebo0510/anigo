@@ -106,6 +106,7 @@ Fase 2, luz e sombra
 7. HDR + tonemap neutro no passe final, mantendo paridade com o frame congelado (flag no contrato). [B, H]
 8. Rampa 2D por material + mapa ILM (threshold/spec/ramp row). [A layout, H]
 9. `shadow_map` de uma luz ajustado ao personagem; sombra do cabelo no rosto com offset; degrau estilizado. Reaproveitar o pipeline de depth_prepass. [A para matriz/limites, B, H]
+   **Atualização (workspace Iluminação):** feito de forma ADITIVA e desligada por padrão — passe de profundidade da luz que reusa o `vs_main` do cel, bindings 18–20, PCF + degrau estilizado, auto-sombra (cabelo/cabeça no rosto) pelo mesmo mapa; goldens intactos. Ver `docs/native/ILUMINACAO_UI.md` §3 (o que falta: gosto/bias/GPU real, cabelo real, CSM, luzes extras).
 10. Normais de rosto transferidas de proxy (ferramenta offline). [A+H]
 
 Fase 3, cabelo e olho

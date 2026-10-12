@@ -896,7 +896,7 @@ impl StudioApp {
 
     // ===================================================================== render
 
-    fn scene_render(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32, cam: &OrbitCamera) {
+    pub(crate) fn scene_render(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32, cam: &OrbitCamera) {
         if !self.ensure_gpu(frame) {
             return;
         }
@@ -1010,7 +1010,10 @@ impl StudioApp {
         let mut cel_recreated = false;
         if su.shading == SceneShading::Cel {
             if let Some(cel) = gpu.cel.as_mut() {
-                let light = project.scene.lights.first().map(|l| l.light.clone()).unwrap_or_default();
+                let mut light = project.scene.lights.first().map(|l| l.light.clone()).unwrap_or_default();
+                if let Some(dir) = su.light_dir_override {
+                    light.direction = dir;
+                }
                 let dirty = cel.sync_level(&nodes, light, cam, aspect, [0.0, 0.0, 0.0, 0.0], 0);
                 cel_recreated = cel.render_if(size_px, dirty);
                 if let Some(e) = &cel.last_error {

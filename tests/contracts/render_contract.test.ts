@@ -226,6 +226,11 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformOffset("light", "ambient_ground"), 64);
   assert.equal(uniformOffset("outline", "params2"), 32);
   assert.equal(uniformOffset("outline", "params3"), 48);
+  // Sombra projetada da luz principal (aditivo): matriz da luz + 2 vec4 = 96 B
+  assert.equal(uniformSize("shadow"), 96);
+  assert.equal(uniformFloats("shadow"), 24);
+  assert.equal(uniformOffset("shadow", "params"), 64);
+  assert.equal(uniformOffset("shadow", "params2"), 80);
 
   const spaces = Object.fromEntries(
     Object.entries(RENDER_CONTRACT.uniforms).map(([name, layout]) => [name, layout.address_space])
@@ -237,6 +242,7 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
     light: "uniform",
     material: "uniform",
     outline: "uniform",
+    shadow: "uniform", // sombra projetada da luz principal (96 B)
     sparse_morph_header: "uniform",
     morph_channel: "storage_read",
     sparse_morph_delta: "storage_read",

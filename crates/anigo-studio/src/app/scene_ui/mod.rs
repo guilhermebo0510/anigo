@@ -208,6 +208,8 @@ pub(crate) struct SceneUi {
     pub pending_focus: bool,
     /// Última linha de ANIGO_TRACE_SCENE (só imprime mudanças).
     pub trace: Option<String>,
+    /// Direção de luz que SUBSTITUI a do projeto só no preview (luz presa à câmera do workspace Iluminação).
+    pub light_dir_override: Option<[f32; 3]>,
 }
 
 impl Default for SceneUi {
@@ -257,6 +259,7 @@ impl Default for SceneUi {
             history_limit_set: false,
             pending_focus: false,
             trace: None,
+            light_dir_override: None,
         }
     }
 }

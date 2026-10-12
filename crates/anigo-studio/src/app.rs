@@ -22,6 +22,7 @@ mod automation;
 mod character_ui;
 mod gizmo;
 mod hair_ui;
+mod lighting_ui;
 pub(crate) mod inspector;
 pub mod operators;
 mod modifiers_ui;
@@ -100,6 +101,8 @@ pub struct StudioApp {
     pub(crate) char_ui: character_ui::CharacterUi,
     /// Estado do workspace Cenário (câmera, snap, seleção, caches); o projeto vive em `core`.
     pub(crate) scene_ui: scene_ui::SceneUi,
+    /// Estado do workspace Iluminação (câmera, gizmo da luz, edição ao vivo); o projeto vive em `core`.
+    pub(crate) light_ui: lighting_ui::LightingUi,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -210,6 +213,11 @@ impl StudioApp {
             }
         }
 
+        // cenários do Iluminação: o cenário é montado por comandos do núcleo (sem Biblioteca)
+        if cli.scenario.as_deref().is_some_and(lighting_ui::is_light_scenario) && cli.workspace.is_none() {
+            ws = WorkspaceId::Iluminacao;
+        }
+
         Self {
             cli,
             ws,
@@ -243,6 +251,7 @@ impl StudioApp {
             core,
             char_ui,
             scene_ui,
+            light_ui: lighting_ui::LightingUi::default(),
         }
     }
 
@@ -278,9 +287,15 @@ impl StudioApp {
             self.scene_ui.session = None;
             self.scene_ui.gesture = None;
         }
+        if self.ws == WorkspaceId::Iluminacao {
+            self.light_ui.gesture = None;
+            self.light_ui.drag = None;
+        }
         if let Some(msg) = character_ui::route_undo_redo(self.ws, &mut self.core, &mut self.modeling, undo) {
             if self.ws == WorkspaceId::Cenario {
                 self.scene_ui.message = msg;
+            } else if self.ws == WorkspaceId::Iluminacao {
+                self.light_ui.message = msg;
             } else {
                 self.char_ui.message = msg;
             }
@@ -386,7 +401,12 @@ impl StudioApp {
         if self.modeling.modal_active() {
             self.modeling.cancel_modal();
         }
+        // a luz presa à câmera é só preview do Iluminação: nunca vaza para os outros workspaces
+        self.scene_ui.light_dir_override = None;
         self.ws = w;
+        if w == WorkspaceId::Iluminacao {
+            self.light_enter();
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -399,6 +419,8 @@ impl StudioApp {
                     self.char_ui.message.clone()
                 } else if self.ws == WorkspaceId::Cenario && !self.scene_ui.message.is_empty() {
                     self.scene_ui.message.clone()
+                } else if self.ws == WorkspaceId::Iluminacao && !self.light_ui.message.is_empty() {
+                    self.light_ui.message.clone()
                 } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
                 } else {
@@ -475,6 +497,9 @@ impl StudioApp {
     fn on_tool_selected(&mut self, id: &str) {
         if self.ws == WorkspaceId::Cenario {
             self.on_scene_tool_selected(id);
+        }
+        if self.ws == WorkspaceId::Iluminacao {
+            self.on_light_tool_selected(id);
         }
         if self.ws == WorkspaceId::Modelagem {
             let label_key = crate::app::inspector::modeling_tools(self.modeling.mode)
@@ -561,7 +586,8 @@ impl StudioApp {
             return;
         };
         let library_busy = (self.ws == WorkspaceId::Biblioteca && self.frame_count < self.cli.frames as u64 + 3000 && self.lib_ws.as_ref().is_some_and(|w| !w.scenario_done()))
-            || (self.ws == WorkspaceId::Cenario && self.frame_count < self.cli.frames as u64 + 3000 && self.scene_ui.script.as_ref().is_some_and(|s| !s.is_done()));
+            || (self.ws == WorkspaceId::Cenario && self.frame_count < self.cli.frames as u64 + 3000 && self.scene_ui.script.as_ref().is_some_and(|s| !s.is_done()))
+            || (self.ws == WorkspaceId::Iluminacao && self.frame_count < self.cli.frames as u64 + 3000 && self.light_ui.script.as_ref().is_some_and(|s| !s.is_done()));
         if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 && !library_busy {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -608,6 +634,11 @@ impl eframe::App for StudioApp {
             self.scene_shortcuts(&ui.ctx().clone());
             self.scene_panels(ui);
         }
+        if self.ws == WorkspaceId::Iluminacao {
+            self.light_script_tick();
+            self.light_shortcuts(&ui.ctx().clone());
+            self.light_panels(ui);
+        }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
@@ -625,6 +656,8 @@ impl eframe::App for StudioApp {
                 self.character_viewport_ui(ui, frame);
             } else if self.ws == WorkspaceId::Cenario {
                 self.scene_viewport_ui(ui, frame);
+            } else if self.ws == WorkspaceId::Iluminacao {
+                self.light_viewport_ui(ui, frame);
             } else {
                 self.placeholder_ui(ui);
             }

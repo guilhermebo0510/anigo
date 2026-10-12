@@ -320,3 +320,76 @@ fn ramp_index_math_matches_the_rust_math() {
     );
     assert_eq!(out[0][0], 0.3);
 }
+
+#[test]
+fn shadow_math_matches_the_rust_math() {
+    let Some(renderer) = renderer_or_skip("parity_shadow") else { return };
+    let source = shader_source("cel_shading.wgsl");
+    // matriz REAL da luz (a que o renderer envia), embutida como literais WGSL exatos
+    let pts: Vec<Vec3> = [Vec3::new(0.0, 1.0, 0.0), Vec3::new(3.0, 0.5, -2.0), Vec3::new(-2.0, 2.0, 1.5)]
+        .into_iter()
+        .flat_map(|c| {
+            (0..8).map(move |i| {
+                c + Vec3::new(
+                    if i & 1 == 0 { -0.8 } else { 0.8 },
+                    if i & 2 == 0 { -0.8 } else { 0.8 },
+                    if i & 4 == 0 { -0.8 } else { 0.8 },
+                )
+            })
+        })
+        .collect();
+    let fit = anigo_core::shadow::fit_directional([0.45, 0.75, 0.35], &pts, None, 2048).expect("ajuste");
+    let m = fit.view_proj.to_cols_array();
+    let literal: Vec<String> = m.iter().map(|v| format!("{v:e}")).collect();
+    let prelude = format!(
+        "const LIGHT_M: mat4x4<f32> = mat4x4<f32>({});\n{}\n{}\n{}",
+        literal.join(", "),
+        extract_fn(&source, "shadow_project"),
+        extract_fn(&source, "shadow_receiver_pos"),
+        extract_fn(&source, "shadow_step")
+    );
+    // project: c = ponto de mundo
+    let mut cases = Vec::new();
+    let mut expected = Vec::new();
+    for p in pts.iter().copied().chain([Vec3::ZERO, Vec3::new(10.0, -3.0, 4.0), Vec3::new(-1.0, 0.2, 0.9)]) {
+        cases.push([[0.0; 4], [0.0; 4], [p.x, p.y, p.z, 0.0]]);
+        expected.push(anigo_core::shadow::project(&fit.view_proj, p));
+    }
+    let out = run_cases(&renderer, &prelude, "vec4<f32>(shadow_project(LIGHT_M, c.xyz), 0.0)", &cases);
+    for (i, (gpu, cpu)) in out.iter().zip(&expected).enumerate() {
+        close(&format!("project.u[{i}]"), gpu[0], cpu.x, 2e-5);
+        close(&format!("project.v[{i}]"), gpu[1], cpu.y, 2e-5);
+        close(&format!("project.z[{i}]"), gpu[2], cpu.z, 2e-5);
+    }
+    // receiver_pos: a = mundo, b = normal, c = (luz.xyz, normal_bias)
+    let mut cases = Vec::new();
+    let mut expected = Vec::new();
+    for n in [Vec3::Y, Vec3::new(0.3, 0.9, -0.3).normalize(), Vec3::X, Vec3::new(-0.6, -0.2, 0.77).normalize()] {
+        for l in [Vec3::Y, Vec3::new(0.45, 0.75, 0.35).normalize(), -Vec3::X, Vec3::new(0.0, -1.0, 0.0)] {
+            for bias in [0.0f32, 0.03, 0.2] {
+                let w = Vec3::new(1.5, 0.25, -0.5);
+                cases.push([[w.x, w.y, w.z, 0.0], [n.x, n.y, n.z, 0.0], [l.x, l.y, l.z, bias]]);
+                expected.push(anigo_core::shadow::receiver_position(w, n, l, bias));
+            }
+        }
+    }
+    let out = run_cases(&renderer, &prelude, "vec4<f32>(shadow_receiver_pos(a.xyz, b.xyz, c.xyz, c.w), 0.0)", &cases);
+    for (i, (gpu, cpu)) in out.iter().zip(&expected).enumerate() {
+        close(&format!("receiver.x[{i}]"), gpu[0], cpu.x, 1e-6);
+        close(&format!("receiver.y[{i}]"), gpu[1], cpu.y, 1e-6);
+        close(&format!("receiver.z[{i}]"), gpu[2], cpu.z, 1e-6);
+    }
+    // step: a = (oclusão, meia-largura)
+    let mut cases = Vec::new();
+    let mut expected = Vec::new();
+    for occ in (0..=20).map(|i| i as f32 / 20.0) {
+        for hw in [0.0f32, 0.05, 0.1, 0.25, 0.5] {
+            cases.push([[occ, hw, 0.0, 0.0], [0.0; 4], [0.0; 4]]);
+            expected.push(anigo_core::shadow::shadow_step(occ, hw));
+        }
+    }
+    let out = run_cases(&renderer, &prelude, "vec4<f32>(shadow_step(a.x, a.y), 0.0, 0.0, 0.0)", &cases);
+    for (i, (gpu, cpu)) in out.iter().zip(&expected).enumerate() {
+        close(&format!("step[{i}] {:?}", cases[i][0]), gpu[0], *cpu, 1e-5);
+    }
+}

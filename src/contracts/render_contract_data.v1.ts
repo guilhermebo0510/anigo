@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 583,
-      "fnv1a64": "35bd4fe95ad3976d"
+      "lines": 657,
+      "fnv1a64": "8ed63f9deb0892cf"
     },
     {
       "name": "inverted_hull",
@@ -258,6 +258,34 @@ export const RENDER_CONTRACT_DATA = {
           "kind": "vec4",
           "offset": 64,
           "size": 16
+        }
+      ]
+    },
+    "shadow": {
+      "struct": "ShadowUniform",
+      "address_space": "uniform",
+      "size": 96,
+      "fields": [
+        {
+          "name": "light_view_proj",
+          "kind": "mat4x4",
+          "offset": 0,
+          "size": 64,
+          "meaning": "mundo → clip da luz (ortográfica, z em 0..1); identidade quando desligada"
+        },
+        {
+          "name": "params",
+          "kind": "vec4",
+          "offset": 64,
+          "size": 16,
+          "meaning": "enabled (0/1; 0 = o shader nem amostra o mapa), strength (0..1), bias de profundidade (NDC), normal bias (m)"
+        },
+        {
+          "name": "params2",
+          "kind": "vec4",
+          "offset": 80,
+          "size": 16,
+          "meaning": "1/resolução do mapa, raio do PCF (texels), meia-largura do degrau, reservado"
         }
       ]
     },
@@ -744,6 +772,30 @@ export const RENDER_CONTRACT_DATA = {
             "fragment"
           ],
           "declaration": "var face_sdf_sampler: sampler"
+        },
+        {
+          "binding": 18,
+          "kind": "uniform",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var<uniform> shadow_u: ShadowUniform"
+        },
+        {
+          "binding": 19,
+          "kind": "texture_depth_2d",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var shadow_map: texture_depth_2d"
+        },
+        {
+          "binding": 20,
+          "kind": "sampler_comparison",
+          "stages": [
+            "fragment"
+          ],
+          "declaration": "var shadow_cmp_sampler: sampler_comparison"
         }
       ]
     },
@@ -1831,6 +1883,101 @@ export const RENDER_CONTRACT_DATA = {
         "uniform": "material.params8.w",
         "shader": "cel_shading",
         "effect": "0 = sem espelhamento (sombra facial simétrica, o comportamento anterior). > 0 = u do eixo de simetria do rosto no mapa SDF (0.5 para mapas centrados; 0.25 na esfera UV/cabeça canônica): com a luz do lado oposto ao autorado (theta < 0) o mapa é amostrado espelhado. Só vale com face_sdf_enabled e um mapa ancorado."
+      }
+    ]
+  },
+  "shadow_map": {
+    "version": 1,
+    "enabled_by": "scene.light.shadow.enabled (padrão false)",
+    "neutral_when_disabled": "uniform neutro (matriz identidade, params.x = 0) + profundidade 1x1: o fragmento não amostra → imagem inalterada",
+    "pass": {
+      "name": "shadow_depth",
+      "kind": "render",
+      "shader": "cel_shading",
+      "vertex_entry": "vs_main",
+      "fragment_entry": null,
+      "bind_group": "cel",
+      "camera": "a câmera do bind group é a da LUZ (view_proj = light_view_proj); o mapa não é vinculado como textura neste passe (profundidade neutra no binding 19)",
+      "target": {
+        "format": "depth24plus (targets.depth_format)",
+        "samples": 1,
+        "clear": 1
+      },
+      "cull_mode": "none",
+      "depth_compare": "less",
+      "depth_bias": {
+        "constant": 2,
+        "slope_scale": 2,
+        "clamp": 0
+      },
+      "only_when": "shadow_enabled",
+      "backends": "não criado no backend GL (sem leitura de profundidade com comparação)"
+    },
+    "light_fit": "projeção ORTOGRÁFICA ajustada a uma esfera envolvente dos cantos de todos os nós visíveis (raio × 1.04 + 0.02), centro com snap de texel no plano da luz; o olho recua até o projetor mais próximo da luz; distance > 0 limita a esfera a esse raio ao redor do alvo da câmera; distance = 0 (automático) limita a 7 m ao redor do alvo (cenas menores usam o conteúdo inteiro)",
+    "receiver": "p' = p + N · normal_bias_m · saturate(1 − N·L); uv = (x/2 + 0.5, 0.5 − y/2); ref = z − bias_ndc; fora de [0,1]² ou z fora de [0,1] → sem sombra",
+    "filter": "PCF 5×5 de textureSampleCompareLevel (sampler linear de comparação), espaçamento = raio_texels/2 texels; oclusão = 1 − média",
+    "stylize": "sombra = smoothstep(0.5 − w, 0.5 + w, oclusão); toon_factor *= 1 − sombra · strength (herda a cor de sombra do terminador)",
+    "hardness_mapping": "raio_texels = 4.5 − 3·dureza; w = 0.5 − 0.45·dureza",
+    "entry_functions": [
+      "shadow_project",
+      "shadow_receiver_pos",
+      "shadow_step",
+      "shadow_occlusion"
+    ],
+    "golden": [
+      {
+        "fn": "shadow_step",
+        "occlusion": 0.5,
+        "half_width": 0.1,
+        "value": 0.5
+      },
+      {
+        "fn": "shadow_step",
+        "occlusion": 0,
+        "half_width": 0.1,
+        "value": 0
+      },
+      {
+        "fn": "shadow_step",
+        "occlusion": 1,
+        "half_width": 0.1,
+        "value": 1
+      },
+      {
+        "fn": "shadow_receiver_pos",
+        "normal": [
+   0, 1, 0
+  ],
+        "light": [
+   1, 0, 0
+  ],
+        "normal_bias": 0.1,
+        "offset": [
+   0, 0.1, 0
+  ]
+      },
+      {
+        "fn": "shadow_receiver_pos",
+        "normal": [
+   0, 1, 0
+  ],
+        "light": [
+   0, 1, 0
+  ],
+        "normal_bias": 0.1,
+        "offset": [
+   0, 0, 0
+  ]
+      },
+      {
+        "fn": "shadow_project",
+        "matrix": "identity",
+        "point": [
+   1, -1, 0.25
+  ],
+        "uvz": [
+   1, 1, 0.25
+  ]
       }
     ]
   },

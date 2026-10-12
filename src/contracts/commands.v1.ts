@@ -183,6 +183,17 @@ export interface NprParamsWire {
   face_sdf_mirror_center: number;
 }
 
+/** Sombra projetada da luz principal (espelha `anigo_core::scene::LightShadow`). */
+export interface LightShadowWire {
+  enabled: boolean;
+  strength: number;
+  hardness: number;
+  bias: number;
+  normal_bias: number;
+  resolution: 512 | 1024 | 2048 | 4096;
+  distance: number;
+}
+
 export interface MaterialPatchWire {
   base_color?: [number, number, number, number];
   shade_color?: [number, number, number, number];
@@ -273,6 +284,7 @@ export type CommandWire =
       shadow_saturation?: number;
       ambient_sky?: [number, number, number];
       ambient_ground?: [number, number, number];
+      shadow?: LightShadowWire;
     }
   | { kind: "set_material_params"; material_id?: string; patch: MaterialPatchWire }
   | { kind: "set_node_visibility"; node_id: string; visible: boolean }

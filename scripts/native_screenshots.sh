@@ -35,6 +35,24 @@ shot cenario_snap cenario cenario-snap
 shot cenario_outliner cenario cenario-outliner
 shot cenario_gizmo cenario cenario-gizmo
 shot cenario_camera cenario cenario-camera
+# Iluminacao: direcao da luz (azimute/elevacao/intensidade), rigs, sombra projetada, rosto, luz presa a camera
+shot iluminacao_base iluminacao iluminacao-base
+shot iluminacao_luz_az_n60 iluminacao iluminacao-luz-n60-35-100
+shot iluminacao_luz_az_60 iluminacao iluminacao-luz-60-35-100
+shot iluminacao_luz_el_78 iluminacao iluminacao-luz-0-78-100
+shot iluminacao_luz_contraluz iluminacao iluminacao-luz-170-30-120
+shot iluminacao_luz_fraca iluminacao iluminacao-luz-60-35-35
+shot iluminacao_rig_tres_pontos iluminacao iluminacao-rig-three_point
+shot iluminacao_rig_rim iluminacao iluminacao-rig-rim
+shot iluminacao_rig_golden_hour iluminacao iluminacao-rig-golden_hour
+shot iluminacao_rig_noite iluminacao iluminacao-rig-night
+shot iluminacao_sombra iluminacao iluminacao-sombra
+shot iluminacao_sombra_suave iluminacao iluminacao-sombra-suave
+shot iluminacao_rosto iluminacao iluminacao-rosto
+shot iluminacao_rosto_sem_sombra iluminacao iluminacao-rosto-sem
+shot iluminacao_camera iluminacao iluminacao-camera
+shot iluminacao_ambiente iluminacao iluminacao-ambiente
+shot iluminacao_extras iluminacao iluminacao-extras
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)
