@@ -206,6 +206,8 @@ pub(crate) struct SceneUi {
     pub script_assets: Option<crate::library_ui::synth::ScenarioAssets>,
     pub history_limit_set: bool,
     pub pending_focus: bool,
+    /// Última linha de ANIGO_TRACE_SCENE (só imprime mudanças).
+    pub trace: Option<String>,
 }
 
 impl Default for SceneUi {
@@ -254,6 +256,7 @@ impl Default for SceneUi {
             script_assets: None,
             history_limit_set: false,
             pending_focus: false,
+            trace: None,
         }
     }
 }

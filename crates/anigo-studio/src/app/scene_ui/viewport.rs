@@ -138,6 +138,7 @@ impl StudioApp {
             self.scene_overlays(ui, &painter, rect, render_rect, &view);
             self.scene_toolbars(ui, rect);
             self.scene_finish_gesture(ui.ctx());
+            self.scene_trace(ui.ctx(), rect, render_rect, &view);
             if self.scene_ui.message_seen.0 != self.scene_ui.message {
                 self.scene_ui.message_seen = (self.scene_ui.message.clone(), Some(std::time::Instant::now()));
             }
@@ -154,6 +155,62 @@ impl StudioApp {
                 painter.galley(r.min + egui::vec2(6.0, 3.0), galley, Color32::WHITE);
             }
         });
+    }
+
+    /// `ANIGO_TRACE_SCENE=1`: uma linha `scenetrace ...` por mudança de estado, para o smoke de xdotool
+    /// (scripts/native_scene_smoke.sh). Coordenadas em pixels físicos da janela.
+    fn scene_trace(&mut self, ctx: &egui::Context, rect: Rect, render_rect: Rect, view: &CamView) {
+        if std::env::var_os("ANIGO_TRACE_SCENE").is_none() {
+            return;
+        }
+        let ppp = ctx.pixels_per_point();
+        let su = &self.scene_ui;
+        let project = self.core.project();
+        let h = self.core.history();
+        let active = su.selection.active().and_then(|a| project.scene.node(a)).map(|n| n.transform.translation);
+        let active = active.map(|t| format!("{:.3},{:.3},{:.3}", t.x, t.y, t.z)).unwrap_or_else(|| "-".into());
+        let gx = self
+            .gizmo_frame(view)
+            .and_then(|f| {
+                let (s, e) = f.axis_segment(Axis3::X);
+                view.project(s.lerp(e, 0.7)).map(|(p, _)| p)
+            })
+            .map(|p| format!("{:.0},{:.0}", (render_rect.min.x + p.x) * ppp, (render_rect.min.y + p.y) * ppp))
+            .unwrap_or_else(|| "-".into());
+        let c = self.lib_ws.as_ref().map(|w| w.first_card_center).unwrap_or(Pos2::ZERO);
+        let ready = su.runtime.geom.values().filter(|g| matches!(g, crate::scene::runtime::GeomState::Ready(_))).count();
+        let line = format!(
+            "scenetrace nodes={} sel={} undo={} redo={} active={} tool={:?} ghost={} loaded={} card0={:.0},{:.0} view={:.0},{:.0},{:.0},{:.0} gizmo_x={} hover={} drag={} snap={} grid={} fly={} script={}",
+            project.scene.nodes.len(),
+            su.selection.len(),
+            h.undo_depth(),
+            h.redo_depth(),
+            active,
+            su.tool,
+            su.ghost.is_some(),
+            ready,
+            c.x * ppp,
+            c.y * ppp,
+            rect.min.x * ppp,
+            rect.min.y * ppp,
+            rect.max.x * ppp,
+            rect.max.y * ppp,
+            gx,
+            su.hover_handle.map(|h| format!("{h:?}").replace(' ', "")).unwrap_or_else(|| "-".into()),
+            su.session.is_some(),
+            su.snap.grid_on,
+            su.snap.grid_m,
+            su.fly_active,
+            match &su.script {
+                None => "none",
+                Some(s) if s.is_done() => "done",
+                Some(_) => "running",
+            },
+        );
+        if self.scene_ui.trace.as_deref() != Some(line.as_str()) {
+            eprintln!("{line}");
+            self.scene_ui.trace = Some(line);
+        }
     }
 
     /// Câmera da viewport e o retângulo onde a imagem é desenhada (letterbox na vista pela câmera da cena).
