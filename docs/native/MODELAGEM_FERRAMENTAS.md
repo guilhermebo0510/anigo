@@ -86,6 +86,7 @@ Dyntopo (subdividir/colapsar por detalhe); Voxel Remesh (SDF → surface nets). 
 | Shape keys ⇄ morph targets esparsos do core | `shapekeys.rs` | P1 | A |
 | UV: costuras, unwrap (LSCM), pack, projeções (planar/caixa/cilindro/esfera), métricas | `uv/` | P0 | A |
 | Curvas Bézier/Catmull → tubo, fita, **hair card** (taper, twist, perfil) | `curve.rs` | P0 | A |
+| **Cabelo estilo VRoid**: mechas editáveis por grupo, desenho sobre a cabeça (BVH), pentear, simetria X, bounce/cadeias de física neutras | `hair/` + Modo Cabelo (`FERRAMENTA_CABELO.md`) | P0 | A+H |
 
 ## 6. Ferramentas de viewport do editor (em `anigo-studio`)
 
