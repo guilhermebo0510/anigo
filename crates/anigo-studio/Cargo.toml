@@ -21,6 +21,8 @@ anigo-assets = { path = "../anigo-assets", default-features = false, features = 
 anigo-native = { path = "../anigo-native", default-features = false, features = ["ufbx"] }
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }
 egui = "0.36"
+# docking/tiling (T-2.12): compatível com egui 0.36 (0.17.x); sem serde — o layout persiste num formato próprio
+egui_tiles = { version = "0.17", default-features = false }
 egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
 glam = { workspace = true }
 base64 = { workspace = true }
