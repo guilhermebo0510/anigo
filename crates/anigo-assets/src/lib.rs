@@ -52,7 +52,7 @@ pub use rebuild::RebuildReport;
 pub use scan::{ScanJob, ScanOptions, ScanReport};
 pub use store::normalize_tag;
 pub use thumbs::{
-    default_cpu_renderer, ChainRenderer, ClosureRenderer, ImageThumbnailRenderer, MaterialSwatchRenderer, PlaceholderRenderer, Rendered, ThumbEvent, ThumbJob, ThumbOptions,
+    default_cpu_renderer, ChainRenderer, ClosureRenderer, ImageThumbnailRenderer, MaterialSwatchRenderer, PlaceholderRenderer, PoseStickRenderer, Rendered, ThumbEvent, ThumbJob, ThumbOptions,
     ThumbReport, ThumbRequest, ThumbnailCache, ThumbnailRenderer, MASTER_SIZE, THUMB_SIZES,
 };
 pub use trash::{PurgeReport, TrashOptions, TrashReport};

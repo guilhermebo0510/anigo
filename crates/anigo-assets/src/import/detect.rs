@@ -18,6 +18,8 @@ pub enum Format {
     /// Outras texturas (tga, bmp, webp, dds, ktx2, exr, hdr): so catalogadas, sem decodificar.
     OpaqueTexture,
     AnigoMat,
+    /// Pose do esqueleto canonico (`.anigopose.json`, ver `anigo_core::pose::PoseAsset`).
+    AnigoPose,
 }
 
 impl Format {
@@ -33,6 +35,9 @@ pub(crate) fn extension_lower(path: &Path) -> String {
     if name.ends_with(crate::material::MATERIAL_SUFFIX) {
         return "anigomat.json".into();
     }
+    if name.ends_with(anigo_core::pose::POSE_ASSET_SUFFIX) {
+        return "anigopose.json".into();
+    }
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
@@ -47,6 +52,7 @@ pub fn format_by_extension(path: &Path) -> Option<Format> {
         "png" | "jpg" | "jpeg" => Format::Raster,
         "tga" | "bmp" | "webp" | "dds" | "ktx2" | "exr" | "hdr" => Format::OpaqueTexture,
         "anigomat.json" => Format::AnigoMat,
+        "anigopose.json" => Format::AnigoPose,
         _ => return None,
     })
 }
@@ -56,6 +62,8 @@ pub(crate) fn format_label(path: &Path) -> String {
     let e = extension_lower(path);
     if e == "anigomat.json" {
         "anigomat".into()
+    } else if e == "anigopose.json" {
+        "anigopose".into()
     } else if e == "jpeg" {
         "jpg".into()
     } else {
@@ -102,7 +110,7 @@ pub(crate) fn verify_magic(path: &Path, fmt: Format) -> Result<()> {
                 return Err(bad("imagem"));
             }
         }
-        Format::Gltf | Format::Obj | Format::OpaqueTexture | Format::AnigoMat => {}
+        Format::Gltf | Format::Obj | Format::OpaqueTexture | Format::AnigoMat | Format::AnigoPose => {}
     }
     Ok(())
 }
@@ -123,6 +131,7 @@ mod tests {
             ("a.JPEG", Format::Raster),
             ("a.exr", Format::OpaqueTexture),
             ("mat.anigomat.json", Format::AnigoMat),
+            ("sentada.anigopose.json", Format::AnigoPose),
         ] {
             assert_eq!(format_by_extension(Path::new(name)), Some(fmt), "{name}");
         }
@@ -131,6 +140,7 @@ mod tests {
         }
         assert_eq!(format_label(Path::new("x.JPEG")), "jpg");
         assert_eq!(format_label(Path::new("x.anigomat.json")), "anigomat");
+        assert_eq!(format_label(Path::new("x.AnigoPose.json")), "anigopose");
     }
 
     #[test]

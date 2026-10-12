@@ -49,6 +49,30 @@ pub(crate) fn analyze_texture(path: &Path, fmt: Format, limits: &Limits) -> Resu
     })
 }
 
+/// Analisa um `.anigopose.json`: valida o formato (`PoseAsset::from_json`) e resume quantos ossos ele carrega.
+pub(crate) fn analyze_pose_file(path: &Path) -> Result<Analysis> {
+    use anigo_core::pose::{PoseAsset, POSE_ASSET_MAX_BYTES};
+    let meta = std::fs::metadata(path).at(path)?;
+    Limits::check("anigopose.json", meta.len(), POSE_ASSET_MAX_BYTES as u64)?;
+    let asset = PoseAsset::from_json(&std::fs::read(path).at(path)?).map_err(|e| AssetError::parse("anigopose.json", e.to_string()))?;
+    let mask = asset.mask();
+    let mut warnings = Vec::new();
+    if asset.pose.is_rest() {
+        warnings.push("a pose esta em repouso (nenhum osso girado)".to_string());
+    }
+    Ok(Analysis {
+        kind: AssetKind::Pose,
+        stats: AssetStats { bones: mask.len() as u32, ..Default::default() },
+        dependents: Vec::new(),
+        materials: Vec::new(),
+        suggested_name: Some(asset.name.clone()),
+        author: None,
+        license: None,
+        props: serde_json::json!({ "bones": mask.len(), "posed_bones": asset.pose.rotations.len(), "has_hands": !asset.pose.hands.is_rest(), "rig_hint": asset.rig_hint }),
+        warnings,
+    })
+}
+
 pub(crate) fn analyze_material_file(path: &Path, limits: &Limits) -> Result<Analysis> {
     let meta = std::fs::metadata(path).at(path)?;
     Limits::check("anigomat.json", meta.len(), MATERIAL_MAX_BYTES as u64)?;
