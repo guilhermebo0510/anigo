@@ -21,6 +21,7 @@ use std::path::PathBuf;
 mod automation;
 mod character_ui;
 mod gizmo;
+mod hair_ui;
 pub(crate) mod inspector;
 pub mod operators;
 mod modifiers_ui;
@@ -90,6 +91,8 @@ pub struct StudioApp {
     pub(crate) paint_attr_active: bool,
     /// Estado do Modo Escultura (pincéis, contexto/BVH do objeto ativo, traço).
     pub(crate) sculpt: crate::modeling::sculpt::SculptState,
+    /// Estado do Modo Cabelo (ferramenta, grupo/mecha ativos, traço, pente).
+    pub(crate) hair: crate::modeling::hair::HairState,
     /// Sessão canônica do núcleo (projeto + histórico) do workspace Personagem.
     pub(crate) core: anigo_session::CoreSession,
     pub(crate) char_ui: character_ui::CharacterUi,
@@ -208,6 +211,7 @@ impl StudioApp {
             normals_ui: normals_ui::NormalsUi::default(),
             paint_attr_active: false,
             sculpt: crate::modeling::sculpt::SculptState::new(),
+            hair: crate::modeling::hair::HairState::new(),
             core,
             char_ui,
         }
@@ -614,6 +618,7 @@ pub(crate) fn mode_label(m: Mode) -> &'static str {
         Mode::Object => tr("mode.object"),
         Mode::Edit => tr("mode.edit"),
         Mode::Sculpt => tr("mode.sculpt"),
+        Mode::Hair => tr("mode.hair"),
     }
 }
 

@@ -32,6 +32,11 @@ impl<T: Clone> History<T> {
         self.undo.pop_back().map(|(l, _)| l)
     }
 
+    /// Remove a entrada de redo mais recente SEM aplicá-la.
+    pub fn pop_redo(&mut self) -> Option<String> {
+        self.redo.pop().map(|(l, _)| l)
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

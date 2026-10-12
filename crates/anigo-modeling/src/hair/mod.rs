@@ -661,6 +661,49 @@ impl HairSet {
         Ok(ids)
     }
 
+    /// Liga/desliga a simetria X do grupo. Ligar cria o espelho das mechas que ainda não têm par
+    /// (devolve quantas foram criadas); desligar desfaz os vínculos (as mechas ficam independentes).
+    pub fn set_symmetry(&mut self, group: u32, on: bool) -> ModelResult<usize> {
+        let g = self.group_mut(group).ok_or_else(|| ModelError::InvalidParameter(format!("grupo {group} inexistente")))?;
+        g.symmetry = on;
+        if !on {
+            for s in &mut g.strands {
+                s.mirror_of = None;
+            }
+            return Ok(0);
+        }
+        let todo: Vec<HairStrand> = g
+            .strands
+            .iter()
+            .filter(|s| s.mirror_of.is_none() && s.root().x.abs() > MIRROR_EPS)
+            .cloned()
+            .collect();
+        if g.strands.len() + todo.len() > MAX_STRANDS_PER_GROUP {
+            g.symmetry = false;
+            return Err(ModelError::InvalidParameter(format!("grupo cheio ({MAX_STRANDS_PER_GROUP} mechas)")));
+        }
+        let mut made = Vec::with_capacity(todo.len());
+        let mut links = Vec::with_capacity(todo.len());
+        for src in &todo {
+            let id = self.next_strand_id;
+            self.next_strand_id += 1;
+            let mut m = src.mirrored_x();
+            m.id = id;
+            m.mirror_of = Some(src.id);
+            links.push((src.id, id));
+            made.push(m);
+        }
+        let n = made.len();
+        let g = self.group_mut(group).ok_or_else(|| ModelError::InvalidParameter("grupo inexistente".into()))?;
+        for (a, b) in links {
+            if let Some(s) = g.strand_mut(a) {
+                s.mirror_of = Some(b);
+            }
+        }
+        g.strands.extend(made);
+        Ok(n)
+    }
+
     /// Remove a mecha (e o par espelhado, se houver). Devolve quantas foram removidas.
     pub fn remove_strand(&mut self, r: StrandRef) -> usize {
         let Some(g) = self.group_mut(r.group) else {
@@ -928,6 +971,21 @@ mod tests {
         let mut back = a.mirrored_x().mirrored_x();
         back.id = a.id;
         assert_eq!(back, a);
+    }
+
+    #[test]
+    fn toggling_symmetry_pairs_existing_strands_and_unlinks_on_off() {
+        let (mut s, g) = set_with_group(false);
+        s.add_strand(g, drop_guide(Vec3::new(0.3, 1.0, 0.1), 0.8, 5), StrandParams::default(), Vec3::X).unwrap();
+        s.add_strand(g, drop_guide(Vec3::new(0.0, 1.0, 0.3), 0.8, 5), StrandParams::default(), Vec3::X).unwrap();
+        assert_eq!(s.set_symmetry(g, true).unwrap(), 1, "só a mecha fora do plano ganha par");
+        assert_eq!(s.group(g).unwrap().strands.len(), 3);
+        s.validate().unwrap();
+        assert_eq!(s.set_symmetry(g, true).unwrap(), 0, "idempotente");
+        s.set_symmetry(g, false).unwrap();
+        assert!(s.group(g).unwrap().strands.iter().all(|st| st.mirror_of.is_none()));
+        s.validate().unwrap();
+        assert!(s.set_symmetry(99, true).is_err());
     }
 
     #[test]

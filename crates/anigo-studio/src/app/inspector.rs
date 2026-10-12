@@ -54,11 +54,18 @@ pub const MODELAGEM_SCULPT: &[ToolDef] = &[
     tool("sculpt.mask_clear", icons::SELECTION_SLASH, "sculpt.mask_clear"),
 ];
 
+pub const MODELAGEM_HAIR: &[ToolDef] = &[
+    tool("hair.draw", icons::PEN_NIB, "hair.draw"),
+    tool("hair.edit", icons::CURSOR, "hair.edit"),
+    tool("hair.comb", icons::WIND, "hair.comb"),
+];
+
 pub fn modeling_tools(mode: Mode) -> &'static [ToolDef] {
     match mode {
         Mode::Object => MODELAGEM_OBJECT,
         Mode::Edit => MODELAGEM_EDIT,
         Mode::Sculpt => MODELAGEM_SCULPT,
+        Mode::Hair => MODELAGEM_HAIR,
     }
 }
 
@@ -82,6 +89,7 @@ impl StudioApp {
                         Mode::Object => self.inspector_object(ui),
                         Mode::Edit => self.inspector_edit(ui),
                         Mode::Sculpt => self.inspector_sculpt(ui),
+                        Mode::Hair => self.inspector_hair(ui),
                     }
                     section(ui, tr("panel.history"), |ui| {
                         let labels = self.modeling.history_labels();

@@ -43,7 +43,7 @@ impl SessionState {
 
     /// Carrega validando versão e a integridade das malhas (sessão corrompida nunca derruba o app).
     pub fn from_json(raw: &str) -> Result<Self, SessionError> {
-        let s: SessionState = serde_json::from_str(raw)?;
+        let mut s: SessionState = serde_json::from_str(raw)?;
         if s.version != SESSION_VERSION {
             return Err(SessionError::Version(s.version));
         }
@@ -51,6 +51,11 @@ impl SessionState {
             o.mesh
                 .validate()
                 .map_err(|e| SessionError::Json(serde::de::Error::custom(format!("malha '{}' inválida: {e}", o.name))))?;
+        }
+        // penteado corrompido nunca derruba a sessão: as mechas são descartadas (as malhas dos grupos ficam)
+        if let Err(e) = s.document.hair.validate() {
+            tracing::warn!("cabelo da sessão ignorado: {e}");
+            s.document.hair = Default::default();
         }
         Ok(s)
     }

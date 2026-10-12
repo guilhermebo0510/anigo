@@ -126,6 +126,17 @@ impl CelPreview {
             self.scene.nodes.clear();
             for o in doc.objects.iter().filter(|o| o.visible) {
                 let mut node = SceneNode::new(format!("obj{}", o.id), o.name.clone());
+                if let Some(m) = &o.material {
+                    // material por objeto (grupos de cabelo): cor base, sombra e brilho próprios
+                    let mut sm = anigo_core::scene::StylizedMaterial::default();
+                    sm.name = m.name.clone();
+                    sm.base_color = [m.base_color[0], m.base_color[1], m.base_color[2], 1.0];
+                    sm.shade_color = [m.shade_color[0], m.shade_color[1], m.shade_color[2], 1.0];
+                    sm.specular_color = [m.highlight_color[0], m.highlight_color[1], m.highlight_color[2], 1.0];
+                    sm.spec_intensity = 0.9;
+                    sm.rim_intensity = 0.45;
+                    node.material = Some(sm);
+                }
                 let eval = o.evaluated(crate::modeling::EvalMode::Viewport);
                 let source = match &eval {
                     Some(Ok(m)) => m,

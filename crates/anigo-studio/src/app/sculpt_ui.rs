@@ -548,7 +548,7 @@ impl StudioApp {
     }
 
     /// Posições do ponteiro neste quadro (todas as `PointerMoved` + a última), em pixels do viewport.
-    fn pointer_samples(&self, ui: &egui::Ui, rect: Rect) -> Vec<Vec2> {
+    pub(super) fn pointer_samples(&self, ui: &egui::Ui, rect: Rect) -> Vec<Vec2> {
         let mut out: Vec<Vec2> = Vec::new();
         ui.input(|i| {
             for e in &i.events {

@@ -33,8 +33,8 @@ pub fn tr(key: &str) -> &str {
 fn index() -> &'static std::collections::HashMap<&'static str, (&'static str, &'static str)> {
     static IDX: std::sync::OnceLock<std::collections::HashMap<&'static str, (&'static str, &'static str)>> = std::sync::OnceLock::new();
     IDX.get_or_init(|| {
-        let mut m = std::collections::HashMap::with_capacity(TABLE.len() + crate::i18n_lib::LIB_TABLE.len());
-        for (k, pt, en) in TABLE.iter().chain(crate::i18n_lib::LIB_TABLE.iter()) {
+        let mut m = std::collections::HashMap::with_capacity(TABLE.len() + crate::i18n_lib::LIB_TABLE.len() + crate::i18n_hair::HAIR_TABLE.len());
+        for (k, pt, en) in TABLE.iter().chain(crate::i18n_lib::LIB_TABLE.iter()).chain(crate::i18n_hair::HAIR_TABLE.iter()) {
             m.entry(*k).or_insert((*pt, *en));
         }
         m

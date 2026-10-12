@@ -12,6 +12,8 @@ pub enum Mode {
     Object,
     Edit,
     Sculpt,
+    /// Ferramenta de cabelo (mechas sobre a cabeça, estilo VRoid): ver `modeling::hair`.
+    Hair,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +82,15 @@ fn default_auto_smooth() -> f32 {
     DEFAULT_AUTO_SMOOTH
 }
 
+/// Material de superfície do objeto (preview Solid e Cel). Cores lineares sRGB 0..1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectMaterial {
+    pub name: String,
+    pub base_color: [f32; 3],
+    pub shade_color: [f32; 3],
+    pub highlight_color: [f32; 3],
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelObject {
     pub id: u32,
@@ -94,6 +105,9 @@ pub struct ModelObject {
     /// de normais (Workbench, preview Cel e export). `>= π` desliga o corte por ângulo.
     #[serde(default = "default_auto_smooth")]
     pub auto_smooth_angle: f32,
+    /// Material próprio (`None` = material padrão do preview). Os grupos de cabelo usam este campo.
+    #[serde(default)]
+    pub material: Option<ObjectMaterial>,
 }
 
 impl ModelObject {
@@ -143,6 +157,11 @@ impl ModelObject {
             }
         };
         mix(&self.auto_smooth_angle.to_bits().to_le_bytes());
+        if let Some(m) = &self.material {
+            for c in m.base_color.iter().chain(&m.shade_color).chain(&m.highlight_color) {
+                mix(&c.to_bits().to_le_bytes());
+            }
+        }
         for f in &self.mesh.faces {
             for c in &f.corners {
                 match c.normal {
@@ -178,6 +197,17 @@ pub struct Document {
     pub objects: Vec<ModelObject>,
     pub active: Option<usize>,
     next_id: u32,
+    /// Penteado (ferramenta de cabelo): mechas editáveis; as malhas dos grupos são objetos acima.
+    #[serde(default)]
+    pub hair: anigo_modeling::hair::HairSet,
+}
+
+impl Document {
+    /// Próximo id de objeto (único no documento).
+    pub(crate) fn alloc_id(&mut self) -> u32 {
+        self.next_id += 1;
+        self.next_id
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +320,11 @@ impl ModelingSession {
         self.history.clear();
     }
 
+    /// Descarta o topo do redo (uma ação que falhou depois do checkpoint foi desfeita sem deixar rastro).
+    pub(crate) fn history_drop_redo(&mut self) {
+        self.history.pop_redo();
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
     }
@@ -352,6 +387,7 @@ impl ModelingSession {
             visible: true,
             modifiers: Default::default(),
             auto_smooth_angle: DEFAULT_AUTO_SMOOTH,
+            material: None,
         };
         obj.mesh.name = obj.name.clone();
         self.doc.objects.push(obj);
@@ -377,6 +413,7 @@ impl ModelingSession {
             visible: true,
             modifiers: Default::default(),
             auto_smooth_angle: DEFAULT_AUTO_SMOOTH,
+            material: None,
         });
         self.doc.active = Some(self.doc.objects.len() - 1);
         self.selection.clear();
@@ -436,6 +473,9 @@ impl ModelingSession {
             self.selection.clear();
             self.active_vert = None;
             self.mode = mode;
+            if mode == Mode::Hair {
+                self.hair_enter();
+            }
             self.revision += 1;
         }
     }
@@ -600,7 +640,7 @@ impl ModelingSession {
                 let t = obj.transform.translation;
                 (t, vec![(0u32, t)])
             }
-            Mode::Sculpt => return false,
+            Mode::Sculpt | Mode::Hair => return false,
         };
         let mut transform = ModalTransform::new(kind, mouse, pivot, originals);
         transform.weights = prop_weights;
@@ -676,7 +716,7 @@ impl ModelingSession {
                     }
                 }
             }
-            Mode::Sculpt => {}
+            Mode::Sculpt | Mode::Hair => {}
         }
         self.revision += 1;
     }

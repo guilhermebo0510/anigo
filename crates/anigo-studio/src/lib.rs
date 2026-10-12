@@ -15,6 +15,7 @@ pub mod character;
 pub mod cli;
 pub mod hot;
 pub mod i18n;
+pub mod i18n_hair;
 pub mod i18n_lib;
 pub mod icons;
 pub mod library;

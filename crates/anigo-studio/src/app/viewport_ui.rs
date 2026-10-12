@@ -132,7 +132,7 @@ impl StudioApp {
             ]);
             let prev = gpu.cache.iter().position(|c| c.id == obj.id && c.key == key);
             let model = obj.model_matrix();
-            let tint = [1.0, 1.0, 1.0, 1.0];
+            let tint = obj.material.as_ref().map(|m| [m.base_color[0], m.base_color[1], m.base_color[2], 1.0]).unwrap_or([1.0, 1.0, 1.0, 1.0]);
             if let Some(pos) = prev {
                 let c = gpu.cache.swap_remove(pos);
                 gpu.wb.set_object_transform(&c.mesh, model, tint);
@@ -224,6 +224,7 @@ impl StudioApp {
 
         let (shift, ctrl, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.command, i.modifiers.alt));
         let sculpt_consumed = self.modeling.mode == Mode::Sculpt && self.sculpt_input(ui, resp, rect, size);
+        let hair_consumed = self.modeling.mode == Mode::Hair && self.hair_input(ui, resp, rect, size);
         let paint_consumed = self.paint_attr_input(ui, resp, rect, size);
 
         // ---- câmera
@@ -237,7 +238,7 @@ impl StudioApp {
         }
         let delta = ui.input(|i| i.pointer.delta());
         let mid = resp.dragged_by(PointerButton::Middle);
-        let alt_orbit = alt && !sculpt_consumed && !paint_consumed && resp.dragged_by(PointerButton::Primary);
+        let alt_orbit = alt && !sculpt_consumed && !paint_consumed && !hair_consumed && resp.dragged_by(PointerButton::Primary);
         if mid || alt_orbit {
             if shift {
                 self.camera.pan(delta.x, delta.y, size.y);
@@ -248,7 +249,14 @@ impl StudioApp {
             }
         }
 
-        if sculpt_consumed || paint_consumed {
+        if sculpt_consumed || paint_consumed || hair_consumed {
+            return;
+        }
+        if self.modeling.mode == Mode::Hair {
+            // sem seleção de malha nem gizmo no Modo Cabelo; só as teclas da ferramenta
+            if resp.hovered() && !ui.ctx().text_edit_focused() {
+                self.handle_hotkeys(ui, mouse_local, size);
+            }
             return;
         }
         // ---- gizmo / seleção
@@ -365,6 +373,16 @@ impl StudioApp {
         }
         if consume(ui, Modifiers::NONE, Key::Tab) {
             self.modeling.toggle_edit_mode();
+        }
+        if self.modeling.mode == Mode::Hair {
+            self.hair_hotkeys(ui);
+            if consume(ui, Modifiers::ALT, Key::Z) {
+                self.modeling.xray = !self.modeling.xray;
+            }
+            if consume(ui, Modifiers::NONE, Key::Period) || consume(ui, Modifiers::NONE, Key::Home) {
+                self.frame_selected_or_all();
+            }
+            return;
         }
         for (key, kind) in [(Key::G, TransformKind::Grab), (Key::R, TransformKind::Rotate), (Key::S, TransformKind::Scale)] {
             if consume(ui, Modifiers::NONE, key) {
@@ -488,7 +506,7 @@ impl StudioApp {
                     self.modeling.set_active(i);
                 }
             }
-            Mode::Sculpt => {}
+            Mode::Sculpt | Mode::Hair => {}
         }
     }
 
@@ -518,7 +536,7 @@ impl StudioApp {
     // ------------------------------------------------------------------- ajudantes
 
     fn current_transform_tool(&self) -> Option<TransformKind> {
-        if self.ws != crate::workspace::WorkspaceId::Modelagem || self.modeling.mode == Mode::Sculpt {
+        if self.ws != crate::workspace::WorkspaceId::Modelagem || matches!(self.modeling.mode, Mode::Sculpt | Mode::Hair) {
             return None;
         }
         let tools = self.shelf_tools();
@@ -535,7 +553,7 @@ impl StudioApp {
         match self.modeling.mode {
             Mode::Edit => self.modeling.selection_center_world(),
             Mode::Object => self.modeling.object_center_world(),
-            Mode::Sculpt => None,
+            Mode::Sculpt | Mode::Hair => None,
         }
     }
 
@@ -590,6 +608,9 @@ impl StudioApp {
 
         if self.modeling.mode == Mode::Sculpt {
             self.sculpt_overlay(ui, rect, size);
+        }
+        if self.modeling.mode == Mode::Hair {
+            self.hair_overlay(ui, rect, size);
         }
         self.normals_overlay(ui, rect, size);
         self.draw_axis_widget(ui, rect);
@@ -697,7 +718,7 @@ impl StudioApp {
                             .selected_text(mode_label(mode))
                             .width(130.0)
                             .show_ui(ui, |ui| {
-                                for m in [Mode::Object, Mode::Edit, Mode::Sculpt] {
+                                for m in [Mode::Object, Mode::Edit, Mode::Sculpt, Mode::Hair] {
                                     ui.selectable_value(&mut mode, m, mode_label(m));
                                 }
                             });
