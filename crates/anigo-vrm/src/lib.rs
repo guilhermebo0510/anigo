@@ -20,6 +20,7 @@
 
 pub mod exporter;
 pub mod gltf;
+pub mod spring_bridge;
 pub mod vrm1;
 
 pub use exporter::{
