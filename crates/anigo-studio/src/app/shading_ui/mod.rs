@@ -200,11 +200,16 @@ impl StudioApp {
         let mat = self.shading_ui.target.as_ref().and_then(|t| self.shading_read(t));
         let (rim, ramp, width) = mat.as_ref().map_or((0.0, 0.0, 0.0), |m| (m.rim_intensity, m.npr.ramp_blend, m.outline_width));
         let line = format!(
-            "shadetrace target={:?} rim={rim:.3} ramp_blend={ramp:.2} outline={width:.4} undo={} redo={} gesture={} {extra}",
-            self.shading_ui.target.as_ref().map(|t| format!("{t:?}")).unwrap_or_default(),
-            self.can_undo_redo().0,
-            self.can_undo_redo().1,
-            self.shading_ui.gesture.is_some()
+            "shadetrace target={:?} rim={rim:.3} ramp_blend={ramp:.2} outline={width:.4} undo={} redo={} gesture={} script={} {extra}",
+            self.shading_ui.target.as_ref().map(|t| format!("{t:?}").replace(' ', "")).unwrap_or_default(),
+            if self.shading_ui.source == Source::Modelagem { self.modeling.history_labels().len() } else { self.core.history().undo_depth() },
+            self.shading_can_undo_redo().1,
+            self.shading_ui.gesture.is_some(),
+            match &self.shading_ui.script {
+                Some(sc) if sc.is_done() => "done",
+                Some(_) => "running",
+                None => "none",
+            }
         );
         if self.shading_ui.trace.as_deref() != Some(line.as_str()) {
             eprintln!("{line}");

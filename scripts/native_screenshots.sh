@@ -35,6 +35,18 @@ shot cenario_snap cenario cenario-snap
 shot cenario_outliner cenario cenario-outliner
 shot cenario_gizmo cenario cenario-gizmo
 shot cenario_camera cenario cenario-camera
+shot shading_bola shading shading-ball
+shot shading_rampa shading shading-rampa
+shot shading_rim shading shading-rim
+shot shading_contorno shading shading-contorno
+shot shading_face_sdf shading shading-face-sdf
+shot shading_face_sdf_frente shading shading-face-sdf-frente
+shot shading_face_sdf_espelho shading shading-face-sdf-espelho
+shot shading_ab shading shading-ab
+shot shading_paleta shading shading-paleta
+shot shading_presets shading shading-presets
+shot shading_cenario shading shading-cenario
+shot shading_modelagem shading shading-modelagem
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)
