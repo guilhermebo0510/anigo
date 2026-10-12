@@ -1,6 +1,6 @@
 # Biblioteca de ativos — backend (`crates/anigo-assets`)
 
-**Estado:** backend implementado e testado em Linux (sandbox, sem GPU). **Sem UI** — outro agente consome esta API.
+**Estado:** backend implementado e testado em Linux (sandbox, sem GPU). A UI que consome esta API está descrita em [`BIBLIOTECA_UI.md`](BIBLIOTECA_UI.md).
 Cobre T-5.2, T-5.3, T-5.4, T-5.5, T-5.6 (parte CPU), T-5.8 (parte de dados) e T-5.10 (medido em
 [`BIBLIOTECA_BENCH.md`](BIBLIOTECA_BENCH.md)). Pesquisa de origem: [`pesquisa/biblioteca_assets.md`](pesquisa/biblioteca_assets.md).
 

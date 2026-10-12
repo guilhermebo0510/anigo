@@ -24,6 +24,9 @@ impl StudioApp {
         if self.frame_count != 3 {
             return;
         }
+        if crate::library_ui::scenario::is_library_scenario(&name) {
+            return; // a máquina de estados do cenário vive em `LibraryWorkspace::scenario_tick`
+        }
         if name.starts_with("sculpt-") {
             self.run_sculpt_scenario(&name);
             return;
