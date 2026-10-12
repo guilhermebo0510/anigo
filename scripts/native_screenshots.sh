@@ -35,6 +35,14 @@ shot cenario_snap cenario cenario-snap
 shot cenario_outliner cenario cenario-outliner
 shot cenario_gizmo cenario cenario-gizmo
 shot cenario_camera cenario cenario-camera
+shot posing_vazio posing posing-vazio
+shot posing_fk posing posing-fk
+shot posing_limites posing posing-limites
+shot posing_ik posing posing-ik
+shot posing_presets posing posing-presets
+shot posing_mao posing posing-mao
+shot posing_gaze posing posing-gaze
+shot posing_biblioteca posing posing-biblioteca
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)
