@@ -273,6 +273,19 @@ impl StudioApp {
                 "available": WorkspaceId::ALL.iter().map(|w| w.key()).collect::<Vec<_>>(),
             }))),
             "SET_WORKSPACE" => Some(self.bridge_set_workspace(params)),
+            // compatibilidade com `anigo_ui_action`: só a troca de aba tem equivalente nativo
+            "UI_ACTION" => Some((|| {
+                let m = as_obj(params)?;
+                match opt_str(m, "action")? {
+                    Some("select_tab") => {
+                        let tab = opt_str(m, "value")?.ok_or_else(|| BridgeError::invalid_params("select_tab exige 'value'"))?;
+                        self.bridge_set_workspace(&json!({ "workspace": tab }))
+                    }
+                    other => Err(BridgeError::invalid_params(format!(
+                        "UI_ACTION {other:?} não é suportada pelo app nativo; use APPLY_COMMAND (Commands do núcleo) ou SET_WORKSPACE"
+                    ))),
+                }
+            })()),
             "GET_SELECTION" => Some(Ok(self.bridge_selection())),
             "LIST_ASSETS" => self.bridge_list_assets(ctx, params),
             "PLACE_ASSET" => self.bridge_place_asset(ctx, params),

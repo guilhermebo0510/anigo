@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 anigo-core = { workspace = true }
 anigo-renderer = { workspace = true }
+anigo-bridge = { path = "../anigo-bridge" }
 glam = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -27,6 +28,10 @@ image = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+anigo-session = { path = "../anigo-session" }
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 # No extra dependencies needed for raw win32 linking, but keep for future use

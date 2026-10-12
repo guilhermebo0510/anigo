@@ -23,6 +23,9 @@ pub struct McpMetrics {
     pub fs_sandbox_rejections: AtomicU64,
     pub json_rpc_requests: AtomicU64,
     pub json_rpc_parse_errors: AtomicU64,
+    /// T-2.13: comandos/undo/redo aceitos pelo app nativo e capturas (screenshot/render) recebidas.
+    pub native_commands_applied: AtomicU64,
+    pub native_images_received: AtomicU64,
 }
 
 impl McpMetrics {
@@ -43,6 +46,8 @@ impl McpMetrics {
             fs_sandbox_rejections: AtomicU64::new(0),
             json_rpc_requests: AtomicU64::new(0),
             json_rpc_parse_errors: AtomicU64::new(0),
+            native_commands_applied: AtomicU64::new(0),
+            native_images_received: AtomicU64::new(0),
         }
     }
 
@@ -65,6 +70,8 @@ impl McpMetrics {
             "fs_sandbox_rejections": self.fs_sandbox_rejections.load(Relaxed),
             "json_rpc_requests": self.json_rpc_requests.load(Relaxed),
             "json_rpc_parse_errors": self.json_rpc_parse_errors.load(Relaxed),
+            "native_commands_applied": self.native_commands_applied.load(Relaxed),
+            "native_images_received": self.native_images_received.load(Relaxed),
             "tools_per_second_avg": if uptime > 0.0 { (total as f64) / uptime } else { 0.0 },
         })
     }
