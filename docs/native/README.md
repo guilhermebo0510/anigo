@@ -3,6 +3,7 @@
 | Documento | Conteúdo |
 |---|---|
 | [ARQUITETURA_NATIVA.md](ARQUITETURA_NATIVA.md) | ADR: UI/viewport 100 % Rust (egui + wgpu 30), por que não Tauri/Slint/iced/Bevy, C/C++ só onde vale, hot reload, plano de migração |
+| [RELATORIO_FINAL.md](RELATORIO_FINAL.md) | **Relatório final**: o que foi entregue, o que não foi feito e o que falta para o nível comercial (P0/P1/P2) |
 | [ROADMAP_TAREFAS.md](ROADMAP_TAREFAS.md) | Todas as tarefas por trilha, com estado e tipo de validação |
 | [MODELAGEM_FERRAMENTAS.md](MODELAGEM_FERRAMENTAS.md) | Mapa de ferramentas do workspace de Modelagem (Blender como referência) |
 | [FERRAMENTA_CABELO.md](FERRAMENTA_CABELO.md) | Modo Cabelo da Modelagem (estilo VRoid): uso, atalhos, modelo de dados, cadeias de física neutras, limites e o que não foi validado |
