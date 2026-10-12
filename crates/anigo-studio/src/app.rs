@@ -209,25 +209,15 @@ impl StudioApp {
     /// Desfazer/refazer roteados pelo workspace ativo: Personagem fala com a sessão do núcleo,
     /// os demais com a `ModelingSession`.
     pub(crate) fn can_undo_redo(&self) -> (bool, bool) {
-        if self.ws == WorkspaceId::Personagem {
-            (self.core.history().can_undo(), self.core.history().can_redo())
-        } else {
-            (self.modeling.can_undo(), self.modeling.can_redo())
-        }
+        character_ui::can_undo_redo(self.ws, &self.core, &self.modeling)
     }
 
     pub(crate) fn undo_redo(&mut self, undo: bool) {
         if self.ws == WorkspaceId::Personagem {
             self.char_ui.gesture = None;
-            let r = if undo { self.core.undo() } else { self.core.redo() };
-            self.char_ui.message = match r {
-                Ok(o) => o.description,
-                Err(e) => e,
-            };
-        } else if undo {
-            self.modeling.undo();
-        } else {
-            self.modeling.redo();
+        }
+        if let Some(msg) = character_ui::route_undo_redo(self.ws, &mut self.core, &mut self.modeling, undo) {
+            self.char_ui.message = msg;
         }
     }
 

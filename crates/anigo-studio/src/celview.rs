@@ -293,3 +293,35 @@ mod multi_tests {
         assert_eq!(m.culled_draw_calls, 0, "nenhum objeto visível pode ser descartado");
     }
 }
+
+#[cfg(test)]
+mod character_tests {
+    use super::*;
+    use anigo_core::scene::Scene;
+
+    /// Frame canônico (headless) do personagem do núcleo: é a referência de paridade de
+    /// silhueta com o viewport do workspace Personagem (que usa a mesma cena + renderer).
+    fn canonical_frame(session: &mut CoreSession, w: u32, h: u32) -> Option<image::RgbaImage> {
+        let renderer = pollster::block_on(HeadlessRenderer::new()).ok()?;
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).ok()?;
+        let (img, _) = pollster::block_on(renderer.render_scene(&scene, w, h)).ok()?;
+        Some(img)
+    }
+
+    #[test]
+    fn canonical_character_frame_is_shaded_and_not_empty() {
+        let mut session = CoreSession::new();
+        let Some(img) = canonical_frame(&mut session, 400, 600) else {
+            eprintln!("sem adaptador wgpu: teste pulado");
+            return;
+        };
+        if let Ok(dir) = std::env::var("ANIGO_TEST_OUT") {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = img.save(format!("{dir}/character_canonical.png"));
+        }
+        let bg = img.get_pixel(0, 0).0;
+        let fg: Vec<_> = img.pixels().filter(|p| p.0 != bg).collect();
+        assert!(fg.len() > 3000, "personagem sumiu: {} pixels", fg.len());
+    }
+}

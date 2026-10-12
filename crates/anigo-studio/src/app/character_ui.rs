@@ -80,7 +80,7 @@ impl Default for CharacterUi {
 pub(crate) fn frame_character(cam: &mut OrbitCamera, lo: Vec3, hi: Vec3) {
     let h = (hi.y - lo.y).max(0.2);
     cam.target = Vec3::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, (lo.z + hi.z) * 0.5);
-    cam.distance = (h * 0.5 / (cam.fov_y * 0.5).tan() * 1.3).clamp(0.3, 50.0);
+    cam.distance = (h * 0.5 / (cam.fov_y * 0.5).tan() * 1.15).clamp(0.3, 50.0);
 }
 
 /// Enquadra a cabeça (parte alta da caixa).
@@ -101,7 +101,7 @@ impl StudioApp {
     /// Comando discreto (clique): vai direto ao histórico do núcleo.
     fn char_apply(&mut self, cmd: Command) {
         match self.core.apply(cmd) {
-            Ok(o) => self.char_ui.message = o.description,
+            Ok(o) => self.char_ui.message = describe(&o.description),
             Err(e) => self.char_report(e),
         }
     }
@@ -138,7 +138,7 @@ impl StudioApp {
         if let Some(g) = self.char_ui.gesture.take() {
             let fin = g.commit.unwrap_or(g.last);
             match self.core.commit_preview(fin) {
-                Ok(o) => self.char_ui.message = o.description,
+                Ok(o) => self.char_ui.message = describe(&o.description),
                 Err(e) => self.char_report(e),
             }
         }
@@ -256,7 +256,7 @@ impl StudioApp {
 
         // ---- proporções
         egui::CollapsingHeader::new(RichText::new(tr("char.proportions")).strong())
-            .default_open(false)
+            .default_open(true)
             .show(ui, |ui| {
                 for p in Proportion::ALL {
                     let (lo, hi) = p.range();
@@ -377,7 +377,7 @@ impl StudioApp {
             ui.label(RichText::new(tr("char.no_results")).color(theme::TEXT_DIM));
             return;
         }
-        for (zone, defs) in groups {
+        for (i, (zone, defs)) in groups.into_iter().enumerate() {
             let modified = sliders::modified_in_zone(st, zone);
             let mut title = format!("{}  ({})", sliders::zone_label(zone), defs.len());
             if modified > 0 {
@@ -385,7 +385,7 @@ impl StudioApp {
             }
             let mut header = egui::CollapsingHeader::new(RichText::new(title).strong())
                 .id_salt(sliders::zone_key(zone))
-                .default_open(false);
+                .default_open(i == 0);
             if !query.trim().is_empty() {
                 header = header.open(Some(true));
             }
@@ -728,6 +728,68 @@ impl StudioApp {
     }
 }
 
+/// Desfazer/refazer roteado pelo workspace ativo: Personagem fala com a sessão do núcleo
+/// (`CoreSession`), os demais com a `ModelingSession`. Devolve a mensagem de status do núcleo.
+pub(crate) fn route_undo_redo(
+    ws: crate::workspace::WorkspaceId,
+    core: &mut anigo_session::CoreSession,
+    modeling: &mut crate::modeling::ModelingSession,
+    undo: bool,
+) -> Option<String> {
+    if ws == crate::workspace::WorkspaceId::Personagem {
+        let r = if undo { core.undo() } else { core.redo() };
+        return Some(match r {
+            Ok(o) => describe(&o.description),
+            Err(e) => e,
+        });
+    }
+    if undo {
+        modeling.undo();
+    } else {
+        modeling.redo();
+    }
+    None
+}
+
+pub(crate) fn can_undo_redo(
+    ws: crate::workspace::WorkspaceId,
+    core: &anigo_session::CoreSession,
+    modeling: &crate::modeling::ModelingSession,
+) -> (bool, bool) {
+    if ws == crate::workspace::WorkspaceId::Personagem {
+        (core.history().can_undo(), core.history().can_redo())
+    } else {
+        (modeling.can_undo(), modeling.can_redo())
+    }
+}
+
+/// Descrição de um comando do núcleo (em inglês, para log/undo) no idioma da UI.
+pub(crate) fn describe(desc: &str) -> String {
+    let (undo, redo) = (desc.strip_prefix("Undo "), desc.strip_prefix("Redo "));
+    if let Some(rest) = undo {
+        return format!("{}: {}", tr("char.undone"), describe(rest));
+    }
+    if let Some(rest) = redo {
+        return format!("{}: {}", tr("char.redone"), describe(rest));
+    }
+    if let Some(id) = desc.strip_prefix("Morph ") {
+        let name = anigo_core::morph_catalog::find_slider_def(id)
+            .map(|d| sliders::slider_label(d, lang()))
+            .unwrap_or_else(|| id.to_string());
+        return name;
+    }
+    let key = match desc {
+        "Proportions" => "char.proportions",
+        "Somatotype" => "char.somatotype",
+        "Gender dimorphism" => "char.dimorphism",
+        "Reset morphs" => "char.reset_all",
+        d if d.starts_with("Base gender") => "char.gender",
+        d if d.starts_with("Batch") => "char.batch",
+        _ => return desc.to_string(),
+    };
+    tr(key).to_string()
+}
+
 fn mid(a: Pos2, b: Pos2) -> Pos2 {
     Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
@@ -748,4 +810,58 @@ fn full_width_slider(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, dec
 fn reset_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
     ui.add_enabled(enabled, egui::Button::new(RichText::new(icons::ARROW_COUNTER_CLOCKWISE).size(12.0)).small())
         .on_hover_text(tr("char.reset_slider"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_descriptions_are_translated_and_unknown_ones_pass_through() {
+        crate::i18n::set_lang(crate::i18n::Lang::PtBr);
+        assert_eq!(describe("Proportions"), "Proporções");
+        assert_eq!(describe("Undo Somatotype"), format!("{}: Somatótipo", tr("char.undone")));
+        assert!(describe("Morph jaw_v_line_taper").len() > 3);
+        assert_eq!(describe("Algo novo"), "Algo novo");
+    }
+
+    #[test]
+    fn undo_redo_is_routed_to_the_session_of_the_active_workspace() {
+        use crate::modeling::{ModelingSession, PrimitiveKind};
+        use crate::workspace::WorkspaceId;
+        let mut core = anigo_session::CoreSession::new();
+        let mut modeling = ModelingSession::with_default_cube();
+        core.apply(crate::character::macros::Proportion::Height.command(1.2)).unwrap();
+        modeling.add_primitive(PrimitiveKind::Capsule, glam::Vec3::X);
+        let objs = modeling.doc.objects.len();
+
+        // Personagem: desfaz só o núcleo
+        assert_eq!(can_undo_redo(WorkspaceId::Personagem, &core, &modeling), (true, false));
+        assert!(route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, true).is_some());
+        assert_eq!(core.project().character.proportions.height_overall, 1.0);
+        assert_eq!(modeling.doc.objects.len(), objs, "a modelagem não foi tocada");
+        assert_eq!(can_undo_redo(WorkspaceId::Personagem, &core, &modeling), (false, true));
+        route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, false);
+        assert_eq!(core.project().character.proportions.height_overall, 1.2);
+
+        // Modelagem: desfaz só a ModelingSession
+        assert!(route_undo_redo(WorkspaceId::Modelagem, &mut core, &mut modeling, true).is_none());
+        assert_eq!(modeling.doc.objects.len(), objs - 1);
+        assert_eq!(core.project().character.proportions.height_overall, 1.2, "o núcleo não foi tocado");
+        // desfazer sem histórico não quebra
+        assert!(route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, true).is_some());
+        assert!(route_undo_redo(WorkspaceId::Personagem, &mut core, &mut modeling, true).is_some());
+    }
+
+    #[test]
+    fn framing_keeps_the_whole_character_in_view() {
+        let mut cam = OrbitCamera::default();
+        frame_character(&mut cam, Vec3::new(-0.4, 0.0, -0.2), Vec3::new(0.4, 1.7, 0.2));
+        // a altura de 1.7 m cabe no campo vertical à distância escolhida
+        let visible = 2.0 * cam.distance * (cam.fov_y * 0.5).tan();
+        assert!(visible > 1.7 && visible < 3.0, "{visible}");
+        assert!((cam.target.y - 0.85).abs() < 1e-5);
+        frame_face(&mut cam, Vec3::new(-0.4, 0.0, -0.2), Vec3::new(0.4, 1.7, 0.2));
+        assert!(cam.target.y > 1.5 && cam.distance < 1.5);
+    }
 }
