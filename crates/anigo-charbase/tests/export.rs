@@ -196,8 +196,9 @@ fn exports_are_deterministic_and_loadable_by_the_existing_readers() {
     assert_eq!(&again, glb(false), "o mesmo personagem deve gerar os mesmos bytes");
     // leitor do core (usado pela Biblioteca): lê o primeiro primitivo = pele
     let mesh = anigo_core::Mesh::from_glb_bytes(glb(false)).expect("anigo-core lê o GLB");
-    assert_eq!(mesh.vertices.len(), 10855);
-    assert_eq!(mesh.indices.len(), 20336 * 3);
+    let built = build_scene(c, m);
+    assert_eq!(mesh.vertices.len(), built.scene.meshes[0].primitives[0].vertices.len());
+    assert_eq!(mesh.indices.len(), reference().faces.len() * 6);
     assert!(mesh.vertices.iter().all(|v| v.position.iter().all(|x| x.is_finite())));
     // leitor/validador do anigo-vrm
     let r = anigo_vrm::validate_model(glb(false));

@@ -11,12 +11,14 @@
 pub mod cage;
 pub mod character;
 pub mod contract;
+pub mod debugview;
 pub mod dims;
 pub mod export;
 pub mod expressions;
 pub mod morphs;
 pub mod params;
 pub mod parts;
+pub mod preview;
 pub mod qmesh;
 pub mod skeleton;
 pub mod subdiv;

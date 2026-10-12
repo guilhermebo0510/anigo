@@ -77,8 +77,8 @@ fn build_arm(b: &mut B, d: &Dims, hole: &[u32], s: f32) {
     let yc = hc.y;
     let zc = hc.z;
     let x_sj = x_h - 0.022 * sc;
-    let l_u = lerp(0.300, 0.275, g) * sc * (1.0 + 0.0);
-    let l_f = lerp(0.262, 0.245, g) * sc;
+    let l_u = lerp(0.288, 0.264, g) * sc;
+    let l_f = lerp(0.252, 0.236, g) * sc;
 
     let upper: [(f32, f32, f32); 6] = [
         (0.0, 0.056, 0.052),
@@ -97,7 +97,7 @@ fn build_arm(b: &mut B, d: &Dims, hole: &[u32], s: f32) {
         (1.0, 0.0165, 0.0255),
     ];
     let wk = if p.weight >= 0.0 { p.weight } else { 0.40 * p.weight };
-    let gm = lerp(1.10, 1.0, g);
+    let gm = lerp(1.16, 1.07, g);
     let thick = |seg_t: f32, base: f32, is_upper: bool| -> f32 {
         let musc = p.muscle * if is_upper { 0.14 } else { 0.07 } * (0.4 + 0.6 * (std::f32::consts::PI * seg_t).sin());
         base * gm * sc * (1.0 + 0.34 * wk + musc - 0.07 * p.age)
@@ -401,7 +401,7 @@ fn build_leg(b: &mut B, d: &Dims, chain: &[u32], s: f32) -> (Vec<u32>, Vec<Vec<u
     let p = &d.p;
     let h = d.h;
     let ang = leg_angles();
-    let cx = lerp(0.092, 0.084, g) * sc * (1.0 + 0.06 * p.weight.max(0.0));
+    let cx = lerp(0.094, 0.088, g) * sc * (1.0 + 0.05 * p.weight.max(0.0));
     let cz0 = 0.0;
     // tabela (u = y/H, rx, rz)
     let table: [(f32, f32, f32); 11] = [
@@ -418,7 +418,8 @@ fn build_leg(b: &mut B, d: &Dims, chain: &[u32], s: f32) -> (Vec<u32>, Vec<Vec<u
         (0.470, 0.080, 0.094),
     ];
     let wk = if p.weight >= 0.0 { p.weight } else { 0.40 * p.weight };
-    let gk = lerp(1.0, 1.06, g);
+    let hip_knots = d.trunk_knots();
+    let gk = lerp(1.04, 1.12, g);
     let radius = |u: f32| -> (f32, f32) {
         let n = table.len();
         let mut i = 0;
@@ -430,9 +431,15 @@ fn build_leg(b: &mut B, d: &Dims, chain: &[u32], s: f32) -> (Vec<u32>, Vec<Vec<u
         let t = t * t * (3.0 - 2.0 * t) * 0.5 + t * 0.5;
         let thigh = smoothstep(0.30, 0.44, u); // coxa
         let calf = smoothstep(0.12, 0.2, u) * (1.0 - smoothstep(0.24, 0.3, u));
-        let k = sc * (1.0 + (0.36 * wk + 0.10 * p.muscle * (0.5 * thigh + calf) - 0.06 * p.age) * (0.4 + 0.6 * (thigh + calf).min(1.0)))
-            * if u > 0.3 { gk } else { 1.0 };
-        (lerp(a.1, c.1, t) * k, lerp(a.2, c.2, t) * k)
+        let k = sc * (1.0 + (0.26 * wk + 0.10 * p.muscle * (0.5 * thigh + calf) - 0.06 * p.age) * (0.4 + 0.6 * (thigh + calf).min(1.0)))
+            * if u > 0.3 { gk } else { 1.0 + (gk - 1.0) * 0.7 };
+        let (mut rx, mut rz) = (lerp(a.1, c.1, t) * k, lerp(a.2, c.2, t) * k);
+        // a coxa nunca passa da largura do anel do quadril na virilha (sem degrau com peso alto)
+        let blend = smoothstep(0.40, 0.46, u);
+        let hip = crate::dims::trunk_at(&hip_knots, 0.4906);
+        rx = lerp(rx, rx.min(hip.rx - cx + 0.024 * sc), blend);
+        rz = lerp(rz, rz.min(hip.rz + 0.004 * sc), blend);
+        (rx, rz)
     };
     let ring_pts = |u: f32| -> Vec<Vec3> {
         let (rx, rz) = radius(u);
