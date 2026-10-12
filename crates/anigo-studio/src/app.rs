@@ -422,6 +422,9 @@ impl StudioApp {
         if self.ws == WorkspaceId::Shading && w != WorkspaceId::Shading {
             self.shading_commit_now();
         }
+        if w == WorkspaceId::Shading && self.ws != WorkspaceId::Shading {
+            self.shading_on_enter(self.ws);
+        }
         self.ws = w;
     }
 

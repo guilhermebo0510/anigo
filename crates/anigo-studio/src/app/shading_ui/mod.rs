@@ -231,6 +231,31 @@ impl StudioApp {
         self.shading_validate_target();
     }
 
+    /// Vindo de outro workspace, o Shading já abre no material do que o artista estava editando:
+    /// seleção do Cenário, objeto ativo da Modelagem ou o material do personagem.
+    pub(crate) fn shading_on_enter(&mut self, from: crate::workspace::WorkspaceId) {
+        use crate::workspace::WorkspaceId;
+        let picked = match from {
+            WorkspaceId::Cenario => self.scene_ui.selection.active().cloned().and_then(|id| {
+                let slot = self.core.project().scene.node(&id)?;
+                if slot.kind == anigo_core::hierarchy::NodeKind::CharacterRoot {
+                    self.shading_character_target().map(|t| (Source::Cenario, t))
+                } else {
+                    Some((Source::Cenario, Target::Node(id)))
+                }
+            }),
+            WorkspaceId::Modelagem => self.modeling.active_object().map(|o| (Source::Modelagem, Target::Object(o.id))),
+            WorkspaceId::Personagem => self.shading_character_target().map(|t| (Source::Personagem, t)),
+            _ => None,
+        };
+        if let Some((src, t)) = picked {
+            if self.shading_read(&t).is_some() {
+                self.shading_ui.source = src;
+                self.shading_select(t);
+            }
+        }
+    }
+
     /// Ferramenta do shelf → grupo do painel (ou modo do preview).
     pub(crate) fn on_shading_tool_selected(&mut self, id: &str) {
         match id {

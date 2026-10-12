@@ -121,6 +121,13 @@ o grupo. Detalhe no contrato (`contracts/fixtures/render_contract_v1.json`, seç
 Os padrões são **conservadores**: nada disso liga sozinho. Quem quiser o visual "anime" precisa ligar
 (`smooth_normals = 1`, `falloff ≈ 0,8..1`, `taper ≈ 0,5`, `ink_blend ≈ 0,7` foi o que usei nas imagens).
 
+### 6.1 Rampa 2D personalizada por material (workspace Shading)
+
+`NprParams::ramp_custom` (aditivo, omitido no padrão) permite um **gradiente próprio por linha** da rampa (até 6 paradas posição/valor por linha, linear ou em degraus;
+`count = 0` mantém a linha do contrato). O renderer monta, por material, uma textura 256×4 com as linhas personalizadas sobre os bytes do contrato e a liga no mesmo binding
+(cache por `RampCustom::cache_key`); só vale com `ramp_blend > 0`. **O WGSL, o formato da textura e o contrato não mudam** (os goldens/fixtures continuam idênticos).
+Editor: [`SHADING_UI.md`](SHADING_UI.md). Testes: `anigo-core::npr::ramp_custom_tests`, `cel_features::custom_ramp_row_changes_the_image_and_untouched_rows_stay_on_the_contract`.
+
 ## 7. Contrato, TS legado e testes
 
 Fixtures regeneradas por `node scripts/gen_contract_fixtures.mjs`. Mudanças no contrato: `outline` 48 → 64 B,
