@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 562,
-      "fnv1a64": "266c04d4782cd76f"
+      "lines": 583,
+      "fnv1a64": "35bd4fe95ad3976d"
     },
     {
       "name": "inverted_hull",
@@ -31,8 +31,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 158,
-      "fnv1a64": "15569a73ed3623fe"
+      "lines": 170,
+      "fnv1a64": "d852649e619a62ee"
     },
     {
       "name": "morph_sparse_compute",

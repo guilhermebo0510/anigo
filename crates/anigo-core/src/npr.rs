@@ -2,10 +2,23 @@
 //!
 //! Este módulo concentra (1) o grupo [`NprParams`] de parâmetros opcionais do
 //! motor de cel shading e (2) a matemática **pura e testável** que o WGSL
-//! (`crates/anigo-renderer/shaders/*.wgsl`) executa na GPU. Cada função aqui
-//! diz, no comentário, qual trecho de shader ela espelha; os testes `golden_*`
-//! no fim do arquivo fixam os valores que o shader calcula, de modo que uma
-//! mudança num lado sem o outro quebra o teste.
+//! (`crates/anigo-renderer/shaders/*.wgsl`) executa na GPU.
+//!
+//! ## Equivalência com o shader
+//!
+//! | Rust (`anigo_core::npr`)                          | WGSL                                                      |
+//! |---------------------------------------------------|-----------------------------------------------------------|
+//! | `ramp_v`, `ramp_u`, `blend_toon_factor`           | `cel_shading.wgsl` (rampa 2D)                             |
+//! | `outline_width_scale`, `outline_taper_scale`      | `inverted_hull.wgsl` (largura por distância/FOV, taper)   |
+//! | `face_sdf_theta/threshold/factor/mirror_u`        | bloco `ANIGO-FACE-SDF` (`face_sdf.wgsl` == cel)           |
+//! | `face_frame`, `face_shadow_tone`                  | `vs_main`/`fs_main` do cel (eixos da cabeça, cor da sombra)|
+//! | `smooth_outline_normals`, `outline_ink_rgb`, ...  | só Rust (CPU, por design): o shader recebe o resultado    |
+//!
+//! Cada função tem testes `golden_*` aqui (valores calculados à mão do que o
+//! shader faz) **e** um teste de paridade na GPU
+//! (`crates/anigo-renderer/tests/shader_math_parity.rs`) que extrai o TEXTO das
+//! funções dos arquivos de produção, executa num compute shader e compara com
+//! estas funções — mudar uma fórmula num lado sem o outro quebra o teste.
 //!
 //! Regra de ouro dos parâmetros: o valor **padrão** de cada um reproduz byte a
 //! byte o comportamento anterior do motor (o frame congelado do render

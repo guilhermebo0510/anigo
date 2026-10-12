@@ -332,6 +332,25 @@ fn eye_highlight_rgb(mask: f32, intensity: f32) -> vec3<f32> {
 }
 // ANIGO-ANIME-EYE-END
 
+// ── Rampa 2D (pura; espelhada em anigo-core::npr com testes que executam ESTE
+// texto numa GPU e comparam com o Rust) ─────────────────────────────────────
+
+// V do centro da linha `row` (0..3, fração interpola entre linhas): (row + 0.5) / 4.
+fn ramp_v(row: f32) -> f32 {
+    return (clamp(row, 0.0, 3.0) + 0.5) * 0.25;
+}
+
+// U da coluna: half-lambert deslocado pelo limiar de sombra (o degrau cai em 0.5
+// quando half_lambert == threshold).
+fn ramp_u(half_lambert: f32, threshold: f32) -> f32 {
+    return clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
+}
+
+// Fator de luz final: mix(analítico, rampa, blend); blend 0 → analítico exato.
+fn blend_toon_factor(analytic: f32, ramp_value: f32, blend: f32) -> f32 {
+    return mix(analytic, ramp_value, blend);
+}
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -397,10 +416,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // textureSample é legal aqui.
     let ramp_blend = clamp(material.params6.w, 0.0, 1.0);
     if (ramp_blend > 0.0) {
-        let ramp_v = (clamp(material.params7.w, 0.0, 3.0) + 0.5) * 0.25;
-        let ramp_u = clamp((half_lambert - threshold) + 0.5, 0.002, 0.998);
-        let ramp_value = textureSample(toon_ramp_tex, toon_ramp_sampler, vec2<f32>(ramp_u, ramp_v)).r;
-        toon_factor = mix(analytical_toon, ramp_value, ramp_blend);
+        let ramp_value = textureSample(
+            toon_ramp_tex,
+            toon_ramp_sampler,
+            vec2<f32>(ramp_u(half_lambert, threshold), ramp_v(material.params7.w))
+        ).r;
+        toon_factor = blend_toon_factor(analytical_toon, ramp_value, ramp_blend);
     }
 
     // 4. Stylized Ambient Occlusion (R channel) — P2-05 applied to diffuse/ambient only
