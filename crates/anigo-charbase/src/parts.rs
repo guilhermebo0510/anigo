@@ -279,7 +279,7 @@ pub fn build_parts(topo: &Topology, rest: &[Vec3], current: &[Vec3], jaw: f32) -
         let mut lb = Builder::new();
         let outer_sign = if *s == "L" { 1.0 } else { -1.0 };
         let c3 = ids3.iter().map(|&i| current[i as usize]).sum::<Vec3>() / n3 as f32;
-        let mut add_chain = |chain: Vec<u32>, upper: bool, len: f32, lb: &mut Builder| {
+        let add_chain = |chain: Vec<u32>, upper: bool, len: f32, lb: &mut Builder| {
             let m = chain.len();
             let mut rows: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
             for (i, &vid) in chain.iter().enumerate() {

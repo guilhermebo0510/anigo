@@ -18,11 +18,11 @@ fn main() {
         let ch = generate(g);
         let morphs = build_morphs(&ch);
         let title = if matches!(g, Gender::Male) { "ANIGO Anime Male v2 (Gen-0)" } else { "ANIGO Anime Female v2 (Gen-0)" };
-        let glb = export_glb(&ch, &morphs, &ExportOptions { vrm: false, title: title.into(), author: "ANIGO".into() });
-        let vrm = export_glb(&ch, &morphs, &ExportOptions { vrm: true, title: title.into(), author: "ANIGO".into() });
+        // Um arquivo por gênero: GLB com skin de 65 ossos, morph targets nomeados e a camada VRMC_vrm 1.0
+        // (humanoid, expressões, lookAt). Qualquer visualizador glTF ignora a extensão; leitores VRM a usam.
+        let glb = export_glb(&ch, &morphs, &ExportOptions { vrm: true, title: title.into(), author: "ANIGO".into() }).expect("exportar");
         std::fs::write(out.join(format!("{name}.glb")), &glb).expect("gravar glb");
-        std::fs::write(out.join(format!("{name}.vrm")), &vrm).expect("gravar vrm");
-        println!("{name}: glb {} KB, vrm {} KB", glb.len() / 1024, vrm.len() / 1024);
+        println!("{name}: {} KB", glb.len() / 1024);
         println!("{}", serde_json::to_string(&summarize(&ch, &morphs)).unwrap());
     }
     std::fs::write(out.join("topology_contract.json"), contract_json_string()).expect("gravar contrato");

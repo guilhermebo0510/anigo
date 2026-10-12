@@ -231,7 +231,7 @@ fn sheet_topology() -> RgbaImage {
     let mesh = QuadMesh { pos: ch.positions.clone(), faces: t.faces.clone() };
     let head = ch.skeleton.pos(ch.skeleton.index("head").unwrap());
     let hand = ch.skeleton.pos(ch.skeleton.index("leftHand").unwrap());
-    let o = ViewOpts { wire: true, ..Default::default() };
+    let o = ViewOpts { wire: true, flat: true, ..Default::default() };
     let hc = head + Vec3::new(0.0, 0.1, 0.0);
     let a = wire_render(&mesh, None, None, 420, 420, Vec3::Z, hc, 0.17, &o);
     let b = wire_render(&mesh, None, None, 420, 420, Vec3::new(0.62, 0.12, 0.78), hc, 0.17, &o);
@@ -265,6 +265,15 @@ fn main() {
             "expressions" => save(&out, "charbase_expressions", sheet_expressions(&renderer)),
             "details" => save(&out, "charbase_details", sheet_details(&renderer)),
             "topology" => save(&out, "charbase_topology", sheet_topology()),
+            // inspeção em tamanho grande (não faz parte das figuras da documentação)
+            "big_f" | "big_m" => {
+                let ch = generate(if w == "big_f" { Gender::Female } else { Gender::Male });
+                let parts = build_parts(reference(), &ch.positions, &ch.positions, 0.0);
+                let c = Vec3::new(0.0, 0.88, 0.0);
+                let a = render_panel(&renderer, &ch, &parts, &Panel { eye_dir: Vec3::Z, target: c, height: 1.9, w: 700, h: 900 });
+                let b = render_panel(&renderer, &ch, &parts, &Panel { eye_dir: Vec3::new(0.8, 0.1, 0.6), target: c, height: 1.9, w: 700, h: 900 });
+                save(&out, &format!("big_{}", &w[4..]), concat(&[a, b]));
+            }
             other => eprintln!("folha desconhecida: {other}"),
         }
     }

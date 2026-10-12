@@ -27,7 +27,7 @@ fn glb(vrm: bool) -> &'static Vec<u8> {
     static B: OnceLock<Vec<u8>> = OnceLock::new();
     let (c, m) = female();
     let cell = if vrm { &B } else { &A };
-    cell.get_or_init(|| export_glb(c, m, &ExportOptions { vrm, ..Default::default() }))
+    cell.get_or_init(|| export_glb(c, m, &ExportOptions { vrm, ..Default::default() }).unwrap())
 }
 
 fn accessor_f32(json: &Value, bin: &[u8], acc: usize) -> Vec<f32> {
@@ -192,11 +192,11 @@ fn vrm_extension_has_full_humanoid_expressions_and_lookat() {
 #[test]
 fn exports_are_deterministic_and_loadable_by_the_existing_readers() {
     let (c, m) = female();
-    let again = export_glb(c, m, &ExportOptions { vrm: false, ..Default::default() });
+    let again = export_glb(c, m, &ExportOptions { vrm: false, ..Default::default() }).unwrap();
     assert_eq!(&again, glb(false), "o mesmo personagem deve gerar os mesmos bytes");
     // leitor do core (usado pela Biblioteca): lê o primeiro primitivo = pele
     let mesh = anigo_core::Mesh::from_glb_bytes(glb(false)).expect("anigo-core lê o GLB");
-    let built = build_scene(c, m);
+    let built = build_scene(c, m).unwrap();
     assert_eq!(mesh.vertices.len(), built.scene.meshes[0].primitives[0].vertices.len());
     assert_eq!(mesh.indices.len(), reference().faces.len() * 6);
     assert!(mesh.vertices.iter().all(|v| v.position.iter().all(|x| x.is_finite())));
@@ -210,7 +210,7 @@ fn exports_are_deterministic_and_loadable_by_the_existing_readers() {
 fn skin_triangles_triangulate_each_quad_in_contract_order() {
     // o GLB exportado pode ser revalidado pelo contrato triangulado (depois de remapear extras)
     let (c, m) = female();
-    let built = build_scene(c, m);
+    let built = build_scene(c, m).unwrap();
     let prim = &built.scene.meshes[0].primitives[0];
     let nv = built.skin_canonical;
     let canon = |i: u32| -> u32 { if (i as usize) < nv { i } else { built.extra_canonical[i as usize - nv] } };
@@ -383,8 +383,8 @@ fn gender_variants_export_with_identical_structure() {
     let m_ch = generate(Gender::Male);
     let m_m = build_morphs(&m_ch);
     let (f_ch, f_m) = female();
-    let a = build_scene(&m_ch, &m_m);
-    let b = build_scene(f_ch, f_m);
+    let a = build_scene(&m_ch, &m_m).unwrap();
+    let b = build_scene(f_ch, f_m).unwrap();
     assert_eq!(a.target_names, b.target_names);
     assert_eq!(a.scene.meshes[0].primitives.len(), b.scene.meshes[0].primitives.len());
     for (p, q) in a.scene.meshes[0].primitives.iter().zip(&b.scene.meshes[0].primitives) {
@@ -397,4 +397,71 @@ fn gender_variants_export_with_identical_structure() {
     }
     let defs = bone_defs(reference());
     let _ = (defs, generate_with(&Params::default()));
+}
+
+#[test]
+fn vrm_variant_loads_in_the_core_reader_and_in_the_anigo_vrm_reader() {
+    let bytes = glb(true);
+    let mesh = anigo_core::Mesh::from_glb_bytes(bytes).expect("anigo-core lê o VRM (Biblioteca)");
+    assert!(mesh.vertices.len() > 10_000);
+    // o leitor do anigo-vrm (dialeto próprio) também abre o arquivo: expressões nas duas formas
+    let (_model, vrm) = anigo_vrm::parse_vrm(bytes).expect("anigo-vrm lê o VRM (dialeto duplo)");
+    assert_eq!(vrm.humanoid.human_bones.len(), 55);
+    assert_eq!(vrm.expression.preset.len(), 16);
+    let (json, _) = parse_glb(bytes).unwrap();
+    assert!(json["extensions"]["VRMC_vrm"]["expressions"]["preset"]["happy"]["morphTargetBinds"].is_array(), "forma oficial da spec 1.0 preservada");
+}
+
+#[test]
+fn glb_imports_into_modeling_like_the_library_does() {
+    // mesmo caminho de `anigo-studio::library::import_glb_mesh`: GLB -> Mesh do núcleo -> EditMesh -> quadify
+    use anigo_modeling::convert::{from_core_mesh, quadify, FromCoreOptions};
+    let mesh = anigo_core::Mesh::from_glb_bytes(glb(true)).unwrap();
+    let mut em = from_core_mesh(&mesh, &FromCoreOptions::default()).expect("importa na Modelagem");
+    em.validate().unwrap();
+    let tris_before = em.face_count();
+    quadify(&mut em, 5f32.to_radians());
+    assert!(em.face_count() < tris_before, "quadify deve recuperar quads");
+    // a soldagem por posição funde as costuras de UV: volta (quase) aos vértices do contrato
+    let n = reference().n_verts;
+    assert!(em.vert_count() >= n - 50 && em.vert_count() <= n + 50, "{} vs {n}", em.vert_count());
+    let quads = em.faces.iter().filter(|f| f.len() == 4).count();
+    assert!(quads as f32 > 0.85 * reference().faces.len() as f32, "{quads} quads recuperados");
+}
+
+#[test]
+fn export_rejects_malformed_inputs_without_panicking() {
+    use anigo_charbase::export::ExportError;
+    let (c, m) = female();
+    let mut short = c.clone();
+    short.positions.truncate(10);
+    assert!(matches!(export_glb(&short, m, &ExportOptions::default()), Err(ExportError::VertexCount(10, _))));
+    let mut nan = c.clone();
+    nan.positions[3] = Vec3::NAN;
+    assert_eq!(export_glb(&nan, m, &ExportOptions::default()).unwrap_err(), ExportError::NotFinite);
+    let mut bad = m.clone();
+    bad.targets[0].deltas.push((u32::MAX, [0.0; 3]));
+    assert!(matches!(export_glb(c, &bad, &ExportOptions::default()), Err(ExportError::BadMorph(_, _))));
+    assert!(matches!(build_scene(&short, m), Err(_)));
+}
+
+#[test]
+fn sculpt_round_trip_through_glb_is_exact_and_rederives() {
+    use anigo_charbase::contract::rederive_tris;
+    use anigo_charbase::import::import_glb_skin;
+    let (c, _) = female();
+    // GLB do próprio gerador: soldar as costuras de UV devolve a ordem canônica
+    let imp = import_glb_skin(glb(true)).unwrap();
+    assert!(imp.file_vertices > imp.positions.len(), "há duplicatas de costura");
+    assert_eq!(imp.positions.len(), reference().n_verts);
+    for (a, b) in imp.positions.iter().zip(&c.positions) {
+        assert!((*a - *b).length() < 1e-6);
+    }
+    let rep = validate_topology_tris(&imp.positions, &imp.tris);
+    assert!(rep.is_exact(), "{:?}", rep.messages);
+    let r = rederive_tris(&imp.positions, &imp.tris).unwrap();
+    assert_eq!(r.method, RederiveMethod::Exact);
+    // um arquivo corrompido não derruba nada
+    assert!(import_glb_skin(&[1, 2, 3]).is_err());
+    assert!(import_glb_skin(&glb(true)[..200]).is_err());
 }

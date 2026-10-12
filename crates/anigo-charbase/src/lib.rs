@@ -15,6 +15,7 @@ pub mod debugview;
 pub mod dims;
 pub mod export;
 pub mod expressions;
+pub mod import;
 pub mod morphs;
 pub mod params;
 pub mod parts;

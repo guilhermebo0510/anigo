@@ -7,7 +7,7 @@ use anigo_charbase::morphs::{build_morphs, MorphGroup, MorphSet};
 use anigo_charbase::params::{Params, FACE_PARAM_NAMES};
 use anigo_charbase::parts::{build_parts, eye_geom, parts_topology, PART_NAMES};
 use anigo_charbase::skeleton::{bone_defs, Skeleton};
-use anigo_charbase::topology::{bfs_dist, quad_mesh_of, reference, Topology};
+use anigo_charbase::topology::{quad_mesh_of, reference, Topology};
 use anigo_charbase::{generate, generate_with, BaseCharacter, Gender};
 use anigo_modeling::bvh::TriBvh;
 use anigo_modeling::EditMesh;

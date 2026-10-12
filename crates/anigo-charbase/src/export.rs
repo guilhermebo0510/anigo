@@ -64,6 +64,32 @@ fn tri_normals(pos: &[Vec3], tris: &[[u32; 3]]) -> Vec<Vec3> {
     n.iter().map(|v| v.normalize_or_zero()).collect()
 }
 
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ExportError {
+    #[error("o personagem tem {0} vértices, o contrato exige {1}")]
+    VertexCount(usize, usize),
+    #[error("o personagem tem posições não finitas")]
+    NotFinite,
+    #[error("o morph '{0}' referencia o vértice {1}, fora da faixa")]
+    BadMorph(String, u32),
+}
+
+fn check_inputs(ch: &BaseCharacter, morphs: &MorphSet) -> Result<(), ExportError> {
+    let n = reference().n_verts;
+    if ch.positions.len() != n || ch.normals.len() != n {
+        return Err(ExportError::VertexCount(ch.positions.len(), n));
+    }
+    if ch.positions.iter().any(|p| !p.is_finite()) {
+        return Err(ExportError::NotFinite);
+    }
+    for t in &morphs.targets {
+        if let Some((v, _)) = t.deltas.iter().find(|(v, d)| *v as usize >= n || d.iter().any(|x| !x.is_finite())) {
+            return Err(ExportError::BadMorph(t.name.clone(), *v));
+        }
+    }
+    Ok(())
+}
+
 /// Resultado detalhado da montagem da cena (útil para testes).
 pub struct BuiltScene {
     pub scene: ExportScene,
@@ -77,7 +103,8 @@ pub struct BuiltScene {
 }
 
 /// Monta a cena de exportação: 65 ossos, malha "Body" com primitivos (pele + peças auxiliares).
-pub fn build_scene(ch: &BaseCharacter, morphs: &MorphSet) -> BuiltScene {
+pub fn build_scene(ch: &BaseCharacter, morphs: &MorphSet) -> Result<BuiltScene, ExportError> {
+    check_inputs(ch, morphs)?;
     let topo = reference();
     let n_bones = ch.skeleton.len();
     let t_count = morphs.targets.len();
@@ -187,13 +214,17 @@ pub fn build_scene(ch: &BaseCharacter, morphs: &MorphSet) -> BuiltScene {
             }
         })
         .collect();
+    // Deltas de normal só para as expressões (pequenas). Macros e rosto saem sem normais para manter o
+    // arquivo enxuto: o runtime do ANIGO recompleta as normais ausentes
+    // (`SparseMorphSet::complete_normal_deltas`).
     let skin_morphs: Vec<Vec<ExportMorphDelta>> = (0..t_count)
         .map(|ti| {
+            let with_normals = morphs.targets[ti].group == crate::morphs::MorphGroup::Expression;
             vert_list
                 .iter()
                 .map(|&(v, _)| ExportMorphDelta {
                     position: (target_pos[ti][v as usize] - ch.positions[v as usize]).to_array(),
-                    normal: (target_nrm[ti][v as usize] - base_normals[v as usize]).to_array(),
+                    normal: if with_normals { (target_nrm[ti][v as usize] - base_normals[v as usize]).to_array() } else { [0.0; 3] },
                 })
                 .collect()
         })
@@ -279,14 +310,14 @@ pub fn build_scene(ch: &BaseCharacter, morphs: &MorphSet) -> BuiltScene {
         materials,
         animations: Vec::new(),
     };
-    BuiltScene {
+    Ok(BuiltScene {
         scene,
         target_names,
         skin_canonical: nv,
         extra_canonical,
         mesh_node,
         root_node,
-    }
+    })
 }
 
 fn vrm_extension(ch: &BaseCharacter, built: &BuiltScene, opts: &ExportOptions) -> Value {
@@ -312,6 +343,19 @@ fn vrm_extension(ch: &BaseCharacter, built: &BuiltScene, opts: &ExportOptions) -
             );
         }
     }
+    // Dialeto legado do anigo-vrm (parse_vrm1 exige `expression.preset` com 16 nomes próprios e
+    // `meta.title/author/year`): escrito junto da forma oficial para que o arquivo abra nos dois
+    // leitores. As chaves extras são ignoradas por leitores que seguem a spec 1.0.
+    let legacy = [
+        ("neutral", "neutral"), ("angry", "angry"), ("sad", "sad"), ("happy", "happy"), ("relaxed", "relaxed"), ("aha", "surprised"),
+        ("fun", "happy"), ("sleepy", "relaxed"), ("surprised", "surprised"), ("upset", "sad"), ("ajishii", "sad"), ("akubou", "angry"),
+        ("airy", "relaxed"), ("frightened", "surprised"), ("disgusted", "angry"), ("confused", "sad"),
+    ];
+    let mut legacy_preset = Map::new();
+    for (name, target) in legacy {
+        let i = idx(target).unwrap_or(0);
+        legacy_preset.insert(name.to_string(), json!({ "blendShape": i, "isolated": false }));
+    }
     let head = ch.skeleton.pos(ch.skeleton.index("head").unwrap_or(0));
     let eye = (ch.skeleton.pos(ch.skeleton.index("leftEye").unwrap_or(0)) + ch.skeleton.pos(ch.skeleton.index("rightEye").unwrap_or(0))) * 0.5;
     let off = eye - head;
@@ -319,6 +363,11 @@ fn vrm_extension(ch: &BaseCharacter, built: &BuiltScene, opts: &ExportOptions) -
         "specVersion": "1.0",
         "meta": {
             "name": opts.title,
+            "title": opts.title,
+            "author": opts.author,
+            "year": 2026,
+            "contactInformation": "",
+            "reference": "",
             "version": "0.1.0",
             "authors": [opts.author],
             "copyrightInformation": "Base procedural Gen-0 do ANIGO (geometria gerada por codigo; nenhuma malha de terceiros).",
@@ -343,12 +392,13 @@ fn vrm_extension(ch: &BaseCharacter, built: &BuiltScene, opts: &ExportOptions) -
             "rangeMapVerticalUp": { "inputMaxValue": 90.0, "outputScale": 10.0 },
         },
         "expressions": { "preset": preset, "custom": {} },
+        "expression": { "preset": legacy_preset, "custom": {} },
     })
 }
 
 /// GLB determinístico do personagem base. Com `opts.vrm`, vira um VRM 1.0 (mesmo formato binário).
-pub fn export_glb(ch: &BaseCharacter, morphs: &MorphSet, opts: &ExportOptions) -> Vec<u8> {
-    let built = build_scene(ch, morphs);
+pub fn export_glb(ch: &BaseCharacter, morphs: &MorphSet, opts: &ExportOptions) -> Result<Vec<u8>, ExportError> {
+    let built = build_scene(ch, morphs)?;
     let (mut json, bin) = export_gltf(&built.scene, None);
     let topo = reference();
     if let Value::Object(root) = &mut json {
@@ -413,12 +463,14 @@ pub fn export_glb(ch: &BaseCharacter, morphs: &MorphSet, opts: &ExportOptions) -
             root.insert("extensions".into(), Value::Object(exts));
         }
     }
-    build_glb(&json, &bin)
+    Ok(build_glb(&json, &bin))
 }
 
 /// Contagens do que será exportado (para o relatório e para testes).
 pub fn summarize(ch: &BaseCharacter, morphs: &MorphSet) -> Value {
-    let built = build_scene(ch, morphs);
+    let Ok(built) = build_scene(ch, morphs) else {
+        return json!({ "error": "entrada inválida" });
+    };
     let prims: Vec<Value> = built.scene.meshes[0]
         .primitives
         .iter()

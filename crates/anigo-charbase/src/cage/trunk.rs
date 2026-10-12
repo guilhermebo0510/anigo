@@ -14,7 +14,6 @@ pub(crate) const ARM_HOLE_ROW: usize = 4;
 
 pub(crate) struct TrunkOut {
     pub rows: Vec<Vec<u32>>,
-    pub row_y: Vec<f32>,
     /// contorno (12) do buraco do ombro: [esquerdo (+x), direito (-x)]
     pub arm_holes: [Vec<u32>; 2],
 }
@@ -37,7 +36,7 @@ pub(crate) fn trunk_ring(d: &Dims, knots: &[crate::dims::TrunkKnot], y: f32) -> 
         let mut p = Vec3::new(x, y, z + k.zc);
         // busto / peitoral (frente) e glúteos (costas)
         let g = d.g;
-        let bust_amp = lerp(0.008, 0.024, g) * (1.0 + 0.45 * d.p.weight.max(0.0) + 0.5 * d.p.muscle * (1.0 - g)) * (1.0 - 0.35 * d.p.age * g);
+        let bust_amp = lerp(0.008, 0.034, g) * (1.0 + 0.45 * d.p.weight.max(0.0) + 0.5 * d.p.muscle * (1.0 - g)) * (1.0 - 0.35 * d.p.age * g);
         let by = d.y_bust - 0.012 * d.age_sag();
         let bust = bust_amp * (-((x.abs() - 0.064 * d.sc) / 0.034).powi(2)).exp() * (-((y - by) / 0.040).powi(2)).exp();
         let glute_amp = lerp(0.010, 0.020, g) * (1.0 + 0.3 * d.p.weight.max(0.0)) * (1.0 - 0.3 * d.p.age);
@@ -83,7 +82,6 @@ pub(crate) fn build_trunk(b: &mut B, d: &Dims, head: &HeadOut) -> TrunkOut {
         b.set_attr(i, 2, theta(j).cos());
     }
     let mut rows: Vec<Vec<u32>> = vec![ring0];
-    let mut row_y = vec![c.y];
     for (r, &u) in ROW_U.iter().enumerate() {
         let y = u * d.h;
         let pts = trunk_ring(d, &knots, y);
@@ -95,7 +93,6 @@ pub(crate) fn build_trunk(b: &mut B, d: &Dims, head: &HeadOut) -> TrunkOut {
             b.set_attr(i, 2, theta(j).cos());
         }
         rows.push(ids);
-        row_y.push(y);
     }
     let nrows = rows.len();
 
@@ -168,7 +165,6 @@ pub(crate) fn build_trunk(b: &mut B, d: &Dims, head: &HeadOut) -> TrunkOut {
 
     TrunkOut {
         rows,
-        row_y,
         arm_holes: [hole_l, hole_r],
     }
 }

@@ -7,6 +7,8 @@ use glam::{Vec2, Vec3};
 pub struct ViewOpts {
     pub wire: bool,
     pub background: [u8; 4],
+    /// Cor chapada (sem sombreamento): comprime bem e destaca o wireframe nas figuras da documentação.
+    pub flat: bool,
 }
 
 impl Default for ViewOpts {
@@ -14,6 +16,7 @@ impl Default for ViewOpts {
         Self {
             wire: false,
             background: [232, 234, 240, 255],
+            flat: false,
         }
     }
 }
@@ -74,9 +77,11 @@ pub fn render(
                     if z < zb[y * w + x] {
                         zb[y * w + x] = z;
                         let n = (nrm[ids[0] as usize] * l1 + nrm[ids[1] as usize] * l2 + nrm[ids[2] as usize] * l3).normalize_or_zero();
-                        let lam = n.dot(light).max(0.0) * 0.75 + 0.25;
+                        let lam = if o.flat { 0.92 } else { n.dot(light).max(0.0) * 0.75 + 0.25 };
                         let facing = n.dot(-fwd);
-                        let base = if let Some(c) = colors {
+                        let base = if o.flat && colors.is_none() {
+                            [236.0, 214.0, 200.0]
+                        } else if let Some(c) = colors {
                             let col = c[ids[0] as usize] * l1 + c[ids[1] as usize] * l2 + c[ids[2] as usize] * l3;
                             [col.x * 255.0, col.y * 255.0, col.z * 255.0]
                         } else if facing < 0.0 {

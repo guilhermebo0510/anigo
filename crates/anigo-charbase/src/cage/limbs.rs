@@ -272,7 +272,6 @@ fn build_hand(b: &mut B, d: &Dims, wrist: &[u32], s: f32, yc: f32, zc: f32, x_w_
     b.add_loop(format!("palm_{sn}_mid_loop"), palm[2].clone(), true);
 
     // --- dedos ---
-    let x_base = x_w_abs + 0.092 * sc;
     let fan = [5.0f32, 1.5, -3.0, -8.5];
     let lens = [0.071f32, 0.079, 0.073, 0.057];
     let fnames = ["index", "middle", "ring", "little"];
@@ -487,7 +486,6 @@ fn build_leg(b: &mut B, d: &Dims, chain: &[u32], s: f32) -> (Vec<u32>, Vec<Vec<u
     }
 
     // --- pé ---
-    let ankle_y = us[ankle_i] * h;
     let (ax, az) = radius(us[ankle_i]);
     let _ = az;
     // (normal φ em graus, centro (y, z), rx, rv, índice da região)

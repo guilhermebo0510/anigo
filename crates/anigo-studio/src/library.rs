@@ -43,6 +43,12 @@ pub fn linked_defaults() -> Vec<(String, PathBuf)> {
     if canon.is_dir() {
         v.push(("Bases canônicas".to_string(), canon));
     }
+    // Bases v2 (anigo-charbase, Gen-0): malha única de ~10 k vértices com esqueleto VRM de 55 ossos e morphs.
+    // Convivem com as canônicas até o usuário decidir a migração (docs/native/PERSONAGEM_BASE.md).
+    let v2 = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models_v2");
+    if v2.is_dir() {
+        v.push(("Bases v2 (Gen-0)".to_string(), v2));
+    }
     v
 }
 

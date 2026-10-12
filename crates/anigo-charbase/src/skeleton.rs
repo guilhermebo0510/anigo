@@ -75,9 +75,8 @@ impl Skeleton {
 /// Definição (nome, pai, localizador) dos ossos, na ordem de exportação.
 pub fn bone_defs(t: &Topology) -> Vec<BoneDef> {
     let ring = |name: &str| -> Locator { Locator::centroid(t.mark(name)) };
-    let lp = |name: &str| -> Locator { Locator::centroid(&t.loop_by_name(name).map(|l| l.verts.clone()).unwrap_or_default()) };
     let mut defs: Vec<BoneDef> = Vec::new();
-    let mut add = |defs: &mut Vec<BoneDef>, name: &str, parent: Option<&str>, humanoid: bool, loc: Locator| {
+    let add = |defs: &mut Vec<BoneDef>, name: &str, parent: Option<&str>, humanoid: bool, loc: Locator| {
         let p = parent.map(|pn| defs.iter().position(|d| d.name == pn).expect("pai deve vir antes"));
         defs.push(BoneDef {
             name: name.to_string(),

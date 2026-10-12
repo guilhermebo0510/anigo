@@ -181,7 +181,6 @@ fn lattice_dir(i: usize, j: usize, k: usize) -> Vec3 {
 
 pub(crate) struct HeadOut {
     pub neck_loop: Vec<u32>,
-    pub shape_center: Vec3,
 }
 
 struct RingSpec {
@@ -298,7 +297,7 @@ pub(crate) fn build_head(b: &mut B, d: &Dims) -> HeadOut {
     let boundary_ids = |h: &Hole| -> Vec<u32> { h.boundary().iter().map(|&(a, bb)| id(h.side, h.a0 + a, h.b0 + bb)).collect() };
 
     // --- olhos ---
-    let eye_size = 1.0 + 0.10 * fp.eye_size;
+    let eye_size = 1.08 + 0.10 * fp.eye_size;
     let eye_w = 1.0 + 0.10 * fp.eye_width;
     let eye_h = 1.0 + 0.10 * fp.eye_height;
     let lid_specs = |sa: f32, sb: f32| {
@@ -383,7 +382,7 @@ pub(crate) fn build_head(b: &mut B, d: &Dims) -> HeadOut {
             &specs,
             (0.0, 0.0),
             0.0,
-            &|k, nu, nv| if k == 1 { 0.0035 * smoothstep(0.2, 1.0, nv) * (1.0 + 2.2 * pt) } else { 0.0 },
+            &|k, _nu, nv| if k == 1 { 0.0035 * smoothstep(0.2, 1.0, nv) * (1.0 + 2.2 * pt) } else { 0.0 },
             0.45,
         );
         for (k, r) in rings.iter().enumerate() {
@@ -491,6 +490,5 @@ pub(crate) fn build_head(b: &mut B, d: &Dims) -> HeadOut {
     b.mark("hair_scalp", scalp);
     HeadOut {
         neck_loop,
-        shape_center: shape.c,
     }
 }

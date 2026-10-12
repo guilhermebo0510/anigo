@@ -384,7 +384,23 @@ fn fit_to_reference(positions: &[Vec3], r: &[Vec3]) -> Vec<Vec3> {
 /// * Com topologia diferente (re-malhada, reordenada, subdividida): casa cada vértice de referência
 ///   com o vizinho mais próximo (depois de ajustar escala e posição) para re-localizar as juntas e
 ///   copia os pesos do vértice de referência mais próximo para cada vértice novo.
+///
+/// Com `faces = None` a função confia que as posições estão na ordem do contrato quando a contagem
+/// de vértices coincide; passe as faces (ou use [`rederive_tris`]) para conferir de verdade.
 pub fn rederive(positions: &[Vec3], faces: Option<&[[u32; 4]]>) -> Result<Rederived, ContractError> {
+    let t = reference();
+    let exact = positions.len() == t.n_verts && faces.map(|f| hash_faces(f, positions.len()) == t.connectivity_hash()).unwrap_or(true);
+    rederive_inner(positions, exact)
+}
+
+/// Como [`rederive`], para uma malha triangulada (GLB): confere a conectividade triangulada.
+pub fn rederive_tris(positions: &[Vec3], tris: &[[u32; 3]]) -> Result<Rederived, ContractError> {
+    let t = reference();
+    let exact = positions.len() == t.n_verts && tri_hash(tris, positions.len()) == triangulated_hash(&t.faces, t.n_verts);
+    rederive_inner(positions, exact)
+}
+
+fn rederive_inner(positions: &[Vec3], exact: bool) -> Result<Rederived, ContractError> {
     if positions.is_empty() {
         return Err(ContractError::Empty);
     }
@@ -393,7 +409,6 @@ pub fn rederive(positions: &[Vec3], faces: Option<&[[u32; 4]]>) -> Result<Rederi
     }
     let t = reference();
     let defs = bone_defs(t);
-    let exact = positions.len() == t.n_verts && faces.map(|f| hash_faces(f, positions.len()) == t.connectivity_hash()).unwrap_or(true);
     if exact {
         let skeleton = Skeleton::derive(&defs, positions);
         let landmarks = t.landmarks.iter().map(|(n, l)| (n.clone(), l.eval(positions))).collect();
