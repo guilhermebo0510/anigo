@@ -2,9 +2,10 @@
 name = "anigo-cloth"
 version = "0.1.0"
 edition = "2021"
-description = "ANIGO Real-Time Cloth and Tailoring Simulation Engine"
+description = "ANIGO Real-Time Cloth and Tailoring Simulation Engine (authoring) + physics via anigo-physics"
 
 [dependencies]
 glam = { workspace = true }
 serde = { workspace = true }
 anigo-core = { workspace = true }
+anigo-physics = { workspace = true }

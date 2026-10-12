@@ -1105,7 +1105,7 @@ async fn vrm_import_model(path: String) -> Result<VrmImportInfo, String> {
             expression_presets,
             expression_custom,
             mtoon_material_count: parsed.materials.iter().filter(|m| m.is_some()).count(),
-            spring_bone_groups: parsed.spring_bone.as_ref().map(|s| s.groups.len()).unwrap_or(0),
+            spring_bone_groups: parsed.spring_bone.as_ref().map(|s| s.springs.len()).unwrap_or(0),
             node_constraint_count: parsed.node_constraints.iter().filter(|c| c.is_some()).count(),
             warnings: parsed.warnings,
         }

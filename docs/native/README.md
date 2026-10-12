@@ -11,6 +11,7 @@
 | [CEL_ENGINE_FASE1.md](CEL_ENGINE_FASE1.md) | Melhorias do motor de cel shading (fase 1: DoF, rampa 2D, contorno, face SDF, paridade WGSL↔Rust) |
 | [BIBLIOTECA_BACKEND.md](BIBLIOTECA_BACKEND.md) / [BIBLIOTECA_BENCH.md](BIBLIOTECA_BENCH.md) | `anigo-assets`: SQLite/FTS5, locais, import GLB/glTF/OBJ/FBX/VRM, material toon canônico, miniaturas, benchmark de 50 mil ativos |
 | [BIBLIOTECA_UI.md](BIBLIOTECA_UI.md) | Workspace Biblioteca: grade virtualizada, miniaturas 3D cel, gestão, import, cenários de captura |
+| [FISICA.md](FISICA.md) | `anigo-physics`: spring bone VRM-exato, XPBD (cabelo, roupa por proxy, acessórios), `PhysicsWorld`, presets, números medidos, o que não foi validado visualmente e o que o renderer precisaria (storage buffer de N ossos) |
 | [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 

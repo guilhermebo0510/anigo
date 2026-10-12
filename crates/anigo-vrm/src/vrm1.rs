@@ -3,7 +3,9 @@
 //! Deserializa as quatro extensões oficiais:
 //!  - `VRMC_vrm` — meta, humanoid (mapeamento de ossos), expressões;
 //!  - `VRMC_materials_mtoon` — parâmetros MToon por material;
-//!  - `VRMC_springBone` — rig secundário (molas + colisores);
+//!  - `VRMC_springBone` — schema oficial 1.0 (`springs[].joints[]`, `colliders[].shape`,
+//!    `colliderGroups`, `center`) + `VRMC_springBone_extended_collider`; o formato legado
+//!    do ANIGO (`secondaryRig`) ainda é lido e convertido;
 //!  - `VRMC_node_constraint` — limites por nó.
 //!
 //! Parse tolerante a omissões opcionais (defaults da spec), rigoroso no que
@@ -51,52 +53,104 @@ pub struct Vrm1Expression {
     pub custom: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+/// Versão da spec `VRMC_springBone` (e `VRMC_springBone_extended_collider`) emitida pelo exportador.
+pub const SPRING_BONE_SPEC_VERSION: &str = "1.0";
+
+/// Junta de uma cadeia (`springs[i].joints[j]`, schema oficial `VRMC_springBone-1.0`).
+///
+/// Defaults da spec: `hitRadius=0`, `stiffness=1`, `gravityPower=0`,
+/// `gravityDir=[0,-1,0]`, `dragForce=0.5`. A última junta da cadeia só serve de
+/// "cauda" (os parâmetros dela não são usados).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Vrm1SpringJoint {
     pub node: u64,
-    pub distance: f32,
     pub hit_radius: f32,
+    pub stiffness: f32,
     pub gravity_power: f32,
     pub gravity_dir: [f32; 3],
-    pub spring_stiffness: f32,
-    pub spring_damping: f32,
+    pub drag_force: f32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Vrm1SpringGroup {
-    pub name: String,
-    pub center: Vrm1SpringJoint,
+impl Default for Vrm1SpringJoint {
+    fn default() -> Self {
+        Self {
+            node: 0,
+            hit_radius: 0.0,
+            stiffness: 1.0,
+            gravity_power: 0.0,
+            gravity_dir: [0.0, -1.0, 0.0],
+            drag_force: 0.5,
+        }
+    }
+}
+
+/// Uma cadeia de molas (`springs[i]`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Vrm1Spring {
+    pub name: Option<String>,
     pub joints: Vec<Vrm1SpringJoint>,
+    /// Índices em `VRMC_springBone.colliderGroups`.
     pub collider_groups: Vec<u64>,
+    /// Nó usado como raiz do "center space" (None = espaço do mundo).
+    pub center: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Vrm1SphereCollider {
-    pub group: u64,
+/// Forma de um collider (`colliders[i].shape`). `Sphere`/`Capsule` com
+/// `inside=false` são a spec base; `inside=true` e `Plane` vêm de
+/// `VRMC_springBone_extended_collider`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Vrm1ColliderShape {
+    Sphere { offset: [f32; 3], radius: f32, inside: bool },
+    Capsule { offset: [f32; 3], radius: f32, tail: [f32; 3], inside: bool },
+    Plane { offset: [f32; 3], normal: [f32; 3] },
+}
+
+impl Vrm1ColliderShape {
+    /// `true` quando a forma precisa de `VRMC_springBone_extended_collider`.
+    pub fn is_extended(&self) -> bool {
+        match self {
+            Vrm1ColliderShape::Sphere { inside, .. } | Vrm1ColliderShape::Capsule { inside, .. } => *inside,
+            Vrm1ColliderShape::Plane { .. } => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Vrm1Collider {
     pub node: u64,
-    pub radius: f32,
-    pub offset: [f32; 3],
+    pub shape: Vrm1ColliderShape,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Vrm1CapsuleCollider {
-    pub group: u64,
-    pub node: u64,
-    pub from: [f32; 3],
-    pub to: [f32; 3],
-    pub radius: f32,
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Vrm1ColliderGroup {
+    pub name: Option<String>,
+    /// Índices em `VRMC_springBone.colliders`.
+    pub colliders: Vec<u64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Vrm1Colliders {
-    pub spheres: Vec<Vrm1SphereCollider>,
-    pub capsules: Vec<Vrm1CapsuleCollider>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// `VRMC_springBone` no schema oficial 1.0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Vrm1SpringBone {
-    pub groups: Vec<Vrm1SpringGroup>,
-    pub colliders: Vrm1Colliders,
+    pub spec_version: String,
+    pub colliders: Vec<Vrm1Collider>,
+    pub collider_groups: Vec<Vrm1ColliderGroup>,
+    pub springs: Vec<Vrm1Spring>,
+}
+
+impl Default for Vrm1SpringBone {
+    fn default() -> Self {
+        Self {
+            spec_version: SPRING_BONE_SPEC_VERSION.to_string(),
+            colliders: Vec::new(),
+            collider_groups: Vec::new(),
+            springs: Vec::new(),
+        }
+    }
 }
 
 /// MToon (VRMC_materials_mtoon) — parâmetros por material (defaults da spec).
@@ -506,115 +560,429 @@ fn parse_mtoon(raw: Option<&Value>, where_: &str) -> Result<Vrm1MToon, Vrm1Error
     })
 }
 
-fn parse_spring_joint(raw: Option<&Value>, where_: &str) -> Result<Vrm1SpringJoint, Vrm1Error> {
-    let Some(raw) = raw.and_then(Value::as_object) else {
-        return Err(fail(Vrm1ErrorCode::BadSpringBone, format!("{where_}: joint inválido")));
-    };
-    let node = raw
-        .get("node")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| fail(Vrm1ErrorCode::BadSpringBone, format!("{where_}.node ausente")))?;
-    let distance = as_number(raw.get("distance"), 0.0, &format!("{where_}.distance"))?;
-    if distance < 0.0 {
-        return Err(fail(Vrm1ErrorCode::BadSpringBone, format!("{where_}.distance deve ser >= 0")));
-    }
-    Ok(Vrm1SpringJoint {
-        node,
-        distance: distance as f32,
-        hit_radius: as_number(raw.get("hitRadius"), 0.05, &format!("{where_}.hitRadius"))? as f32,
-        gravity_power: as_number(raw.get("gravityPower"), 0.0, &format!("{where_}.gravityPower"))? as f32,
-        gravity_dir: as_vec3(raw.get("gravityDir"), [0.0, -1.0, 0.0], &format!("{where_}.gravityDir"))?,
-        spring_stiffness: as_number(raw.get("springStiffness"), 0.5, &format!("{where_}.springStiffness"))? as f32,
-        spring_damping: as_number(raw.get("springDamping"), 0.5, &format!("{where_}.springDamping"))? as f32,
-    })
+// ---------------------------------------------------------------------------
+// VRMC_springBone (schema oficial 1.0 + leitura tolerante do formato legado)
+// ---------------------------------------------------------------------------
+
+fn sb_fail(message: impl Into<String>) -> Vrm1Error {
+    fail(Vrm1ErrorCode::BadSpringBone, message)
 }
 
-fn parse_spring_bone(raw: Option<&Value>, node_count: usize, warnings: &mut Vec<String>) -> Result<Vrm1SpringBone, Vrm1Error> {
-    let Some(rig) = raw
-        .and_then(Value::as_object)
-        .and_then(|o| o.get("secondaryRig"))
-        .and_then(Value::as_object)
-    else {
-        return Err(fail(Vrm1ErrorCode::BadSpringBone, "VRMC_springBone.secondaryRig ausente"));
-    };
-    let mut check_node = |node: u64, where_: &str| {
-        if node as usize >= node_count {
-            warnings.push(format!("springBone {where_}.node={node} fora da faixa — mola será ignorada em runtime"));
-        }
-    };
-    let mut groups: Vec<Vrm1SpringGroup> = Vec::new();
-    if let Some(groups_raw) = rig.get("groups").and_then(Value::as_array) {
-        for (i, group_raw) in groups_raw.iter().enumerate() {
-            let Some(group_raw) = group_raw.as_object() else {
-                return Err(fail(Vrm1ErrorCode::BadSpringBone, format!("groups[{i}] inválido")));
-            };
-            let center = parse_spring_joint(group_raw.get("center"), &format!("groups[{i}].center"))?;
-            check_node(center.node, &format!("groups[{i}].center"));
-            let mut joints: Vec<Vrm1SpringJoint> = Vec::new();
-            if let Some(joints_raw) = group_raw.get("joints").and_then(Value::as_array) {
-                for (j, joint_raw) in joints_raw.iter().enumerate() {
-                    let joint = parse_spring_joint(Some(joint_raw), &format!("groups[{i}].joints[{j}]"))?;
-                    check_node(joint.node, &format!("groups[{i}].joints[{j}]"));
-                    joints.push(joint);
-                }
+fn sb_f32(value: Option<&Value>, fallback: f32, where_: &str) -> Result<f32, Vrm1Error> {
+    match value {
+        None | Some(Value::Null) => Ok(fallback),
+        Some(v) => v
+            .as_f64()
+            .filter(|n| n.is_finite() && n.abs() < f32::MAX as f64)
+            .map(|n| n as f32)
+            .ok_or_else(|| sb_fail(format!("{where_}: número finito esperado"))),
+    }
+}
+
+fn sb_vec3(value: Option<&Value>, fallback: [f32; 3], where_: &str) -> Result<[f32; 3], Vrm1Error> {
+    match value {
+        None | Some(Value::Null) => Ok(fallback),
+        Some(v) => {
+            let arr = v
+                .as_array()
+                .filter(|a| a.len() == 3)
+                .ok_or_else(|| sb_fail(format!("{where_}: vetor de 3 números esperado")))?;
+            let mut out = [0f32; 3];
+            for (i, component) in arr.iter().enumerate() {
+                out[i] = sb_f32(Some(component), 0.0, where_)?;
             }
-            let collider_groups: Vec<u64> = group_raw
-                .get("colliderGroups")
-                .and_then(Value::as_array)
-                .map(|arr| arr.iter().filter_map(Value::as_u64).collect())
-                .unwrap_or_default();
-            groups.push(Vrm1SpringGroup {
-                name: group_raw.get("name").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("group_{i}")),
-                center,
-                joints,
-                collider_groups,
-            });
+            Ok(out)
         }
     }
-    let mut colliders = Vrm1Colliders::default();
-    let colliders_value = rig.get("colliders");
-    let colliders_raw: Vec<&Value> = match colliders_value {
+}
+
+fn sb_node(value: Option<&Value>, where_: &str) -> Result<u64, Vrm1Error> {
+    value
+        .and_then(Value::as_u64)
+        .ok_or_else(|| sb_fail(format!("{where_}: índice de nó (inteiro >= 0) obrigatório")))
+}
+
+fn sb_index_list(value: Option<&Value>, where_: &str) -> Result<Vec<u64>, Vrm1Error> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .map(|v| v.as_u64().ok_or_else(|| sb_fail(format!("{where_}: índice inteiro >= 0 esperado"))))
+            .collect(),
+        Some(_) => Err(sb_fail(format!("{where_}: lista de índices esperada"))),
+    }
+}
+
+fn sb_name(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(String::from)
+}
+
+/// `parent[i]` de cada nó a partir de `nodes[*].children` (índices inválidos são ignorados).
+fn node_parents(nodes: &[Value]) -> Vec<Option<usize>> {
+    let mut parents = vec![None; nodes.len()];
+    for (i, node) in nodes.iter().enumerate() {
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            for child in children.iter().filter_map(Value::as_u64) {
+                if let Some(slot) = parents.get_mut(child as usize) {
+                    *slot = Some(i);
+                }
+            }
+        }
+    }
+    parents
+}
+
+fn is_ancestor(parents: &[Option<usize>], ancestor: usize, node: usize) -> bool {
+    let mut cursor = parents.get(node).copied().flatten();
+    let mut guard = 0usize;
+    while let Some(p) = cursor {
+        if p == ancestor {
+            return true;
+        }
+        guard += 1;
+        if guard > parents.len() {
+            return false; // ciclo malformado
+        }
+        cursor = parents.get(p).copied().flatten();
+    }
+    false
+}
+
+fn parse_official_shape(shape: &Value, where_: &str) -> Result<Vrm1ColliderShape, Vrm1Error> {
+    let obj = shape
+        .as_object()
+        .ok_or_else(|| sb_fail(format!("{where_}: objeto esperado")))?;
+    let nonneg = |v: f32, what: &str| -> Result<f32, Vrm1Error> {
+        if v < 0.0 {
+            Err(sb_fail(format!("{where_}.{what} deve ser >= 0")))
+        } else {
+            Ok(v)
+        }
+    };
+    if let Some(sphere) = obj.get("sphere").filter(|v| !v.is_null()) {
+        let w = format!("{where_}.sphere");
+        return Ok(Vrm1ColliderShape::Sphere {
+            offset: sb_vec3(sphere.get("offset"), [0.0; 3], &format!("{w}.offset"))?,
+            radius: nonneg(sb_f32(sphere.get("radius"), 0.0, &format!("{w}.radius"))?, "sphere.radius")?,
+            inside: sphere.get("inside").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    if let Some(capsule) = obj.get("capsule").filter(|v| !v.is_null()) {
+        let w = format!("{where_}.capsule");
+        return Ok(Vrm1ColliderShape::Capsule {
+            offset: sb_vec3(capsule.get("offset"), [0.0; 3], &format!("{w}.offset"))?,
+            radius: nonneg(sb_f32(capsule.get("radius"), 0.0, &format!("{w}.radius"))?, "capsule.radius")?,
+            tail: sb_vec3(capsule.get("tail"), [0.0; 3], &format!("{w}.tail"))?,
+            inside: capsule.get("inside").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    if let Some(plane) = obj.get("plane").filter(|v| !v.is_null()) {
+        let w = format!("{where_}.plane");
+        let normal = sb_vec3(plane.get("normal"), [0.0, 0.0, 1.0], &format!("{w}.normal"))?;
+        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        if len < 1e-6 {
+            return Err(sb_fail(format!("{w}.normal não pode ser o vetor nulo")));
+        }
+        return Ok(Vrm1ColliderShape::Plane {
+            offset: sb_vec3(plane.get("offset"), [0.0; 3], &format!("{w}.offset"))?,
+            normal: [normal[0] / len, normal[1] / len, normal[2] / len],
+        });
+    }
+    Err(sb_fail(format!("{where_}: shape deve ter exatamente um de sphere/capsule/plane")))
+}
+
+fn parse_official_joint(raw: &Value, where_: &str) -> Result<Vrm1SpringJoint, Vrm1Error> {
+    let obj = raw.as_object().ok_or_else(|| sb_fail(format!("{where_}: objeto esperado")))?;
+    let defaults = Vrm1SpringJoint::default();
+    let joint = Vrm1SpringJoint {
+        node: sb_node(obj.get("node"), &format!("{where_}.node"))?,
+        hit_radius: sb_f32(obj.get("hitRadius"), defaults.hit_radius, &format!("{where_}.hitRadius"))?,
+        stiffness: sb_f32(obj.get("stiffness"), defaults.stiffness, &format!("{where_}.stiffness"))?,
+        gravity_power: sb_f32(obj.get("gravityPower"), defaults.gravity_power, &format!("{where_}.gravityPower"))?,
+        gravity_dir: sb_vec3(obj.get("gravityDir"), defaults.gravity_dir, &format!("{where_}.gravityDir"))?,
+        drag_force: sb_f32(obj.get("dragForce"), defaults.drag_force, &format!("{where_}.dragForce"))?,
+    };
+    if joint.hit_radius < 0.0 {
+        return Err(sb_fail(format!("{where_}.hitRadius deve ser >= 0")));
+    }
+    if joint.stiffness < 0.0 {
+        return Err(sb_fail(format!("{where_}.stiffness deve ser >= 0")));
+    }
+    if !(0.0..=1.0).contains(&joint.drag_force) {
+        return Err(sb_fail(format!("{where_}.dragForce deve estar em [0, 1]")));
+    }
+    Ok(joint)
+}
+
+fn parse_official_spring_bone(
+    raw: &serde_json::Map<String, Value>,
+    nodes: &[Value],
+    warnings: &mut Vec<String>,
+) -> Result<Vrm1SpringBone, Vrm1Error> {
+    let spec_version = match raw.get("specVersion").and_then(Value::as_str) {
+        Some(v) => v.to_string(),
+        None => {
+            warnings.push("VRMC_springBone.specVersion ausente (obrigatório na spec) — assumindo \"1.0\"".into());
+            SPRING_BONE_SPEC_VERSION.to_string()
+        }
+    };
+    if spec_version != SPRING_BONE_SPEC_VERSION {
+        warnings.push(format!("VRMC_springBone.specVersion=\"{spec_version}\" não é \"1.0\" — lendo como 1.0"));
+    }
+    let node_count = nodes.len();
+    let parents = node_parents(nodes);
+    let check_node = |node: u64, where_: &str, warnings: &mut Vec<String>| {
+        if node as usize >= node_count {
+            warnings.push(format!("springBone {where_}.node={node} fora da faixa de nodes — será ignorado em runtime"));
+        }
+    };
+
+    let mut colliders: Vec<Vrm1Collider> = Vec::new();
+    if let Some(list) = raw.get("colliders").and_then(Value::as_array) {
+        for (i, entry) in list.iter().enumerate() {
+            let w = format!("colliders[{i}]");
+            let obj = entry.as_object().ok_or_else(|| sb_fail(format!("{w}: objeto esperado")))?;
+            let node = sb_node(obj.get("node"), &format!("{w}.node"))?;
+            check_node(node, &w, warnings);
+            let extended = obj
+                .get("extensions")
+                .and_then(|e| e.get("VRMC_springBone_extended_collider"))
+                .and_then(|e| e.get("shape"))
+                .filter(|v| !v.is_null());
+            let shape = match (extended, obj.get("shape").filter(|v| !v.is_null())) {
+                (Some(ext), _) => parse_official_shape(ext, &format!("{w}.extensions.VRMC_springBone_extended_collider.shape"))?,
+                (None, Some(base)) => parse_official_shape(base, &format!("{w}.shape"))?,
+                (None, None) => return Err(sb_fail(format!("{w}.shape obrigatório"))),
+            };
+            colliders.push(Vrm1Collider { node, shape });
+        }
+    }
+
+    let mut collider_groups: Vec<Vrm1ColliderGroup> = Vec::new();
+    if let Some(list) = raw.get("colliderGroups").and_then(Value::as_array) {
+        for (i, entry) in list.iter().enumerate() {
+            let w = format!("colliderGroups[{i}]");
+            let obj = entry.as_object().ok_or_else(|| sb_fail(format!("{w}: objeto esperado")))?;
+            let mut indices = sb_index_list(obj.get("colliders"), &format!("{w}.colliders"))?;
+            let before = indices.len();
+            indices.retain(|c| (*c as usize) < colliders.len());
+            if indices.len() != before {
+                warnings.push(format!("springBone {w}.colliders referencia collider inexistente — referência descartada"));
+            }
+            collider_groups.push(Vrm1ColliderGroup { name: sb_name(obj.get("name")), colliders: indices });
+        }
+    }
+
+    let mut springs: Vec<Vrm1Spring> = Vec::new();
+    let mut seen_joint_nodes: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    if let Some(list) = raw.get("springs").and_then(Value::as_array) {
+        for (i, entry) in list.iter().enumerate() {
+            let w = format!("springs[{i}]");
+            let obj = entry.as_object().ok_or_else(|| sb_fail(format!("{w}: objeto esperado")))?;
+            let joints_raw = obj
+                .get("joints")
+                .and_then(Value::as_array)
+                .ok_or_else(|| sb_fail(format!("{w}.joints obrigatório")))?;
+            let mut joints = Vec::with_capacity(joints_raw.len());
+            for (j, joint_raw) in joints_raw.iter().enumerate() {
+                let jw = format!("{w}.joints[{j}]");
+                let joint = parse_official_joint(joint_raw, &jw)?;
+                check_node(joint.node, &jw, warnings);
+                if let Some(prev) = seen_joint_nodes.insert(joint.node, i) {
+                    warnings.push(format!(
+                        "springBone {jw}.node={} já pertence à cadeia springs[{prev}] (cadeias duplicadas são proibidas pela spec)",
+                        joint.node
+                    ));
+                }
+                joints.push(joint);
+            }
+            if joints.len() < 2 {
+                warnings.push(format!("springBone {w}.joints tem {} junta(s); a spec exige >= 2 — cadeia sem efeito", joints.len()));
+            }
+            for pair in joints.windows(2) {
+                if (pair[1].node as usize) < node_count
+                    && (pair[0].node as usize) < node_count
+                    && !is_ancestor(&parents, pair[0].node as usize, pair[1].node as usize)
+                {
+                    warnings.push(format!(
+                        "springBone {w}: nó {} não é descendente do nó {} — a spec exige joints[n] ancestral de joints[n+1]",
+                        pair[1].node, pair[0].node
+                    ));
+                }
+            }
+            let mut groups = sb_index_list(obj.get("colliderGroups"), &format!("{w}.colliderGroups"))?;
+            let before = groups.len();
+            groups.retain(|g| (*g as usize) < collider_groups.len());
+            if groups.len() != before {
+                warnings.push(format!("springBone {w}.colliderGroups referencia grupo inexistente — referência descartada"));
+            }
+            let center = match obj.get("center") {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    let node = sb_node(Some(v), &format!("{w}.center"))?;
+                    check_node(node, &format!("{w}.center"), warnings);
+                    Some(node)
+                }
+            };
+            springs.push(Vrm1Spring { name: sb_name(obj.get("name")), joints, collider_groups: groups, center });
+        }
+    }
+    Ok(Vrm1SpringBone { spec_version: SPRING_BONE_SPEC_VERSION.to_string(), colliders, collider_groups, springs })
+}
+
+/// Formato legado do ANIGO (`secondaryRig.groups[]/colliders[]{spheres,capsules}`), anterior ao
+/// schema oficial. Convertido para o modelo novo para não perder arquivos já gerados.
+fn parse_legacy_spring_bone(
+    rig: &serde_json::Map<String, Value>,
+    node_count: usize,
+    warnings: &mut Vec<String>,
+) -> Result<Vrm1SpringBone, Vrm1Error> {
+    warnings.push(
+        "VRMC_springBone em formato legado (secondaryRig) convertido para o schema oficial 1.0; reexporte para gravar o formato novo"
+            .into(),
+    );
+    let check_node = |node: u64, where_: &str, warnings: &mut Vec<String>| {
+        if node as usize >= node_count {
+            warnings.push(format!("springBone {where_}.node={node} fora da faixa — será ignorado em runtime"));
+        }
+    };
+    let legacy_joint = |raw: &Value, where_: &str| -> Result<Vrm1SpringJoint, Vrm1Error> {
+        let obj = raw.as_object().ok_or_else(|| sb_fail(format!("{where_}: joint inválido")))?;
+        let distance = sb_f32(obj.get("distance"), 0.0, &format!("{where_}.distance"))?;
+        if distance < 0.0 {
+            return Err(sb_fail(format!("{where_}.distance deve ser >= 0")));
+        }
+        Ok(Vrm1SpringJoint {
+            node: sb_node(obj.get("node"), &format!("{where_}.node"))?,
+            hit_radius: sb_f32(obj.get("hitRadius"), 0.05, &format!("{where_}.hitRadius"))?.max(0.0),
+            gravity_power: sb_f32(obj.get("gravityPower"), 0.0, &format!("{where_}.gravityPower"))?,
+            gravity_dir: sb_vec3(obj.get("gravityDir"), [0.0, -1.0, 0.0], &format!("{where_}.gravityDir"))?,
+            stiffness: sb_f32(obj.get("springStiffness"), 0.5, &format!("{where_}.springStiffness"))?.max(0.0),
+            drag_force: sb_f32(obj.get("springDamping"), 0.5, &format!("{where_}.springDamping"))?.clamp(0.0, 1.0),
+        })
+    };
+
+    // Colliders: lista (ou objeto único) de {spheres[], capsules[]}; `group` é um id livre.
+    let collider_objs: Vec<&Value> = match rig.get("colliders") {
         Some(Value::Array(arr)) => arr.iter().collect(),
         Some(v) if v.is_object() => vec![v],
         _ => vec![],
     };
-    for (i, collider_raw) in colliders_raw.iter().enumerate() {
-        let Some(collider_raw) = collider_raw.as_object() else {
-            return Err(fail(Vrm1ErrorCode::BadSpringBone, format!("colliders[{i}] inválido")));
-        };
-        if let Some(spheres) = collider_raw.get("spheres").and_then(Value::as_array) {
-            for (j, sphere_raw) in spheres.iter().enumerate() {
-                let Some(sphere_raw) = sphere_raw.as_object() else {
-                    return Err(fail(Vrm1ErrorCode::BadSpringBone, format!("colliders[{i}].spheres[{j}] inválido")));
-                };
-                let node = sphere_raw.get("node").and_then(Value::as_u64).unwrap_or(0);
-                check_node(node, &format!("colliders[{i}].spheres[{j}]"));
-                colliders.spheres.push(Vrm1SphereCollider {
-                    group: sphere_raw.get("group").and_then(Value::as_u64).unwrap_or(0),
+    let mut colliders: Vec<Vrm1Collider> = Vec::new();
+    let mut collider_group_ids: Vec<u64> = Vec::new(); // id legado de cada collider (mesmo índice)
+    for (i, entry) in collider_objs.iter().enumerate() {
+        let obj = entry.as_object().ok_or_else(|| sb_fail(format!("colliders[{i}] inválido")))?;
+        if let Some(spheres) = obj.get("spheres").and_then(Value::as_array) {
+            for (j, s) in spheres.iter().enumerate() {
+                let w = format!("colliders[{i}].spheres[{j}]");
+                let so = s.as_object().ok_or_else(|| sb_fail(format!("{w} inválido")))?;
+                let node = so.get("node").and_then(Value::as_u64).unwrap_or(0);
+                check_node(node, &w, warnings);
+                colliders.push(Vrm1Collider {
                     node,
-                    radius: sphere_raw.get("radius").and_then(Value::as_f64).unwrap_or(0.0) as f32,
-                    offset: as_vec3(sphere_raw.get("offset"), [0.0, 0.0, 0.0], &format!("colliders[{i}].spheres[{j}].offset"))?,
+                    shape: Vrm1ColliderShape::Sphere {
+                        offset: sb_vec3(so.get("offset"), [0.0; 3], &format!("{w}.offset"))?,
+                        radius: sb_f32(so.get("radius"), 0.0, &format!("{w}.radius"))?.max(0.0),
+                        inside: false,
+                    },
                 });
+                collider_group_ids.push(so.get("group").and_then(Value::as_u64).unwrap_or(0));
             }
         }
-        if let Some(capsules) = collider_raw.get("capsules").and_then(Value::as_array) {
-            for (j, capsule_raw) in capsules.iter().enumerate() {
-                let Some(capsule_raw) = capsule_raw.as_object() else {
-                    return Err(fail(Vrm1ErrorCode::BadSpringBone, format!("colliders[{i}].capsules[{j}] inválido")));
-                };
-                let node = capsule_raw.get("node").and_then(Value::as_u64).unwrap_or(0);
-                check_node(node, &format!("colliders[{i}].capsules[{j}]"));
-                colliders.capsules.push(Vrm1CapsuleCollider {
-                    group: capsule_raw.get("group").and_then(Value::as_u64).unwrap_or(0),
+        if let Some(capsules) = obj.get("capsules").and_then(Value::as_array) {
+            for (j, c) in capsules.iter().enumerate() {
+                let w = format!("colliders[{i}].capsules[{j}]");
+                let co = c.as_object().ok_or_else(|| sb_fail(format!("{w} inválido")))?;
+                let node = co.get("node").and_then(Value::as_u64).unwrap_or(0);
+                check_node(node, &w, warnings);
+                colliders.push(Vrm1Collider {
                     node,
-                    from: as_vec3(capsule_raw.get("from"), [0.0, 0.0, 0.0], &format!("colliders[{i}].capsules[{j}].from"))?,
-                    to: as_vec3(capsule_raw.get("to"), [0.0, 0.0, 0.0], &format!("colliders[{i}].capsules[{j}].to"))?,
-                    radius: capsule_raw.get("radius").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                    shape: Vrm1ColliderShape::Capsule {
+                        offset: sb_vec3(co.get("from"), [0.0; 3], &format!("{w}.from"))?,
+                        tail: sb_vec3(co.get("to"), [0.0; 3], &format!("{w}.to"))?,
+                        radius: sb_f32(co.get("radius"), 0.0, &format!("{w}.radius"))?.max(0.0),
+                        inside: false,
+                    },
                 });
+                collider_group_ids.push(co.get("group").and_then(Value::as_u64).unwrap_or(0));
             }
         }
     }
-    Ok(Vrm1SpringBone { groups, colliders })
+
+    let mut springs: Vec<Vrm1Spring> = Vec::new();
+    let mut referenced_ids: Vec<u64> = collider_group_ids.clone();
+    let mut spring_group_ids: Vec<Vec<u64>> = Vec::new();
+    if let Some(groups) = rig.get("groups").and_then(Value::as_array) {
+        for (i, entry) in groups.iter().enumerate() {
+            let obj = entry.as_object().ok_or_else(|| sb_fail(format!("groups[{i}] inválido")))?;
+            let center = match obj.get("center") {
+                None | Some(Value::Null) => None,
+                Some(raw) => {
+                    let joint = legacy_joint(raw, &format!("groups[{i}].center"))?;
+                    check_node(joint.node, &format!("groups[{i}].center"), warnings);
+                    Some(joint.node)
+                }
+            };
+            let mut joints = Vec::new();
+            if let Some(list) = obj.get("joints").and_then(Value::as_array) {
+                for (j, raw) in list.iter().enumerate() {
+                    let w = format!("groups[{i}].joints[{j}]");
+                    let joint = legacy_joint(raw, &w)?;
+                    check_node(joint.node, &w, warnings);
+                    joints.push(joint);
+                }
+            }
+            let ids: Vec<u64> = obj
+                .get("colliderGroups")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_u64).collect())
+                .unwrap_or_default();
+            referenced_ids.extend(ids.iter().copied());
+            spring_group_ids.push(ids);
+            springs.push(Vrm1Spring {
+                name: Some(sb_name(obj.get("name")).unwrap_or_else(|| format!("group_{i}"))),
+                joints,
+                collider_groups: Vec::new(),
+                center,
+            });
+        }
+    }
+
+    // Ids legados -> índices densos de `colliderGroups` (ordem crescente de id: determinístico).
+    referenced_ids.sort_unstable();
+    referenced_ids.dedup();
+    let mut collider_groups: Vec<Vrm1ColliderGroup> = Vec::new();
+    for id in &referenced_ids {
+        let members: Vec<u64> = collider_group_ids
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| *g == id)
+            .map(|(idx, _)| idx as u64)
+            .collect();
+        collider_groups.push(Vrm1ColliderGroup { name: Some(format!("group_{id}")), colliders: members });
+    }
+    for (spring, ids) in springs.iter_mut().zip(spring_group_ids) {
+        spring.collider_groups = ids
+            .iter()
+            .filter_map(|id| referenced_ids.binary_search(id).ok().map(|p| p as u64))
+            .collect();
+    }
+    Ok(Vrm1SpringBone { spec_version: SPRING_BONE_SPEC_VERSION.to_string(), colliders, collider_groups, springs })
+}
+
+/// Lê um bloco `VRMC_springBone` (oficial ou legado). `nodes` é `gltf.nodes` (para validar
+/// índices e a ordem ancestral das juntas).
+pub fn parse_spring_bone(raw: Option<&Value>, nodes: &[Value], warnings: &mut Vec<String>) -> Result<Vrm1SpringBone, Vrm1Error> {
+    let Some(obj) = raw.and_then(Value::as_object) else {
+        return Err(sb_fail("VRMC_springBone inválido (objeto esperado)"));
+    };
+    if let Some(rig) = obj.get("secondaryRig").and_then(Value::as_object) {
+        return parse_legacy_spring_bone(rig, nodes.len(), warnings);
+    }
+    if obj.contains_key("secondaryRig") {
+        return Err(sb_fail("VRMC_springBone.secondaryRig inválido"));
+    }
+    parse_official_spring_bone(obj, nodes, warnings)
 }
 
 fn parse_node_constraint(raw: Option<&Value>, node_index: usize) -> Result<Vrm1NodeConstraint, Vrm1Error> {
@@ -675,8 +1043,8 @@ pub fn parse_vrm1(model: &ParsedGltf) -> Result<ParsedVrm1, Vrm1Error> {
             .get("secondary")
             .cloned()
             .or_else(|| model.json.pointer("/extensions/VRMC_springBone").cloned());
-        let node_count = model.json.get("nodes").and_then(Value::as_array).map(|n| n.len()).unwrap_or(0);
-        Some(parse_spring_bone(raw.as_ref(), node_count, &mut warnings)?)
+        let nodes: &[Value] = model.json.get("nodes").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+        Some(parse_spring_bone(raw.as_ref(), nodes, &mut warnings)?)
     } else {
         None
     };

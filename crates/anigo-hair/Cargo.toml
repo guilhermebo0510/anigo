@@ -2,9 +2,11 @@
 name = "anigo-hair"
 version = "0.1.0"
 edition = "2021"
-description = "ANIGO Procedural Spline Hair Generation Engine"
+description = "ANIGO Procedural Spline Hair Generation Engine (authoring) + physics via anigo-physics"
 
 [dependencies]
 glam = { workspace = true }
 serde = { workspace = true }
 anigo-core = { workspace = true }
+anigo-modeling = { path = "../anigo-modeling" }
+anigo-physics = { workspace = true }
