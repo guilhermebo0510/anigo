@@ -14,12 +14,14 @@ anigo-modeling = { path = "../anigo-modeling" }
 anigo-renderer = { workspace = true }
 anigo-session = { path = "../anigo-session" }
 anigo-ik = { path = "../anigo-ik" }
+anigo-bridge = { path = "../anigo-bridge" }
 anigo-assets = { path = "../anigo-assets", default-features = false, features = ["fbx", "watch"] }
 anigo-native = { path = "../anigo-native", default-features = false, features = ["ufbx"] }
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }
 egui = "0.36"
 egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
 glam = { workspace = true }
+base64 = { workspace = true }
 bytemuck = { workspace = true }
 image = { workspace = true }
 # mesma versão que o `image` já compila: PNG com iTXt/cICP/pHYs e profundidade 16 bits

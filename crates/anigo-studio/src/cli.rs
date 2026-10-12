@@ -3,7 +3,10 @@
 //! ```text
 //! anigo-studio [--workspace <chave>] [--screenshot <png>] [--frames <n>] [--size <LxA>]
 //!              [--scenario <nome>] [--session-file <json>] [--no-session] [--lang pt|en]
+//!              [--bridge] [--bridge-port <n>] [--bridge-discovery <arquivo>]
 //! ```
+//!
+//! `--bridge` liga a bridge local do `anigo-mcp` (loopback + token; desligada por padrão; `ANIGO_BRIDGE=1` também liga).
 
 use crate::i18n::Lang;
 use crate::workspace::WorkspaceId;
@@ -19,6 +22,12 @@ pub struct Cli {
     pub session_file: Option<String>,
     pub no_session: bool,
     pub lang: Option<Lang>,
+    /// Liga a bridge local de automação (T-2.13).
+    pub bridge: bool,
+    /// Porta fixa da bridge (padrão: efêmera).
+    pub bridge_port: Option<u16>,
+    /// Arquivo de descoberta (padrão: pasta de dados do usuário; ver `anigo_bridge::discovery`).
+    pub bridge_discovery: Option<String>,
 }
 
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
@@ -49,6 +58,15 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--scenario" => cli.scenario = Some(value("--scenario")?),
             "--session-file" => cli.session_file = Some(value("--session-file")?),
             "--no-session" => cli.no_session = true,
+            "--bridge" => cli.bridge = true,
+            "--bridge-port" => {
+                cli.bridge_port = Some(value("--bridge-port")?.parse().map_err(|_| "--bridge-port precisa ser uma porta (0..65535)".to_string())?);
+                cli.bridge = true;
+            }
+            "--bridge-discovery" => {
+                cli.bridge_discovery = Some(value("--bridge-discovery")?);
+                cli.bridge = true;
+            }
             "--lang" => {
                 cli.lang = Some(match value("--lang")?.as_str() {
                     "pt" | "pt-BR" => Lang::PtBr,
@@ -90,6 +108,20 @@ mod tests {
         assert!(p(&["--frames"]).unwrap_err().contains("valor"));
         assert!(p(&["--size", "100"]).is_err());
         assert!(p(&["--wat"]).is_err());
+    }
+
+    #[test]
+    fn bridge_flags_are_off_by_default_and_imply_each_other() {
+        let c = p(&[]).unwrap();
+        assert!(!c.bridge && c.bridge_port.is_none() && c.bridge_discovery.is_none());
+        let c = p(&["--bridge"]).unwrap();
+        assert!(c.bridge);
+        let c = p(&["--bridge-port", "4567"]).unwrap();
+        assert!(c.bridge && c.bridge_port == Some(4567));
+        let c = p(&["--bridge-discovery", "/tmp/b.json"]).unwrap();
+        assert!(c.bridge && c.bridge_discovery.as_deref() == Some("/tmp/b.json"));
+        assert!(p(&["--bridge-port", "99999"]).is_err());
+        assert!(p(&["--bridge-port"]).is_err());
     }
 
     #[test]

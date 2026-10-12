@@ -9,7 +9,7 @@
 //! `code` é ADITIVO (clientes antigos o ignoram). Mensagens de auth contêm "Unauthorized"/"token" para o
 //! cliente legado continuar produzindo a mensagem acionável.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// Versão do protocolo (sobe só em mudança incompatível do envelope).

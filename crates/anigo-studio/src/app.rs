@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 mod automation;
+mod bridge_host;
 mod character_ui;
 mod gizmo;
 mod hair_ui;
@@ -113,6 +114,8 @@ pub struct StudioApp {
     pub(crate) shading_ui: shading_ui::ShadingUi,
     /// Estado do workspace Posing (seleção de ossos, IK, gizmo, Biblioteca de poses); a pose vive em `core`.
     pub(crate) pose_ui: posing_ui::PosingUi,
+    /// Bridge local de automação do `anigo-mcp` (T-2.13); `None` = desligada (padrão).
+    pub(crate) bridge: Option<bridge_host::BridgeHost>,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -285,6 +288,7 @@ impl StudioApp {
             }
         }
 
+        let bridge = bridge_host::BridgeHost::start(&cli, &cc.egui_ctx);
         Self {
             cli,
             ws,
@@ -322,6 +326,7 @@ impl StudioApp {
             render_ui,
             shading_ui: shading_ui::ShadingUi::default(),
             pose_ui,
+            bridge,
         }
     }
 
@@ -538,6 +543,7 @@ impl StudioApp {
                     ui.separator();
                     ui.label(RichText::new(format!("shader: {}", err.lines().next().unwrap_or(""))).color(Color32::from_rgb(0xff, 0x70, 0x70)).size(12.0));
                 }
+                self.bridge_status_label(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
                     if let Some(g) = &self.gpu {
@@ -709,7 +715,8 @@ impl StudioApp {
             i.events
                 .iter()
                 .filter_map(|e| match e {
-                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    // capturas pedidas pela bridge (user_data presente) não são do `--screenshot`
+                    egui::Event::Screenshot { image, user_data, .. } if user_data.data.is_none() => Some(image.clone()),
                     _ => None,
                 })
                 .collect()
@@ -732,6 +739,7 @@ impl eframe::App for StudioApp {
         self.ensure_gpu(frame);
         self.poll_hot_reload();
         self.run_scenario();
+        self.bridge_tick(&ui.ctx().clone());
 
         self.top_bar(ui);
         self.status_bar(ui);
@@ -778,6 +786,7 @@ impl eframe::App for StudioApp {
             }
         }
 
+        self.bridge_note_viewport(ui.available_rect_before_wrap());
         if self.ws.has_viewport() {
             if self.ws == WorkspaceId::Modelagem {
                 self.viewport_ui(ui, frame);
