@@ -236,7 +236,7 @@ impl CelPreview {
             .objects
             .iter()
             .filter(|o| o.visible)
-            .map(|o| (o.id, o.render_hash()))
+            .map(|o| (o.id, o.render_hash() ^ doc.stylized.get(&o.id).map_or(0, |m| anigo_core::fnv1a64(&format!("{m:?}")).rotate_left(7))))
             .collect();
         if wanted != self.node_keys {
             self.scene.nodes.clear();
@@ -252,6 +252,10 @@ impl CelPreview {
                     sm.spec_intensity = 0.9;
                     sm.rim_intensity = 0.45;
                     node.material = Some(sm);
+                }
+                if let Some(full) = doc.stylized.get(&o.id) {
+                    // material completo editado no workspace Shading
+                    node.material = Some(full.clone());
                 }
                 let eval = o.evaluated(crate::modeling::EvalMode::Viewport);
                 let source = match &eval {
@@ -291,6 +295,22 @@ impl CelPreview {
             light.direction = dir.to_array();
         }
         self.scene.light = light;
+    }
+
+    /// Mapa SDF da sombra facial (R16Float, 0..1) usado pelos materiais com `face_sdf_enabled`
+    /// (renderer-global: vale para toda a cena até ser trocado/limpo).
+    pub fn set_face_sdf_f32(&self, width: u32, height: u32, values: &[f32]) -> Result<(), String> {
+        self.renderer.set_face_sdf_map_f32(width, height, values).map_err(|e| format!("{e:#}"))
+    }
+
+    /// Mapa SDF 8 bits (canal R de uma imagem do artista).
+    pub fn set_face_sdf_r8(&self, width: u32, height: u32, r8: &[u8]) -> Result<(), String> {
+        self.renderer.set_face_sdf_map(width, height, r8).map_err(|e| format!("{e:#}"))
+    }
+
+    /// Volta ao mapa neutro (a face SDF não altera a imagem).
+    pub fn clear_face_sdf(&self) {
+        self.renderer.clear_face_sdf_map();
     }
 
     /// Renderiza na textura interna (recriada se o tamanho mudar). `true` se foi recriada.

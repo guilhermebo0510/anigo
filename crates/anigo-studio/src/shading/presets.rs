@@ -128,6 +128,9 @@ pub const BUILT_IN: &[BuiltIn] = &[
 
 // ───────────────────────────── Biblioteca ─────────────────────────────────
 
+/// Chave de `ToonMaterial::extras` com as referências de textura (`slot -> anigo://library/<uuid>`).
+pub const TEXTURE_REFS_KEY: &str = "anigo_texture_refs";
+
 /// Linha de um preset salvo na Biblioteca.
 #[derive(Debug, Clone)]
 pub struct PresetRow {
@@ -144,7 +147,7 @@ fn safe_file_name(name: &str) -> String {
 
 /// Salva `m` como ativo `Material` da Biblioteca (`<nome>.anigomat.json`, tag `preset`). Devolve o id
 /// (se já existir um ativo com o mesmo conteúdo, o existente).
-pub fn save_preset(lib: &Library, name: &str, m: &StylizedMaterial) -> Result<AssetId, String> {
+pub fn save_preset(lib: &Library, name: &str, m: &StylizedMaterial, texture_refs: &std::collections::BTreeMap<String, String>) -> Result<AssetId, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("nome vazio".into());
@@ -152,6 +155,10 @@ pub fn save_preset(lib: &Library, name: &str, m: &StylizedMaterial) -> Result<As
     let mut tm = ToonMaterial::from_stylized(m);
     tm.name = name.to_string();
     tm.converted_from = None;
+    if !texture_refs.is_empty() {
+        // referências de textura da Biblioteca por slot (o renderer ainda não amostra todas; ficam no preset)
+        tm.extras = serde_json::json!({ TEXTURE_REFS_KEY: texture_refs });
+    }
     let bytes = tm.to_json().map_err(|e| e.to_string())?;
     let dir = std::env::temp_dir().join(format!("anigo-preset-{}-{}", std::process::id(), anigo_core::ids::fnv1a64(name)));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -183,6 +190,11 @@ pub fn list_presets(lib: &Library) -> Vec<PresetRow> {
 
 /// Carrega o `.anigomat.json` do ativo e converte para o material do renderer.
 pub fn load_preset(lib: &Library, id: &AssetId) -> Result<StylizedMaterial, String> {
+    load_preset_with_refs(lib, id).map(|(m, _)| m)
+}
+
+/// Como [`load_preset`], devolvendo também as referências de textura gravadas no preset.
+pub fn load_preset_with_refs(lib: &Library, id: &AssetId) -> Result<(StylizedMaterial, std::collections::BTreeMap<String, String>), String> {
     let files = lib.resolve_files(id).map_err(|e| e.to_string())?;
     let meta = std::fs::metadata(&files.primary).map_err(|e| format!("{}: {e}", files.primary.display()))?;
     if meta.len() > anigo_assets::material::MATERIAL_MAX_BYTES as u64 {
@@ -190,7 +202,13 @@ pub fn load_preset(lib: &Library, id: &AssetId) -> Result<StylizedMaterial, Stri
     }
     let bytes = std::fs::read(&files.primary).map_err(|e| e.to_string())?;
     let tm = ToonMaterial::from_json(&bytes).map_err(|e| e.to_string())?;
-    Ok(tm.to_stylized())
+    let refs = tm
+        .extras
+        .get(TEXTURE_REFS_KEY)
+        .and_then(|v| v.as_object())
+        .map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+        .unwrap_or_default();
+    Ok((tm.to_stylized(), refs))
 }
 
 #[cfg(test)]
@@ -226,7 +244,7 @@ mod tests {
         let lib = Library::open(&dir).unwrap();
         let mut m = (BUILT_IN[0].build)();
         m.name = "Minha pele".into();
-        let id = save_preset(&lib, "Minha pele", &m).unwrap();
+        let id = save_preset(&lib, "Minha pele", &m, &Default::default()).unwrap();
         let rows = list_presets(&lib);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, id);
@@ -234,10 +252,18 @@ mod tests {
         let loaded = load_preset(&lib, &id).unwrap();
         assert_eq!(loaded, m);
         // salvar o mesmo conteúdo de novo não duplica
-        let again = save_preset(&lib, "Minha pele", &m).unwrap();
+        let again = save_preset(&lib, "Minha pele", &m, &Default::default()).unwrap();
         assert_eq!(again, id);
         assert_eq!(list_presets(&lib).len(), 1);
-        assert!(save_preset(&lib, "  ", &m).is_err());
+        assert!(save_preset(&lib, "  ", &m, &Default::default()).is_err());
+        // referências de textura viajam no preset
+        let mut refs = std::collections::BTreeMap::new();
+        refs.insert("matcap".to_string(), "anigo://library/00000000-0000-0000-0000-000000000001".to_string());
+        m.name = "Com refs".into();
+        let id2 = save_preset(&lib, "Com refs", &m, &refs).unwrap();
+        let (m2, refs2) = load_preset_with_refs(&lib, &id2).unwrap();
+        assert_eq!(m2, m);
+        assert_eq!(refs2, refs);
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }

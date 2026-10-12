@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) use script::is_scene_scenario;
+pub(crate) use viewport::node_material;
 #[allow(unused_imports)]
 pub use script::SCENE_SCENARIOS;
 

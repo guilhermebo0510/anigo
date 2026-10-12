@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// Versão do visual das miniaturas (entra na chave do cache em disco).
-pub const PIPELINE_VER: u32 = 2;
+pub const PIPELINE_VER: u32 = 3;
 
 /// Fundo neutro das miniaturas (cor do clear, espaço do renderer).
 pub const THUMB_BG: [f32; 4] = [0.30, 0.31, 0.35, 1.0];
@@ -344,6 +344,20 @@ impl ThumbnailRenderer for CelThumbnailRenderer {
     }
 
     fn render(&self, req: &ThumbRequest) -> Result<Rendered, String> {
+        // Ativo Material (.anigomat.json): shader ball no renderer cel canônico (o mesmo do viewport)
+        if req.kind == anigo_assets::AssetKind::Material && req.format == "anigomat" {
+            if self.available() == Some(false) {
+                return Err(self.failure_reason().unwrap_or_default());
+            }
+            let meta = std::fs::metadata(&req.primary).map_err(|e| format!("{}: {e}", req.primary.display()))?;
+            if meta.len() > anigo_assets::material::MATERIAL_MAX_BYTES as u64 {
+                return Err("material grande demais".into());
+            }
+            let tm = anigo_assets::ToonMaterial::from_json(&std::fs::read(&req.primary).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            let prep = PreparedMesh::new((*crate::shading::ball::ball_mesh()).clone())?;
+            let image = self.render_prepared(&prep, ViewParams::default(), Some(tm.to_stylized()), req.size)?;
+            return Ok(Rendered { image, placeholder: false });
+        }
         if !is_3d_format(&req.format) {
             return Err(format!("{} não é 3D", req.format));
         }

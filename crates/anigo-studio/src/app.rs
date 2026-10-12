@@ -29,6 +29,7 @@ mod normals_ui;
 mod sculpt_ui;
 mod scene_ui;
 pub use scene_ui::ScenePrefs;
+mod shading_ui;
 mod uv_ui;
 mod viewport_ui;
 
@@ -100,6 +101,8 @@ pub struct StudioApp {
     pub(crate) char_ui: character_ui::CharacterUi,
     /// Estado do workspace Cenário (câmera, snap, seleção, caches); o projeto vive em `core`.
     pub(crate) scene_ui: scene_ui::SceneUi,
+    /// Estado do workspace Shading (alvo, preview, paleta, presets); o material vive no núcleo/Modelagem.
+    pub(crate) shading_ui: shading_ui::ShadingUi,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -210,6 +213,26 @@ impl StudioApp {
             }
         }
 
+        // cenários do Shading: biblioteca temporária VAZIA (presets salvos pelo próprio cenário)
+        if let Some(name) = cli.scenario.as_deref().filter(|n| shading_ui::is_shading_scenario(n)) {
+            if cli.workspace.is_none() {
+                ws = WorkspaceId::Shading;
+            }
+            let dir = std::env::var_os("ANIGO_SCENARIO_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::temp_dir().join(format!("anigo-shading-scenario-{}-{}", std::process::id(), name.trim_start_matches("shading-"))));
+            let _ = std::fs::remove_dir_all(&dir);
+            match anigo_assets::Library::open(dir.join("lib")) {
+                Ok(lib) => {
+                    lib_ws = Some(LibraryWorkspace::with_library(lib));
+                    lib_scenario_dir = Some(dir.clone());
+                }
+                Err(e) => eprintln!("cenário {name}: {e}"),
+            }
+            // paletas do cenário isoladas das do usuário
+            std::env::set_var("ANIGO_SHADING_DIR", dir.join("shading"));
+        }
+
         Self {
             cli,
             ws,
@@ -243,6 +266,7 @@ impl StudioApp {
             core,
             char_ui,
             scene_ui,
+            shading_ui: shading_ui::ShadingUi::default(),
         }
     }
 
@@ -267,6 +291,9 @@ impl StudioApp {
     /// Desfazer/refazer roteados pelo workspace ativo: Personagem fala com a sessão do núcleo,
     /// os demais com a `ModelingSession`.
     pub(crate) fn can_undo_redo(&self) -> (bool, bool) {
+        if self.ws == WorkspaceId::Shading {
+            return self.shading_can_undo_redo();
+        }
         character_ui::can_undo_redo(self.ws, &self.core, &self.modeling)
     }
 
@@ -277,6 +304,12 @@ impl StudioApp {
         if self.ws == WorkspaceId::Cenario {
             self.scene_ui.session = None;
             self.scene_ui.gesture = None;
+        }
+        if self.ws == WorkspaceId::Shading {
+            if let Some(msg) = self.shading_undo_redo(undo) {
+                self.shading_ui.message = msg;
+            }
+            return;
         }
         if let Some(msg) = character_ui::route_undo_redo(self.ws, &mut self.core, &mut self.modeling, undo) {
             if self.ws == WorkspaceId::Cenario {
@@ -386,6 +419,9 @@ impl StudioApp {
         if self.modeling.modal_active() {
             self.modeling.cancel_modal();
         }
+        if self.ws == WorkspaceId::Shading && w != WorkspaceId::Shading {
+            self.shading_commit_now();
+        }
         self.ws = w;
     }
 
@@ -399,6 +435,8 @@ impl StudioApp {
                     self.char_ui.message.clone()
                 } else if self.ws == WorkspaceId::Cenario && !self.scene_ui.message.is_empty() {
                     self.scene_ui.message.clone()
+                } else if self.ws == WorkspaceId::Shading && !self.shading_ui.message.is_empty() {
+                    self.shading_ui.message.clone()
                 } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
                 } else {
@@ -475,6 +513,9 @@ impl StudioApp {
     fn on_tool_selected(&mut self, id: &str) {
         if self.ws == WorkspaceId::Cenario {
             self.on_scene_tool_selected(id);
+        }
+        if self.ws == WorkspaceId::Shading {
+            self.on_shading_tool_selected(id);
         }
         if self.ws == WorkspaceId::Modelagem {
             let label_key = crate::app::inspector::modeling_tools(self.modeling.mode)
@@ -561,7 +602,8 @@ impl StudioApp {
             return;
         };
         let library_busy = (self.ws == WorkspaceId::Biblioteca && self.frame_count < self.cli.frames as u64 + 3000 && self.lib_ws.as_ref().is_some_and(|w| !w.scenario_done()))
-            || (self.ws == WorkspaceId::Cenario && self.frame_count < self.cli.frames as u64 + 3000 && self.scene_ui.script.as_ref().is_some_and(|s| !s.is_done()));
+            || (self.ws == WorkspaceId::Cenario && self.frame_count < self.cli.frames as u64 + 3000 && self.scene_ui.script.as_ref().is_some_and(|s| !s.is_done()))
+            || (self.ws == WorkspaceId::Shading && self.frame_count < self.cli.frames as u64 + 3000 && self.shading_ui.script.as_ref().is_some_and(|s| !s.is_done()));
         if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 && !library_busy {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -608,6 +650,11 @@ impl eframe::App for StudioApp {
             self.scene_shortcuts(&ui.ctx().clone());
             self.scene_panels(ui);
         }
+        if self.ws == WorkspaceId::Shading {
+            self.shading_script_tick();
+            self.shading_shortcuts(&ui.ctx().clone());
+            self.shading_panels(ui);
+        }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
@@ -625,6 +672,8 @@ impl eframe::App for StudioApp {
                 self.character_viewport_ui(ui, frame);
             } else if self.ws == WorkspaceId::Cenario {
                 self.scene_viewport_ui(ui, frame);
+            } else if self.ws == WorkspaceId::Shading {
+                self.shading_viewport_ui(ui, frame);
             } else {
                 self.placeholder_ui(ui);
             }
@@ -681,4 +730,10 @@ pub(crate) fn shading_label(s: ViewShading) -> &'static str {
         ViewShading::Wireframe => tr("viewport.wireframe"),
         ViewShading::Cel => tr("viewport.cel"),
     }
+}
+
+/// Chaves de i18n das abas de origem do Shading (para o teste de tradução).
+#[cfg(test)]
+pub(crate) fn shading_source_keys() -> Vec<&'static str> {
+    shading_ui::Source::ALL.iter().map(|s| s.key()).collect()
 }

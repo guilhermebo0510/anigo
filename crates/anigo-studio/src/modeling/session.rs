@@ -200,6 +200,10 @@ pub struct Document {
     /// Penteado (ferramenta de cabelo): mechas editáveis; as malhas dos grupos são objetos acima.
     #[serde(default)]
     pub hair: anigo_modeling::hair::HairSet,
+    /// Material toon COMPLETO por objeto (workspace Shading), por id de objeto. Quando existe, vale
+    /// mais que `ModelObject::material` no preview Cel. Omitido enquanto vazio.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub stylized: std::collections::BTreeMap<u32, anigo_core::StylizedMaterial>,
 }
 
 impl Document {
@@ -860,6 +864,36 @@ impl ModelingSession {
 
     pub fn capture(&self) -> SnapshotPub {
         self.snapshot()
+    }
+
+    // ------------------------------------------------- material toon por objeto (Shading)
+
+    /// Material toon completo do objeto `id` (se já foi editado no Shading).
+    pub fn object_stylized(&self, id: u32) -> Option<&anigo_core::StylizedMaterial> {
+        self.doc.stylized.get(&id)
+    }
+
+    /// Escreve o material do objeto SEM registrar undo (preview de arrasto; o commit usa
+    /// [`commit_snapshot`](Self::commit_snapshot) com o estado capturado antes do gesto).
+    pub fn set_object_stylized_live(&mut self, id: u32, m: Option<anigo_core::StylizedMaterial>) {
+        match m {
+            Some(m) => {
+                self.doc.stylized.insert(id, m);
+            }
+            None => {
+                self.doc.stylized.remove(&id);
+            }
+        }
+        self.revision += 1;
+    }
+
+    /// Edição discreta (preset, colar, reset): registra o undo e aplica.
+    pub fn set_object_stylized(&mut self, label: &str, id: u32, m: Option<anigo_core::StylizedMaterial>) {
+        if self.doc.stylized.get(&id) == m.as_ref() {
+            return;
+        }
+        self.checkpoint(label);
+        self.set_object_stylized_live(id, m);
     }
 
     /// Volta ao estado capturado e descarta a última entrada de undo (refazer com outros parâmetros).
