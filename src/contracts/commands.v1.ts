@@ -162,6 +162,47 @@ export interface AssetEntryWire {
   content_hash?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace Render — espelha `crates/anigo-core/src/render_output.rs`.
+// ---------------------------------------------------------------------------
+
+export type OutputFormatWire = "png8" | "png16" | "jpeg";
+
+export interface AovSelectionWire {
+  outline?: boolean;
+  depth?: boolean;
+  mask?: boolean;
+  object_id?: boolean;
+  normal?: boolean;
+}
+
+export interface DofSettingsWire {
+  enabled?: boolean;
+  focus_distance?: number;
+  f_number?: number;
+  focal_mm?: number;
+  bokeh_shape?: number;
+  max_radius_px?: number;
+}
+
+/** Patch de `RenderOutput` (+ espaço de cor do arquivo e near/far/aspecto da câmera de render). */
+export interface RenderOutputPatchWire {
+  width?: number;
+  height?: number;
+  scale_percent?: number;
+  supersample?: number;
+  transparent?: boolean;
+  format?: OutputFormatWire;
+  jpeg_quality?: number;
+  dpi?: number;
+  aov?: AovSelectionWire;
+  dof?: DofSettingsWire;
+  display_space?: "srgb" | "display_p3";
+  camera_aspect?: number;
+  camera_near?: number;
+  camera_far?: number;
+}
+
 /** Patch of the stylized material — only `Some` fields are written (Rust `Option`). */
 /**
  * Motor cel NPR (Fase 0/1): parâmetros opcionais por material — espelha
@@ -317,6 +358,7 @@ export type CommandWire =
   | { kind: "set_node_props"; node_id: string; patch: NodePatchWire }
   | { kind: "replace_nodes_asset"; entries: NodeAssetEntryWire[] }
   | { kind: "patch_assets"; put: AssetEntryWire[]; remove?: string[] }
+  | { kind: "set_render_output"; patch: RenderOutputPatchWire }
   | { kind: "batch"; commands: CommandWire[] };
 
 /** Kinds known by this contract version (drift-checked against the Rust enum). */
@@ -348,6 +390,7 @@ export const COMMAND_KINDS = [
   "set_node_props",
   "replace_nodes_asset",
   "patch_assets",
+  "set_render_output",
   "batch",
 ] as const;
 

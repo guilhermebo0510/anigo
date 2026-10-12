@@ -618,6 +618,9 @@ pub enum Command {
         #[serde(default)]
         remove: Vec<AssetId>,
     },
+    /// Workspace Render: saída de render (resolução, escala, supersampling, fundo transparente, formato,
+    /// AOVs, DoF), espaço de cor do arquivo e planos near/far/aspecto da câmera de render.
+    SetRenderOutput { patch: crate::render_output::RenderOutputPatch },
     /// Applies several commands atomically (single undo entry).
     Batch { commands: Vec<Command> },
 }
@@ -712,6 +715,7 @@ impl Command {
             }
             Command::ReplaceNodesAsset { entries } => format!("Replace asset of {} nodes", entries.len()),
             Command::PatchAssets { put, remove } => format!("Assets +{} -{}", put.len(), remove.len()),
+            Command::SetRenderOutput { .. } => "Render output".to_string(),
             Command::Batch { commands } => {
                 format!("Batch of {} commands", commands.len())
             }
@@ -748,7 +752,8 @@ impl Command {
             | Command::DuplicateNodes { .. }
             | Command::SetNodeProps { .. }
             | Command::ReplaceNodesAsset { .. }
-            | Command::PatchAssets { .. } => ChangeScope::Presentation,
+            | Command::PatchAssets { .. }
+            | Command::SetRenderOutput { .. } => ChangeScope::Presentation,
             Command::RenameProject { .. } => ChangeScope::Project,
             Command::Batch { commands } => commands
                 .iter()
@@ -801,7 +806,7 @@ impl Command {
                 .chain(remove.iter().map(AssetId::to_string))
                 .collect(),
             Command::LoadMeshPreset { .. } => vec![NodeId::canonical_character().to_string()],
-            Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } => {
+            Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } | Command::SetRenderOutput { .. } => {
                 vec!["rnd_main".to_string()]
             }
             Command::RenameProject { .. } => vec!["prj_*".to_string()],
@@ -1410,6 +1415,19 @@ impl Command {
                 }
                 Ok(())
             }
+            Command::SetRenderOutput { patch } => {
+                if patch.is_empty() {
+                    return Err(CommandError::NoOp("empty render output patch".to_string()));
+                }
+                patch.validate_against(state).map_err(|detail| CommandError::InvalidValue {
+                    field: "render_output".to_string(),
+                    detail,
+                })?;
+                if !patch.would_change(state) {
+                    return Err(CommandError::NoOp("render output already has those values".to_string()));
+                }
+                Ok(())
+            }
             Command::Batch { commands } => {
                 if commands.is_empty() {
                     return Err(CommandError::NoOp("empty batch".to_string()));
@@ -1749,6 +1767,7 @@ impl Command {
                 }
                 Ok(Command::PatchAssets { put: restore_put, remove: restore_remove })
             }
+            Command::SetRenderOutput { patch } => Ok(Command::SetRenderOutput { patch: patch.inverse(state) }),
             Command::Batch { commands } => {
                 // Inverse of a batch is the reversed batch of inverses. The
                 // intermediate states are replayed on a scratch copy so each
@@ -2138,6 +2157,10 @@ impl Command {
                 for entry in put {
                     state.assets.insert(entry.asset_id.clone(), entry.clone());
                 }
+                Ok(())
+            }
+            Command::SetRenderOutput { patch } => {
+                patch.apply(state);
                 Ok(())
             }
             Command::Batch { commands } => {
@@ -2962,6 +2985,18 @@ mod tests {
             },
             Command::RenameProject {
                 name: "Projeto de Teste".to_string(),
+            },
+            Command::SetRenderOutput {
+                patch: crate::render_output::RenderOutputPatch {
+                    width: Some(2480),
+                    height: Some(3508),
+                    transparent: Some(true),
+                    supersample: Some(2),
+                    display_space: Some(crate::project::ColorSpace::DisplayP3),
+                    camera_near: Some(0.2),
+                    camera_far: Some(300.0),
+                    ..Default::default()
+                },
             },
             // Regression guard for the undo-involution fix: switching the base
             // gender must round-trip exactly. Its inverse is `SetBaseGender`
@@ -4176,5 +4211,40 @@ mod tests {
         assert_eq!(scene_of(&state).nodes.len(), state.scene.nodes.len());
         let overrides = morph_overrides(&state);
         assert_eq!(overrides.get("mrf_head_width"), Some(&1.2));
+    }
+    #[test]
+    fn render_output_command_validates_undoes_and_serializes() {
+        use crate::render_output::RenderOutputPatch;
+        let mut state = project();
+        let mut history = CommandHistory::new(16);
+        let before = state.clone();
+        let cmd = Command::SetRenderOutput {
+            patch: RenderOutputPatch { width: Some(1080), height: Some(1350), dpi: Some(300), camera_near: Some(0.3), ..Default::default() },
+        };
+        // JSON do contrato TS: `kind: set_render_output`
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"kind\":\"set_render_output\""), "{json}");
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        history.execute(&mut state, cmd).unwrap();
+        assert_eq!((state.render.output.width, state.render.output.height), (1080, 1350));
+        assert!((state.scene.camera.camera.aspect - 0.8).abs() < 1e-6);
+        assert_eq!(state.scene.camera.camera.z_near, 0.3);
+        history.undo(&mut state).unwrap();
+        assert_eq!(state, before);
+        history.redo(&mut state).unwrap();
+        assert_eq!(state.render.output.dpi, 300);
+        // near >= far, valores fora da faixa e patch vazio são recusados sem tocar o projeto
+        for bad in [
+            RenderOutputPatch { camera_near: Some(500.0), ..Default::default() },
+            RenderOutputPatch { width: Some(2), ..Default::default() },
+            RenderOutputPatch::default(),
+        ] {
+            let snapshot = state.clone();
+            assert!(Command::SetRenderOutput { patch: bad }.apply(&mut state).is_err());
+            assert_eq!(state, snapshot);
+        }
+        // repetir o mesmo valor é NoOp
+        let again = Command::SetRenderOutput { patch: RenderOutputPatch { dpi: Some(300), ..Default::default() } };
+        assert!(matches!(again.apply(&mut state), Err(CommandError::NoOp(_))));
     }
 }

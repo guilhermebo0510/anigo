@@ -52,6 +52,7 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   set_node_props: "presentation",
   replace_nodes_asset: "presentation",
   patch_assets: "presentation",
+  set_render_output: "presentation",
   set_background_color: "presentation",
   set_render_settings: "presentation",
   rename_project: "project",

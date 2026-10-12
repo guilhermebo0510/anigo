@@ -11,6 +11,7 @@ pub mod morph;
 pub mod morph_catalog;
 pub mod npr;
 pub mod project;
+pub mod render_output;
 pub mod scene;
 pub mod skinning;
 pub mod snapshot;
@@ -65,6 +66,7 @@ pub use project::{
     TonemapOperator, TransformKeyframe, DEFAULT_AUTOSAVE_INTERVAL_MINUTES, DEFAULT_HISTORY_LIMIT,
     PROJECT_SCHEMA_VERSION, URI_BASE_FEMALE, URI_BASE_MALE, URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
+pub use render_output::{AovSelection, OutputFormat, RenderOutput, RenderOutputPatch, OUTPUT_MAX_SIDE, OUTPUT_MIN_SIDE};
 pub use scene::{Scene, SceneNode, StylizedLight, StylizedMaterial};
 pub use snapshot::{
     build_dynamic_payload, build_snapshot, build_snapshot_for_project, build_static_payload,
