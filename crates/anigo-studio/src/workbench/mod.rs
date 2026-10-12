@@ -134,6 +134,8 @@ pub struct Workbench {
     globals_bind: wgpu::BindGroup,
     pipelines: Pipelines,
     targets: Option<Targets>,
+    /// Objeto vazio: satisfaz o layout do grupo 1 quando não há itens (fundo + grid com a cena vazia).
+    empty_object: Option<GpuMesh>,
     pub background_top: [f32; 4],
     pub background_bottom: [f32; 4],
 }
@@ -177,7 +179,7 @@ impl Workbench {
             }],
         });
         let pipelines = Self::build_pipelines(&device, &globals_layout, &object_layout, EMBEDDED_SHADER)?;
-        Ok(Self {
+        let mut wb = Self {
             device,
             queue,
             globals_layout,
@@ -186,9 +188,12 @@ impl Workbench {
             globals_bind,
             pipelines,
             targets: None,
+            empty_object: None,
             background_top: [0.215, 0.220, 0.240, 1.0],
             background_bottom: [0.160, 0.163, 0.178, 1.0],
-        })
+        };
+        wb.empty_object = Some(wb.upload(&MeshDrawData::default(), Mat4::IDENTITY, [1.0; 4]));
+        Ok(wb)
     }
 
     /// Recompila os shaders (hot reload). Só troca os pipelines se a validação passar;
@@ -522,10 +527,15 @@ impl Workbench {
             });
             pass.set_bind_group(0, &self.globals_bind, &[]);
 
-            // fundo — usa o bind group do primeiro objeto só para satisfazer o layout
+            // fundo/grid — usam o bind group do primeiro objeto só para satisfazer o layout
+            // (com a cena vazia, o objeto vazio do próprio Workbench)
+            let layout_bind = items
+                .first()
+                .map(|i| &i.mesh.object_bind)
+                .or(self.empty_object.as_ref().map(|m| &m.object_bind));
             if settings.shading != ShadingMode::OverlayOnly {
-                if let Some(first) = items.first() {
-                    pass.set_bind_group(1, &first.mesh.object_bind, &[]);
+                if let Some(bind) = layout_bind {
+                    pass.set_bind_group(1, bind, &[]);
                     pass.set_pipeline(&self.pipelines.bg);
                     pass.draw(0..3, 0..1);
                 }
@@ -547,8 +557,8 @@ impl Workbench {
             }
 
             if settings.show_grid {
-                if let Some(first) = items.first() {
-                    pass.set_bind_group(1, &first.mesh.object_bind, &[]);
+                if let Some(bind) = layout_bind {
+                    pass.set_bind_group(1, bind, &[]);
                     pass.set_pipeline(&self.pipelines.grid);
                     pass.draw(0..3, 0..1);
                 }

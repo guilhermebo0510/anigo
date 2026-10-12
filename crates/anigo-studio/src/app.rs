@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 mod automation;
+mod character_ui;
 mod gizmo;
 mod inspector;
 pub mod operators;
@@ -86,6 +87,9 @@ pub struct StudioApp {
     /// Editor 2D de UV visível (Modo Edição).
     pub(crate) show_uv_editor: bool,
     pub(crate) box_start: Option<glam::Vec2>,
+    /// Sessão canônica do núcleo (projeto + histórico) do workspace Personagem.
+    pub(crate) core: anigo_session::CoreSession,
+    pub(crate) char_ui: character_ui::CharacterUi,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -100,6 +104,8 @@ impl StudioApp {
         let mut camera = OrbitCamera::default();
         let mut modeling = ModelingSession::with_default_cube();
         let mut restored = false;
+        let mut core = anigo_session::CoreSession::new();
+        let mut char_ui = character_ui::CharacterUi::default();
 
         let session_path = cli.session_file.as_ref().map(PathBuf::from);
         if !cli.no_session {
@@ -123,6 +129,15 @@ impl StudioApp {
                 camera = s.camera;
                 if !s.document.objects.is_empty() {
                     modeling.doc = s.document;
+                }
+                if let Some(doc) = &s.character_document {
+                    if let Err(e) = core.load_document(doc) {
+                        tracing::warn!("projeto do personagem da sessão ignorado: {e}");
+                    }
+                }
+                if let Some(c) = s.character_camera {
+                    char_ui.camera = c;
+                    char_ui.framed = true;
                 }
                 restored = true;
             }
@@ -170,6 +185,8 @@ impl StudioApp {
             frame_pending: false,
             show_uv_editor: false,
             box_start: None,
+            core,
+            char_ui,
         }
     }
 
@@ -184,6 +201,33 @@ impl StudioApp {
             lang: i18n::lang(),
             camera: self.camera,
             document: self.modeling.doc.clone(),
+            character_document: self.core.document().ok(),
+            character_camera: Some(self.char_ui.camera),
+        }
+    }
+
+    /// Desfazer/refazer roteados pelo workspace ativo: Personagem fala com a sessão do núcleo,
+    /// os demais com a `ModelingSession`.
+    pub(crate) fn can_undo_redo(&self) -> (bool, bool) {
+        if self.ws == WorkspaceId::Personagem {
+            (self.core.history().can_undo(), self.core.history().can_redo())
+        } else {
+            (self.modeling.can_undo(), self.modeling.can_redo())
+        }
+    }
+
+    pub(crate) fn undo_redo(&mut self, undo: bool) {
+        if self.ws == WorkspaceId::Personagem {
+            self.char_ui.gesture = None;
+            let r = if undo { self.core.undo() } else { self.core.redo() };
+            self.char_ui.message = match r {
+                Ok(o) => o.description,
+                Err(e) => e,
+            };
+        } else if undo {
+            self.modeling.undo();
+        } else {
+            self.modeling.redo();
         }
     }
 
@@ -262,21 +306,20 @@ impl StudioApp {
                             Lang::En => Lang::PtBr,
                         });
                     }
-                    let can_redo = self.modeling.can_redo();
-                    let can_undo = self.modeling.can_undo();
+                    let (can_undo, can_redo) = self.can_undo_redo();
                     if ui
                         .add_enabled(can_redo, egui::Button::new(icons::ARROW_CLOCKWISE))
                         .on_hover_text(tr("action.redo"))
                         .clicked()
                     {
-                        self.modeling.redo();
+                        self.undo_redo(false);
                     }
                     if ui
                         .add_enabled(can_undo, egui::Button::new(icons::ARROW_COUNTER_CLOCKWISE))
                         .on_hover_text(tr("action.undo"))
                         .clicked()
                     {
-                        self.modeling.undo();
+                        self.undo_redo(true);
                     }
                 });
             });
@@ -294,7 +337,9 @@ impl StudioApp {
         egui::Panel::bottom("statusbar").exact_size(24.0).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
-                let msg = if !self.modeling.status.is_empty() {
+                let msg = if self.ws == WorkspaceId::Personagem && !self.char_ui.message.is_empty() {
+                    self.char_ui.message.clone()
+                } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
                 } else {
                     tr("status.ready").to_string()
@@ -544,6 +589,10 @@ impl eframe::App for StudioApp {
         if self.ws.has_viewport() {
             self.tool_shelf(ui);
         }
+        if self.ws == WorkspaceId::Personagem {
+            self.character_shortcuts(&ui.ctx().clone());
+            self.inspector_character(ui);
+        }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
@@ -557,6 +606,8 @@ impl eframe::App for StudioApp {
         if self.ws.has_viewport() {
             if self.ws == WorkspaceId::Modelagem {
                 self.viewport_ui(ui, frame);
+            } else if self.ws == WorkspaceId::Personagem {
+                self.character_viewport_ui(ui, frame);
             } else {
                 self.placeholder_ui(ui);
             }

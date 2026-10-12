@@ -7,8 +7,17 @@ use crate::viewport::OrbitCamera;
 use anigo_core::{scene::SceneNode, Camera, Scene, StylizedLight};
 use anigo_modeling::convert::{to_core_mesh, ToCoreOptions};
 use anigo_renderer::{HeadlessRenderer, RenderMetrics};
+use anigo_session::CoreSession;
 use eframe::wgpu;
 use std::sync::Arc;
+
+/// Quem escreveu a cena do renderer por último (os workspaces compartilham o mesmo renderer
+/// canônico, mas cada um injeta o seu conteúdo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneOwner {
+    Modeling,
+    Character,
+}
 
 pub struct CelPreview {
     renderer: HeadlessRenderer,
@@ -22,6 +31,13 @@ pub struct CelPreview {
     pub light: StylizedLight,
     /// A luz acompanha a câmera (padrão do editor); desligue para fixar a direção em `light`.
     pub light_follows_camera: bool,
+    owner: SceneOwner,
+    /// (revisão dinâmica, revisão estática, revisão do histórico) da última sincronização do personagem.
+    char_key: Option<(u64, u64, u64)>,
+    /// Luz do projeto (mundo) — usada quando a luz do personagem não acompanha a câmera.
+    char_light: StylizedLight,
+    /// Caixa envolvente (min, max) da malha deformada do personagem.
+    pub character_bounds: Option<(glam::Vec3, glam::Vec3)>,
 }
 
 impl CelPreview {
@@ -41,11 +57,66 @@ impl CelPreview {
             last_error: None,
             light: StylizedLight::default(),
             light_follows_camera: true,
+            owner: SceneOwner::Modeling,
+            char_key: None,
+            char_light: StylizedLight::default(),
+            character_bounds: None,
         })
+    }
+
+    /// Sincroniza a cena com o PERSONAGEM da sessão do núcleo: a malha já deformada
+    /// (`CoreSession::sync_scene` = morphs + proporções + material + luz do projeto) é
+    /// injetada no mesmo renderer canônico. A malha só é reconstruída quando as revisões
+    /// da sessão mudam; câmera e luz são atualizadas a cada quadro.
+    pub fn sync_character(&mut self, session: &mut CoreSession, camera: &OrbitCamera, aspect: f32, light_follows_camera: bool) {
+        let key = (session.dynamic_revision(), session.static_revision(), session.history().revision());
+        if self.owner != SceneOwner::Character || self.char_key != Some(key) {
+            match session.sync_scene(&mut self.scene) {
+                Ok(()) => {
+                    self.last_error = None;
+                    self.char_key = Some(key);
+                    self.char_light = self.scene.light.clone();
+                    self.character_bounds = scene_bounds(&self.scene);
+                }
+                Err(e) => {
+                    self.last_error = Some(format!("personagem: {e}"));
+                    self.char_key = None;
+                }
+            }
+            // o fundo é do Workbench (gradiente + grid); aqui só o personagem, sobre transparente
+            self.scene.background_color = [0.0, 0.0, 0.0, 0.0];
+            self.node_keys.clear();
+            self.owner = SceneOwner::Character;
+        }
+        self.scene.camera = Camera {
+            eye: camera.eye(),
+            target: camera.target,
+            up: camera.up(),
+            fov_y: camera.fov_y,
+            aspect,
+            z_near: camera.near,
+            z_far: camera.far,
+            orthographic: None,
+        };
+        let mut light = self.char_light.clone();
+        if light_follows_camera {
+            let back = -camera.forward();
+            let dir = (-camera.right() * 0.45 + camera.up() * 0.6 + back * 0.65).normalize_or_zero();
+            light.direction = dir.to_array();
+        }
+        self.scene.light = light;
     }
 
     /// Sincroniza a cena do renderer com o documento de modelagem.
     pub fn sync_scene(&mut self, doc: &Document, camera: &OrbitCamera, aspect: f32) {
+        if self.owner != SceneOwner::Modeling {
+            // a cena veio de outro workspace: recomeça do zero
+            self.scene.nodes.clear();
+            self.node_keys.clear();
+            self.scene.background_color = [0.0, 0.0, 0.0, 0.0];
+            self.owner = SceneOwner::Modeling;
+            self.char_key = None;
+        }
         let wanted: Vec<(u32, u64)> = doc
             .objects
             .iter()
@@ -133,6 +204,24 @@ impl CelPreview {
     pub fn view(&self) -> Option<&wgpu::TextureView> {
         self.texture.as_ref().map(|t| &t.1)
     }
+}
+
+/// Caixa envolvente de todos os vértices das malhas da cena (espaço do objeto, sem transformação).
+fn scene_bounds(scene: &Scene) -> Option<(glam::Vec3, glam::Vec3)> {
+    let mut lo = glam::Vec3::splat(f32::INFINITY);
+    let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
+    let mut any = false;
+    for mesh in scene.nodes.iter().filter_map(|n| n.mesh.as_ref()) {
+        for v in &mesh.vertices {
+            let p = glam::Vec3::from_array(v.position);
+            if p.is_finite() {
+                lo = lo.min(p);
+                hi = hi.max(p);
+                any = true;
+            }
+        }
+    }
+    any.then_some((lo, hi))
 }
 
 #[cfg(test)]

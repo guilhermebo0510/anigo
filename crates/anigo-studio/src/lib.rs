@@ -11,6 +11,7 @@
 
 pub mod app;
 pub mod celview;
+pub mod character;
 pub mod cli;
 pub mod hot;
 pub mod i18n;
