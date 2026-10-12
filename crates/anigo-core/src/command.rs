@@ -27,7 +27,7 @@ use crate::level::{NodeAssetEntry, NodeAttrs, NodeCopy, NodePatch, NodeTransform
 use crate::math::{Camera, Transform};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
-use crate::pose::{HandsPose, PoseBoneEntry, PoseOp, PoseState};
+use crate::pose::{HandsPose, PoseBoneEntry, PoseOp};
 use crate::project::{
     AssetEntry, MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
     URI_PRESET_CUBE, URI_PRESET_SPHERE,
