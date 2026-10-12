@@ -160,6 +160,11 @@ jobs:
               --no-session --workspace modelagem --scenario "$sc" --frames 14 --size 1440x900 \
               --screenshot "native-artifacts/studio_$sc.png"
           done
+          for sc in character-default character-sliders character-female character-face; do
+            xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace personagem --scenario "$sc" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_$sc.png"
+          done
           xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
             --no-session --workspace biblioteca --frames 14 --size 1440x900 \
             --screenshot native-artifacts/studio_biblioteca.png
