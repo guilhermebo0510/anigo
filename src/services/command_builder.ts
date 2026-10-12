@@ -25,6 +25,7 @@ import {
   type MeshPresetWire,
   type NodeKindWire,
   type NodePatchWire,
+  type RenderOutputPatchWire,
   type NodeSourceWire,
   type TonemapOperatorWire,
   type TransformWire,
@@ -246,6 +247,8 @@ export type CommandIntent =
       put: Array<{ uri: string; byte_len?: number | null; content_hash?: string | null }>;
       remove_uris?: string[];
     }
+  /** Workspace Render: saída de render (resolução, supersampling, fundo, AOVs, DoF, cor, near/far). */
+  | { kind: "render_output"; patch: RenderOutputPatchWire }
   | { kind: "batch"; intents: CommandIntent[] };
 
 // ---------------------------------------------------------------------------
@@ -899,6 +902,35 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
       const command: CommandWire = { kind: "patch_assets", put };
       if (intent.remove_uris !== undefined) command.remove = intent.remove_uris.map(assetIdForUri);
       return { ok: true, command };
+    }
+
+    case "render_output": {
+      const p = intent.patch;
+      if (typeof p !== "object" || p === null || Object.keys(p).length === 0) {
+        return fail("no_op", "saída de render vazia");
+      }
+      for (const [field, lo, hi] of [
+        ["width", 16, 16384],
+        ["height", 16, 16384],
+        ["scale_percent", 10, 400],
+        ["supersample", 1, 4],
+        ["jpeg_quality", 1, 100],
+        ["dpi", 36, 1200],
+        ["camera_near", 0.001, 1000],
+        ["camera_far", 0.1, 100000],
+      ] as const) {
+        const value = (p as Record<string, unknown>)[field];
+        if (value === undefined) continue;
+        const problem = finite(value as number, field) ?? inRange(value as number, lo, hi, field);
+        if (problem) return problem;
+      }
+      if (p.display_space !== undefined && p.display_space !== "srgb" && p.display_space !== "display_p3") {
+        return fail("invalid_value", "display_space precisa ser srgb ou display_p3", "display_space");
+      }
+      if (p.format !== undefined && !["png8", "png16", "jpeg"].includes(p.format)) {
+        return fail("invalid_value", `formato '${p.format}' desconhecido`, "format");
+      }
+      return { ok: true, command: { kind: "set_render_output", patch: { ...p } } };
     }
 
     case "batch": {

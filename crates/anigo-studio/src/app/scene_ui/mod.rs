@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) use script::is_scene_scenario;
+pub(crate) use viewport::{node_material, orbit_from_camera};
 #[allow(unused_imports)]
 pub use script::SCENE_SCENARIOS;
 
@@ -471,6 +472,9 @@ pub(crate) fn describe_scene(desc: &str) -> String {
     }
     if desc == "Camera" {
         return key("scene.cmd.camera");
+    }
+    if desc == "Render output" || desc == "Render settings" {
+        return key("render.cmd.output");
     }
     if desc == "Lighting" {
         return key("scene.cmd.light");

@@ -88,7 +88,7 @@ describe("Command v1 — vocabulary matches the Rust enum", () => {
       `command kinds drifted: ${diff(rustKinds, [...COMMAND_KINDS])}`
     );
     assert.deepEqual([...wireMembers.keys()], rustKinds, "the union must cover every kind");
-    assert.equal(COMMAND_KINDS.length, 28);
+    assert.equal(COMMAND_KINDS.length, 29);
   });
 
   it("the snake_case array literal matches the exported tuple", () => {

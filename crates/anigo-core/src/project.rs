@@ -532,6 +532,10 @@ pub struct RenderState {
     /// rejeição antecipada no fragment shader).
     #[serde(default)]
     pub depth_prepass: bool,
+    /// Saída de render (resolução, supersampling, fundo transparente, AOVs, DoF…). Aditivo: omitido do
+    /// JSON canônico enquanto estiver no padrão.
+    #[serde(default, skip_serializing_if = "crate::render_output::RenderOutput::is_default")]
+    pub output: crate::render_output::RenderOutput,
 }
 
 impl Default for RenderState {
@@ -545,6 +549,7 @@ impl Default for RenderState {
             graph_order: Vec::new(),
             graph_disabled: Vec::new(),
             depth_prepass: false,
+            output: crate::render_output::RenderOutput::default(),
         }
     }
 }
@@ -1127,6 +1132,10 @@ impl ProjectState {
         for component in self.render.background_color {
             require_range("render.background_color", component, 0.0, 1.0)?;
         }
+        self.render.output.validate().map_err(|detail| ProjectError::InvalidValue {
+            field: "render.output".to_string(),
+            detail,
+        })?;
 
         Ok(())
     }
@@ -1276,6 +1285,7 @@ impl ProjectState {
         for component in self.render.background_color.iter_mut() {
             *component = component_or(*component, 0.0).clamp(0.0, 1.0);
         }
+        self.render.output.sanitize();
 
         self.settings.autosave_interval_minutes = self.settings.autosave_interval_minutes.clamp(1, 240);
         self.settings.history_limit = self.settings.history_limit.clamp(1, 1000);

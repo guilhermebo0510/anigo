@@ -57,7 +57,7 @@ pub(crate) fn letterbox(outer: Rect, aspect: f32) -> Rect {
     Rect::from_center_size(outer.center(), egui::vec2(rw, rh))
 }
 
-fn node_material(project: &anigo_core::ProjectState, slot: &anigo_core::NodeSlot) -> StylizedMaterial {
+pub(crate) fn node_material(project: &anigo_core::ProjectState, slot: &anigo_core::NodeSlot) -> StylizedMaterial {
     if slot.kind == NodeKind::CharacterRoot {
         return project.character_material().map(|m| m.material.clone()).unwrap_or_default();
     }

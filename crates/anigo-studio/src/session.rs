@@ -30,6 +30,9 @@ pub struct SessionState {
     /// Snap, ferramenta, sombreamento e painéis do Cenário.
     #[serde(default)]
     pub scene_prefs: Option<crate::app::ScenePrefs>,
+    /// Pasta de saída, template de nome, contador e guias do workspace Render.
+    #[serde(default)]
+    pub render_prefs: Option<crate::app::RenderPrefs>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +103,7 @@ mod tests {
             character_camera: None,
             scene_camera: None,
             scene_prefs: None,
+            render_prefs: None,
         }
     }
 

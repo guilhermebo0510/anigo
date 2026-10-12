@@ -181,12 +181,19 @@ jobs:
               --no-session --workspace iluminacao --scenario "$sc" --frames 14 --size 1440x900 \
               --screenshot "native-artifacts/studio_$sc.png"
           done
+          for sc in render-camera render-saida render-passes render-transparente render-fila; do
+            xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace render --scenario "$sc" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_$sc.png"
+          done
       - name: screenshots da Biblioteca (biblioteca sintética + ativos reais; espera as miniaturas 3D)
         run: bash scripts/native_library_screens.sh ./target/debug/anigo-studio native-artifacts
       - name: smoke de entrada real do Cenario (xdotool: arrasta card da Biblioteca, gizmo com snap, Ctrl+Z/Ctrl+Y)
         run: bash scripts/native_scene_smoke.sh ./target/debug/anigo-studio native-artifacts/scene_smoke
       - name: smoke de entrada real do Iluminacao (xdotool arrasta o disco do sol, Ctrl+Z/Ctrl+Y, clica um rig)
         run: bash scripts/native_lighting_smoke.sh ./target/debug/anigo-studio native-artifacts/lighting_smoke
+      - name: smoke de entrada real do Render (xdotool: trocar orientação, Ctrl+Z/Ctrl+Y, render real com alfa, determinismo, cancelar)
+        run: bash scripts/native_render_smoke.sh ./target/debug/anigo-studio native-artifacts/render_smoke
       - name: smoke de entrada real da Biblioteca (xdotool rola a grade, clica num card, Ctrl+clique, Ctrl+A)
         run: bash scripts/native_library_smoke.sh ./target/debug/anigo-studio native-artifacts/library_smoke
       - name: smoke de entrada real (xdotool: Tab, 3, clique, E, mover, clique)

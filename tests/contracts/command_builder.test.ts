@@ -51,7 +51,7 @@ function rejected(intent: CommandIntent, code: string): void {
 }
 
 describe("Intent → Command — toda alteração da UI vira um comando do contrato", () => {
-  it("cobre os 28 tipos de comando do contrato v1", () => {
+  it("cobre os 29 tipos de comando do contrato v1", () => {
     const intents: CommandIntent[] = [
       { kind: "morph", slider_id: UNIT_SLIDER.id, value: 1.05 },
       { kind: "reset_morphs", override_count: 3 },
@@ -104,6 +104,7 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
         kind: "patch_assets",
         put: [{ uri: "anigo://library/0190a1b2-0000-7000-8000-000000000001", byte_len: 10 }],
       },
+      { kind: "render_output", patch: { width: 2480, height: 3508, dpi: 300, supersample: 2, transparent: true } },
       { kind: "batch", intents: [{ kind: "zoom", factor: 1.1 }, { kind: "render_settings", tonemap: "neutral" }] },
     ];
 

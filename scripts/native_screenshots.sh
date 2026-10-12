@@ -53,6 +53,11 @@ shot iluminacao_rosto_sem_sombra iluminacao iluminacao-rosto-sem
 shot iluminacao_camera iluminacao iluminacao-camera
 shot iluminacao_ambiente iluminacao iluminacao-ambiente
 shot iluminacao_extras iluminacao iluminacao-extras
+shot render_camera render render-camera
+shot render_saida render render-saida
+shot render_passes render render-passes
+shot render_transparente render render-transparente
+shot render_fila render render-fila
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)
