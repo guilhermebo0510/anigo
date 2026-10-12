@@ -2,6 +2,7 @@
 members = [
     "crates/anigo-core",
     "crates/anigo-session",
+    "crates/anigo-bridge",
     "crates/anigo-modeling",
     "crates/anigo-studio",
     "crates/anigo-native",

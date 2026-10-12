@@ -1,0 +1,19 @@
+[package]
+name = "anigo-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Bridge local (loopback + token) entre o anigo-mcp e o app nativo ANIGO Studio: protocolo NDJSON/HTTP minimo, seguranca, ponte para a thread da UI e operacoes sobre a CoreSession"
+license = "Proprietary"
+
+[dependencies]
+anigo-core = { workspace = true }
+anigo-session = { path = "../anigo-session" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crossbeam-channel = "0.5"
+# CSPRNG do SO (getrandom(2) no Linux, BCryptGenRandom no Windows); ja compilado como dependencia transitiva
+getrandom = "0.3"
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
