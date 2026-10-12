@@ -10,6 +10,7 @@ members = [
     "crates/anigo-ik",
     "crates/anigo-hair",
     "crates/anigo-cloth",
+    "crates/anigo-physics",
     "crates/anigo-vrm",
     "crates/anigo-ai",
     "crates/anigo-assets",
@@ -34,3 +35,4 @@ wgpu = "30.0.1"
 anigo-core = { path = "crates/anigo-core" }
 anigo-renderer = { path = "crates/anigo-renderer" }
 anigo-vrm = { path = "crates/anigo-vrm" }
+anigo-physics = { path = "crates/anigo-physics" }
