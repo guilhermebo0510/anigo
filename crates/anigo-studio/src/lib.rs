@@ -20,6 +20,7 @@ pub mod icons;
 pub mod library;
 pub mod library_ui;
 pub mod modeling;
+pub mod scene;
 pub mod session;
 pub mod theme;
 pub mod viewport;
