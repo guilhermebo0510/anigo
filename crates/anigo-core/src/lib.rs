@@ -50,7 +50,7 @@ pub use level::{
     NodeSource, NodeTransformEntry, PlanError, PrimitiveShape, LIBRARY_URI_PREFIX,
 };
 pub use mesh::{BaseGender, Mesh, Vertex};
-pub use npr::NprParams;
+pub use npr::{NprParams, RampCustom};
 pub use morph::{MorphChannel, MorphTarget, SparseMorphDelta, SparseMorphHeader, SparseMorphSet};
 pub use morph_catalog::{
     ALL_MORPH_SLIDERS, AnatomicalZone, GenderDimorphism, MeshIntegrityReport, MorphCatalog,

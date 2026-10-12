@@ -82,6 +82,45 @@ fn ramp_2d_off_is_byte_identical_and_on_changes_the_terminator() {
     );
 }
 
+#[test]
+fn custom_ramp_row_changes_the_image_and_untouched_rows_stay_on_the_contract() {
+    let Some(renderer) = renderer_or_skip("ramp_custom") else { return };
+    let contract_row2 = render(&renderer, &probe_sphere(|m| {
+        m.npr.ramp_blend = 1.0;
+        m.npr.ramp_row = 2.0;
+    }));
+    // gradiente próprio SÓ na linha 3: a linha 2 continua a do contrato, byte a byte.
+    let other_row_custom = render(&renderer, &probe_sphere(|m| {
+        m.npr.ramp_blend = 1.0;
+        m.npr.ramp_row = 2.0;
+        m.npr.ramp_custom.set_stops(3, false, &[(0.0, 0.0), (1.0, 1.0)]);
+    }));
+    assert_eq!(contract_row2, other_row_custom, "linha sem gradiente próprio = contrato");
+
+    // linha 2 reescrita como degrau único bem escuro: muda a imagem de forma visível
+    let custom = render(&renderer, &probe_sphere(|m| {
+        m.npr.ramp_blend = 1.0;
+        m.npr.ramp_row = 2.0;
+        m.npr.ramp_custom.set_stops(2, true, &[(0.0, 0.0), (0.8, 1.0)]);
+    }));
+    assert!(differing_pixels(&contract_row2, &custom) > 800, "o gradiente próprio deveria mudar a sombra");
+
+    // rampa desligada: o gradiente próprio não tem efeito (nem é criado)
+    let baseline = render(&renderer, &probe_sphere(|_| {}));
+    let off = render(&renderer, &probe_sphere(|m| {
+        m.npr.ramp_custom.set_stops(2, true, &[(0.0, 0.0), (0.8, 1.0)]);
+    }));
+    assert_eq!(baseline, off, "ramp_blend = 0 ignora o gradiente próprio");
+
+    // gradiente linear (0→1) ≠ degrau: a penumbra larga muda o terminador
+    let linear = render(&renderer, &probe_sphere(|m| {
+        m.npr.ramp_blend = 1.0;
+        m.npr.ramp_row = 2.0;
+        m.npr.ramp_custom.set_stops(2, false, &[(0.2, 0.0), (0.8, 1.0)]);
+    }));
+    assert!(differing_pixels(&custom, &linear) > 500);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Contorno (inverted hull)
 // ─────────────────────────────────────────────────────────────────────────────

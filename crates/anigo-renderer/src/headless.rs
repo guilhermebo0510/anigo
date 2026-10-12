@@ -130,6 +130,9 @@ pub struct HeadlessRenderer {
     /// Mapa SDF da sombra facial (binding 16 do cel). `None` = neutro 1x1 branco
     /// (fator de sombra 0: a face SDF não altera a imagem).
     face_sdf_view: Mutex<Option<wgpu::TextureView>>,
+    /// Rampas 2D personalizadas por material (gradiente por linha, `NprParams::ramp_custom`),
+    /// chave = `RampCustom::cache_key`. Mesmo formato/sampler da rampa do contrato.
+    custom_ramps: Mutex<std::collections::HashMap<u64, wgpu::TextureView>>,
 }
 
 /// Vértices já morfados pelo compute (GPU): substituem o VBO estático dos nós
@@ -1049,6 +1052,7 @@ impl HeadlessRenderer {
             target_cache: Mutex::new(RenderTargetCache::new()),
             outline_normal_cache: Mutex::new(OutlineNormalCache::default()),
             face_sdf_view: Mutex::new(None),
+            custom_ramps: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -1097,6 +1101,7 @@ impl HeadlessRenderer {
         self.dof_nearest_sampler = resources.dof_nearest_sampler;
         // Os alvos em cache pertencem ao device antigo.
         self.lock_target_cache().clear();
+        self.custom_ramps.lock().unwrap_or_else(|p| p.into_inner()).clear();
 
         let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
         diagnostics::report_with_detail(
@@ -1335,6 +1340,55 @@ impl HeadlessRenderer {
         Ok(result_vertices)
     }
 
+    /// Textura de rampa 2D do material quando `npr.ramp_custom` define algum gradiente próprio
+    /// (as linhas sem gradiente mantêm os bytes do contrato). `None` = usar a rampa do contrato.
+    /// Cache por `RampCustom::cache_key` (limitado: passa de 64 entradas, recomeça).
+    fn custom_ramp_view(&self, npr: &anigo_core::NprParams) -> Option<wgpu::TextureView> {
+        let custom = npr.ramp_custom.sanitized();
+        if custom.is_default() {
+            return None;
+        }
+        let key = custom.cache_key();
+        let mut cache = self.custom_ramps.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(v) = cache.get(&key) {
+            return Some(v.clone());
+        }
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        let spec = contract::toon_ramp_spec();
+        let width = spec["width"].as_u64().unwrap_or(256) as u32;
+        let height = spec["height"].as_u64().unwrap_or(4) as u32;
+        let mut bytes = contract::toon_ramp_bytes();
+        if bytes.len() != (width * height * 4) as usize || !custom.apply_to_ramp_bytes(&mut bytes, width as usize) {
+            return None;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Toon Ramp 2D Texture (material)"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: contract::texture_format(spec["format"].as_str().unwrap_or("rgba8unorm")),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        cache.insert(key, view.clone());
+        Some(view)
+    }
+
     /// Issue #14: prepara os recursos de desenho de um nó (uniforms por nó +
     /// bind groups + IBO) uma vez por quadro, para o pré-passe e o passe
     /// principal desenharem os mesmos buffers.
@@ -1393,6 +1447,9 @@ impl HeadlessRenderer {
             None
         };
         let face_sdf_view = face_sdf_map.as_ref().unwrap_or(&self.mtoon_neutral_view);
+        // Rampa 2D personalizada do material (só com a rampa ligada e algum gradiente próprio).
+        let custom_ramp = if mat.npr.ramp_blend > 0.0 { self.custom_ramp_view(&mat.npr) } else { None };
+        let ramp_view = custom_ramp.as_ref().unwrap_or(&self.toon_ramp_view);
         let outline_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Outline Uniform Buffer"),
             contents: cast_slice(&[outline_uniform]),
@@ -1417,7 +1474,7 @@ impl HeadlessRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.toon_ramp_view),
+                    resource: wgpu::BindingResource::TextureView(ramp_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,

@@ -57,7 +57,7 @@ pub(crate) fn letterbox(outer: Rect, aspect: f32) -> Rect {
     Rect::from_center_size(outer.center(), egui::vec2(rw, rh))
 }
 
-fn node_material(project: &anigo_core::ProjectState, slot: &anigo_core::NodeSlot) -> StylizedMaterial {
+pub(crate) fn node_material(project: &anigo_core::ProjectState, slot: &anigo_core::NodeSlot) -> StylizedMaterial {
     if slot.kind == NodeKind::CharacterRoot {
         return project.character_material().map(|m| m.material.clone()).unwrap_or_default();
     }
@@ -67,15 +67,7 @@ fn node_material(project: &anigo_core::ProjectState, slot: &anigo_core::NodeSlot
         outline_color: [0.12, 0.10, 0.16, 1.0],
         ..Default::default()
     };
-    if let Some(c) = slot.overrides.base_color {
-        m.base_color = c;
-    }
-    if let Some(c) = slot.overrides.shade_color {
-        m.shade_color = c;
-    }
-    if let Some(w) = slot.overrides.outline_width {
-        m.outline_width = w;
-    }
+    slot.overrides.apply_to_material(&mut m);
     m
 }
 
