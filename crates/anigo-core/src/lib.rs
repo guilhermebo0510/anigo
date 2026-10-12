@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod bone_sync;
+pub mod clip_asset;
 pub mod command;
 pub mod deformation;
 pub mod export;

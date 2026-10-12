@@ -348,10 +348,12 @@ impl KeyValue {
 /// Quaternion unitário com `w ≥ 0`; entradas degeneradas viram identidade.
 pub fn canonical_quat(q: [f32; 4]) -> [f32; 4] {
     let quat = Quat::from_xyzw(q[0], q[1], q[2], q[3]);
-    if !quat.is_finite() || quat.length_squared() < 1e-12 {
+    let len2 = quat.length_squared();
+    if !quat.is_finite() || len2 < 1e-12 {
         return [0.0, 0.0, 0.0, 1.0];
     }
-    let quat = quat.normalize();
+    // já unitário (a menos de ruído de f32): não renormaliza, para a forma canônica ser estável bit a bit
+    let quat = if (len2 - 1.0).abs() < 1e-6 { quat } else { quat.normalize() };
     let quat = if quat.w < 0.0 { -quat } else { quat };
     quat.to_array()
 }
@@ -602,27 +604,41 @@ impl AnimationClip {
         set.into_iter().collect()
     }
 
-    /// Mapeia o quadro bruto do relógio para o quadro de avaliação: loop/ping-pong e "animar em Ns".
-    pub fn map_frame(&self, fps: f32, raw: f32) -> f32 {
+    /// Aplica só o loop/ping-pong ao quadro bruto do relógio (é o quadro que a régua mostra).
+    pub fn wrap_frame(&self, fps: f32, raw: f32) -> f32 {
         let (start, end) = self.effective_range(fps);
         let (s, e) = (start as f32, end as f32);
         let len = e - s;
-        let mut f = raw;
-        if len > 0.0 {
-            match self.loop_mode {
-                LoopMode::Once => {}
-                LoopMode::Loop => f = s + (raw - s).rem_euclid(len),
-                LoopMode::PingPong => {
-                    let p = (raw - s).rem_euclid(2.0 * len);
-                    f = if p <= len { s + p } else { s + 2.0 * len - p };
+        if len <= 0.0 {
+            return raw;
+        }
+        match self.loop_mode {
+            LoopMode::Once => raw,
+            LoopMode::Loop => s + (raw - s).rem_euclid(len),
+            LoopMode::PingPong => {
+                let p = (raw - s).rem_euclid(2.0 * len);
+                if p <= len {
+                    s + p
+                } else {
+                    s + 2.0 * len - p
                 }
             }
         }
+    }
+
+    /// "Animar em Ns": congela o quadro em múltiplos de `hold_step` a partir do início da faixa.
+    pub fn hold_frame(&self, fps: f32, frame: f32) -> f32 {
         let hold = self.hold_step.max(1) as f32;
-        if hold > 1.0 {
-            f = s + ((f - s) / hold).floor() * hold;
+        if hold <= 1.0 {
+            return frame;
         }
-        f
+        let s = self.effective_range(fps).0 as f32;
+        s + ((frame - s) / hold).floor() * hold
+    }
+
+    /// Mapeia o quadro bruto do relógio para o quadro de avaliação: loop/ping-pong e "animar em Ns".
+    pub fn map_frame(&self, fps: f32, raw: f32) -> f32 {
+        self.hold_frame(fps, self.wrap_frame(fps, raw))
     }
 
     /// Avalia o clip no quadro bruto `raw` (fracionário): aplica loop/hold e avalia cada canal. Os `tracks` legados

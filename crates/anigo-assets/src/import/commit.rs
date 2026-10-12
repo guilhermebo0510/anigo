@@ -36,6 +36,8 @@ fn default_name(p: &Prepared) -> String {
         file[..s.len()].to_string()
     } else if let Some(s) = file.to_lowercase().strip_suffix(anigo_core::pose::POSE_ASSET_SUFFIX) {
         file[..s.len()].to_string()
+    } else if let Some(s) = file.to_lowercase().strip_suffix(anigo_core::clip_asset::CLIP_ASSET_SUFFIX) {
+        file[..s.len()].to_string()
     } else {
         p.src.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or(file)
     };

@@ -109,7 +109,7 @@ impl ThumbnailRenderer for ChainRenderer {
 
 /// Renderizador padrao sem GPU: imagens -> miniatura real; materiais `.anigomat.json` -> esfera toon; resto -> placeholder.
 pub fn default_cpu_renderer() -> Arc<dyn ThumbnailRenderer> {
-    Arc::new(ChainRenderer::new(vec![Arc::new(ImageThumbnailRenderer::default()), Arc::new(MaterialSwatchRenderer), Arc::new(PoseStickRenderer), Arc::new(PlaceholderRenderer)]))
+    Arc::new(ChainRenderer::new(vec![Arc::new(ImageThumbnailRenderer::default()), Arc::new(MaterialSwatchRenderer), Arc::new(PoseStickRenderer), Arc::new(ClipStripRenderer), Arc::new(PlaceholderRenderer)]))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -361,6 +361,45 @@ impl ThumbnailRenderer for PoseStickRenderer {
         }
         let a = anigo_core::pose::PoseAsset::from_json(&std::fs::read(&req.primary).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         Ok(Rendered { image: Self::draw(&a.pose, req.size), placeholder: false })
+    }
+}
+
+/// Tira de poses de um clip (`.anigoclip.json`): 4 bonecos de palitos amostrados ao longo do clip, em grade 2x2.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClipStripRenderer;
+
+impl ClipStripRenderer {
+    /// Desenha as poses em `size` x `size` (grade 2x2; fundo transparente).
+    pub fn draw(asset: &anigo_core::clip_asset::ClipAsset, size: u32) -> RgbaImage {
+        let tile = (size / 2).max(8);
+        let mut img = RgbaImage::new(size, size);
+        for (i, pose) in asset.strip_poses(4).iter().enumerate() {
+            let t = PoseStickRenderer::draw(pose, tile);
+            let (ox, oy) = ((i as u32 % 2) * tile, (i as u32 / 2) * tile);
+            for (x, y, p) in t.enumerate_pixels() {
+                if ox + x < size && oy + y < size {
+                    img.put_pixel(ox + x, oy + y, *p);
+                }
+            }
+        }
+        img
+    }
+}
+
+impl ThumbnailRenderer for ClipStripRenderer {
+    fn id(&self) -> &str {
+        "cpu-clip-strip"
+    }
+    fn render(&self, req: &ThumbRequest) -> std::result::Result<Rendered, String> {
+        if req.format != "anigoclip" {
+            return Err("nao e um .anigoclip.json".into());
+        }
+        let meta = std::fs::metadata(&req.primary).map_err(|e| e.to_string())?;
+        if meta.len() > anigo_core::clip_asset::CLIP_ASSET_MAX_BYTES as u64 {
+            return Err("clip grande demais".into());
+        }
+        let a = anigo_core::clip_asset::ClipAsset::from_json(&std::fs::read(&req.primary).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        Ok(Rendered { image: Self::draw(&a, req.size), placeholder: false })
     }
 }
 

@@ -73,6 +73,38 @@ pub(crate) fn analyze_pose_file(path: &Path) -> Result<Analysis> {
     })
 }
 
+/// Analisa um `.anigoclip.json`: valida o formato (`ClipAsset::from_json`) e resume canais, chaves e duração.
+pub(crate) fn analyze_clip_file(path: &Path) -> Result<Analysis> {
+    use anigo_core::clip_asset::{ClipAsset, CLIP_ASSET_MAX_BYTES};
+    let meta = std::fs::metadata(path).at(path)?;
+    Limits::check("anigoclip.json", meta.len(), CLIP_ASSET_MAX_BYTES as u64)?;
+    let asset = ClipAsset::from_json(&std::fs::read(path).at(path)?).map_err(|e| AssetError::parse("anigoclip.json", e.to_string()))?;
+    let (a, b) = asset.frame_range();
+    let mut warnings = Vec::new();
+    if asset.key_count() < 2 {
+        warnings.push("o clip tem uma chave só (nada se move)".to_string());
+    }
+    Ok(Analysis {
+        kind: AssetKind::Animation,
+        stats: AssetStats { bones: asset.channels.iter().filter(|c| matches!(c.target, anigo_core::animation::ChannelTarget::Bone { .. })).count() as u32, anims: 1, ..Default::default() },
+        dependents: Vec::new(),
+        materials: Vec::new(),
+        suggested_name: Some(asset.name.clone()),
+        author: None,
+        license: None,
+        props: serde_json::json!({
+            "channels": asset.channels.len(),
+            "keys": asset.key_count(),
+            "fps": asset.fps,
+            "frames": [a, b],
+            "seconds": asset.duration_seconds(),
+            "loop": format!("{:?}", asset.loop_mode),
+            "hold_step": asset.hold_step,
+        }),
+        warnings,
+    })
+}
+
 pub(crate) fn analyze_material_file(path: &Path, limits: &Limits) -> Result<Analysis> {
     let meta = std::fs::metadata(path).at(path)?;
     Limits::check("anigomat.json", meta.len(), MATERIAL_MAX_BYTES as u64)?;

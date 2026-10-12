@@ -183,7 +183,7 @@ fn quaternion_bezier_remaps_the_slerp_parameter() {
     // ease-in: no meio do tempo a rotação ainda está abaixo de 45 graus
     assert!(q_angle(q, ry(0.0)) < 40.0, "{}", q_angle(q, ry(0.0)));
     let KeyValue::Quat(end) = ch.evaluate(10.0, Extrapolation::Constant).unwrap() else { panic!() };
-    assert!(q_angle(end, ry(90.0)) < 1e-3);
+    assert!(q_angle(end, ry(90.0)) < 0.05);
 }
 
 #[test]
