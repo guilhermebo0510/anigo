@@ -17,7 +17,6 @@ use crate::util::now_secs;
 /// Onde um ativo vive no indice.
 #[derive(Debug, Clone)]
 pub(crate) struct Loc {
-    pub seq: i64,
     pub root_id: i64,
     pub storage: StorageMode,
     pub manifest_dir: String,
@@ -74,7 +73,6 @@ impl Library {
                 Ok(c.prepare_cached("SELECT seq, root_id, storage, manifest_dir, state, file_mtime_ns, trashed_at FROM asset WHERE id = ?1")?
                     .query_row([id.as_bytes().as_slice()], |r| {
                         Ok(Loc {
-                            seq: r.get(0)?,
                             root_id: r.get(1)?,
                             storage: StorageMode::from_db(r.get(2)?),
                             manifest_dir: r.get(3)?,

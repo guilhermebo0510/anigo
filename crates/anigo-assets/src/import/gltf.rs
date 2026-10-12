@@ -364,11 +364,6 @@ pub(crate) mod fixtures {
         let (j, bin) = triangle_json(None);
         anigo_vrm::gltf::build_glb(&j, &bin)
     }
-
-    pub fn glb_with_material(mat: Value) -> Vec<u8> {
-        let (j, bin) = triangle_json(Some(mat));
-        anigo_vrm::gltf::build_glb(&j, &bin)
-    }
 }
 
 #[cfg(test)]

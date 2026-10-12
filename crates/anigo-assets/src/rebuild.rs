@@ -21,7 +21,6 @@ pub(crate) struct FoundDir {
     pub trashed: bool,
     /// Base onde a pasta foi achada (raiz managed ou home).
     pub base_root: i64,
-    pub linked_area: bool,
 }
 
 /// Resultado de `rebuild_index`.
@@ -53,12 +52,12 @@ pub(crate) fn scan_layout(base: &Path, base_root: i64, include_linked: bool) -> 
     if include_linked {
         areas.push(("linked", true));
     }
-    for (area, linked_area) in areas {
+    for (area, _) in areas {
         for (a, pa) in list_dirs(&base.join(area)) {
             for (b, pb) in list_dirs(&pa) {
                 for (id, pid) in list_dirs(&pb) {
                     if pid.join(MANIFEST_FILE).is_file() {
-                        out.push(FoundDir { rel: format!("{area}/{a}/{b}/{id}"), trashed: false, base_root, linked_area });
+                        out.push(FoundDir { rel: format!("{area}/{a}/{b}/{id}"), trashed: false, base_root });
                     }
                 }
             }
@@ -67,7 +66,7 @@ pub(crate) fn scan_layout(base: &Path, base_root: i64, include_linked: bool) -> 
     for (date, pd) in list_dirs(&base.join("trash")) {
         for (id, pid) in list_dirs(&pd) {
             if pid.join(MANIFEST_FILE).is_file() {
-                out.push(FoundDir { rel: format!("trash/{date}/{id}"), trashed: true, base_root, linked_area: false });
+                out.push(FoundDir { rel: format!("trash/{date}/{id}"), trashed: true, base_root });
             }
         }
     }

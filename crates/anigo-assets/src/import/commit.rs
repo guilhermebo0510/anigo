@@ -25,7 +25,6 @@ pub(crate) enum Applied {
     Relinked { id: AssetId },
     Duplicate { existing: AssetId },
     Unchanged,
-    Skipped(String),
 }
 
 /// Subpasta de materiais canonicos dentro da pasta do ativo.
@@ -113,7 +112,6 @@ fn base_manifest(p: &Prepared, params: &RunParams<'_>, id: AssetId, single: bool
 pub(crate) fn apply(lib: &Library, params: &RunParams<'_>, decision: &Decision, mut p: Prepared, single: bool, pending: &mut Vec<IndexItem>) -> Result<Applied> {
     match decision {
         Decision::Duplicate(existing) => Ok(Applied::Duplicate { existing: *existing }),
-        Decision::Skip(reason) => Ok(Applied::Skipped(reason.clone())),
         Decision::Unchanged(id) => {
             lib.touch_file(id, p.file_mtime_ns)?;
             Ok(Applied::Unchanged)

@@ -294,11 +294,12 @@ impl Library {
             new_state: Option<AssetState>,
             hashed: u64,
         }
+        // so o necessario para `fix` (evita reter 1 Outcome por ativo em bibliotecas grandes)
+        let mut state_changes: Vec<(AssetId, AssetState)> = Vec::new();
         let lib = self;
         let cancel = ctx.cancel.clone();
         let rehash = opts.rehash;
         let mut done = 0usize;
-        let mut outcomes: Vec<Outcome> = Vec::new();
         for chunk in items.chunks(256) {
             if cancel.is_cancelled() {
                 rep.cancelled = true;
@@ -418,7 +419,9 @@ impl Library {
                     ctx.emit(VerifyEvent::Issue(i.clone()));
                 }
                 rep.issues.extend(o.issues.iter().cloned());
-                outcomes.push(o);
+                if let Some(s) = o.new_state {
+                    state_changes.push((o.item.id, s));
+                }
             }
             ctx.emit(VerifyEvent::Progress { done, total });
         }
@@ -438,7 +441,7 @@ impl Library {
             }
             // 4. correcoes
             if opts.fix {
-                let changes: Vec<(AssetId, AssetState)> = outcomes.iter().filter_map(|o| o.new_state.map(|s| (o.item.id, s))).collect();
+                let changes = std::mem::take(&mut state_changes);
                 if !changes.is_empty() || !rows_without_dir.is_empty() {
                     self.inner.db.write(|c| {
                         let tx = c.transaction()?;

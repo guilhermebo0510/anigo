@@ -383,7 +383,6 @@ pub(crate) enum Decision {
     Duplicate(AssetId),
     /// Nada a fazer (ex.: so o mtime mudou).
     Unchanged(AssetId),
-    Skip(String),
 }
 
 pub(crate) struct RunParams<'a> {
@@ -500,10 +499,6 @@ pub(crate) fn run_pipeline(
                     }
                     Ok(commit::Applied::Unchanged) => {
                         report.skipped += 1;
-                    }
-                    Ok(commit::Applied::Skipped(reason)) => {
-                        report.skipped += 1;
-                        ctx.emit(ImportEvent::Skipped { path, reason });
                     }
                     Err(e) => {
                         report.failed.push((path.clone(), e.to_string()));
