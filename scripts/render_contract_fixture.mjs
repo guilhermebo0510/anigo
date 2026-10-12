@@ -172,6 +172,17 @@ export function renderContractFixture() {
           { name: "ambient_ground", kind: "vec4", offset: 64, size: 16 },
         ],
       },
+      // Sombra projetada da luz principal (aditivo; desligada por padrão).
+      shadow: {
+        struct: "ShadowUniform",
+        address_space: "uniform",
+        size: 96,
+        fields: [
+          { name: "light_view_proj", kind: "mat4x4", offset: 0, size: 64, meaning: "mundo → clip da luz (ortográfica, z em 0..1); identidade quando desligada" },
+          { name: "params", kind: "vec4", offset: 64, size: 16, meaning: "enabled (0/1; 0 = o shader nem amostra o mapa), strength (0..1), bias de profundidade (NDC), normal bias (m)" },
+          { name: "params2", kind: "vec4", offset: 80, size: 16, meaning: "1/resolução do mapa, raio do PCF (texels), meia-largura do degrau, reservado" },
+        ],
+      },
       material: {
         struct: "MaterialUniform",
         address_space: "uniform",
@@ -310,6 +321,12 @@ export function renderContractFixture() {
           // Fase 2 (#17): mapa SDF da sombra facial (neutro 1x1 quando off)
           { binding: 16, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var face_sdf_tex: texture_2d<f32>" },
           { binding: 17, kind: "sampler", stages: ["fragment"], declaration: "var face_sdf_sampler: sampler" },
+          // Sombra projetada (aditivo): uniform da luz, mapa de profundidade 1× e
+          // sampler de comparação. Desligada, o renderer ancora o uniform neutro
+          // (enabled = 0) e uma profundidade 1x1 — o shader não amostra.
+          { binding: 18, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> shadow_u: ShadowUniform" },
+          { binding: 19, kind: "texture_depth_2d", stages: ["fragment"], declaration: "var shadow_map: texture_depth_2d" },
+          { binding: 20, kind: "sampler_comparison", stages: ["fragment"], declaration: "var shadow_cmp_sampler: sampler_comparison" },
         ],
       },
       {
@@ -900,6 +917,49 @@ export function renderContractFixture() {
           uniform: "material.params8.w", shader: "cel_shading",
           effect: "0 = sem espelhamento (sombra facial simétrica, o comportamento anterior). > 0 = u do eixo de simetria do rosto no mapa SDF (0.5 para mapas centrados; 0.25 na esfera UV/cabeça canônica): com a luz do lado oposto ao autorado (theta < 0) o mapa é amostrado espelhado. Só vale com face_sdf_enabled e um mapa ancorado.",
         },
+      ],
+    },
+    // -----------------------------------------------------------------------
+    // Sombra projetada da luz principal (workspace Iluminação): shadow map de 1
+    // luz, estilizado. ADITIVO e DESLIGADO por padrão (`StylizedLight.shadow`):
+    // com `enabled = false` o passe de profundidade da luz não existe e o quadro
+    // é byte a byte o do motor anterior (hashes de golden_frames.rs). Não entra em
+    // `passes`/`render_graph` (a ordem canônica não muda): é um passe só-
+    // profundidade que reusa o vertex shader do cel. Fonte Rust:
+    // `anigo-core::shadow` (matemática pura espelhada no WGSL com teste de paridade).
+    // -----------------------------------------------------------------------
+    shadow_map: {
+      version: 1,
+      enabled_by: "scene.light.shadow.enabled (padrão false)",
+      neutral_when_disabled: "uniform neutro (matriz identidade, params.x = 0) + profundidade 1x1: o fragmento não amostra → imagem inalterada",
+      pass: {
+        name: "shadow_depth",
+        kind: "render",
+        shader: "cel_shading",
+        vertex_entry: "vs_main",
+        fragment_entry: null,
+        bind_group: "cel",
+        camera: "a câmera do bind group é a da LUZ (view_proj = light_view_proj); o mapa não é vinculado como textura neste passe (profundidade neutra no binding 19)",
+        target: { format: "depth24plus (targets.depth_format)", samples: 1, clear: 1.0 },
+        cull_mode: "none",
+        depth_compare: "less",
+        depth_bias: { constant: 2, slope_scale: 2.0, clamp: 0 },
+        only_when: "shadow_enabled",
+        backends: "não criado no backend GL (sem leitura de profundidade com comparação)",
+      },
+      light_fit: "projeção ORTOGRÁFICA ajustada a uma esfera envolvente dos cantos de todos os nós visíveis (raio × 1.04 + 0.02), centro com snap de texel no plano da luz; o olho recua até o projetor mais próximo da luz; distance > 0 limita a esfera ao redor do alvo da câmera",
+      receiver: "p' = p + N · normal_bias_m · saturate(1 − N·L); uv = (x/2 + 0.5, 0.5 − y/2); ref = z − bias_ndc; fora de [0,1]² ou z fora de [0,1] → sem sombra",
+      filter: "PCF 5×5 de textureSampleCompareLevel (sampler linear de comparação), espaçamento = raio_texels/2 texels; oclusão = 1 − média",
+      stylize: "sombra = smoothstep(0.5 − w, 0.5 + w, oclusão); toon_factor *= 1 − sombra · strength (herda a cor de sombra do terminador)",
+      hardness_mapping: "raio_texels = 4 − 3·dureza; w = 0.5 − 0.45·dureza",
+      entry_functions: ["shadow_project", "shadow_receiver_pos", "shadow_step", "shadow_occlusion"],
+      golden: [
+        { fn: "shadow_step", occlusion: 0.5, half_width: 0.1, value: 0.5 },
+        { fn: "shadow_step", occlusion: 0.0, half_width: 0.1, value: 0.0 },
+        { fn: "shadow_step", occlusion: 1.0, half_width: 0.1, value: 1.0 },
+        { fn: "shadow_receiver_pos", normal: [0, 1, 0], light: [1, 0, 0], normal_bias: 0.1, offset: [0, 0.1, 0] },
+        { fn: "shadow_receiver_pos", normal: [0, 1, 0], light: [0, 1, 0], normal_bias: 0.1, offset: [0, 0, 0] },
+        { fn: "shadow_project", matrix: "identity", point: [1, -1, 0.25], uvz: [1, 1, 0.25] },
       ],
     },
     reference_frame: {

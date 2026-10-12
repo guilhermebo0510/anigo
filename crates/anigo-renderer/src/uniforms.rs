@@ -42,6 +42,38 @@ impl Default for LightUniform {
     }
 }
 
+/// Sombra projetada da luz principal (binding 18 do cel; 96 B).
+///
+/// Neutro (padrão) = matriz identidade e `params.x == 0`: o shader nem amostra o mapa.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct ShadowUniform {
+    pub light_view_proj: [f32; 16],
+    /// x: enabled (0/1), y: strength, z: bias de profundidade (NDC), w: normal bias (m)
+    pub params: [f32; 4],
+    /// x: 1/resolução, y: raio do PCF (texels), z: meia-largura do degrau, w: reservado
+    pub params2: [f32; 4],
+}
+
+impl Default for ShadowUniform {
+    fn default() -> Self {
+        Self::from_floats(&anigo_core::shadow::uniform_floats(&anigo_core::LightShadow::default(), None))
+    }
+}
+
+impl ShadowUniform {
+    /// A partir do vetor de 24 floats de [`anigo_core::shadow::uniform_floats`].
+    pub fn from_floats(f: &[f32; 24]) -> Self {
+        let mut light_view_proj = [0.0; 16];
+        light_view_proj.copy_from_slice(&f[..16]);
+        Self {
+            light_view_proj,
+            params: [f[16], f[17], f[18], f[19]],
+            params2: [f[20], f[21], f[22], f[23]],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct MaterialUniform {

@@ -1089,6 +1089,10 @@ mod tests {
                 (15, "sampler"),
                 (16, "texture_2d<f32>"),
                 (17, "sampler"),
+                // sombra projetada (aditivo): uniform, mapa de profundidade, comparação
+                (18, "uniform"),
+                (19, "texture_depth_2d"),
+                (20, "sampler_comparison"),
             ]
         );
         // Fase 2 (#18): o mapa de espessura do contorno (MToon outlineWidth) é

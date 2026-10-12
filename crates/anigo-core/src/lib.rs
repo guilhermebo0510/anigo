@@ -12,6 +12,7 @@ pub mod morph_catalog;
 pub mod npr;
 pub mod project;
 pub mod scene;
+pub mod shadow;
 pub mod skinning;
 pub mod snapshot;
 pub mod somatotype;
@@ -65,7 +66,7 @@ pub use project::{
     TonemapOperator, TransformKeyframe, DEFAULT_AUTOSAVE_INTERVAL_MINUTES, DEFAULT_HISTORY_LIMIT,
     PROJECT_SCHEMA_VERSION, URI_BASE_FEMALE, URI_BASE_MALE, URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
-pub use scene::{Scene, SceneNode, StylizedLight, StylizedMaterial};
+pub use scene::{LightShadow, Scene, SceneNode, StylizedLight, StylizedMaterial};
 pub use snapshot::{
     build_dynamic_payload, build_snapshot, build_snapshot_for_project, build_static_payload,
     catalog_fingerprint, coverage_of, sliders_without_geometry,

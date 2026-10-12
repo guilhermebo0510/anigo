@@ -15,7 +15,7 @@ use crate::render_contract as contract;
 use crate::render_graph::{ExecutionPlan, GraphOverrides, RenderGraph};
 use crate::render_targets::{RenderTarget, RenderTargetCache, TargetViews};
 use crate::uniforms::{
-    BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform,
+    BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform, ShadowUniform,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +82,28 @@ struct DeviceResources {
     dof_pipeline: Option<wgpu::RenderPipeline>,
     dof_bind_group_layout: wgpu::BindGroupLayout,
     dof_nearest_sampler: wgpu::Sampler,
+    /// Sombra projetada: pipeline só-profundidade da luz (`None` no backend GL,
+    /// que não amostra profundidade com comparação), sampler de comparação e a
+    /// profundidade neutra 1x1 ancorada nos bind groups quando a sombra está off.
+    shadow_pipeline: Option<wgpu::RenderPipeline>,
+    shadow_cmp_sampler: wgpu::Sampler,
+    shadow_neutral_view: wgpu::TextureView,
+}
+
+/// Mapa de sombra alocado (reutilizado entre quadros enquanto o tamanho não muda).
+struct ShadowTarget {
+    size: u32,
+    /// Mantém a textura viva (a view não a retém no wgpu).
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// Sombra de UM quadro: o uniform (neutro quando desligada), a view do mapa e a
+/// matriz da luz (só quando o passe de profundidade da luz vai rodar).
+struct ShadowFrame {
+    uniform: wgpu::Buffer,
+    map_view: Option<wgpu::TextureView>,
+    light_view_proj: Option<[f32; 16]>,
 }
 
 pub struct HeadlessRenderer {
@@ -122,6 +144,11 @@ pub struct HeadlessRenderer {
     dof_bind_group_layout: wgpu::BindGroupLayout,
     /// Textura de profundidade só é amostrável com sampler sem filtragem.
     dof_nearest_sampler: wgpu::Sampler,
+    /// Sombra projetada da luz principal (aditiva, desligada por padrão).
+    shadow_pipeline: Option<wgpu::RenderPipeline>,
+    shadow_cmp_sampler: wgpu::Sampler,
+    shadow_neutral_view: wgpu::TextureView,
+    shadow_target: Mutex<Option<ShadowTarget>>,
     /// Alvos intermediários (MSAA/profundidade/DoF) reutilizados entre quadros;
     /// atrás de `Mutex` porque `encode_scene` recebe `&self`.
     target_cache: Mutex<RenderTargetCache>,
@@ -145,6 +172,9 @@ struct MorphedVertices<'a> {
 /// (mesmo VBO/IBO, mesmos bind groups).
 struct PreparedPassInputs {
     cel_bind_group: wgpu::BindGroup,
+    /// Mesmo layout do cel, mas com a câmera da LUZ — só existe quando o passe
+    /// de sombra vai rodar neste quadro.
+    shadow_bind_group: Option<wgpu::BindGroup>,
     outline_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     /// Motor cel: 2º stream do contorno (normal de extrusão, 12 B/vértice).
@@ -529,6 +559,35 @@ impl HeadlessRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Sombra projetada (aditiva): uniform da luz, mapa de profundidade
+                // e sampler de comparação. Desligada, o headless ancora o uniform
+                // neutro (enabled = 0) e uma profundidade 1x1 — o shader não amostra.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 19,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 20,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
         ];
         let cel_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cel Bind Group Layout"),
@@ -783,6 +842,64 @@ impl HeadlessRenderer {
         } else {
             Some(make_depth_only_pipeline("DoF Depth Pipeline (1x)", 1))
         };
+        // Sombra projetada: o MESMO vertex shader do cel (`vs_main`, skinning incluso)
+        // renderizado a partir da LUZ (a câmera do bind group é a da luz), só
+        // profundidade, 1×. Sem culling (malhas abertas/cartões de cabelo também
+        // projetam) e com bias de rasterização por inclinação (acne).
+        let shadow_pipeline = if adapter_info.backend == wgpu::Backend::Gl {
+            None
+        } else {
+            Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Shadow Map Pipeline (light depth)"),
+                layout: Some(&depth_prepass_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &cel_shader,
+                    entry_point: Some(cel_pass_spec.vertex_entry.unwrap_or("vs_main")),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(vertex_layout.clone())],
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: cel_pass_spec.front_face,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: contract::depth_format(),
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            }))
+        };
+        let shadow_cmp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Shadow Comparison Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let shadow_neutral_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shadow Neutral 1x1 Depth"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: contract::depth_format(),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_neutral_view = shadow_neutral_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Sparse Morph Target Compute Pipeline
         let morph_pass_spec = contract::compute_pass("sparse_morph");
         let morph_shader_src = contract::MORPH_SPARSE_COMPUTE_WGSL;
@@ -973,6 +1090,9 @@ impl HeadlessRenderer {
             dof_pipeline,
             dof_bind_group_layout,
             dof_nearest_sampler,
+            shadow_pipeline,
+            shadow_cmp_sampler,
+            shadow_neutral_view,
         })
     }
 
@@ -1046,6 +1166,10 @@ impl HeadlessRenderer {
             dof_pipeline: resources.dof_pipeline,
             dof_bind_group_layout: resources.dof_bind_group_layout,
             dof_nearest_sampler: resources.dof_nearest_sampler,
+            shadow_pipeline: resources.shadow_pipeline,
+            shadow_cmp_sampler: resources.shadow_cmp_sampler,
+            shadow_neutral_view: resources.shadow_neutral_view,
+            shadow_target: Mutex::new(None),
             target_cache: Mutex::new(RenderTargetCache::new()),
             outline_normal_cache: Mutex::new(OutlineNormalCache::default()),
             face_sdf_view: Mutex::new(None),
@@ -1095,8 +1219,12 @@ impl HeadlessRenderer {
         self.dof_pipeline = resources.dof_pipeline;
         self.dof_bind_group_layout = resources.dof_bind_group_layout;
         self.dof_nearest_sampler = resources.dof_nearest_sampler;
+        self.shadow_pipeline = resources.shadow_pipeline;
+        self.shadow_cmp_sampler = resources.shadow_cmp_sampler;
+        self.shadow_neutral_view = resources.shadow_neutral_view;
         // Os alvos em cache pertencem ao device antigo.
         self.lock_target_cache().clear();
+        *self.shadow_target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 
         let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
         diagnostics::report_with_detail(
@@ -1354,6 +1482,7 @@ impl HeadlessRenderer {
         fov_y: Option<f32>,
         light_buffer: &wgpu::Buffer,
         bones_buffer: &wgpu::Buffer,
+        shadow: &ShadowFrame,
         vertex_buffer: wgpu::Buffer,
     ) -> PreparedPassInputs {
         let normal_mat = model_mat.inverse().transpose();
@@ -1399,8 +1528,11 @@ impl HeadlessRenderer {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        let cel_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Cel Bind Group"),
+        // O mesmo bind group serve ao passe principal (câmera do usuário + mapa de
+        // sombra) e ao passe de sombra (câmera da LUZ + profundidade neutra: o mapa
+        // não pode estar vinculado como textura enquanto é o alvo de profundidade).
+        let make_cel_bind_group = |label: &str, camera_buffer: &wgpu::Buffer, shadow_view: &wgpu::TextureView| self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
             layout: &self.cel_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1479,7 +1611,39 @@ impl HeadlessRenderer {
                     binding: 17,
                     resource: wgpu::BindingResource::Sampler(&self.mtoon_neutral_sampler),
                 },
+                // Sombra projetada: uniform da luz, mapa (ou neutro) e comparação.
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: shadow.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 19,
+                    resource: wgpu::BindingResource::TextureView(shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 20,
+                    resource: wgpu::BindingResource::Sampler(&self.shadow_cmp_sampler),
+                },
             ],
+        });
+        let cel_bind_group = make_cel_bind_group(
+            "Cel Bind Group",
+            &camera_buffer,
+            shadow.map_view.as_ref().unwrap_or(&self.shadow_neutral_view),
+        );
+        let shadow_bind_group = shadow.light_view_proj.map(|light_view_proj| {
+            let light_camera = CameraUniform {
+                view_proj: light_view_proj,
+                camera_pos: [0.0, 0.0, 0.0, 1.0],
+                model: model_mat.to_cols_array(),
+                normal_mat: normal_mat.to_cols_array(),
+            };
+            let light_camera_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Uniform Buffer (light)"),
+                contents: cast_slice(&[light_camera]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            make_cel_bind_group("Shadow Pass Bind Group", &light_camera_buffer, &self.shadow_neutral_view)
         });
 
         let outline_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1531,6 +1695,7 @@ impl HeadlessRenderer {
 
         PreparedPassInputs {
             cel_bind_group,
+            shadow_bind_group,
             outline_bind_group,
             vertex_buffer,
             outline_normal_buffer,
@@ -1832,6 +1997,28 @@ impl HeadlessRenderer {
         self.lock_target_cache().allocations()
     }
 
+    /// Mapa de sombra `size × size` (profundidade do contrato, 1×): realocado só
+    /// quando o tamanho muda. Devolve a view (um handle barato, clonado).
+    fn ensure_shadow_target(&self, size: u32) -> wgpu::TextureView {
+        let mut slot = self.shadow_target.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(target) = slot.as_ref().filter(|t| t.size == size) {
+            return target.view.clone();
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shadow Map (light depth)"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: contract::depth_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        *slot = Some(ShadowTarget { size, _texture: texture, view: view.clone() });
+        view
+    }
+
     fn lock_target_cache(&self) -> std::sync::MutexGuard<'_, RenderTargetCache> {
         self.target_cache
             .lock()
@@ -2088,6 +2275,45 @@ impl HeadlessRenderer {
         } else {
             Some(camera_copy.fov_y)
         };
+        // Sombra projetada (aditiva): só quando a luz a liga E o backend suporta. O
+        // mapa é ajustado (esfera + snap de texel) aos cantos de TODOS os nós
+        // visíveis — inclusive os fora do frustum da câmera, que ainda projetam.
+        let shadow_settings = scene.light.shadow.sanitized();
+        let shadow_fit = if shadow_settings.enabled && self.shadow_pipeline.is_some() {
+            let mut points: Vec<glam::Vec3> = Vec::new();
+            for node in scene.nodes.iter().filter(|n| n.visible) {
+                let Some(mesh) = node.mesh.as_ref().filter(|m| !m.vertices.is_empty() && !m.indices.is_empty()) else {
+                    continue;
+                };
+                let Some(bounds) = mesh.local_bounds() else { continue };
+                let model = world_matrices.get(&node.id).copied().unwrap_or_else(|| node.transform.to_matrix());
+                for i in 0..8u32 {
+                    let corner = glam::Vec3::new(
+                        if i & 1 == 0 { bounds.min.x } else { bounds.max.x },
+                        if i & 2 == 0 { bounds.min.y } else { bounds.max.y },
+                        if i & 4 == 0 { bounds.min.z } else { bounds.max.z },
+                    );
+                    points.push(model.transform_point3(corner));
+                }
+            }
+            let focus = (shadow_settings.distance > 0.0).then_some((scene.camera.target, shadow_settings.distance));
+            anigo_core::shadow::fit_directional(scene.light.direction, &points, focus, shadow_settings.resolution)
+        } else {
+            None
+        };
+        let shadow_uniform_floats = anigo_core::shadow::uniform_floats(&shadow_settings, shadow_fit.as_ref());
+        let shadow_uniform = ShadowUniform::from_floats(&shadow_uniform_floats);
+        let shadow_map_view = shadow_fit.as_ref().map(|_| self.ensure_shadow_target(shadow_settings.resolution));
+        let shadow_frame = ShadowFrame {
+            uniform: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Shadow Uniform Buffer"),
+                contents: cast_slice(&[shadow_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
+            map_view: shadow_map_view,
+            light_view_proj: shadow_fit.as_ref().map(|fit| fit.view_proj.to_cols_array()),
+        };
+
         let mut prepared: Vec<PreparedPassInputs> = Vec::new();
         for node in &scene.nodes {
             if !node.visible {
@@ -2152,8 +2378,39 @@ impl HeadlessRenderer {
                     outline_fov_y,
                     &light_buffer,
                     &bones_buffer,
+                    &shadow_frame,
                     vertex_buffer,
                 ));
+            }
+        }
+
+        // Sombra projetada: passe de profundidade a partir da luz (mesmos buffers,
+        // vértices e skinning do cel; câmera = a da luz). Antes de qualquer passe
+        // que amostre o mapa. Nós culados pela câmera não entram (limite documentado).
+        if let (Some(pipeline), Some(map_view)) = (self.shadow_pipeline.as_ref(), shadow_frame.map_view.as_ref()) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shadow Map Pass (light depth)"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: map_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            for inputs in &prepared {
+                let Some(bind_group) = inputs.shadow_bind_group.as_ref() else { continue };
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.set_vertex_buffer(0, inputs.vertex_buffer.slice(..));
+                pass.set_index_buffer(inputs.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..inputs.index_count, 0, 0..1);
+                draw_calls += 1;
             }
         }
 

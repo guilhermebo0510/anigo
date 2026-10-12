@@ -243,6 +243,14 @@ export class WebGpuViewportRenderer {
   private mtoonNeutralTexture: GPUTexture | null = null;
   private mtoonNeutralSampler: GPUSampler | null = null;
 
+  // Sombra projetada da luz principal (cel 18–20): o viewport Svelte NÃO a
+  // implementa — ancora o uniform neutro (enabled = 0, o shader não amostra), uma
+  // profundidade 1x1 e o sampler de comparação só para o layout `auto` do cel
+  // continuar válido com o WGSL compartilhado. A sombra existe no renderer nativo.
+  private shadowNeutralBuffer: GPUBuffer | null = null;
+  private shadowNeutralTexture: GPUTexture | null = null;
+  private shadowNeutralSampler: GPUSampler | null = null;
+
   // Fase 2 (#18): parâmetros MToon do material (default = tudo off)
   private mtoonEmissionColor: [number, number, number, number] = [0.0, 0.0, 0.0, 0.0];
   private mtoonEmissionIntensity = 0.0;
@@ -2162,6 +2170,29 @@ export class WebGpuViewportRenderer {
       addressModeV: "clamp-to-edge",
     });
 
+    // Sombra projetada (cel 18–20): neutros (ver os campos acima).
+    // destroy() é idempotente no WebGPU (sem try/catch silencioso)
+    this.shadowNeutralBuffer?.destroy();
+    this.shadowNeutralTexture?.destroy();
+    this.shadowNeutralBuffer = this.device.createBuffer({
+      size: uniformSize("shadow"),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // matriz identidade + params.x = 0 (desligada); o resto em zero
+    const shadowNeutral = new Float32Array(uniformSize("shadow") / 4);
+    shadowNeutral.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    this.device.queue.writeBuffer(this.shadowNeutralBuffer, 0, shadowNeutral);
+    this.shadowNeutralTexture = this.device.createTexture({
+      size: [1, 1],
+      format: depthFormat() as any,
+      usage: GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.shadowNeutralSampler = this.device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      compare: "less-equal",
+    });
+
     // P1-04: o binding da paleta vem do contrato (5 no cel, 2 no outline) —
     // nunca um literal solto no renderer.
     const celSkinBinding = skinningBinding("cel");
@@ -2194,6 +2225,10 @@ export class WebGpuViewportRenderer {
         // Fase 2 (#17): SDF facial — neutro 1x1 (R=1 → fator de sombra 0)
         { binding: 16, resource: mtoonNeutralView },
         { binding: 17, resource: mtoonNeutralSampler },
+        // Sombra projetada: neutros (a sombra existe só no renderer nativo)
+        { binding: 18, resource: { buffer: this.shadowNeutralBuffer } },
+        { binding: 19, resource: this.shadowNeutralTexture.createView() },
+        { binding: 20, resource: this.shadowNeutralSampler },
       ],
     });
 

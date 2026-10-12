@@ -888,6 +888,7 @@ impl StudioApp {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             });
         }
         let c = &project.scene.camera.camera;

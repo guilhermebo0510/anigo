@@ -394,6 +394,7 @@ async fn set_light_params(
         shadow_saturation,
         ambient_sky: None,
         ambient_ground: None,
+        shadow: None,
     };
     apply_session_command(&mut state, command)?;
     Ok(())
@@ -512,6 +513,7 @@ async fn set_material_toon_params(
             shadow_saturation: Some(value),
             ambient_sky: None,
             ambient_ground: None,
+            shadow: None,
         });
     }
     if commands.is_empty() {

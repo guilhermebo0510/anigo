@@ -43,6 +43,15 @@ struct MaterialUniform {
     params8: vec4<f32>,         // x: eye_depth_scale, y: eye_highlight_intensity, z: eye_enabled, w: face_sdf_mirror_center (0 = off)
 };
 
+// Sombra projetada da luz principal (shadow map de 1 luz, estilizado). ADITIVO:
+// com `params.x == 0` (padrão) nenhum trecho do shader amostra o mapa e o quadro
+// é byte a byte o do motor anterior. Matemática espelhada em anigo-core::shadow.
+struct ShadowUniform {
+    light_view_proj: mat4x4<f32>,  // mundo → clip da luz (ortográfica, z em 0..1)
+    params: vec4<f32>,             // x: enabled (0/1), y: strength, z: bias de profundidade (NDC), w: normal bias (m)
+    params2: vec4<f32>,            // x: 1/resolução, y: raio do PCF (texels), z: meia-largura do degrau, w: reservado
+};
+
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
@@ -99,6 +108,17 @@ var face_sdf_tex: texture_2d<f32>;
 
 @group(0) @binding(17)
 var face_sdf_sampler: sampler;
+
+// Sombra projetada (ver ShadowUniform). Desligada, o renderer ancora uma
+// profundidade neutra 1x1 aqui e o shader nem chega a amostrar.
+@group(0) @binding(18)
+var<uniform> shadow_u: ShadowUniform;
+
+@group(0) @binding(19)
+var shadow_map: texture_depth_2d;
+
+@group(0) @binding(20)
+var shadow_cmp_sampler: sampler_comparison;
 
 struct BonePalette {
     matrices: array<mat4x4<f32>, 24>,
@@ -351,6 +371,51 @@ fn blend_toon_factor(analytic: f32, ramp_value: f32, blend: f32) -> f32 {
     return mix(analytic, ramp_value, blend);
 }
 
+// ── Sombra projetada (pura; espelhada em anigo-core::shadow com teste de
+// paridade que executa ESTE texto numa GPU) ─────────────────────────────────
+
+// Mundo → (u, v, profundidade) no mapa da luz. u,v em 0..1 com v para baixo
+// (como a textura); a projeção da luz é ortográfica (w = 1).
+fn shadow_project(m: mat4x4<f32>, world: vec3<f32>) -> vec3<f32> {
+    let clip = m * vec4<f32>(world, 1.0);
+    let ndc = clip.xyz / clip.w;
+    return vec3<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, ndc.z);
+}
+
+// Offset de normal: o receptor anda ao longo da normal proporcionalmente à
+// inclinação (1 − N·L), onde nasce a acne.
+fn shadow_receiver_pos(world: vec3<f32>, n: vec3<f32>, l: vec3<f32>, normal_bias: f32) -> vec3<f32> {
+    let slope = clamp(1.0 - dot(n, l), 0.0, 1.0);
+    return world + n * (normal_bias * slope);
+}
+
+// Degrau estilizado da oclusão filtrada (0 = iluminado, 1 = sombra).
+fn shadow_step(occlusion: f32, half_width: f32) -> f32 {
+    let w = max(half_width, 0.001);
+    return smoothstep(0.5 - w, 0.5 + w, occlusion);
+}
+
+// Oclusão filtrada 0..1 (PCF 5×5 de comparações com filtro bilinear de hardware).
+// Fora do frustum da luz não há sombra. `textureSampleCompareLevel` não depende
+// de derivadas, então é legal em qualquer fluxo de controle.
+fn shadow_occlusion(world: vec3<f32>, n: vec3<f32>, l: vec3<f32>) -> f32 {
+    let receiver = shadow_receiver_pos(world, n, l, shadow_u.params.w);
+    let p = shadow_project(shadow_u.light_view_proj, receiver);
+    let depth = p.z - shadow_u.params.z;
+    if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || depth > 1.0 || depth < 0.0) {
+        return 0.0;
+    }
+    let spacing = shadow_u.params2.y * 0.5 * shadow_u.params2.x;
+    var lit = 0.0;
+    for (var iy = -2; iy <= 2; iy = iy + 1) {
+        for (var ix = -2; ix <= 2; ix = ix + 1) {
+            let uv = p.xy + vec2<f32>(f32(ix), f32(iy)) * spacing;
+            lit = lit + textureSampleCompareLevel(shadow_map, shadow_cmp_sampler, uv, depth);
+        }
+    }
+    return 1.0 - lit / 25.0;
+}
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -422,6 +487,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             vec2<f32>(ramp_u(half_lambert, threshold), ramp_v(material.params7.w))
         ).r;
         toon_factor = blend_toon_factor(analytical_toon, ramp_value, ramp_blend);
+    }
+
+    // 3c. Sombra projetada da luz principal (shadow map de 1 luz, aditivo). O
+    // fator entra no MESMO `toon_factor` do terminador, então a sombra projetada
+    // herda a cor de sombra do material (base × tinta, hue-shift). `shadow_u` é um
+    // uniform → o desvio é uniforme. Desligada (params.x == 0): nada executa.
+    if (shadow_u.params.x > 0.5) {
+        let projected = shadow_step(shadow_occlusion(in.world_position, N, L), shadow_u.params2.z);
+        toon_factor = toon_factor * (1.0 - projected * shadow_u.params.y);
     }
 
     // 4. Stylized Ambient Occlusion (R channel) — P2-05 applied to diffuse/ambient only
