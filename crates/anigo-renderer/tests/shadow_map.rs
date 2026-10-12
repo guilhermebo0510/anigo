@@ -22,7 +22,20 @@ const H: u32 = 256;
 
 fn renderer_or_skip(test: &str) -> Option<HeadlessRenderer> {
     match pollster::block_on(HeadlessRenderer::new()) {
-        Ok(r) => Some(r),
+        Ok(r) => {
+            // Como o DoF, a sombra projetada não existe no backend GL/GLES (o
+            // `shadow_pipeline` é `None` ali: `build_device_resources`). Sem este
+            // guarda os testes reprovam em runners só com llvmpipe via EGL (job
+            // `rust` do CI, sem driver Vulkan); o job `native` os cobre em Vulkan.
+            if r.adapter_info.backend == wgpu::Backend::Gl {
+                eprintln!(
+                    "[{test}] PULADO: sombra projetada não existe no backend GL; adaptador atual: {} ({:?})",
+                    r.adapter_info.name, r.adapter_info.backend
+                );
+                return None;
+            }
+            Some(r)
+        }
         Err(error) => {
             eprintln!("[{test}] PULADO: sem adaptador GPU utilizável ({error})");
             None
