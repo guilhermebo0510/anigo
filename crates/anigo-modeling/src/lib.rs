@@ -9,6 +9,7 @@
 //! * [`primitives`] — primitivas.
 //! * [`normals`] — normais por corner (sharp/smooth/custom), crucial para cel shading.
 //! * [`convert`] — ponte com `anigo_core::Mesh` (formato de render de 72 B).
+//! * [`hair`] — ferramenta de cabelo estilo VRoid (mechas editáveis, malha, pentear, cadeias de física).
 //! * [`history`] — undo/redo por snapshot (edit mode) e por delta (escultura).
 
 pub mod attributes;
@@ -16,6 +17,7 @@ pub mod bvh;
 pub mod convert;
 pub mod curve;
 pub mod error;
+pub mod hair;
 pub mod history;
 pub mod mesh;
 pub mod modifiers;
