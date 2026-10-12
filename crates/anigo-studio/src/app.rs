@@ -88,6 +88,10 @@ pub struct StudioApp {
     /// Estado do editor de UV (vista 2D, parâmetros do Inspector, cache de métricas).
     pub(crate) uv: uv_ui::UvState,
     pub(crate) box_start: Option<glam::Vec2>,
+    /// Estado do painel de normais (overlay, transferência, relatório, pincel de atributo).
+    pub(crate) normals_ui: normals_ui::NormalsUi,
+    /// Ferramenta "Pintar atributo" ativa: LMB no viewport pinta o canal NPR (Modo Edição).
+    pub(crate) paint_attr_active: bool,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -173,6 +177,8 @@ impl StudioApp {
             show_uv_editor: false,
             uv: uv_ui::UvState::default(),
             box_start: None,
+            normals_ui: normals_ui::NormalsUi::default(),
+            paint_attr_active: false,
         }
     }
 

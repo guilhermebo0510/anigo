@@ -1,6 +1,7 @@
 use super::history::History;
 use super::modal::{ModalContext, ModalTransform, TransformKind};
 use anigo_core::math::Transform;
+use anigo_modeling::normals::NormalParams;
 use anigo_modeling::{primitives, select, EditMesh, SelectMode, Selection, Topology};
 use glam::{Mat4, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,13 @@ impl PrimitiveKind {
     }
 }
 
+/// Ângulo padrão de auto-smooth (30°), em radianos.
+pub const DEFAULT_AUTO_SMOOTH: f32 = std::f32::consts::PI * 30.0 / 180.0;
+
+fn default_auto_smooth() -> f32 {
+    DEFAULT_AUTO_SMOOTH
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelObject {
     pub id: u32,
@@ -82,6 +90,10 @@ pub struct ModelObject {
     /// Pilha de modificadores não destrutivos (Subsurf, Mirror, Solidify…).
     #[serde(default)]
     pub modifiers: anigo_modeling::modifiers::stack::ModifierStack,
+    /// Ângulo de auto-smooth da malha (radianos). Arestas com diedro maior viram duras no cálculo
+    /// de normais (Workbench, preview Cel e export). `>= π` desliga o corte por ângulo.
+    #[serde(default = "default_auto_smooth")]
+    pub auto_smooth_angle: f32,
 }
 
 impl ModelObject {
@@ -102,6 +114,62 @@ impl ModelObject {
     pub fn modifiers_hash(&self) -> u64 {
         let json = serde_json::to_string(&self.modifiers).unwrap_or_default();
         anigo_core::ids::fnv1a64(&json)
+    }
+
+    /// Parâmetros de normais deste objeto (usados por Workbench, preview Cel e `to_core`).
+    pub fn normal_params(&self) -> NormalParams {
+        normal_params_for(self.auto_smooth_angle)
+    }
+
+    /// Conversão para o formato do renderer respeitando o auto-smooth e as normais customizadas.
+    pub fn to_core(&self) -> anigo_modeling::ModelResult<anigo_core::Mesh> {
+        anigo_modeling::convert::to_core_mesh(
+            &self.mesh,
+            &anigo_modeling::convert::ToCoreOptions {
+                normals: self.normal_params(),
+            },
+        )
+    }
+
+    /// Hash do que influencia o desenho: geometria + normais customizadas + cores de vértice
+    /// (canais NPR) + ângulo de auto-smooth. `EditMesh::content_hash` sozinho não enxerga
+    /// normais nem cores, então caches de GPU usam este.
+    pub fn render_hash(&self) -> u64 {
+        let mut h: u64 = self.mesh.content_hash() ^ self.modifiers_hash().rotate_left(17);
+        let mut mix = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        };
+        mix(&self.auto_smooth_angle.to_bits().to_le_bytes());
+        for f in &self.mesh.faces {
+            for c in &f.corners {
+                match c.normal {
+                    Some(n) => {
+                        mix(&[1]);
+                        for x in n.to_array() {
+                            mix(&x.to_bits().to_le_bytes());
+                        }
+                    }
+                    None => mix(&[0]),
+                }
+            }
+        }
+        for v in &self.mesh.verts {
+            for x in v.color {
+                mix(&x.to_bits().to_le_bytes());
+            }
+        }
+        h
+    }
+}
+
+/// `NormalParams` para um ângulo de auto-smooth em radianos (`>= π` = sem corte por ângulo).
+pub fn normal_params_for(auto_smooth_angle: f32) -> NormalParams {
+    NormalParams {
+        auto_smooth_angle: (auto_smooth_angle < std::f32::consts::PI - 1e-3).then_some(auto_smooth_angle.max(0.0)),
+        ..NormalParams::default()
     }
 }
 
@@ -273,6 +341,7 @@ impl ModelingSession {
             transform: Transform::from_translation(at),
             visible: true,
             modifiers: Default::default(),
+            auto_smooth_angle: DEFAULT_AUTO_SMOOTH,
         };
         obj.mesh.name = obj.name.clone();
         self.doc.objects.push(obj);
@@ -297,6 +366,7 @@ impl ModelingSession {
             transform: Transform::from_translation(at),
             visible: true,
             modifiers: Default::default(),
+            auto_smooth_angle: DEFAULT_AUTO_SMOOTH,
         });
         self.doc.active = Some(self.doc.objects.len() - 1);
         self.selection.clear();
@@ -672,6 +742,55 @@ impl ModelingSession {
         self.restore(snap.0);
     }
 
+    /// Edita a malha ativa em **cópia** mantendo a seleção: se `f` der certo e a malha validar,
+    /// registra o undo e aplica; em erro nada muda (malha e histórico intactos).
+    pub fn edit_mesh<R, F>(&mut self, label: &str, f: F) -> Result<R, anigo_modeling::ModelError>
+    where
+        F: FnOnce(&mut EditMesh, &Selection) -> anigo_modeling::ModelResult<R>,
+    {
+        let idx = self.doc.active.ok_or(anigo_modeling::ModelError::EmptySelection("sem objeto ativo"))?;
+        let before = self.snapshot();
+        let mut mesh = self.doc.objects[idx].mesh.clone();
+        let out = f(&mut mesh, &self.selection)?;
+        mesh.validate()?;
+        self.history.record(label, &before);
+        self.doc.objects[idx].mesh = mesh;
+        self.revision += 1;
+        Ok(out)
+    }
+
+    /// Muda a malha ativa **sem** registrar undo (para traços contínuos já cobertos por um `checkpoint`,
+    /// como a pintura de atributos). Só atributos; não use para topologia. `None` sem objeto ativo.
+    pub fn mutate_active_mesh<R>(&mut self, f: impl FnOnce(&mut EditMesh) -> R) -> Option<R> {
+        let obj = self.active_object_mut()?;
+        let r = f(&mut obj.mesh);
+        self.revision += 1;
+        Some(r)
+    }
+
+    /// Altera o ângulo de auto-smooth do objeto ativo (radianos, limitado a `0..=π`) com um passo de undo.
+    /// `record = false` serve para arrastos contínuos já cobertos por um `checkpoint`.
+    pub fn set_auto_smooth_angle(&mut self, angle: f32, record: bool) -> bool {
+        if !angle.is_finite() {
+            return false;
+        }
+        let angle = angle.clamp(0.0, std::f32::consts::PI);
+        let Some(cur) = self.active_object().map(|o| o.auto_smooth_angle) else {
+            return false;
+        };
+        if (cur - angle).abs() < 1e-6 {
+            return false;
+        }
+        if record {
+            self.checkpoint("Ângulo de auto-smooth");
+        }
+        if let Some(o) = self.active_object_mut() {
+            o.auto_smooth_angle = angle;
+        }
+        self.revision += 1;
+        true
+    }
+
     /// Estado completo atual (para o painel "ajustar última operação").
     /// Aplica a pilha de modificadores à malha base (destrutivo, com undo) e a esvazia.
     pub fn apply_modifier_stack(&mut self) -> Result<(), String> {
@@ -962,5 +1081,97 @@ mod tests {
         let back: Document = serde_json::from_str(&json).unwrap();
         assert_eq!(back.objects.len(), 2);
         assert_eq!(back.objects[1].mesh, s.doc.objects[1].mesh);
+    }
+
+    // ------------------------------------------------------------ normais / auto-smooth
+
+    #[test]
+    fn auto_smooth_angle_defaults_and_roundtrips_in_serde() {
+        let mut s = ModelingSession::with_default_cube();
+        assert!((s.doc.objects[0].auto_smooth_angle - DEFAULT_AUTO_SMOOTH).abs() < 1e-6);
+        assert!(s.set_auto_smooth_angle(75f32.to_radians(), true));
+        let json = serde_json::to_string(&s.doc).unwrap();
+        let back: Document = serde_json::from_str(&json).unwrap();
+        assert!((back.objects[0].auto_smooth_angle - 75f32.to_radians()).abs() < 1e-6);
+        // documento antigo, sem o campo: assume o padrão (30°)
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["objects"][0].as_object_mut().unwrap().remove("auto_smooth_angle");
+        let old: Document = serde_json::from_value(v).unwrap();
+        assert!((old.objects[0].auto_smooth_angle - DEFAULT_AUTO_SMOOTH).abs() < 1e-6);
+    }
+
+    #[test]
+    fn auto_smooth_angle_feeds_normal_params_and_core_mesh() {
+        let mut s = ModelingSession::new();
+        s.add_primitive(PrimitiveKind::Cube, Vec3::ZERO);
+        // cubo suave: com 30° as quinas de 90° continuam duras; com 180° o corte desaparece e
+        // as normais se fundem (menos vértices de render, mesmo com UVs por face)
+        for f in &mut s.doc.objects[0].mesh.faces {
+            f.smooth = true;
+            for c in &mut f.corners {
+                c.uv = glam::Vec2::ZERO; // sem costuras de UV: só as normais separam vértices
+            }
+        }
+        let hard = s.doc.objects[0].to_core().unwrap().vertices.len();
+        assert_eq!(hard, 24);
+        s.set_auto_smooth_angle(std::f32::consts::PI, true);
+        let o = &s.doc.objects[0];
+        assert!(o.normal_params().auto_smooth_angle.is_none());
+        assert_eq!(o.to_core().unwrap().vertices.len(), 8);
+        s.set_auto_smooth_angle(100f32.to_radians(), true);
+        assert!((s.doc.objects[0].normal_params().auto_smooth_angle.unwrap() - 100f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_auto_smooth_angle_is_undoable_and_ignores_invalid() {
+        let mut s = ModelingSession::with_default_cube();
+        let before = s.doc.objects[0].auto_smooth_angle;
+        assert!(!s.set_auto_smooth_angle(f32::NAN, true));
+        assert!(!s.set_auto_smooth_angle(before, true), "mesmo valor não gera undo");
+        assert!(!s.can_undo());
+        assert!(s.set_auto_smooth_angle(1.0, true));
+        assert!(s.undo().is_some());
+        assert_eq!(s.doc.objects[0].auto_smooth_angle, before);
+    }
+
+    #[test]
+    fn render_hash_sees_custom_normals_colors_and_angle() {
+        let mut s = ModelingSession::with_default_cube();
+        let base = s.doc.objects[0].render_hash();
+        assert_eq!(base, s.doc.objects[0].render_hash());
+        s.doc.objects[0].mesh.faces[0].corners[0].normal = Some(Vec3::Y);
+        let with_normal = s.doc.objects[0].render_hash();
+        assert_ne!(base, with_normal);
+        s.doc.objects[0].mesh.verts[0].color[0] = 0.25;
+        let with_color = s.doc.objects[0].render_hash();
+        assert_ne!(with_normal, with_color);
+        s.doc.objects[0].auto_smooth_angle = 1.0;
+        assert_ne!(with_color, s.doc.objects[0].render_hash());
+    }
+
+    #[test]
+    fn edit_mesh_keeps_selection_and_undo_is_exact() {
+        let mut s = ModelingSession::with_default_cube();
+        s.set_mode(Mode::Edit);
+        s.select_all();
+        let sel_before = s.selection.clone();
+        let mesh_before = s.doc.objects[0].mesh.clone();
+        let n = s
+            .edit_mesh("teste", |m, _| {
+                m.verts[0].color[0] = 0.0;
+                Ok(7usize)
+            })
+            .unwrap();
+        assert_eq!(n, 7);
+        assert_eq!(s.selection, sel_before);
+        assert_ne!(s.doc.objects[0].mesh, mesh_before);
+        s.undo();
+        assert_eq!(s.doc.objects[0].mesh, mesh_before);
+        // erro do operador: nada muda e nada entra no histórico
+        let labels = s.history_labels().len();
+        let r: Result<(), _> = s.edit_mesh("falha", |_, _| Err(anigo_modeling::ModelError::EmptySelection("x")));
+        assert!(r.is_err());
+        assert_eq!(s.history_labels().len(), labels);
+        assert_eq!(s.doc.objects[0].mesh, mesh_before);
     }
 }

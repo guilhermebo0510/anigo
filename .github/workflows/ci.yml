@@ -155,7 +155,7 @@ jobs:
         run: |
           mkdir -p native-artifacts
           cargo build -p anigo-studio
-          for sc in edit-faces grab-modal tool-move cel-preview cel-edit uv-editor uv-sphere; do
+          for sc in edit-faces grab-modal tool-move cel-preview cel-edit uv-editor uv-sphere normals-overlay normals-transfer normals-paint; do
             xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
               --no-session --workspace modelagem --scenario "$sc" --frames 14 --size 1440x900 \
               --screenshot "native-artifacts/studio_$sc.png"

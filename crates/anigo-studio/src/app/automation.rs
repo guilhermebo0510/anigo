@@ -10,6 +10,7 @@ pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
     "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel", "modifiers", "proportional",
     "uv-editor", "uv-sphere", "uv-click",
+    "normals-overlay", "normals-transfer", "normals-transfer-clean", "normals-paint",
 ];
 
 impl StudioApp {
@@ -234,6 +235,7 @@ impl StudioApp {
                 m.add_primitive(PrimitiveKind::UvSphere, Vec3::new(0.0, 1.0, 0.0));
                 m.set_mode(Mode::Edit);
             }
+            other if other.starts_with("normals-") && self.scenario_normals(other) => {}
             other => {
                 eprintln!("cenário desconhecido: {other} (disponíveis: {SCENARIOS:?})");
             }
