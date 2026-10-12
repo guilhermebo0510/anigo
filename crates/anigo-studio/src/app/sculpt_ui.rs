@@ -22,6 +22,7 @@ fn gv(p: egui::Vec2) -> Vec2 {
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
     egui::CollapsingHeader::new(RichText::new(title).strong())
+        .id_salt(("sculpt_section", title))
         .default_open(open)
         .show(ui, add);
 }
@@ -179,7 +180,7 @@ impl StudioApp {
         });
 
         let kind = self.sculpt.active;
-        section(ui, &format!("{}", tr(brush_tool_id(kind))), true, |ui| {
+        section(ui, tr(brush_tool_id(kind)), true, |ui| {
             let is_mask = kind.is_mask();
             let default_strength = anigo_modeling::sculpt::brush::Brush::new(kind).strength;
             let smax = if default_strength <= 0.1 { 0.5 } else { STRENGTH_MAX };
@@ -308,7 +309,7 @@ impl StudioApp {
             ui.checkbox(&mut am.boundary, "Proteger bordas abertas");
         });
 
-        section(ui, "Máscara", true, |ui| {
+        section(ui, "Máscara global", true, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui.button(format!("{}  Inverter", icons::SELECTION_INVERSE)).clicked() {
                     let r = self.sculpt.mask_invert(&mut self.modeling);
@@ -362,11 +363,11 @@ impl StudioApp {
             ui.horizontal_wrapped(|ui| {
                 let axis = self.sculpt.symmetrize_axis;
                 let n = ["X", "Y", "Z"][axis.min(2)];
-                if ui.button(format!("+{n} → −{n}")).clicked() {
+                if ui.button(format!("+{n} {} -{n}", icons::ARROW_RIGHT)).clicked() {
                     let r = self.sculpt.symmetrize(&mut self.modeling, axis, true);
                     self.report(r.err());
                 }
-                if ui.button(format!("−{n} → +{n}")).clicked() {
+                if ui.button(format!("-{n} {} +{n}", icons::ARROW_RIGHT)).clicked() {
                     let r = self.sculpt.symmetrize(&mut self.modeling, axis, false);
                     self.report(r.err());
                 }
@@ -415,9 +416,11 @@ impl StudioApp {
         let mouse = gv(self.last_mouse - rect.min);
 
         // traço roteirizado (cenários de screenshot)
-        if let Some(script) = self.sculpt.script.take() {
-            self.sculpt.run_script(&mut self.modeling, &view, &script);
-            self.sculpt.hover_override = script.hover.map(|h| h * size);
+        if self.sculpt.script.is_some() {
+            for script in [self.sculpt.script.take(), self.sculpt.followup.take()].into_iter().flatten() {
+                self.sculpt.run_script(&mut self.modeling, &view, &script);
+                self.sculpt.hover_override = script.hover.map(|h| h * size);
+            }
             ui.ctx().request_repaint();
         }
 

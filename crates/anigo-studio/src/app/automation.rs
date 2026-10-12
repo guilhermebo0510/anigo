@@ -9,6 +9,7 @@ use glam::{Vec2, Vec3};
 pub const SCENARIOS: &[&str] = &[
     "edit-faces", "edit-vertices", "tool-move", "tool-rotate", "tool-scale", "grab-modal",
     "sphere-wire", "scene-many", "dense-sphere", "cel-preview", "cel-preview-inactive", "cel-edit", "ops-demo", "ops-bevel",
+    "sculpt-ready", "sculpt-draw", "sculpt-mask",
 ];
 
 impl StudioApp {
@@ -18,6 +19,10 @@ impl StudioApp {
         };
         // executa uma única vez, no 3º quadro (UI e GPU já inicializadas)
         if self.frame_count != 3 {
+            return;
+        }
+        if name.starts_with("sculpt-") {
+            self.run_sculpt_scenario(&name);
             return;
         }
         let m = &mut self.modeling;
@@ -158,6 +163,63 @@ impl StudioApp {
             other => {
                 eprintln!("cenário desconhecido: {other} (disponíveis: {SCENARIOS:?})");
             }
+        }
+    }
+
+    /// Cenários do Modo Escultura: esfera densa, modo Escultura e (conforme o cenário) traços roteirizados
+    /// que rodam no próximo `sculpt_input` pelo mesmo caminho do mouse.
+    fn run_sculpt_scenario(&mut self, name: &str) {
+        use crate::app::sculpt_ui::scripted;
+        use crate::modeling::sculpt::tool_index_for_brush;
+        use anigo_modeling::sculpt::brush::BrushKind;
+        let m = &mut self.modeling;
+        m.delete_active_object();
+        m.add_primitive(PrimitiveKind::QuadSphere, Vec3::new(0.0, 1.0, 0.0));
+        if let Some(o) = m.active_object_mut() {
+            o.mesh = anigo_modeling::primitives::quad_sphere(1.0, 40);
+        }
+        m.clear_history();
+        m.revision += 1;
+        m.set_mode(Mode::Sculpt);
+        self.camera.distance = 4.2;
+        let brush = match name {
+            "sculpt-mask" => BrushKind::MaskPaint,
+            _ => BrushKind::Draw,
+        };
+        if let Some(i) = tool_index_for_brush(brush) {
+            self.tool_idx.insert(self.ws, i);
+        }
+        self.sculpt.active = brush;
+        match name {
+            "sculpt-draw" => {
+                self.sculpt.slot_mut(BrushKind::Draw).brush.strength = 0.06;
+                self.sculpt.slot_mut(BrushKind::Draw).radius_px = 70.0;
+                self.sculpt.slot_mut(BrushKind::Inflate).brush.strength = 0.1;
+                self.sculpt.symmetry = anigo_modeling::sculpt::symmetry::Symmetry::mirror_x();
+                // zigue-zague de Draw + um toque de Inflate; o círculo fica sobre a esfera
+                self.sculpt.script = Some(scripted(
+                    BrushKind::Draw,
+                    false,
+                    vec![
+                        vec![(0.40, 0.40), (0.47, 0.50), (0.40, 0.60)],
+                        vec![(0.52, 0.34), (0.58, 0.46), (0.52, 0.58)],
+                    ],
+                    Some((0.56, 0.68)),
+                ));
+                self.sculpt.followup = Some(scripted(BrushKind::Inflate, false, vec![vec![(0.47, 0.30), (0.50, 0.31)]], Some((0.56, 0.68))));
+            }
+            "sculpt-mask" => {
+                self.sculpt.slot_mut(BrushKind::MaskPaint).brush.strength = 1.0;
+                self.sculpt.slot_mut(BrushKind::MaskPaint).radius_px = 60.0;
+                self.sculpt.script = Some(scripted(
+                    BrushKind::MaskPaint,
+                    false,
+                    vec![vec![(0.38, 0.42), (0.46, 0.50), (0.38, 0.58)], vec![(0.46, 0.36), (0.50, 0.36)]],
+                    Some((0.58, 0.55)),
+                ));
+                self.sculpt.followup = Some(scripted(BrushKind::Draw, false, vec![vec![(0.28, 0.50), (0.52, 0.50)]], Some((0.58, 0.55))));
+            }
+            _ => {}
         }
     }
 }

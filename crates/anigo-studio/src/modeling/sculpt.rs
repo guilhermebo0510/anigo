@@ -301,6 +301,8 @@ pub struct SculptState {
     pub error: Option<String>,
     pub resize: Option<Resize>,
     pub script: Option<ScriptedStroke>,
+    /// Segundo traço roteirizado, executado depois de `script`.
+    pub followup: Option<ScriptedStroke>,
     /// Posição (px do viewport) forçada para o círculo do pincel (cenários).
     pub hover_override: Option<Vec2>,
     pub last_stroke: Option<StrokeSummary>,
@@ -345,6 +347,7 @@ impl SculptState {
             error: None,
             resize: None,
             script: None,
+            followup: None,
             hover_override: None,
             last_stroke: None,
             gpu_gen: 0,
