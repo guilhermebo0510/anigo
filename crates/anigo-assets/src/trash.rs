@@ -8,7 +8,7 @@ use rusqlite::params;
 use crate::error::{AssetError, IoContext, Result};
 use crate::library::{layout, read_manifest, write_manifest, Library};
 use crate::model::*;
-use crate::util::{dir_size, now_secs, yyyymmdd};
+use crate::util::{dir_size, now_secs, prune_empty_parents, yyyymmdd};
 
 /// Opcoes de `trash`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -66,6 +66,7 @@ impl Library {
                 return Err(AssetError::Conflict(format!("destino da lixeira ja existe: {}", dst.display())));
             }
             std::fs::rename(&src, &dst).at(&src)?;
+            prune_empty_parents(&src, &base);
             let mut m = read_manifest(&dst)?;
             m.trashed_at = Some(now);
             m.modified_at = now;
@@ -105,6 +106,7 @@ impl Library {
                 std::fs::create_dir_all(parent).at(parent)?;
             }
             std::fs::rename(&src, &dst).at(&src)?;
+            prune_empty_parents(&src, &base);
             let mut m = read_manifest(&dst)?;
             m.trashed_at = None;
             m.modified_at = now_secs();
@@ -142,6 +144,7 @@ impl Library {
             let freed = dir_size(&dir);
             if dir.exists() {
                 std::fs::remove_dir_all(&dir).at(&dir)?;
+                prune_empty_parents(&dir, &base);
             }
             // limpa dependencias nos dependentes
             let users = self.used_by_filtered(id, true)?;

@@ -380,6 +380,8 @@ impl Library {
             let is_linked = StorageMode::from_db(*storage) == StorageMode::Linked;
             if is_linked || delete_files {
                 let _ = std::fs::remove_dir_all(&abs);
+                let base = if is_linked { self.inner.home.clone() } else { info.path.clone() };
+                crate::util::prune_empty_parents(&abs, &base);
             }
         }
         let n = rows.len() as u64;

@@ -745,3 +745,7 @@ impl Library {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "thumbs_tests.rs"]
+mod tests;

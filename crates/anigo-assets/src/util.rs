@@ -154,6 +154,20 @@ pub(crate) fn sanitize_file_name(name: &str) -> String {
     out
 }
 
+/// Remove diretorios VAZIOS subindo de `start` ate (sem incluir) `stop`. Para no primeiro nao-vazio.
+pub(crate) fn prune_empty_parents(start: &Path, stop: &Path) {
+    let mut cur = start.parent().map(|p| p.to_path_buf());
+    while let Some(dir) = cur {
+        if dir == stop || !dir.starts_with(stop) {
+            break;
+        }
+        if std::fs::remove_dir(&dir).is_err() {
+            break;
+        }
+        cur = dir.parent().map(|p| p.to_path_buf());
+    }
+}
+
 /// Tamanho recursivo de um diretorio (ignora erros por entrada).
 pub(crate) fn dir_size(path: &Path) -> u64 {
     walkdir::WalkDir::new(path)
