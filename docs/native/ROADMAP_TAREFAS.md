@@ -49,6 +49,7 @@ Validação: **A** automática (CI) · **B** render em software (lavapipe/Xvfb, 
 | T-2.12 | Layout dockável (egui_tiles) persistido; atalhos configuráveis; menus | ⬜ | H |
 | T-2.13 | Servidor local para `anigo-mcp` falar com o app nativo (loopback + token) | ⬜ | A |
 | T-2.14 | Aposentar `src/` Svelte e `webgpu_renderer.ts` após paridade | ⬜ | A |
+| T-2.15 | Base de personagem Gen-0 (`anigo-charbase`): mesh anime M/F só quads, VRM 55 ossos + twist/busto, pesos, 64 morphs esparsos, contrato de topologia, GLB/VRM em `assets/models_v2` (ver `PERSONAGEM_BASE.md`). Pendente: esculpir rosto/corpo, renderer a N ossos, migração do CoreSession | 🟡 | A+H |
 
 ## Trilha 3 — Motor Cel (anime NPR) — ver `CEL_ENGINE_FASE1.md` (Fase 1 concluída; padrões conservadores, afinar com artista)
 | ID | Tarefa | Estado | Val. |
