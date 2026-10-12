@@ -6,6 +6,7 @@
 //! este módulo é só a ferramenta de edição — por isso não herda o contrato do render.
 
 pub mod mesh_data;
+pub mod sculpt_mesh;
 
 use crate::viewport::OrbitCamera;
 use bytemuck::{Pod, Zeroable};
@@ -370,7 +371,8 @@ impl Workbench {
                 self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(label),
                     contents: bytes,
-                    usage: wgpu::BufferUsages::VERTEX,
+                    // COPY_DST: o sólido pode ser atualizado em lugar (`update_solid`) durante a escultura
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 })
             })
         };
@@ -397,6 +399,29 @@ impl Workbench {
             object_buffer,
             object_bind,
         }
+    }
+
+    /// Sobrescreve vértices do sólido a partir de `first` (posições/normais/cores novas, mesma contagem).
+    /// Usado pela escultura para não recriar o buffer a cada quadro do traço. `false` se não couber.
+    pub fn update_solid(&self, mesh: &GpuMesh, first: usize, data: &[SolidVertex]) -> bool {
+        let Some(buf) = mesh.solid.as_ref() else {
+            return false;
+        };
+        if data.is_empty() {
+            return true;
+        }
+        if first + data.len() > mesh.solid_count as usize {
+            return false;
+        }
+        let stride = std::mem::size_of::<SolidVertex>() as u64;
+        self.queue
+            .write_buffer(buf, first as u64 * stride, bytemuck::cast_slice(data));
+        true
+    }
+
+    /// Número de vértices do sólido na GPU.
+    pub fn solid_len(mesh: &GpuMesh) -> usize {
+        mesh.solid_count as usize
     }
 
     /// Atualiza só a matriz do objeto (mover/rotacionar sem reenviar a malha).

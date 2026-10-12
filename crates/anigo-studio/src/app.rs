@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 mod automation;
 mod gizmo;
-mod inspector;
+pub(crate) mod inspector;
 pub mod operators;
 mod modifiers_ui;
 mod normals_ui;
@@ -92,6 +92,8 @@ pub struct StudioApp {
     pub(crate) normals_ui: normals_ui::NormalsUi,
     /// Ferramenta "Pintar atributo" ativa: LMB no viewport pinta o canal NPR (Modo Edição).
     pub(crate) paint_attr_active: bool,
+    /// Estado do Modo Escultura (pincéis, contexto/BVH do objeto ativo, traço).
+    pub(crate) sculpt: crate::modeling::sculpt::SculptState,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -179,6 +181,7 @@ impl StudioApp {
             box_start: None,
             normals_ui: normals_ui::NormalsUi::default(),
             paint_attr_active: false,
+            sculpt: crate::modeling::sculpt::SculptState::new(),
         }
     }
 
@@ -378,7 +381,12 @@ impl StudioApp {
 
     fn on_tool_selected(&mut self, id: &str) {
         if self.ws == WorkspaceId::Modelagem {
-            self.modeling.status = format!("Ferramenta: {}", tr(&format!("tool.{id}")));
+            let label_key = crate::app::inspector::modeling_tools(self.modeling.mode)
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.label_key)
+                .unwrap_or("");
+            self.modeling.status = format!("Ferramenta: {}", tr(label_key));
             if let Some(kind) = operators::tool_to_op(id) {
                 self.run_op(kind);
             }

@@ -146,7 +146,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             mesa-vulkan-drivers libvulkan1 xvfb xauth \
             libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libwayland-dev libfontconfig1-dev fonts-dejavu-core
+            libwayland-dev libfontconfig1-dev fonts-dejavu-core \
+            xdotool imagemagick python3-pil
       - name: testes (modelagem, sessão, nativo C/C++, studio)
         run: cargo test -p anigo-modeling -p anigo-session -p anigo-native -p anigo-studio
       - name: testes do renderer (golden frames + render_to_texture + naga)
@@ -155,7 +156,7 @@ jobs:
         run: |
           mkdir -p native-artifacts
           cargo build -p anigo-studio
-          for sc in edit-faces grab-modal tool-move cel-preview cel-edit uv-editor uv-sphere normals-overlay normals-transfer normals-paint; do
+          for sc in edit-faces grab-modal tool-move cel-preview cel-edit uv-editor uv-sphere normals-overlay normals-transfer normals-paint sculpt-draw sculpt-mask; do
             xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
               --no-session --workspace modelagem --scenario "$sc" --frames 14 --size 1440x900 \
               --screenshot "native-artifacts/studio_$sc.png"
@@ -167,6 +168,8 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends xdotool
           scripts/native_input_smoke.sh native-artifacts/studio_input_smoke.png
+      - name: smoke de entrada real da Escultura (xdotool arrasta o mouse; screenshots por diferença)
+        run: bash scripts/native_sculpt_smoke.sh ./target/debug/anigo-studio
       - uses: actions/upload-artifact@v4
         if: always()
         with:

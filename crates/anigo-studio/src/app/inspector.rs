@@ -43,6 +43,15 @@ pub const MODELAGEM_SCULPT: &[ToolDef] = &[
     tool("sculpt.snake_hook", icons::BEZIER_CURVE, "sculpt.snake_hook"),
     tool("sculpt.crease", icons::SNOWFLAKE, "sculpt.crease"),
     tool("sculpt.mask", icons::CIRCLE, "sculpt.mask"),
+    tool("sculpt.fill", icons::PAINT_BUCKET, "sculpt.fill"),
+    tool("sculpt.scrape", icons::ERASER, "sculpt.scrape"),
+    tool("sculpt.nudge", icons::HAND_SWIPE_RIGHT, "sculpt.nudge"),
+    tool("sculpt.layer", icons::STACK, "sculpt.layer"),
+    tool("sculpt.elastic", icons::WAVE_SINE, "sculpt.elastic"),
+    tool("sculpt.mask_smooth", icons::CIRCLES_THREE, "sculpt.mask_smooth"),
+    tool("sculpt.mask_sharpen", icons::CIRCLE_DASHED, "sculpt.mask_sharpen"),
+    tool("sculpt.mask_invert", icons::SELECTION_INVERSE, "sculpt.mask_invert"),
+    tool("sculpt.mask_clear", icons::SELECTION_SLASH, "sculpt.mask_clear"),
 ];
 
 pub fn modeling_tools(mode: Mode) -> &'static [ToolDef] {

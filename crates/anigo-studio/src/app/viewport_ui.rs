@@ -75,6 +75,10 @@ impl StudioApp {
         let nui_hash = self.normals_ui.view_hash();
         let (nui_overlay, nui_channel) = (self.normals_ui.overlay(), self.normals_ui.channel_view());
         let edit_obj = (session.mode == Mode::Edit).then_some(session.doc.active).flatten();
+        // Escultura: o sólido do objeto ativo vem do espelho incremental (sem reconstruir a malha a cada quadro)
+        let sculpt_fast = session.mode == Mode::Sculpt && self.view_shading != ViewShading::Wireframe && !self.overlay_wire;
+        let sculpt_obj = sculpt_fast.then_some(session.doc.active).flatten();
+        let sculpt = &mut self.sculpt;
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
@@ -89,6 +93,31 @@ impl StudioApp {
             let is_edit = edit_obj == Some(i);
             let is_active = session.doc.active == Some(i);
             let hover_wire = self.overlay_wire;
+            if sculpt_obj == Some(i) {
+                if let Some(mirror) = sculpt.mirror.as_mut().filter(|m| !m.is_empty()) {
+                    let key = hash_u64(&[obj.id as u64, sculpt.gpu_gen, 0x5c01_7e55, mirror.len() as u64]);
+                    let model = obj.model_matrix();
+                    let tint = [1.0, 1.0, 1.0, 1.0];
+                    if let Some(pos) = gpu.cache.iter().position(|c| c.id == obj.id && c.key == key) {
+                        let c = gpu.cache.swap_remove(pos);
+                        gpu.wb.set_object_transform(&c.mesh, model, tint);
+                        if let Some((lo, hi)) = mirror.take_dirty() {
+                            gpu.wb.update_solid(&c.mesh, lo, &mirror.verts[lo..hi]);
+                        }
+                        new_cache.push(c);
+                    } else {
+                        let data = crate::workbench::MeshDrawData {
+                            solid: mirror.verts.clone(),
+                            ..Default::default()
+                        };
+                        mirror.take_dirty();
+                        let mesh = gpu.wb.upload(&data, model, tint);
+                        new_cache.push(CachedObject { id: obj.id, key, mesh });
+                    }
+                    order.push(new_cache.len() - 1);
+                    continue;
+                }
+            }
             let key = hash_u64(&[
                 obj.render_hash(),
                 if is_edit { session.revision } else { 0 },
