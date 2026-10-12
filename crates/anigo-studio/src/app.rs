@@ -5,7 +5,8 @@ use crate::cli::Cli;
 use crate::hot::{dev_shader_path, ShaderWatcher};
 use crate::i18n::{self, tr, Lang};
 use crate::icons;
-use crate::library::{self, AssetRecord};
+use crate::library;
+use crate::library_ui::{HostAction, LibraryWorkspace};
 use crate::modeling::{Mode, ModelingSession};
 use crate::session::{SessionState, SESSION_VERSION};
 use crate::theme;
@@ -53,15 +54,6 @@ pub(crate) struct Gpu {
     pub backend: String,
 }
 
-#[derive(Default)]
-pub(crate) struct LibraryState {
-    pub assets: Vec<AssetRecord>,
-    pub category: Option<&'static str>,
-    pub query: String,
-    pub selected: Option<usize>,
-    pub toast: Option<String>,
-}
-
 pub struct StudioApp {
     pub(crate) cli: Cli,
     pub(crate) ws: WorkspaceId,
@@ -73,7 +65,10 @@ pub struct StudioApp {
     pub(crate) gpu: Option<Gpu>,
     pub(crate) shader_watcher: Option<ShaderWatcher>,
     pub(crate) shader_error: Option<String>,
-    pub(crate) library: LibraryState,
+    /// Workspace Biblioteca (aberto sob demanda, na primeira visita ou no primeiro export).
+    pub(crate) lib_ws: Option<LibraryWorkspace>,
+    /// Biblioteca temporária do cenário `biblioteca-*` (mantida viva até o fim).
+    pub(crate) lib_scenario_dir: Option<std::path::PathBuf>,
     pub(crate) frame_count: u64,
     pub(crate) screenshot_requested: bool,
     pub(crate) session_path: Option<PathBuf>,
@@ -166,8 +161,23 @@ impl StudioApp {
         }
         let shader_watcher = dev_shader_path().and_then(|p| ShaderWatcher::new(p).ok());
 
-        let mut library = LibraryState::default();
-        library.assets = library_scan();
+        // cenários da Biblioteca: monta uma biblioteca temporária SINTÉTICA antes do primeiro quadro
+        let mut lib_ws = None;
+        let mut lib_scenario_dir = None;
+        if let Some(name) = cli.scenario.as_deref().filter(|n| crate::library_ui::scenario::is_library_scenario(n)) {
+            if cli.workspace.is_none() {
+                ws = WorkspaceId::Biblioteca;
+            }
+            match crate::library_ui::scenario::build(name) {
+                Ok(built) => {
+                    let mut w = LibraryWorkspace::with_library(built.lib.clone());
+                    w.start_scenario(name, built.assets.clone());
+                    lib_scenario_dir = Some(built.dir.clone());
+                    lib_ws = Some(w);
+                }
+                Err(e) => eprintln!("cenário {name}: {e}"),
+            }
+        }
 
         Self {
             cli,
@@ -180,7 +190,8 @@ impl StudioApp {
             gpu: None,
             shader_watcher,
             shader_error: None,
-            library,
+            lib_ws,
+            lib_scenario_dir,
             frame_count: 0,
             screenshot_requested: false,
             session_path,
@@ -339,7 +350,9 @@ impl StudioApp {
         egui::Panel::bottom("statusbar").exact_size(24.0).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
-                let msg = if self.ws == WorkspaceId::Personagem && !self.char_ui.message.is_empty() {
+                let msg = if self.ws == WorkspaceId::Biblioteca && self.lib_ws.is_some() {
+                    self.lib_ws.as_ref().map(|w| w.status_text()).unwrap_or_default()
+                } else if self.ws == WorkspaceId::Personagem && !self.char_ui.message.is_empty() {
                     self.char_ui.message.clone()
                 } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
@@ -430,150 +443,56 @@ impl StudioApp {
 
     // ------------------------------------------------------------- Biblioteca
 
-    fn library_ui(&mut self, ui: &mut egui::Ui) {
-        // categorias (esquerda do conteúdo)
-        egui::Panel::left("lib_cats").default_size(190.0).show(ui, |ui| {
-            ui.add_space(8.0);
-            ui.label(RichText::new(tr("lib.categories")).strong());
-            ui.add_space(4.0);
-            if ui.selectable_label(self.library.category.is_none(), "Todos").clicked() {
-                self.library.category = None;
-            }
-            for c in library::CATEGORIES {
-                let n = self.library.assets.iter().filter(|a| a.category == c).count();
-                let label = format!("{c}  ({n})");
-                if ui.selectable_label(self.library.category == Some(c), label).clicked() {
-                    self.library.category = Some(c);
-                }
-            }
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(icons::MAGNIFYING_GLASS);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.library.query)
-                        .hint_text(tr("lib.search_hint"))
-                        .desired_width(320.0),
-                );
-            });
-            ui.separator();
-            let authored: Vec<AssetRecord> = self
-                .modeling
-                .doc
-                .objects
-                .iter()
-                .map(|o| library::authored_record(&o.name, &o.mesh))
-                .collect();
-            let all: Vec<&AssetRecord> = self
-                .library
-                .assets
-                .iter()
-                .chain(authored.iter())
-                .filter(|a| a.matches(self.library.category, &self.library.query))
-                .collect();
-            if all.is_empty() {
-                ui.add_space(24.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Nenhum ativo nesta categoria").color(theme::TEXT_DIM));
-                });
-                return;
-            }
-            let card_w = 190.0;
-            let cols = ((ui.available_width() / (card_w + 10.0)).floor() as usize).max(1);
-            let mut toast = None;
-            let mut edit_request: Option<AssetRecord> = None;
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                egui::Grid::new("asset_grid").spacing([10.0, 10.0]).show(ui, |ui| {
-                    for (i, a) in all.iter().enumerate() {
-                        ui.allocate_ui(EVec2::new(card_w, 170.0), |ui| {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                ui.set_width(card_w - 16.0);
-                                ui.vertical(|ui| {
-                                    let (rect, _) = ui.allocate_exact_size(EVec2::new(card_w - 16.0, 74.0), egui::Sense::hover());
-                                    ui.painter().rect_filled(rect, 4.0, theme::BG_DEEP);
-                                    ui.painter().text(
-                                        rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        category_icon(a.category),
-                                        egui::FontId::proportional(34.0),
-                                        theme::ACCENT,
-                                    );
-                                    ui.label(RichText::new(&a.name).strong());
-                                    let meta = match (a.tris, a.verts) {
-                                        (Some(t), Some(v)) => format!("{} · {} tris · {} vértices", a.format, t, v),
-                                        _ => a.format.to_string(),
-                                    };
-                                    ui.label(RichText::new(meta).size(11.0).color(theme::TEXT_DIM));
-                                    ui.horizontal_wrapped(|ui| {
-                                        if ui.small_button(tr("lib.use_in_scene")).clicked() {
-                                            toast = Some(format!("\"{}\": a colocação em cena entra com o workspace Cenário nativo", a.name));
-                                        }
-                                        if ui.small_button("Editar na Modelagem").clicked() {
-                                            edit_request = Some((*a).clone());
-                                        }
-                                        if ui.small_button(tr("lib.inspect")).clicked() {
-                                            self.library.selected = Some(i);
-                                        }
-                                    });
-                                });
-                            });
-                        });
-                        if (i + 1) % cols == 0 {
-                            ui.end_row();
-                        }
-                    }
-                });
-            });
-            if let Some(a) = edit_request {
-                self.edit_library_asset(&a);
-            } else if let Some(t) = toast {
-                self.library.toast = Some(t);
-            }
-            if let Some(t) = &self.library.toast {
-                ui.separator();
-                ui.label(RichText::new(t).color(theme::TEXT_DIM).size(12.0));
-            }
-        });
+    /// Workspace Biblioteca (criado na primeira necessidade; abre a biblioteca em segundo plano).
+    pub(crate) fn lib_workspace(&mut self) -> &mut LibraryWorkspace {
+        self.lib_ws.get_or_insert_with(|| LibraryWorkspace::new(library::default_spec()))
     }
 
-    /// "Editar na Modelagem": importa o GLB (ou ativa o objeto autoral) e muda de workspace.
-    fn edit_library_asset(&mut self, a: &AssetRecord) {
-        if a.authored {
-            let name = a.name.clone();
-            if let Some(i) = self.modeling.doc.objects.iter().position(|o| o.name == name) {
-                self.modeling.set_active(i);
+    fn library_ui(&mut self, ui: &mut egui::Ui) {
+        let actions = self.lib_workspace().ui(ui);
+        for a in actions {
+            match a {
+                HostAction::EditInModeling { path, format, name } => self.edit_library_asset(&path, &format, &name),
+                HostAction::Status(s) => self.modeling.status = s,
             }
-            self.switch_workspace(WorkspaceId::Modelagem);
-            return;
         }
-        let Some(path) = a.path.clone() else {
-            return;
-        };
-        match library::import_glb_mesh(&path) {
-            Ok(mesh) => {
-                let name = mesh.name.clone();
-                self.modeling.add_object_from_mesh(&name, mesh, glam::Vec3::ZERO);
+    }
+
+    /// "Editar na Modelagem": importa o modelo (GLB/VRM/OBJ/FBX) como objeto editável e muda de workspace.
+    fn edit_library_asset(&mut self, path: &std::path::Path, format: &str, name: &str) {
+        match library::import_model_mesh(path, format) {
+            Ok(mut mesh) => {
+                mesh.name = name.to_string();
+                self.modeling.add_object_from_mesh(name, mesh, glam::Vec3::ZERO);
                 self.modeling.status = format!("Importado: {name}");
                 self.switch_workspace(WorkspaceId::Modelagem);
                 self.frame_selected_or_all();
             }
-            Err(e) => self.library.toast = Some(format!("Falha ao importar {}: {e}", path.display())),
+            Err(e) => {
+                let msg = format!("Falha ao abrir {} na Modelagem: {e}", path.display());
+                self.modeling.status = msg.clone();
+                self.lib_workspace().report_error(msg);
+            }
         }
     }
 
-    /// Exporta o objeto ativo como GLB na pasta de ativos e atualiza o catálogo.
+    /// Exporta o objeto ativo como GLB e o registra na Biblioteca como ativo autoral (nova revisão se já existir).
     pub(crate) fn export_active_to_library(&mut self) {
         let Some(obj) = self.modeling.active_object().cloned() else {
             self.modeling.status = "Nenhum objeto ativo".into();
             return;
         };
-        match library::export_object_glb(&obj, &library::studio_assets_dir()) {
-            Ok(path) => {
-                self.modeling.status = format!("Exportado para a Biblioteca: {}", path.display());
-                self.library.assets = library_scan();
-            }
-            Err(e) => self.modeling.status = format!("Exportar: {e}"),
-        }
+        let tmp = std::env::temp_dir().join(format!("anigo-export-{}", std::process::id()));
+        let result = library::export_object_glb(&obj, &tmp).map_err(|e| format!("Exportar: {e}")).and_then(|glb| {
+            let r = self.lib_workspace().import_authored(&obj.name, &glb).map_err(|e| format!("Biblioteca: {e}"));
+            let _ = std::fs::remove_file(&glb);
+            r
+        });
+        let _ = std::fs::remove_dir(&tmp);
+        self.modeling.status = match result {
+            Ok(msg) => format!("Exportado para a Biblioteca: {msg}"),
+            Err(e) => e,
+        };
     }
 
     fn placeholder_ui(&mut self, ui: &mut egui::Ui) {
@@ -592,7 +511,8 @@ impl StudioApp {
         let Some(path) = self.cli.screenshot.clone() else {
             return;
         };
-        if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 {
+        let library_busy = self.ws == WorkspaceId::Biblioteca && self.frame_count < self.cli.frames as u64 + 3000 && self.lib_ws.as_ref().is_some_and(|w| !w.scenario_done());
+        if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 && !library_busy {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
@@ -614,26 +534,6 @@ impl StudioApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ctx.request_repaint();
-    }
-}
-
-/// Bases canônicas do repositório + ativos do usuário (`Documents/ANIGO/Assets`).
-pub(crate) fn library_scan() -> Vec<AssetRecord> {
-    let mut v = library::scan_glb_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models"));
-    v.extend(library::scan_glb_dir(&library::studio_assets_dir()));
-    v
-}
-
-fn category_icon(cat: &str) -> &'static str {
-    match cat {
-        "Personagens" => icons::USER,
-        "Roupas" => icons::T_SHIRT,
-        "Penteados" => icons::SCISSORS,
-        "Acessórios" => icons::CUBE,
-        "Poses" => icons::PERSON_SIMPLE_RUN,
-        "Materiais" => icons::PALETTE,
-        "Ambientes" => icons::CLOUD,
-        _ => icons::MOUNTAINS,
     }
 }
 

@@ -30,14 +30,23 @@ pub fn tr(key: &str) -> &str {
     tr_in(lang(), key)
 }
 
-pub fn tr_in(lang: Lang, key: &str) -> &str {
-    for (k, pt, en) in TABLE {
-        if *k == key {
-            return match lang {
-                Lang::PtBr => pt,
-                Lang::En => en,
-            };
+fn index() -> &'static std::collections::HashMap<&'static str, (&'static str, &'static str)> {
+    static IDX: std::sync::OnceLock<std::collections::HashMap<&'static str, (&'static str, &'static str)>> = std::sync::OnceLock::new();
+    IDX.get_or_init(|| {
+        let mut m = std::collections::HashMap::with_capacity(TABLE.len() + crate::i18n_lib::LIB_TABLE.len());
+        for (k, pt, en) in TABLE.iter().chain(crate::i18n_lib::LIB_TABLE.iter()) {
+            m.entry(*k).or_insert((*pt, *en));
         }
+        m
+    })
+}
+
+pub fn tr_in(lang: Lang, key: &str) -> &str {
+    if let Some((pt, en)) = index().get(key) {
+        return match lang {
+            Lang::PtBr => pt,
+            Lang::En => en,
+        };
     }
     // O `&str` devolvido vive tanto quanto `key`.
     key
@@ -158,10 +167,6 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("action.delete", "Excluir", "Delete"),
     ("status.ready", "Pronto", "Ready"),
     ("status.gpu", "GPU", "GPU"),
-    ("lib.categories", "Categorias", "Categories"),
-    ("lib.search_hint", "Buscar por nome ou tag…", "Search by name or tag…"),
-    ("lib.use_in_scene", "Usar no Cenário", "Use in Scene"),
-    ("lib.inspect", "Inspecionar", "Inspect"),
     // Personagem — zonas anatômicas
     ("zone.global_silhouette", "Proporções globais e silhueta", "Global proportions & silhouette"),
     ("zone.craniofacial", "Crânio e estrutura facial", "Skull & facial structure"),

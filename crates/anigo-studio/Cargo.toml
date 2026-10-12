@@ -13,9 +13,11 @@ anigo-core = { workspace = true }
 anigo-modeling = { path = "../anigo-modeling" }
 anigo-renderer = { workspace = true }
 anigo-session = { path = "../anigo-session" }
+anigo-assets = { path = "../anigo-assets", default-features = false, features = ["fbx", "watch"] }
+anigo-native = { path = "../anigo-native", default-features = false, features = ["ufbx"] }
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }
 egui = "0.36"
-egui-phosphor = "0.14"
+egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 image = { workspace = true }
@@ -27,5 +29,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 notify = "8"
 pollster = { workspace = true }
+crossbeam-channel = "0.5"
+lru = "0.18"
+blake3 = "1.8"
 
 [dev-dependencies]
+tempfile = "3"
