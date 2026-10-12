@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 mod automation;
 mod gizmo;
-mod inspector;
+pub(crate) mod inspector;
 pub mod operators;
 mod normals_ui;
 mod sculpt_ui;
@@ -85,6 +85,8 @@ pub struct StudioApp {
     /// Editor 2D de UV visível (Modo Edição).
     pub(crate) show_uv_editor: bool,
     pub(crate) box_start: Option<glam::Vec2>,
+    /// Estado do Modo Escultura (pincéis, contexto/BVH do objeto ativo, traço).
+    pub(crate) sculpt: crate::modeling::sculpt::SculptState,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -169,6 +171,7 @@ impl StudioApp {
             frame_pending: false,
             show_uv_editor: false,
             box_start: None,
+            sculpt: crate::modeling::sculpt::SculptState::new(),
         }
     }
 
@@ -368,7 +371,12 @@ impl StudioApp {
 
     fn on_tool_selected(&mut self, id: &str) {
         if self.ws == WorkspaceId::Modelagem {
-            self.modeling.status = format!("Ferramenta: {}", tr(&format!("tool.{id}")));
+            let label_key = crate::app::inspector::modeling_tools(self.modeling.mode)
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.label_key)
+                .unwrap_or("");
+            self.modeling.status = format!("Ferramenta: {}", tr(label_key));
             if let Some(kind) = operators::tool_to_op(id) {
                 self.run_op(kind);
             }

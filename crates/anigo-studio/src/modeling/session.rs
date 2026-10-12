@@ -189,6 +189,16 @@ impl ModelingSession {
         self.history.record(label, &snap);
     }
 
+    /// Descarta o último ponto de undo (ação que terminou sem efeito, ex.: traço que não tocou a malha).
+    pub fn discard_checkpoint(&mut self) {
+        self.history.pop_undo();
+    }
+
+    /// Esvazia o histórico de undo/redo (estado inicial de testes e cenários).
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
     }

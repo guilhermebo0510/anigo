@@ -3,6 +3,7 @@
 
 pub mod history;
 pub mod modal;
+pub mod sculpt;
 pub mod session;
 
 pub use modal::{Axis, Constraint, ModalContext, ModalTransform, TransformKind};
