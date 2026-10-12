@@ -335,3 +335,44 @@ fn an_oversized_job_fails_cleanly_without_touching_the_disk() {
     assert!(matches!(ev.last(), Some(Event::Failed { .. })), "{ev:?}");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn dof_blurs_the_frame_and_the_output_options_are_honoured() {
+    let Some(mut r) = gpu() else { return };
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let sharp = test_spec(240, 135);
+    let mut blur = sharp.clone();
+    blur.output.dof.enabled = true;
+    blur.output.dof.focus_distance = 1.0;
+    blur.output.dof.f_number = 1.0;
+    blur.output.dof.focal_mm = 200.0;
+    blur.output.dof.max_radius_px = 16.0;
+    run(&mut r, &sharp, a.path(), "d");
+    run(&mut r, &blur, b.path(), "d");
+    let (s, d) = (image::open(a.path().join("d.png")).unwrap().to_luma8(), image::open(b.path().join("d.png")).unwrap().to_luma8());
+    // energia de borda (gradiente horizontal): o desfoque a reduz
+    let edge = |im: &image::GrayImage| (1..im.width()).map(|x| (0..im.height()).map(|y| (im.get_pixel(x, y).0[0] as i32 - im.get_pixel(x - 1, y).0[0] as i32).unsigned_abs() as u64).sum::<u64>()).sum::<u64>();
+    assert!(edge(&d) < edge(&s) * 9 / 10, "o DoF não suavizou a imagem: {} vs {}", edge(&d), edge(&s));
+    // Display P3: marcado com cICP e as cores saem reencodadas
+    let mut p3 = test_spec(160, 90);
+    p3.display_space = ColorSpace::DisplayP3;
+    let mut srgb = p3.clone();
+    srgb.display_space = ColorSpace::Srgb;
+    let (c, e) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    run(&mut r, &p3, c.path(), "p");
+    run(&mut r, &srgb, e.path(), "p");
+    let info = read_info(&std::fs::read(c.path().join("p.png")).unwrap()).unwrap();
+    assert_eq!(info.cicp, Some([12, 13, 0, 1]));
+    assert!(read_info(&std::fs::read(e.path().join("p.png")).unwrap()).unwrap().srgb);
+    assert_ne!(std::fs::read(c.path().join("p.png")).unwrap(), std::fs::read(e.path().join("p.png")).unwrap());
+    // JPEG com fundo transparente achata sobre a cor de fundo (sem alfa) e avisa
+    let mut jpg = test_spec(160, 90);
+    jpg.output.format = OutputFormat::Jpeg;
+    jpg.output.transparent = true;
+    let f = tempfile::tempdir().unwrap();
+    let out = run(&mut r, &jpg, f.path(), "j");
+    assert!(out.notes.iter().any(|n| n.contains("JPEG")));
+    let img = image::open(f.path().join("j.jpg")).unwrap().to_rgb8();
+    let corner = img.get_pixel(1, 1).0;
+    assert!((corner[2] as i32 - 128).abs() < 8 && (corner[0] as i32 - 51).abs() < 8, "canto {corner:?} deveria ser o fundo (0,2 0,3 0,5)");
+}

@@ -13,7 +13,8 @@
 | [BIBLIOTECA_UI.md](BIBLIOTECA_UI.md) | Workspace Biblioteca: grade virtualizada, miniaturas 3D cel, gestão, import, cenários de captura |
 | [FISICA.md](FISICA.md) | `anigo-physics`: spring bone VRM-exato, XPBD (cabelo, roupa por proxy, acessórios), `PhysicsWorld`, presets, números medidos, o que não foi validado visualmente e o que o renderer precisaria (storage buffer de N ossos) |
 | [CENARIO_UI.md](CENARIO_UI.md) | Workspace Cenário (editor de níveis estilo UE5): viewport/fly, Content Drawer da Biblioteca, seleção BVH, gizmo e snap, Outliner/Details/Histórico, smoke xdotool |
-| [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets) |
+| [RENDER_UI.md](RENDER_UI.md) | Workspace Render: câmera de render, saída (presets, supersampling, alfa, P3, PNG 8/16/JPEG), passes e AOVs, preview com máscara/guias, fila de render real (thread de GPU, cancelar/retomar), histórico com miniaturas, gancho de sequência, smoke xdotool |
+| [pesquisa/](pesquisa/) | Relatórios de pesquisa (UI Rust + hot reload, C++ vs Rust p/ modelagem, estado da arte de cel shading, bibliotecas de assets, saída de render) |
 | img/ | Screenshots de referência gerados sob Xvfb + lavapipe |
 
 Crates novas: `anigo-modeling` (motor), `anigo-assets` (biblioteca), `anigo-native` (C/C++), `anigo-session` (CoreSession compartilhada), `anigo-studio` (app).

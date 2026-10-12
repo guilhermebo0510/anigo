@@ -15,6 +15,8 @@
 
 mod panels;
 mod script;
+#[cfg(test)]
+mod pipeline_tests;
 mod viewport;
 
 use super::StudioApp;
@@ -668,7 +670,7 @@ impl StudioApp {
             Some(JobStatus::Failed(_)) => "failed".into(),
             Some(JobStatus::Cancelled) => "cancelled".into(),
         };
-        let files = job.map(|j| j.files.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>().join(",")).unwrap_or_default();
+        let files = job.map(|j| j.files.iter().map(|f| f.path.display().to_string().replace(' ', "%20")).collect::<Vec<_>>().join(",")).unwrap_or_default();
         let r = &self.render_ui;
         let pt = |p: egui::Pos2| format!("{:.0},{:.0}", p.x * ppp, p.y * ppp);
         let line = format!(

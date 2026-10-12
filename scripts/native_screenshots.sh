@@ -35,6 +35,11 @@ shot cenario_snap cenario cenario-snap
 shot cenario_outliner cenario cenario-outliner
 shot cenario_gizmo cenario cenario-gizmo
 shot cenario_camera cenario cenario-camera
+shot render_camera render render-camera
+shot render_saida render render-saida
+shot render_passes render render-passes
+shot render_transparente render render-transparente
+shot render_fila render render-fila
 shot personagem personagem character-default
 shot personagem_feminino personagem character-female
 # reduz o tamanho (PNG otimizado, 8 bits)
