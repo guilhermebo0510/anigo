@@ -1353,4 +1353,32 @@ mod tests {
         assert!(st.gpu_gen > gen1);
         assert_eq!(st.ctx().unwrap().vert_normals.len(), 8);
     }
+
+    /// Desempenho em quad_sphere(64) (24 576 faces): custo por quadro do traço (dabs + espelho incremental)
+    /// versus reconstruir o sólido inteiro como o caminho antigo fazia.
+    #[test]
+    fn perf_incremental_frame_vs_full_rebuild_on_24k_faces() {
+        let mut s = session_with_sphere(64);
+        let view = front_view();
+        let mut st = SculptState::new();
+        st.slot_mut(BrushKind::Draw).radius_px = 60.0;
+        st.sync(&s);
+        assert!(st.is_bound());
+        let t0 = std::time::Instant::now();
+        assert!(st.begin_stroke(&mut s, &view, view.ray(Vec2::new(300.0, 300.0)), 1.0, 0.0, StrokeMods::default()).unwrap());
+        let mut frames = 0;
+        for k in 1..=30 {
+            let p = Vec2::new(300.0 + k as f32 * 6.0, 300.0 + (k as f32 * 0.3).sin() * 20.0);
+            st.continue_stroke(&mut s, view.ray(p), 1.0, k as f64 * 0.016);
+            frames += 1;
+        }
+        st.end_stroke(&mut s);
+        let per_frame = t0.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+        let mesh = &s.active_object().unwrap().mesh;
+        let t1 = std::time::Instant::now();
+        let data = crate::workbench::build_draw_data(mesh, &crate::workbench::BuildOptions::default());
+        let full = t1.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("perf 24k faces (debug): traço {per_frame:.2} ms/quadro; reconstrução completa antiga {full:.1} ms ({} tris)", data.solid.len() / 3);
+        assert!(per_frame < full, "o caminho incremental deve ser mais barato que reconstruir tudo");
+    }
 }
