@@ -53,6 +53,8 @@ pub struct CelPreview {
     /// Cenário: geometria atual de cada nó (id → chave) e assinatura do último quadro desenhado.
     level_geom: std::collections::HashMap<String, String>,
     level_sig: u64,
+    /// Workspace Render: assinatura da última câmera/DoF/passes aplicados por `apply_render_view`.
+    render_view_sig: u64,
 }
 
 impl CelPreview {
@@ -78,7 +80,54 @@ impl CelPreview {
             character_bounds: None,
             level_geom: std::collections::HashMap::new(),
             level_sig: 0,
+            render_view_sig: 0,
         })
+    }
+
+    /// Workspace Render: usa a câmera EXATA do projeto (perspectiva/ortográfica, near/far), o DoF e os passes
+    /// ligados/desligados do grafo — o que o render final vai usar. Chame DEPOIS de `sync_level` e ANTES de
+    /// `render_if`; devolve `true` se algo disso mudou (sujo). Ao SAIR do workspace Render chame
+    /// [`Self::clear_render_view`]: os outros workspaces não herdam DoF nem overrides.
+    pub fn apply_render_view(&mut self, camera: Camera, overrides: anigo_renderer::GraphOverrides, dof: anigo_core::scene::DofSettings) -> bool {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |bits: u32| {
+            h ^= bits as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for b in camera.eye.to_array().into_iter().chain(camera.target.to_array()).chain(camera.up.to_array()).chain([camera.fov_y, camera.aspect, camera.z_near, camera.z_far]) {
+            mix(b.to_bits());
+        }
+        if let Some(o) = camera.orthographic {
+            for b in [o.left, o.right, o.bottom, o.top] {
+                mix(b.to_bits());
+            }
+        }
+        mix(dof.enabled as u32);
+        for b in [dof.focus_distance, dof.f_number, dof.focal_mm, dof.max_radius_px] {
+            mix(b.to_bits());
+        }
+        mix(dof.bokeh_shape);
+        for name in overrides.disabled.iter().chain(&overrides.order) {
+            for byte in name.bytes() {
+                mix(byte as u32);
+            }
+            mix(0xff);
+        }
+        mix(overrides.depth_prepass as u32);
+        self.scene.camera = camera;
+        self.scene.dof = dof;
+        self.renderer.set_graph_overrides(overrides);
+        let changed = h != self.render_view_sig;
+        self.render_view_sig = h;
+        changed
+    }
+
+    /// Desfaz [`Self::apply_render_view`] (DoF desligado, passes do contrato) e força o próximo `sync_level` a redesenhar.
+    pub fn clear_render_view(&mut self) {
+        self.scene.dof = anigo_core::scene::DofSettings::default();
+        self.renderer.set_graph_overrides(anigo_renderer::GraphOverrides::default());
+        self.render_view_sig = 0;
+        self.level_sig = 0;
     }
 
     /// Sincroniza a cena do renderer com o workspace Cenário: um nó por `NodeSlot` (hierarquia

@@ -465,6 +465,33 @@ impl LibraryWorkspace {
         Ok(msg)
     }
 
+    /// Registra uma imagem renderizada (PNG/JPEG) como ativo de imagem da Biblioteca (tags `render`, `autoral`).
+    /// Importar o mesmo conteúdo de novo cai em "duplicado" (sem copiar de novo).
+    pub fn import_render_image(&mut self, name: &str, image: &std::path::Path) -> Result<String, String> {
+        self.open_blocking()?;
+        let rt = self.rt.as_ref().ok_or("a biblioteca não está aberta")?;
+        let lib = rt.lib.clone();
+        let opts = ImportOptions {
+            name: Some(name.to_string()),
+            tags: vec!["render".into(), "autoral".into()],
+            author: Some("ANIGO Studio".into()),
+            ..Default::default()
+        };
+        let rep = lib.import_blocking(image, opts).map_err(|e| e.to_string())?;
+        let msg = if !rep.imported.is_empty() || !rep.revised.is_empty() {
+            format!("\"{name}\" adicionado à Biblioteca")
+        } else if !rep.duplicates.is_empty() {
+            format!("\"{name}\": já existe na Biblioteca com o mesmo conteúdo")
+        } else if let Some((p, e)) = rep.failed.first() {
+            return Err(format!("{}: {e}", p.display()));
+        } else {
+            return Err("nada foi importado".into());
+        };
+        self.reload_rows(false);
+        self.reload_facets();
+        Ok(msg)
+    }
+
     /// Texto da barra de status do app quando este workspace está ativo.
     pub fn status_text(&self) -> String {
         if let Some((t, _, at)) = &self.toast {

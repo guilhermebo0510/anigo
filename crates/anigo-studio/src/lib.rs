@@ -17,6 +17,7 @@ pub mod hot;
 pub mod i18n;
 pub mod i18n_hair;
 pub mod i18n_lib;
+pub mod i18n_render;
 pub mod i18n_scene;
 pub mod icons;
 pub mod library;

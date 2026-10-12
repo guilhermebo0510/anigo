@@ -9,6 +9,7 @@
 //! * [`history`] — histórico de saídas com miniaturas.
 
 pub mod aov;
+pub mod framing;
 pub mod history;
 pub mod image_ops;
 pub mod job;

@@ -32,6 +32,10 @@ impl StudioApp {
             self.scene_start_script(&name);
             return; // a máquina de estados vive em `scene_script_tick`
         }
+        if super::render_ui::is_render_scenario(&name) {
+            self.render_start_script(&name);
+            return; // a máquina de estados vive em `render_script_tick`
+        }
         if name.starts_with("sculpt-") {
             self.run_sculpt_scenario(&name);
             return;

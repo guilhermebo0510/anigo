@@ -56,7 +56,7 @@ impl StudioApp {
     }
 
     /// Monta a sala: piso, parede, pilares, mesa e adereços da Biblioteca, personagem e câmera.
-    fn build_set(&mut self, full: bool) {
+    pub(crate) fn build_set(&mut self, full: bool) {
         // piso e parede de fundo (primitivas)
         let floor = self.add_primitive(PrimitiveShape::Plane, "Piso", Transform { scale: Vec3::new(18.0, 1.0, 12.0), ..Default::default() });
         self.scene_apply(Command::SetNodeProps { node_id: floor, patch: NodePatch { overrides: Some(anigo_core::NodeOverrides { base_color: Some([0.50, 0.58, 0.70, 1.0]), shade_color: Some([0.28, 0.32, 0.46, 1.0]), outline_width: None }), ..Default::default() } });
