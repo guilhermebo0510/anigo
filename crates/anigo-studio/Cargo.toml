@@ -21,6 +21,8 @@ egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 image = { workspace = true }
+# mesma versão que o `image` já compila: PNG com iTXt/cICP/pHYs e profundidade 16 bits
+png = "0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
