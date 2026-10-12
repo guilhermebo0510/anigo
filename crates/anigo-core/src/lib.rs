@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod bone_sync;
+pub mod bvh;
 pub mod clip_asset;
 pub mod command;
 pub mod deformation;
@@ -15,6 +16,7 @@ pub mod npr;
 pub mod pose;
 pub mod project;
 pub mod render_output;
+pub mod retarget;
 pub mod scene;
 pub mod shadow;
 pub mod skinning;
