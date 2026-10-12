@@ -57,6 +57,8 @@ pub(crate) struct DockState {
     /// Diálogos dos menus (nome do preset, caminhos de importar/exportar).
     pub dialog: Option<DockDialog>,
     pub area: (f32, f32),
+    /// Última linha de `ANIGO_TRACE_LAYOUT` (só imprime quando muda).
+    pub last_trace: String,
 }
 
 pub(crate) enum DockDialog {
@@ -530,5 +532,29 @@ impl StudioApp {
         }
         let ctx = ui.ctx().clone();
         self.dock_persist(&ctx);
+        if std::env::var_os("ANIGO_TRACE_LAYOUT").is_some() {
+            self.dock_trace(ws);
+        }
+    }
+
+    /// `layouttrace ws=<ws> tree=<estrutura> pane:<id>=x,y,w,h ...` (pontos lógicos; só quando muda) — os smokes leem isto
+    /// para saber onde arrastar e o que mudou.
+    fn dock_trace(&mut self, ws: WorkspaceId) {
+        let Some(tree) = self.dock.trees.get(&ws) else { return };
+        let structure = tiles::tree_to_node(tree).map(|n| n.describe()).unwrap_or_default();
+        let mut rects: Vec<String> = tiles::pane_ids(tree)
+            .into_iter()
+            .filter_map(|id| {
+                let tid = tiles::find_pane(tree, id)?;
+                let r = tree.tiles.rect(tid)?;
+                Some(format!("pane:{id}={:.0},{:.0},{:.0},{:.0}", r.min.x, r.min.y, r.width(), r.height()))
+            })
+            .collect();
+        rects.sort();
+        let line = format!("layouttrace ws={} tree={} {}", ws.key(), structure, rects.join(" "));
+        if line != self.dock.last_trace {
+            eprintln!("{line}");
+            self.dock.last_trace = line;
+        }
     }
 }

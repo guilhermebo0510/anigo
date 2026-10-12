@@ -58,6 +58,7 @@ pub const DOCK_TABLE: &[(&str, &str, &str)] = &[
     ("menu.file.new_warn", "Descartar o projeto atual? O histórico de desfazer também é limpo.", "Discard the current project? The undo history is cleared too."),
     ("menu.file.new_ok", "Descartar e criar", "Discard and create"),
     ("menu.file.new_done", "Novo projeto criado", "New project created"),
+    ("menu.file.quit", "Sair", "Quit"),
     ("menu.edit.history", "Histórico", "History"),
     ("menu.edit.history_empty", "Sem ações ainda", "No actions yet"),
     ("menu.edit.history_hint", "Mais recente primeiro; use Desfazer/Refazer para navegar", "Newest first; use Undo/Redo to navigate"),

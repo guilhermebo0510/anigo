@@ -160,6 +160,10 @@ impl StudioApp {
                 let ctx = ui.ctx().clone();
                 app.render_enqueue(&ctx);
             }
+            ui.separator();
+            if item(ui, tr("menu.file.quit"), "", true, None) {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         });
     }
 

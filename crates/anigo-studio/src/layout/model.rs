@@ -73,6 +73,21 @@ impl LayoutNode {
         self.panes().contains(&id)
     }
 
+    /// Estrutura compacta para traces e testes: `H[a|V[b|c]]`, abas `T[a,b]*1` (`*n` = aba ativa), folha = id.
+    pub fn describe(&self) -> String {
+        match self {
+            LayoutNode::Pane { id } => id.clone(),
+            LayoutNode::Split { vertical, children } => {
+                let inner: Vec<String> = children.iter().map(|c| c.node.describe()).collect();
+                format!("{}[{}]", if *vertical { "V" } else { "H" }, inner.join("|"))
+            }
+            LayoutNode::Tabs { children, active } => {
+                let inner: Vec<String> = children.iter().map(|c| c.describe()).collect();
+                format!("T[{}]*{}", inner.join(","), active)
+            }
+        }
+    }
+
     /// Remove os painéis para os quais `keep` é falso (e duplicatas), colapsando containers que sobram vazios
     /// ou com um filho. Devolve `None` se nada restou. `seen` acumula os ids já mantidos.
     fn prune(self, keep: &dyn Fn(&str) -> bool, seen: &mut HashSet<String>) -> Option<LayoutNode> {
@@ -520,6 +535,12 @@ mod tests {
         assert!(matches!(&s, LayoutNode::Split { children, .. } if children.len() == 2));
         // tudo desconhecido = nada
         assert!(LayoutNode::pane("x").sanitized(KNOWN).is_none());
+    }
+
+    #[test]
+    fn describe_is_a_compact_structure_string() {
+        assert_eq!(sample().describe(), "H[V[ws.viewport|ws.timeline]|T[ws.outliner,ws.history]*1]");
+        assert_eq!(LayoutNode::pane("a").describe(), "a");
     }
 
     #[test]
