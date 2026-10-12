@@ -1,7 +1,7 @@
 //! Viewport do Posing: navegação, seleção de juntas (clique/marquee), gizmo FK de rotação, handles de IK
 //! (mãos/pés com pole), quadril, alvo do olhar, cones de limites, equilíbrio e render cel do personagem posado.
 
-use super::{character_xf, describe_pose, DragKind, Hot, Marquee, PoseDrag, StudioApp};
+use super::{character_xf, DragKind, Hot, Marquee, PoseDrag, StudioApp};
 use crate::i18n::tr;
 use crate::icons;
 use crate::posing::edit::{self, HipsMove};
@@ -504,7 +504,7 @@ impl StudioApp {
         self.pose_ui.hud.clear();
         match d.tracker.finish().filter(|_| d.tracker.moved).map(|c| self.anim_wrap_pose_cmd(c)) {
             Some(cmd) => match self.core.commit_preview(cmd) {
-                Ok(o) => self.pose_ui.message = describe_pose(&o.description),
+                Ok(o) => self.pose_ui.message = self.pose_describe(&o.description),
                 Err(e) => self.pose_report(e),
             },
             None => self.core.cancel_preview(),

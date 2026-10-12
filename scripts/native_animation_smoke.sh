@@ -74,12 +74,14 @@ press() { refocus; xdotool keydown "$1"; sleep 0.15; xdotool keyup "$1"; sleep 0
 ctrl_key() { refocus; xdotool keydown Control_L; sleep 0.2; xdotool key "$1"; sleep 0.2; xdotool keyup Control_L; }
 # x (pixels) de um quadro e y da linha de regua, calculados do trace
 frame_x() { awk -v t="$1" -v f="$2" 'BEGIN { split(t, c, ","); printf "%d", c[1] + (f - X0) * PPF * PPP }' X0="$X0" PPF="$PPF" PPP="$PPP"; }
-load_geom() { # le canvas/x0/ppf/ppp do trace atual
+load_geom() { # espera o layout assentar e le canvas/x0/ppf/ppp do trace
   local t canvas
+  wait_stable
   t=$(last)
   canvas=$(field "$t" canvas)
   CX=$(echo "$canvas" | cut -d, -f1); CY=$(echo "$canvas" | cut -d, -f2)
   X0=$(field "$t" x0); PPF=$(field "$t" ppf); PPP=$(field "$t" ppp); RH=$(field "$t" ruler_h)
+  RULER_Y=$(awk -v cy="$CY" -v rh="$RH" 'BEGIN { printf "%d", cy + rh / 2 }')
 }
 px_of() { awk -v cx="$CX" -v x0="$X0" -v ppf="$PPF" -v ppp="$PPP" -v f="$1" 'BEGIN { printf "%d", cx + (f - x0) * ppf * ppp }'; }
 start_app() {
@@ -110,7 +112,6 @@ load_geom
 echo "geometria: canvas=$CX,$CY x0=$X0 ppf=$PPF ppp=$PPP ruler_h=$RH"
 
 # ---- 1. clicar no tempo: quadro 12
-RULER_Y=$(awk -v cy="$CY" -v rh="$RH" 'BEGIN { printf "%d", cy + rh / 2 }')
 X12=$(px_of 12)
 xdotool mousemove "$X12" "$RULER_Y"; sleep 0.4
 xdotool click 1; sleep 0.6

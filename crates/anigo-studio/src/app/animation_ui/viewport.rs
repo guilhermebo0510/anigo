@@ -178,7 +178,9 @@ impl StudioApp {
             s.push_str(&format!(" row{}={}@{:.0}", i, t.key_string().replace(' ', "%20"), y * ppp));
         }
         if let Some(clip) = self.anim_clip() {
-            if let Some(ch) = clip.channels.first() {
+            // o canal da primeira linha visível do dope sheet (o que o smoke arrasta)
+            let first = self.anim_ui.rows_geom.first().map(|(t, _)| t.clone());
+            if let Some(ch) = first.and_then(|t| clip.channel(&t)) {
                 let frames: Vec<String> = ch.keys.iter().map(|k| k.frame.to_string()).collect();
                 s.push_str(&format!(" ch0={} ch0keys={}", ch.target.key_string().replace(' ', "%20"), frames.join(",")));
             }

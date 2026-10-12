@@ -21,6 +21,8 @@ use anigo_core::retarget::{poses_to_clip, BoneMap, ClipBuild, Retargeter};
 use egui::{Color32, RichText};
 use std::sync::Arc;
 
+/// Largura fixa dos campos do inspetor: larguras derivadas do espaço disponível realimentam o painel e o fazem crescer.
+const FIELD_W: f32 = 300.0;
 const FPS_PRESETS: [f32; 9] = [8.0, 12.0, 15.0, 24.0, 25.0, 30.0, 48.0, 50.0, 60.0];
 
 impl StudioApp {
@@ -29,16 +31,18 @@ impl StudioApp {
             self.core.set_history_limit(400);
         }
         // o painel inferior (timeline) vem antes do central; o inspetor à direita
-        egui::Panel::right("anim_inspector").default_size(340.0).size_range(290.0..=560.0).show(ui, |ui| {
+        egui::Panel::right("anim_inspector").default_size(360.0).size_range(290.0..=560.0).show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Clip, format!("{}  {}", icons::FILM_STRIP, tr("anim.tab.clip")));
                 ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Bone, format!("{}  {}", icons::BONE, tr("anim.tab.bone")));
             });
             ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.anim_ui.side_tab {
-                SideTab::Clip => self.inspector_clip_tab(ui),
-                SideTab::Bone => self.rig_panel(ui),
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| match self.anim_ui.side_tab {
+                    SideTab::Clip => self.inspector_clip_tab(ui),
+                    SideTab::Bone => self.rig_panel(ui),
+                });
             });
         });
         self.animation_bottom_panel(ui);
@@ -118,8 +122,9 @@ impl StudioApp {
                     }
                 }
             }
-            ui.separator();
-            // chave e auto-key
+        });
+        // segunda linha: chaves, auto-key, interpolação, onion skin
+        ui.horizontal_wrapped(|ui| {
             let key = ui.add(egui::Button::new(format!("{}  {}", icons::KEY, tr("anim.key.insert"))).min_size(egui::vec2(0.0, 24.0))).on_hover_text(format!("{} (I) · {} (Alt+I)", tr("anim.key.insert_tip"), tr("anim.key.delete_here")));
             self.anim_ui.key_btn = key.rect.center();
             if key.clicked() {
@@ -143,9 +148,6 @@ impl StudioApp {
             if self.anim_ui.dirty_pose {
                 ui.label(RichText::new(format!("{}  {}", icons::WARNING, tr("anim.unkeyed"))).color(Color32::from_rgb(0xff, 0xb0, 0x40))).on_hover_text(tr("anim.unkeyed_tip"));
             }
-            if !self.anim_ui.message.is_empty() {
-                ui.label(RichText::new(self.anim_ui.message.clone()).color(theme::TEXT_DIM));
-            }
         });
     }
 
@@ -155,6 +157,7 @@ impl StudioApp {
         self.section_clip(ui);
         ui.add_space(6.0);
         self.anim_section(ui, "sel", format!("{}  {}", icons::KEY, tr("anim.sel.title")), true, |s, ui| s.section_selected_keys(ui));
+        self.anim_section(ui, "scene", format!("{}  {}", icons::CUBE, tr("anim.scene.title")), false, |s, ui| s.section_scene_keys(ui));
         self.anim_section(ui, "onion", format!("{}  {}", icons::GHOST, tr("anim.onion")), false, |s, ui| s.section_onion(ui));
         self.anim_section(ui, "markers", format!("{}  {}", icons::FLAG, tr("anim.markers")), false, |s, ui| s.section_markers(ui));
         self.anim_section(ui, "phys", format!("{}  {}", icons::WIND, tr("anim.phys.title")), false, |s, ui| s.section_physics(ui));
@@ -180,7 +183,7 @@ impl StudioApp {
         let ids: Vec<(AnimationClipId, String)> = self.core.project().animation.clips.iter().map(|(i, c)| (i.clone(), c.name.clone())).collect();
         let active = self.anim_clip_id();
         let cur = active.as_ref().and_then(|a| ids.iter().find(|(i, _)| i == a)).map(|(_, n)| n.clone()).unwrap_or_else(|| tr("anim.no_clip").to_string());
-        egui::ComboBox::from_id_salt("anim_clip_pick").selected_text(cur).width(ui.available_width() - 6.0).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("anim_clip_pick").selected_text(cur).width(FIELD_W).show_ui(ui, |ui| {
             for (id, name) in &ids {
                 if ui.selectable_label(active.as_ref() == Some(id), name).clicked() {
                     self.anim_select_clip(id);
@@ -198,7 +201,7 @@ impl StudioApp {
                 self.anim_ui.rename_for = Some(id.clone());
                 self.anim_ui.rename_buf = clip.name.clone();
             }
-            let te = ui.add(egui::TextEdit::singleline(&mut self.anim_ui.rename_buf).desired_width(ui.available_width() - 70.0));
+            let te = ui.add(egui::TextEdit::singleline(&mut self.anim_ui.rename_buf).desired_width(FIELD_W - 84.0));
             let commit = te.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
             if ui.button(tr("anim.clip.rename")).clicked() || commit {
                 let name = self.anim_ui.rename_buf.trim().to_string();
@@ -362,7 +365,7 @@ impl StudioApp {
                     });
                 }
                 KeyValue::Quat(q) => {
-                    let e = quat_to_euler_deg(glam::Quat::from_xyzw(q[0], q[1], q[2], q[3]));
+                    let e = quat_to_euler_deg(glam::Quat::from_xyzw(q[0], q[1], q[2], q[3])).map(|v| if v.abs() < 0.05 { 0.0 } else { v });
                     let mut x = e;
                     ui.horizontal(|ui| {
                         let mut ch = false;
@@ -406,6 +409,37 @@ impl StudioApp {
                 });
             } else if !matches!(key.interp, Interp::Step | Interp::Linear) {
                 ui.label(RichText::new(tr("anim.handles_preset")).color(theme::TEXT_DIM).size(11.5));
+            }
+        }
+    }
+
+    /// Chaves de sol, câmera de cena e transformação de um nó da cena (canais fora do corpo do personagem).
+    fn section_scene_keys(&mut self, ui: &mut egui::Ui) {
+        use anigo_core::animation::{CameraProp, SunProp};
+        ui.label(RichText::new(tr("anim.scene.note")).color(theme::TEXT_DIM).size(11.5));
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(format!("{}  {}", icons::SUN, tr("anim.scene.key_sun"))).on_hover_text(tr("anim.scene.key_sun_tip")).clicked() {
+                self.anim_insert_targets(vec![ChannelTarget::Sun { prop: SunProp::Direction }, ChannelTarget::Sun { prop: SunProp::Intensity }, ChannelTarget::Sun { prop: SunProp::Color }]);
+            }
+            if ui.button(format!("{}  {}", icons::VIDEO_CAMERA, tr("anim.scene.key_camera"))).on_hover_text(tr("anim.scene.key_camera_tip")).clicked() {
+                self.anim_insert_targets(vec![ChannelTarget::Camera { prop: CameraProp::Fov }, ChannelTarget::Camera { prop: CameraProp::Eye }, ChannelTarget::Camera { prop: CameraProp::Target }]);
+            }
+        });
+        let nodes: Vec<(anigo_core::NodeId, String)> = self.core.project().scene.nodes.iter().map(|n| (n.node_id.clone(), n.name.clone())).collect();
+        if self.anim_ui.scene_node.as_ref().is_none_or(|id| !nodes.iter().any(|(n, _)| n == id)) {
+            self.anim_ui.scene_node = nodes.first().map(|(i, _)| i.clone());
+        }
+        let cur = self.anim_ui.scene_node.as_ref().and_then(|id| nodes.iter().find(|(n, _)| n == id)).map(|(_, name)| name.clone()).unwrap_or_default();
+        egui::ComboBox::from_id_salt("anim_scene_node").selected_text(cur).width(FIELD_W - 60.0).show_ui(ui, |ui| {
+            for (id, name) in &nodes {
+                if ui.selectable_label(self.anim_ui.scene_node.as_ref() == Some(id), name).clicked() {
+                    self.anim_ui.scene_node = Some(id.clone());
+                }
+            }
+        });
+        if let Some(id) = self.anim_ui.scene_node.clone() {
+            if ui.button(format!("{}  {}", icons::CUBE, tr("anim.scene.key_node"))).on_hover_text(tr("anim.scene.key_node_tip")).clicked() {
+                self.anim_insert_targets(vec![ChannelTarget::NodeTranslation { node_id: id.clone() }, ChannelTarget::NodeRotation { node_id: id.clone() }, ChannelTarget::NodeScale { node_id: id }]);
             }
         }
     }
@@ -500,7 +534,7 @@ impl StudioApp {
 
     fn section_files(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("anim.io.note")).color(theme::TEXT_DIM).size(11.5));
-        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.io_path).hint_text(tr("anim.io.path_hint")).desired_width(f32::INFINITY));
+        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.io_path).hint_text(tr("anim.io.path_hint")).desired_width(FIELD_W));
         ui.horizontal_wrapped(|ui| {
             if ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, tr("anim.io.import"))).on_hover_text(tr("anim.io.import_tip")).clicked() {
                 self.anim_import_file();
@@ -704,11 +738,11 @@ impl StudioApp {
         let frames = FrameRange { start: self.anim_ui.seq_start.max(0) as u32, end: self.anim_ui.seq_end.max(0) as u32, step: self.anim_ui.seq_step.max(1) }.frames().len();
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("anim.seq.folder")).color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(&mut self.render_ui.prefs.dir).desired_width(ui.available_width() - 4.0));
+            ui.add(egui::TextEdit::singleline(&mut self.render_ui.prefs.dir).desired_width(FIELD_W - 60.0));
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("anim.seq.template")).color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(&mut self.anim_ui.seq_template).desired_width(ui.available_width() - 4.0)).on_hover_text(tr("anim.seq.template_tip"));
+            ui.add(egui::TextEdit::singleline(&mut self.anim_ui.seq_template).desired_width(FIELD_W - 60.0)).on_hover_text(tr("anim.seq.template_tip"));
         });
         let ctx = ui.ctx().clone();
         let busy = self.anim_seq_job().is_some_and(|j| matches!(j.status, super::super::render_ui::JobStatus::Queued | super::super::render_ui::JobStatus::Running));
@@ -799,13 +833,13 @@ impl StudioApp {
 
     pub(crate) fn clip_library_section(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new(format!("{}  {}", icons::SQUARES_FOUR, tr("anim.lib.title"))).strong());
-        ui.horizontal(|ui| {
-            if self.anim_ui.lib_name.is_empty() {
-                if let Some(c) = self.anim_clip() {
-                    self.anim_ui.lib_name = c.name.clone();
-                }
+        if self.anim_ui.lib_name.is_empty() {
+            if let Some(c) = self.anim_clip() {
+                self.anim_ui.lib_name = c.name.clone();
             }
-            ui.add(egui::TextEdit::singleline(&mut self.anim_ui.lib_name).hint_text(tr("anim.lib.name_hint")).desired_width(150.0));
+        }
+        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.lib_name).hint_text(tr("anim.lib.name_hint")).desired_width(FIELD_W - 40.0));
+        ui.horizontal_wrapped(|ui| {
             if ui.add_enabled(self.anim_clip().is_some(), egui::Button::new(format!("{}  {}", icons::FLOPPY_DISK, tr("anim.lib.save")))).on_hover_text(tr("anim.lib.save_tip")).clicked() {
                 self.anim_save_clip_to_library();
             }
@@ -822,9 +856,11 @@ impl StudioApp {
                 ui.label(RichText::new(tr("anim.lib.empty")).color(theme::TEXT_DIM));
             }
             for (i, c) in cards.iter().enumerate() {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(format!("{}  {}", icons::FILM_STRIP, c.name));
                     ui.label(RichText::new(format!("r{} · {:.1}s · {} {}", c.revision, c.asset.duration_seconds(), c.asset.key_count(), tr("anim.keys"))).color(theme::TEXT_DIM).size(11.5));
+                });
+                ui.horizontal_wrapped(|ui| {
                     if ui.small_button(tr("anim.lib.apply_new")).on_hover_text(tr("anim.lib.apply_new_tip")).clicked() {
                         self.anim_apply_card(i, false);
                     }
@@ -832,6 +868,7 @@ impl StudioApp {
                         self.anim_apply_card(i, true);
                     }
                 });
+                ui.add_space(2.0);
             }
         });
     }

@@ -205,6 +205,11 @@ pub(crate) struct AnimUi {
     // ---- clips
     pub rename_buf: String,
     pub rename_for: Option<AnimationClipId>,
+    /// Renomear a partir da lista de clips (editor "Clips"); independente do campo do inspetor.
+    pub list_rename_buf: String,
+    pub list_rename_for: Option<AnimationClipId>,
+    /// Nó da cena escolhido para receber chaves de transformação.
+    pub scene_node: Option<anigo_core::NodeId>,
     pub lib_name: String,
     pub cards: Vec<ClipCard>,
     pub cards_loaded: bool,
@@ -263,6 +268,9 @@ impl Default for AnimUi {
             dirty_pose: false,
             rename_buf: String::new(),
             rename_for: None,
+            list_rename_buf: String::new(),
+            list_rename_for: None,
+            scene_node: None,
             lib_name: String::new(),
             cards: Vec::new(),
             cards_loaded: false,
@@ -309,6 +317,9 @@ pub(crate) fn describe_anim(desc: &str) -> String {
     }
     if let Some(rest) = desc.strip_prefix("Move ") {
         return format!("{} ({})", tr("anim.h.move"), count(rest).unwrap_or(0));
+    }
+    if desc.starts_with("Batch of") {
+        return tr("anim.h.batch").to_string();
     }
     if desc.starts_with("Interpolation") {
         return tr("anim.h.interp").to_string();
@@ -513,18 +524,38 @@ impl StudioApp {
     }
 
     pub(crate) fn anim_insert_targets(&mut self, targets: Vec<ChannelTarget>) {
-        let Some(id) = self.anim_ensure_clip() else { return };
         let frame = self.anim_key_frame();
         let interp = self.anim_ui.interp.interp();
-        let clip = self.core.project().animation.clips.get(&id).cloned();
-        let edit = crate::anim::keys::plan_insert(self.core.project(), &id, clip.as_ref(), frame, &targets, interp);
-        match edit {
-            Some(e) => {
-                if self.anim_apply(e) {
-                    self.anim_ui.selection = targets.iter().filter(|t| self.anim_clip().and_then(|c| c.channel(t)).is_some_and(|c| c.key_at(frame).is_some())).map(|t| (t.clone(), frame)).collect();
-                }
+        // sem clip: o clip nasce no MESMO passo de histórico que as primeiras chaves (Batch[PutClip, SetActive, InsertKeys])
+        let existing = self.anim_clip_id();
+        let (id, fresh) = match &existing {
+            Some(id) => (id.clone(), None),
+            None => {
+                let name = self.anim_new_clip_name();
+                let id = crate::anim::autokey::fresh_clip_id(self.core.project(), &name);
+                (id.clone(), Some(AnimationClip::new(id, name)))
             }
-            None => self.anim_say(tr("anim.key.nothing")),
+        };
+        let clip = match &fresh {
+            Some(c) => Some(c.clone()),
+            None => self.core.project().animation.clips.get(&id).cloned(),
+        };
+        let Some(edit) = crate::anim::keys::plan_insert(self.core.project(), &id, clip.as_ref(), frame, &targets, interp) else {
+            self.anim_say(tr("anim.key.nothing"));
+            return;
+        };
+        let cmd = match fresh {
+            Some(c) => Command::Batch {
+                commands: vec![
+                    Command::EditAnimation { edit: AnimEdit::PutClip { clip: c } },
+                    Command::EditAnimation { edit: AnimEdit::SetActiveClip { clip_id: Some(id.clone()) } },
+                    Command::EditAnimation { edit },
+                ],
+            },
+            None => Command::EditAnimation { edit },
+        };
+        if self.anim_apply_cmd(cmd) {
+            self.anim_ui.selection = targets.iter().filter(|t| self.anim_clip().and_then(|c| c.channel(t)).is_some_and(|c| c.key_at(frame).is_some())).map(|t| (t.clone(), frame)).collect();
         }
     }
 

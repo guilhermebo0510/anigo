@@ -170,4 +170,74 @@ mod tests {
         assert_eq!(s.light.direction, base.light.direction);
         assert_eq!(s.light.color, base.light.color);
     }
+
+    /// Sequência REAL pela fila de render (GPU headless): um PNG `%04d` por quadro, com a pose de cada quadro; sem GPU é pulado.
+    #[test]
+    fn the_render_queue_writes_one_png_per_frame_with_each_frames_pose() {
+        use crate::render_out::job::{Event, FrameRange, JobSpec, RenderService, RenderSpec};
+        use crate::render_out::settings::NameTokens;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        if pollster::block_on(anigo_renderer::HeadlessRenderer::new()).is_err() {
+            eprintln!("sem adaptador wgpu: teste pulado");
+            return;
+        }
+        let mut project = ProjectState::default();
+        project.render.output.width = 320;
+        project.render.output.height = 240;
+        project.render.output.supersample = 1;
+        let mut c = clip();
+        // só o cotovelo e a mão: o personagem fica no lugar e a câmera fixa
+        c.channels.retain(|ch| matches!(ch.target, ChannelTarget::Bone { .. }));
+        project.animation.clips.insert(c.clip_id.clone(), c.clone());
+        let mut base = base_scene(&project);
+        base.camera.eye = glam::Vec3::new(0.0, 1.2, 4.0);
+        base.camera.target = glam::Vec3::new(0.0, 0.9, 0.0);
+        base.camera.aspect = 320.0 / 240.0;
+        let source: Arc<dyn FrameSource> = Arc::new(ClipFrameSource::new(base, project.clone(), PoseRig::default(), c, 24.0));
+        let spec = RenderSpec {
+            output: project.render.output,
+            display_space: project.render.color.display_space,
+            bg: project.render.background_color,
+            graph: anigo_renderer::GraphOverrides::default(),
+            meta: Default::default(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let job = JobSpec {
+            id: 1,
+            label: "seq".into(),
+            source,
+            spec,
+            dir: dir.path().to_path_buf(),
+            template: "cena_%04d".into(),
+            overwrite: true,
+            counter: 1,
+            frames: Some(FrameRange { start: 0, end: 24, step: 12 }),
+            skip_existing: false,
+            reuse: None,
+            tokens: NameTokens { project: "cena".into(), ..Default::default() },
+        };
+        let svc = RenderService::start(None);
+        svc.submit(job, Arc::new(AtomicBool::new(false)));
+        let t0 = std::time::Instant::now();
+        loop {
+            match svc.events.recv_timeout(std::time::Duration::from_secs(120)) {
+                Ok(Event::Finished { .. }) => break,
+                Ok(Event::Failed { error, .. }) => panic!("render falhou: {error}"),
+                Ok(_) => {}
+                Err(e) => panic!("fila sem resposta: {e}"),
+            }
+            assert!(t0.elapsed().as_secs() < 240);
+        }
+        let frames: Vec<_> = [0u32, 12, 24].iter().map(|f| dir.path().join(format!("cena_{f:04}.png"))).collect();
+        for f in &frames {
+            assert!(f.exists(), "faltou {}", f.display());
+        }
+        assert!(!dir.path().join("cena_0006.png").exists(), "passo de 12: o quadro 6 não existe");
+        let imgs: Vec<_> = frames.iter().map(|f| image::open(f).unwrap().to_rgba8()).collect();
+        let diff = |a: &image::RgbaImage, b: &image::RgbaImage| a.pixels().zip(b.pixels()).filter(|(x, y)| x != y).count();
+        assert!(diff(&imgs[0], &imgs[1]) > 100, "o quadro 12 devia mostrar o cotovelo dobrado");
+        assert!(diff(&imgs[1], &imgs[2]) > 100, "o quadro 24 devia diferir do 12");
+        assert_eq!(diff(&imgs[0], &imgs[0]), 0);
+    }
 }

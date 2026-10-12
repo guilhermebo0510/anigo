@@ -1073,27 +1073,27 @@ impl StudioApp {
                                 self.anim_duplicate_clip(id);
                             }
                             if ui.small_button(icons::PENCIL_SIMPLE).on_hover_text(tr("anim.clip.rename")).clicked() {
-                                self.anim_ui.rename_for = Some(id.clone());
-                                self.anim_ui.rename_buf = c.name.clone();
+                                self.anim_ui.list_rename_for = Some(id.clone());
+                                self.anim_ui.list_rename_buf = c.name.clone();
                             }
                             if ui.small_button(icons::TRASH).on_hover_text(tr("anim.clip.delete")).clicked() {
                                 self.anim_apply(AnimEdit::RemoveClip { clip_id: id.clone() });
                                 self.anim_ui.selection.clear();
                             }
                         });
-                        if self.anim_ui.rename_for.as_ref() == Some(id) {
+                        if self.anim_ui.list_rename_for.as_ref() == Some(id) {
                             ui.horizontal(|ui| {
-                                let te = ui.add(egui::TextEdit::singleline(&mut self.anim_ui.rename_buf).desired_width(180.0));
+                                let te = ui.add(egui::TextEdit::singleline(&mut self.anim_ui.list_rename_buf).desired_width(180.0));
                                 let ok = ui.button(icons::CHECK).clicked() || (te.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)));
                                 if ok {
-                                    let name = self.anim_ui.rename_buf.trim().to_string();
+                                    let name = self.anim_ui.list_rename_buf.trim().to_string();
                                     if !name.is_empty() {
                                         self.anim_apply(AnimEdit::RenameClip { clip_id: id.clone(), name });
                                     }
-                                    self.anim_ui.rename_for = None;
+                                    self.anim_ui.list_rename_for = None;
                                 }
                                 if ui.button(icons::X).clicked() {
-                                    self.anim_ui.rename_for = None;
+                                    self.anim_ui.list_rename_for = None;
                                 }
                             });
                         }

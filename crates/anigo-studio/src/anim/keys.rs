@@ -433,4 +433,30 @@ mod tests {
         let only_hips = keys_at_frame(c, 20, |t| matches!(t, ChannelTarget::Hips));
         assert_eq!(only_hips.len(), 1);
     }
+
+    /// "Inserir chave" sem clip: o clip nasce no MESMO passo de histórico que as chaves (Batch[PutClip, SetActive, InsertKeys]).
+    #[test]
+    fn inserting_a_key_without_a_clip_is_one_undo_step() {
+        let mut session = anigo_session::CoreSession::new();
+        let cid = id();
+        let fresh = AnimationClip::new(cid.clone(), "Clip 1");
+        let edit = plan_insert(session.project(), &cid, Some(&fresh), 12, &anigo_core::animation::full_pose_targets(), Interp::Linear).expect("há o que gravar");
+        let depth = session.history().undo_depth();
+        session
+            .apply(Command::Batch {
+                commands: vec![
+                    Command::EditAnimation { edit: AnimEdit::PutClip { clip: fresh } },
+                    Command::EditAnimation { edit: AnimEdit::SetActiveClip { clip_id: Some(cid.clone()) } },
+                    Command::EditAnimation { edit },
+                ],
+            })
+            .unwrap();
+        assert_eq!(session.history().undo_depth(), depth + 1);
+        assert!(session.project().animation.clips[&cid].key_count() > 10);
+        assert_eq!(session.project().animation.active_clip.as_ref(), Some(&cid));
+        session.undo().unwrap();
+        assert!(session.project().animation.clips.is_empty() && session.project().animation.active_clip.is_none());
+        session.redo().unwrap();
+        assert!(session.project().animation.clips[&cid].key_count() > 10);
+    }
 }

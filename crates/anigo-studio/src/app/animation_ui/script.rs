@@ -223,7 +223,7 @@ impl StudioApp {
         self.render_ui.prefs.overwrite = true;
         let patch = RenderOutputPatch { width: Some(640), height: Some(360), supersample: Some(1), transparent: Some(false), ..Default::default() };
         self.core.apply(Command::SetRenderOutput { patch }).ok();
-        self.core.apply(Command::SetCamera { eye: Some([1.1, 1.35, 3.4]), target: Some([0.0, 0.95, 0.0]), up: Some([0.0, 1.0, 0.0]), fov_degrees: Some(30.0), projection: None }).ok();
+        self.core.apply(Command::SetCamera { eye: Some([1.2, 1.2, 4.6]), target: Some([0.0, 0.88, 0.0]), up: Some([0.0, 1.0, 0.0]), fov_degrees: Some(30.0), projection: None }).ok();
         self.anim_ui.seq_custom = true;
         self.anim_ui.seq_start = 0;
         self.anim_ui.seq_end = 24;

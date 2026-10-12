@@ -149,7 +149,7 @@ jobs:
             libwayland-dev libfontconfig1-dev fonts-dejavu-core \
             xdotool imagemagick python3-pil
       - name: testes (modelagem, sessão, nativo C/C++, biblioteca de ativos, studio)
-        run: cargo test -p anigo-core -p anigo-modeling -p anigo-session -p anigo-native -p anigo-assets -p anigo-ik -p anigo-studio
+        run: cargo test -p anigo-core -p anigo-modeling -p anigo-session -p anigo-native -p anigo-assets -p anigo-ik -p anigo-vrm -p anigo-studio
       - name: grade da Biblioteca com 50 000 ativos sintéticos (headless egui; orçamento folgado em debug)
         run: ANIGO_BENCH_N=50000 cargo test -p anigo-studio grid_frame_time_with_synthetic_library -- --nocapture
       - name: testes do renderer (golden frames + render_to_texture + naga)
@@ -191,6 +191,15 @@ jobs:
               --no-session --workspace posing --scenario "$sc" --frames 14 --size 1440x900 \
               --screenshot "native-artifacts/studio_$sc.png"
           done
+      - name: screenshots da Animação (timeline, curvas Bézier, degrau vs. Bézier, onion skin, física, clips, sequência renderizada de verdade)
+        run: |
+          for sc in animacao-vazio animacao-timeline animacao-curvas animacao-passo animacao-bezier animacao-onion animacao-fisica animacao-clips animacao-sequencia; do
+            XDG_DATA_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/anigo-studio \
+              --no-session --workspace animacao --scenario "$sc" --frames 14 --size 1440x900 \
+              --screenshot "native-artifacts/studio_$sc.png"
+          done
+      - name: smoke de entrada real da Animação (xdotool: clicar no tempo, I, arrastar chave, Espaço, Ctrl+Z/Ctrl+Y)
+        run: bash scripts/native_animation_smoke.sh ./target/debug/anigo-studio native-artifacts/animation_smoke
       - name: screenshots da Biblioteca (biblioteca sintética + ativos reais; espera as miniaturas 3D)
         run: bash scripts/native_library_screens.sh ./target/debug/anigo-studio native-artifacts
       - name: smoke de entrada real do Cenario (xdotool: arrasta card da Biblioteca, gizmo com snap, Ctrl+Z/Ctrl+Y)
