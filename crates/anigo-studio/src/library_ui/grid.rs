@@ -141,30 +141,10 @@ impl LibraryWorkspace {
             }
             ui.separator();
 
-            // visão
-            if ui.selectable_label(self.view == ViewMode::Grid, RichText::new(icons::GRID_FOUR).size(16.0)).on_hover_text(tr("lib.view.grid")).clicked() {
-                self.view = ViewMode::Grid;
-                self.pending_scroll = Some(0.0);
-            }
-            if ui.selectable_label(self.view == ViewMode::List, RichText::new(icons::LIST_BULLETS).size(16.0)).on_hover_text(tr("lib.view.list")).clicked() {
-                self.view = ViewMode::List;
-                self.pending_scroll = Some(0.0);
-            }
-            if self.view == ViewMode::Grid {
-                ui.add(egui::Slider::new(&mut self.card_size, 90.0..=240.0).show_value(false)).on_hover_text(tr("lib.view.card_size"));
-            }
-            ui.separator();
-
-            if ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, tr("lib.import"))).on_hover_text(tr("lib.import.tip")).clicked() {
-                self.dlg.open_import();
-            }
-            if ui.button(format!("{}  {}", icons::GEAR, tr("lib.manage"))).on_hover_text(tr("lib.manage.tip")).clicked() {
-                self.dlg.open_manage();
-            }
         });
 
-        // linha de contexto: seção atual, chips, contagem, ações da seção
-        ui.horizontal_wrapped(|ui| {
+        // linha de contexto: seção atual + contagem à esquerda; visão/importar/gestão à direita
+        ui.horizontal(|ui| {
             let (icon, title) = self.section_title();
             ui.label(RichText::new(format!("{icon}  {title}")).strong());
             ui.label(small_dim(format!("{} {}", fmt_int(self.list.total_or_last() as u64), tr("lib.items"))));
@@ -174,48 +154,71 @@ impl LibraryWorkspace {
             if !self.selection.is_empty() {
                 ui.label(RichText::new(format!("\u{00b7}  {} {}", self.selection.len(), tr("lib.selected"))).color(theme::SELECT).size(12.0));
             }
-            let mut changed = false;
-            let kinds = self.filters.kinds.clone();
-            for k in kinds {
-                if ui.small_button(format!("{} {}  {}", kind_icon(k), kind_label(k), icons::X)).clicked() {
-                    self.filters.kinds.retain(|x| *x != k);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(format!("{}  {}", icons::GEAR, tr("lib.manage"))).on_hover_text(tr("lib.manage.tip")).clicked() {
+                    self.dlg.open_manage();
+                }
+                if ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, tr("lib.import"))).on_hover_text(tr("lib.import.tip")).clicked() {
+                    self.dlg.open_import();
+                }
+                ui.separator();
+                if self.view == ViewMode::Grid {
+                    ui.add(egui::Slider::new(&mut self.card_size, 90.0..=240.0).show_value(false)).on_hover_text(tr("lib.view.card_size"));
+                }
+                if ui.selectable_label(self.view == ViewMode::List, RichText::new(icons::LIST_BULLETS).size(16.0)).on_hover_text(tr("lib.view.list")).clicked() {
+                    self.view = ViewMode::List;
+                    self.pending_scroll = Some(0.0);
+                }
+                if ui.selectable_label(self.view == ViewMode::Grid, RichText::new(icons::GRID_FOUR).size(16.0)).on_hover_text(tr("lib.view.grid")).clicked() {
+                    self.view = ViewMode::Grid;
+                    self.pending_scroll = Some(0.0);
+                }
+            });
+        });
+        let section = self.filters.section.clone();
+        let has_chips = self.filters.has_refinement() || matches!(section, Section::Trash | Section::Missing | Section::Tag(_));
+        if has_chips {
+            ui.horizontal_wrapped(|ui| {
+                let mut changed = false;
+                let kinds = self.filters.kinds.clone();
+                for k in kinds {
+                    if ui.small_button(format!("{} {}  {}", kind_icon(k), kind_label(k), icons::X)).clicked() {
+                        self.filters.kinds.retain(|x| *x != k);
+                        changed = true;
+                    }
+                }
+                if !self.filters.text.trim().is_empty() && ui.small_button(format!("\u{201c}{}\u{201d}  {}", self.filters.text.trim(), icons::X)).clicked() {
+                    self.filters.text.clear();
+                    self.search_text.clear();
                     changed = true;
                 }
-            }
-            if !self.filters.text.trim().is_empty() && ui.small_button(format!("\u{201c}{}\u{201d}  {}", self.filters.text.trim(), icons::X)).clicked() {
-                self.filters.text.clear();
-                self.search_text.clear();
-                changed = true;
-            }
-            if self.filters.min_rating > 0 && ui.small_button(format!("\u{2265} {} {}  {}", self.filters.min_rating, icons::STAR, icons::X)).clicked() {
-                self.filters.min_rating = 0;
-                changed = true;
-            }
-            if changed {
-                self.filters_changed();
-            }
-            match self.filters.section.clone() {
-                Section::Trash => {
-                    if ui.small_button(format!("{}  {}", icons::RECYCLE, tr("lib.trash.empty"))).clicked() {
-                        self.dlg.confirm = Some(dialogs::Confirm::EmptyTrash);
-                    }
+                if self.filters.min_rating > 0 && ui.small_button(format!("\u{2265} {} {}  {}", self.filters.min_rating, icons::STAR, icons::X)).clicked() {
+                    self.filters.min_rating = 0;
+                    changed = true;
                 }
-                Section::Missing => {
-                    if ui.small_button(format!("{}  {}", icons::LINK, tr("lib.relink.batch"))).clicked() {
-                        self.dlg.open_relink_batch();
-                    }
+                if changed {
+                    self.filters_changed();
                 }
-                Section::Collection(_) if self.filters.has_refinement() => {}
-                _ => {}
-            }
-            // salvar a busca atual como coleção inteligente
-            if self.filters.has_refinement() || matches!(self.filters.section, Section::Tag(_)) {
-                if ui.small_button(format!("{}  {}", icons::BOOKMARK_SIMPLE, tr("lib.coll.save_smart"))).on_hover_text(tr("lib.coll.save_smart.tip")).clicked() {
+                match section {
+                    Section::Trash => {
+                        if ui.small_button(format!("{}  {}", icons::RECYCLE, tr("lib.trash.empty"))).clicked() {
+                            self.dlg.confirm = Some(dialogs::Confirm::EmptyTrash);
+                        }
+                    }
+                    Section::Missing => {
+                        if ui.small_button(format!("{}  {}", icons::LINK, tr("lib.relink.batch"))).clicked() {
+                            self.dlg.open_relink_batch();
+                        }
+                    }
+                    _ => {}
+                }
+                // salvar a busca atual como coleção inteligente
+                if (self.filters.has_refinement() || matches!(self.filters.section, Section::Tag(_))) && ui.small_button(format!("{}  {}", icons::BOOKMARK_SIMPLE, tr("lib.coll.save_smart"))).on_hover_text(tr("lib.coll.save_smart.tip")).clicked() {
                     self.dlg.smart_name = self.filters.text.trim().to_string();
                     self.dlg.open_smart = true;
                 }
-            }
-        });
+            });
+        }
         ui.add_space(2.0);
         ui.separator();
     }
@@ -292,6 +295,7 @@ impl LibraryWorkspace {
         let mut card_hit = false;
         let mut first_item = 0usize;
         let mut last_item = 0usize;
+        let mut first_center = Pos2::ZERO;
         let editable_ctx = self.filters.section.clone();
         let out = {
             let Self { list, tex, selection, .. } = self;
@@ -300,6 +304,7 @@ impl LibraryWorkspace {
                 let origin = ui.max_rect().left_top();
                 first_item = range.start * cols;
                 last_item = (range.end * cols).min(n);
+                first_center = origin + Vec2::new(size * 0.5, card_h * 0.5);
                 for idx in first_item..last_item {
                     let (r, c) = (idx / cols - range.start, idx % cols);
                     let pos = Pos2::new(origin.x + c as f32 * (size + GAP), origin.y + r as f32 * (card_h + GAP));
@@ -320,6 +325,7 @@ impl LibraryWorkspace {
             })
         };
         self.visible = (first_item, last_item);
+        self.first_card_center = first_center;
         self.after_scroll(ui, &out, rows, card_h + GAP, n, want_bucket, cols);
         self.apply_grid_events(events, card_hit, out.inner_rect, ui);
     }
@@ -344,6 +350,34 @@ impl LibraryWorkspace {
         self.request_thumbs(first, last, from, to, want_bucket);
         if self.list.total.is_none() || !self.list.is_settled() {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
+        }
+        self.emit_trace(ui.ctx().pixels_per_point());
+    }
+
+    /// `ANIGO_TRACE_LIB=1`: uma linha por mudança de estado, para o smoke de xdotool (scripts/native_library_smoke.sh).
+    fn emit_trace(&mut self, ppp: f32) {
+        if std::env::var_os("ANIGO_TRACE_LIB").is_none() {
+            return;
+        }
+        let c = self.first_card_center;
+        let line = format!(
+            "libtrace first={} last={} total={} cols={} sel={} primary={} detail={} scroll_y={:.0} card0={:.0},{:.0} loaded_pages={} settled={}",
+            self.visible.0,
+            self.visible.1,
+            self.list.total_or_last(),
+            self.cols,
+            self.selection.len(),
+            self.selection.primary.map(|i| i.to_string()).unwrap_or_else(|| "-".into()),
+            self.detail.as_ref().map(|d| d.detail.row.name.replace(' ', "_")).unwrap_or_else(|| "-".into()),
+            self.scroll_y,
+            c.x * ppp,
+            c.y * ppp,
+            self.list.loaded_pages(),
+            self.is_settled()
+        );
+        if self.trace.as_deref() != Some(line.as_str()) {
+            eprintln!("{line}");
+            self.trace = Some(line);
         }
     }
 
@@ -455,6 +489,7 @@ impl LibraryWorkspace {
         let mut events: Vec<GridEvent> = Vec::new();
         let mut card_hit = false;
         let (mut first_item, mut last_item) = (0usize, 0usize);
+        let mut first_center = Pos2::ZERO;
         let trash_view = matches!(self.filters.section, Section::Trash);
         let out = {
             let Self { list, tex, selection, .. } = self;
@@ -462,6 +497,7 @@ impl LibraryWorkspace {
                 let origin = ui.max_rect().left_top();
                 first_item = range.start;
                 last_item = range.end;
+                first_center = origin + Vec2::new(w * 0.4, LIST_ROW_H * 0.5);
                 let cols_x = list_columns(origin.x + 6.0, w, wide);
                 for idx in range.clone() {
                     let r = idx - range.start;
@@ -477,6 +513,7 @@ impl LibraryWorkspace {
             })
         };
         self.visible = (first_item, last_item);
+        self.first_card_center = first_center;
         self.after_scroll(ui, &out, n, LIST_ROW_H + 2.0, n, want_bucket, 1);
         self.apply_grid_events(events, card_hit, out.inner_rect, ui);
     }
@@ -645,7 +682,8 @@ fn paint_card(ui: &mut Ui, rect: Rect, idx: usize, row: &AssetRow, cc: &CardCtx,
     painter.rect_filled(pill, CornerRadius::same(3), Color32::from_black_alpha(150));
     painter.galley(pill.min + Vec2::new(4.0, 1.5), g, Color32::WHITE);
     if let Some((ic, col)) = state_badge(row) {
-        painter.text(Pos2::new(thumb.left() + 10.0, thumb.bottom() - 12.0), Align2::LEFT_CENTER, ic, egui::FontId::proportional(16.0), col);
+        painter.circle_filled(Pos2::new(pill.right() + 14.0, pill.center().y), 10.0, Color32::from_black_alpha(150));
+        painter.text(Pos2::new(pill.right() + 14.0, pill.center().y), Align2::CENTER_CENTER, ic, egui::FontId::proportional(14.0), col);
     }
 
     // favorito (canto superior direito)
@@ -666,7 +704,7 @@ fn paint_card(ui: &mut Ui, rect: Rect, idx: usize, row: &AssetRow, cc: &CardCtx,
     let stars = Rect::from_min_size(Pos2::new(thumb.center().x - 40.0, thumb.bottom() - 17.0), Vec2::new(80.0, 14.0));
     if hovered || cc.selected {
         painter.rect_filled(stars.expand2(Vec2::new(4.0, 1.0)), CornerRadius::same(7), Color32::from_black_alpha(150));
-        if let Some(v) = rating_row(ui, id.with("rate"), stars, row.rating, true) {
+        if let Some(v) = rating_row(ui, id.with("rate"), stars, row.rating, true, true) {
             events.push(GridEvent::Rating { id: row.id, value: v });
         }
     } else if row.rating > 0 {
@@ -786,12 +824,13 @@ fn paint_list_row(ui: &mut Ui, rect: Rect, idx: usize, row: &AssetRow, selected:
     }
     if wide {
         painter.text(Pos2::new(cols.kind, cy), Align2::LEFT_CENTER, format!("{}  {}", kind_icon(row.kind), kind_label(row.kind)), egui::FontId::proportional(11.5), kind_color(row.kind));
-        painter.text(Pos2::new(cols.format, cy), Align2::LEFT_CENTER, row.format.to_uppercase(), egui::FontId::proportional(11.5), theme::TEXT_DIM);
+        let fg = truncated(ui, &row.format.to_uppercase(), egui::FontId::proportional(11.5), theme::TEXT_DIM, 56.0);
+        painter.galley(Pos2::new(cols.format, cy - fg.size().y / 2.0), fg, theme::TEXT_DIM);
     }
     painter.text(Pos2::new(cols.tris, cy), Align2::LEFT_CENTER, if row.tris > 0 { fmt_int(row.tris) } else { "\u{2014}".into() }, egui::FontId::proportional(11.5), theme::TEXT_DIM);
     painter.text(Pos2::new(cols.size, cy), Align2::LEFT_CENTER, fmt_bytes(row.size), egui::FontId::proportional(11.5), theme::TEXT_DIM);
     let stars = Rect::from_min_size(Pos2::new(cols.rating, cy - 7.0), Vec2::new(80.0, 14.0));
-    if let Some(v) = rating_row(ui, id.with("rate"), stars, row.rating, true) {
+    if let Some(v) = rating_row(ui, id.with("rate"), stars, row.rating, true, resp.hovered() || selected) {
         events.push(GridEvent::Rating { id: row.id, value: v });
     }
     let heart = Rect::from_center_size(Pos2::new(cols.fav, cy), Vec2::splat(22.0));

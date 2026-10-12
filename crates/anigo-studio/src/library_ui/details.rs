@@ -161,7 +161,7 @@ impl LibraryWorkspace {
                     self.set_favorite(&[id], fav);
                 }
                 let rect = ui.allocate_exact_size(Vec2::new(86.0, 16.0), Sense::hover()).0;
-                if let Some(v) = rating_row(ui, ui.id().with("det_rate"), rect, row.rating, true) {
+                if let Some(v) = rating_row(ui, ui.id().with("det_rate"), rect, row.rating, true, true) {
                     self.set_rating(id, v);
                 }
             });
@@ -231,32 +231,31 @@ impl LibraryWorkspace {
                     kv(ui, "VRM", tr("lib.det.yes"));
                 }
                 kv(ui, tr("lib.det.storage"), if row.storage == StorageMode::Managed { tr("lib.root.managed") } else { tr("lib.root.linked") });
-                let origin = match (&row.storage, &d.root_path, &m.link) {
-                    (StorageMode::Linked, Some(rp), Some(l)) => rp.join(&l.rel_path).display().to_string(),
-                    _ => d.files.as_ref().map(|f| f.primary.display().to_string()).unwrap_or_default(),
-                };
-                ui.label(small_dim(tr("lib.det.origin")));
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(egui::Label::new(RichText::new(&origin).size(11.5)).wrap());
-                    if icon_button(ui, icons::COPY, tr("lib.copy")).clicked() {
-                        ui.ctx().copy_text(origin.clone());
-                    }
-                });
-                ui.end_row();
-                ui.label(small_dim(tr("lib.det.hash")));
-                ui.horizontal(|ui| {
-                    let hex = row.content_hash.to_hex();
-                    ui.label(RichText::new(format!("{}\u{2026}", &hex[..16])).monospace().size(11.5)).on_hover_text(&hex);
-                    if icon_button(ui, icons::COPY, tr("lib.copy")).clicked() {
-                        ui.ctx().copy_text(hex);
-                    }
-                });
-                ui.end_row();
                 kv(ui, tr("lib.det.revision"), format!("r{} / {}", m.current_revision, m.revisions.len()));
                 kv(ui, tr("lib.det.imported"), fmt_time(row.imported_at));
                 kv(ui, tr("lib.det.modified"), fmt_time(row.modified_at));
                 if let Some(t) = m.trashed_at {
                     kv(ui, tr("lib.det.trashed_at"), fmt_time(t));
+                }
+            });
+            ui.add_space(4.0);
+            let origin = match (&row.storage, &d.root_path, &m.link) {
+                (StorageMode::Linked, Some(rp), Some(l)) => rp.join(&l.rel_path).display().to_string(),
+                _ => d.files.as_ref().map(|f| f.primary.display().to_string()).unwrap_or_default(),
+            };
+            ui.horizontal(|ui| {
+                ui.label(small_dim(tr("lib.det.origin")));
+                if icon_button(ui, icons::COPY, tr("lib.copy")).clicked() {
+                    ui.ctx().copy_text(origin.clone());
+                }
+            });
+            ui.add(egui::Label::new(RichText::new(&origin).monospace().size(10.5)).wrap());
+            let hex = row.content_hash.to_hex();
+            ui.horizontal(|ui| {
+                ui.label(small_dim(tr("lib.det.hash")));
+                ui.label(RichText::new(format!("{}\u{2026}", &hex[..16])).monospace().size(11.0)).on_hover_text(&hex);
+                if icon_button(ui, icons::COPY, tr("lib.copy")).clicked() {
+                    ui.ctx().copy_text(hex.clone());
                 }
             });
             if m.revisions.len() > 1 {

@@ -146,7 +146,7 @@ pub fn paint_star(p: &Painter, c: Pos2, r: f32, filled: bool, color: Color32) {
 }
 
 /// Linha de 5 estrelas clicável. Devolve a nova nota se o usuário clicou (clicar na nota atual zera).
-pub fn rating_row(ui: &mut Ui, id: egui::Id, rect: Rect, rating: u8, enabled: bool) -> Option<u8> {
+pub fn rating_row(ui: &mut Ui, id: egui::Id, rect: Rect, rating: u8, enabled: bool, show_empty: bool) -> Option<u8> {
     let step = rect.width() / 5.0;
     let r = (step * 0.42).min(rect.height() * 0.5);
     let mut out = None;
@@ -156,6 +156,9 @@ pub fn rating_row(ui: &mut Ui, id: egui::Id, rect: Rect, rating: u8, enabled: bo
         let c = Pos2::new(rect.left() + step * (i as f32 + 0.5), rect.center().y);
         let shown = hovered_star.unwrap_or(rating);
         let on = i < shown;
+        if !on && !show_empty && hovered_star.is_none() {
+            continue;
+        }
         let col = if on { Color32::from_rgb(0xff, 0xc8, 0x3d) } else { theme::TEXT_DIM };
         paint_star(ui.painter(), c, r, on, col);
     }

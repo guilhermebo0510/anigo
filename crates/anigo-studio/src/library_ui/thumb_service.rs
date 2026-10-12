@@ -49,6 +49,8 @@ struct State {
     inflight: HashSet<(ContentHash, u32)>,
     rendering: Option<ContentHash>,
     failed: HashSet<ContentHash>,
+    /// Já entregues à UI desde a última lista de desejos (a UI só atualiza a lista no quadro seguinte).
+    delivered: HashSet<(ContentHash, u32)>,
 }
 
 struct Shared {
@@ -102,6 +104,7 @@ impl ThumbService {
         }
         st.sig = sig;
         st.wanted = wanted;
+        st.delivered.clear();
         drop(st);
         self.shared.cv.notify_all();
     }
@@ -115,7 +118,7 @@ impl ThumbService {
 
     pub fn is_idle(&self) -> bool {
         let Ok(st) = self.shared.state.lock() else { return true };
-        st.inflight.is_empty() && st.rendering.is_none() && !st.wanted.iter().any(|r| !st.failed.contains(&r.hash) && !st.need_render.contains(&r.hash)) && !st.wanted.iter().any(|r| st.need_render.contains(&r.hash))
+        st.inflight.is_empty() && st.rendering.is_none() && !st.wanted.iter().any(|r| !st.failed.contains(&r.hash) && !st.need_render.contains(&r.hash) && !st.delivered.contains(&(r.hash, r.size))) && !st.wanted.iter().any(|r| st.need_render.contains(&r.hash))
     }
 
     pub fn stats(&self) -> (u64, u64, u64) {
@@ -161,7 +164,7 @@ fn loader_loop(shared: Arc<Shared>, cache: Arc<ThumbnailCache>, tx: Sender<Thumb
                 let pick = st
                     .wanted
                     .iter()
-                    .find(|r| !st.inflight.contains(&(r.hash, r.size)) && !st.need_render.contains(&r.hash) && !st.failed.contains(&r.hash) && st.rendering != Some(r.hash))
+                    .find(|r| !st.inflight.contains(&(r.hash, r.size)) && !st.delivered.contains(&(r.hash, r.size)) && !st.need_render.contains(&r.hash) && !st.failed.contains(&r.hash) && st.rendering != Some(r.hash))
                     .cloned();
                 if let Some(r) = pick {
                     st.inflight.insert((r.hash, r.size));
@@ -178,7 +181,9 @@ fn loader_loop(shared: Arc<Shared>, cache: Arc<ThumbnailCache>, tx: Sender<Thumb
         if let Ok(mut st) = shared.state.lock() {
             st.inflight.remove(&(req.hash, req.size));
             match &img {
-                Some(_) => {}
+                Some(_) => {
+                    st.delivered.insert((req.hash, req.size));
+                }
                 None => {
                     st.need_render.insert(req.hash);
                     notify = true;

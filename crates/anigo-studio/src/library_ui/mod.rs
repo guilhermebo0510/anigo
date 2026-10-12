@@ -209,6 +209,9 @@ pub struct LibraryWorkspace {
     pub(crate) scroll_y: f32,
     pub(crate) viewport_h: f32,
     pub(crate) row_h: f32,
+    /// Centro (em pontos) do primeiro card visível: o smoke de xdotool clica aqui.
+    pub(crate) first_card_center: egui::Pos2,
+    pub(crate) trace: Option<String>,
     pub scenario: Option<scenario::Run>,
 }
 
@@ -268,6 +271,8 @@ impl LibraryWorkspace {
             scroll_y: 0.0,
             viewport_h: 600.0,
             row_h: 190.0,
+            first_card_center: egui::Pos2::ZERO,
+            trace: None,
             scenario: None,
         }
     }

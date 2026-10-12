@@ -548,7 +548,7 @@ impl LibraryWorkspace {
         let mut start = false;
         let mut analyze: Option<PathBuf> = None;
         let mut pick = false;
-        egui::Window::new(format!("{}  {}", icons::DOWNLOAD_SIMPLE, tr("lib.imp.title"))).id(egui::Id::new("lib_import_win")).open(&mut open).collapsible(false).resizable(true).default_width(520.0).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+        egui::Window::new(format!("{}  {}", icons::DOWNLOAD_SIMPLE, tr("lib.imp.title"))).id(egui::Id::new("lib_import_win")).open(&mut open).collapsible(false).resizable(true).default_width(520.0).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
             ui.label(small_dim(tr("lib.imp.hint")));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -757,7 +757,7 @@ impl LibraryWorkspace {
         let mut cancel = false;
         let mut clear = false;
         let mut copy = false;
-        egui::Window::new(format!("{}  {}", icons::LIST_BULLETS, tr("lib.imp.report"))).id(egui::Id::new("lib_report_win")).open(&mut open).collapsible(false).resizable(true).default_size([560.0, 380.0]).show(ctx, |ui| {
+        egui::Window::new(format!("{}  {}", icons::LIST_BULLETS, tr("lib.imp.report"))).id(egui::Id::new("lib_report_win")).open(&mut open).collapsible(false).resizable(true).default_size([560.0, 380.0]).default_pos(win_pos(ctx, 560.0, 380.0)).show(ctx, |ui| {
             let log = &self.jobs.log;
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("{} {}", log.imported, tr("lib.imp.imported"))).color(ok_color()));
@@ -848,7 +848,7 @@ impl LibraryWorkspace {
         let mut empty_trash = false;
         let mut relink_batch = false;
         let mut select: Option<AssetId> = None;
-        egui::Window::new(format!("{}  {}", icons::GEAR, tr("lib.manage"))).id(egui::Id::new("lib_manage_win")).open(&mut open).collapsible(false).resizable(true).default_size([520.0, 560.0]).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+        egui::Window::new(format!("{}  {}", icons::GEAR, tr("lib.manage"))).id(egui::Id::new("lib_manage_win")).open(&mut open).collapsible(false).resizable(true).default_size([520.0, 560.0]).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
             egui::ScrollArea::vertical().id_salt("lib_manage_scroll").auto_shrink([false, false]).show(ui, |ui| {
                 // ---- disco
                 egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::DATABASE, tr("lib.manage.disk"))).strong()).default_open(true).show(ui, |ui| {
@@ -994,7 +994,7 @@ impl LibraryWorkspace {
         let mut open = true;
         let mut resolve: Option<(AssetId, Vec<AssetId>)> = None;
         let mut resolve_all = false;
-        egui::Window::new(format!("{}  {}", icons::COPY, tr("lib.duplicates"))).id(egui::Id::new("lib_dups_win")).open(&mut open).collapsible(false).resizable(true).default_size([620.0, 460.0]).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+        egui::Window::new(format!("{}  {}", icons::COPY, tr("lib.duplicates"))).id(egui::Id::new("lib_dups_win")).open(&mut open).collapsible(false).resizable(true).default_size([620.0, 460.0]).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
             match &self.dlg.dups {
                 None => {
                     ui.horizontal(|ui| {
@@ -1095,7 +1095,7 @@ impl LibraryWorkspace {
             let mut pick_file = false;
             let mut pick_dir = false;
             let mut search = false;
-            egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.relink"))).id(egui::Id::new("lib_relink_win")).open(&mut open).collapsible(false).resizable(true).default_width(520.0).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.relink"))).id(egui::Id::new("lib_relink_win")).open(&mut open).collapsible(false).resizable(true).default_width(520.0).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
                 ui.label(RichText::new(&s.name).strong());
                 ui.label(small_dim(tr("lib.relink.hint")));
                 ui.add_space(6.0);
@@ -1173,7 +1173,7 @@ impl LibraryWorkspace {
             let mut open = true;
             let mut go = false;
             let mut pick = false;
-            egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.root.relink"))).id(egui::Id::new("lib_relink_root_win")).open(&mut open).collapsible(false).default_width(480.0).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.root.relink"))).id(egui::Id::new("lib_relink_root_win")).open(&mut open).collapsible(false).default_width(480.0).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
                 ui.label(RichText::new(&s.root.name).strong());
                 ui.label(small_dim(format!("{}: {}", tr("lib.root.current_path"), s.root.path.display())));
                 ui.label(small_dim(tr("lib.root.relink.hint")));
@@ -1203,7 +1203,7 @@ impl LibraryWorkspace {
             let mut open = true;
             let mut go = false;
             let mut pick = false;
-            egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.relink.batch"))).id(egui::Id::new("lib_relink_batch_win")).open(&mut open).collapsible(false).default_width(480.0).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            egui::Window::new(format!("{}  {}", icons::LINK, tr("lib.relink.batch"))).id(egui::Id::new("lib_relink_batch_win")).open(&mut open).collapsible(false).default_width(480.0).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
                 ui.label(small_dim(format!("{} {}", self.facets.n_missing, tr("lib.relink.batch.hint"))));
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut dir).hint_text(tr("lib.relink.search_folder")).desired_width(ui.available_width() - 150.0));
@@ -1252,7 +1252,7 @@ impl LibraryWorkspace {
         }
         let mut open = true;
         let mut create = false;
-        egui::Window::new(format!("{}  {}", icons::MAGIC_WAND, tr("lib.coll.save_smart"))).id(egui::Id::new("lib_smart_win")).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+        egui::Window::new(format!("{}  {}", icons::MAGIC_WAND, tr("lib.coll.save_smart"))).id(egui::Id::new("lib_smart_win")).open(&mut open).collapsible(false).resizable(false).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
             ui.label(small_dim(tr("lib.coll.save_smart.tip")));
             let r = ui.add(egui::TextEdit::singleline(&mut self.dlg.smart_name).hint_text(tr("lib.coll.name_hint")).desired_width(300.0));
             r.request_focus();
@@ -1310,4 +1310,10 @@ pub fn measure_disk(lib: &Library) -> DiskUsage {
         + std::fs::metadata(format!("{}-shm", idx.display())).map(|m| m.len()).unwrap_or(0);
     let thumbs = lib.thumbnails().disk_usage();
     DiskUsage { home_bytes: dir_bytes(home), assets_bytes: assets, trash_bytes: trash, index_bytes: index, thumbs_bytes: thumbs, elapsed_ms: t.elapsed().as_millis() as u64 }
+}
+
+/// Posição inicial centralizada (sem ancorar: a janela continua arrastável).
+fn win_pos(ctx: &egui::Context, w: f32, h: f32) -> egui::Pos2 {
+    let r = ctx.content_rect();
+    egui::Pos2::new((r.center().x - w / 2.0).max(8.0), (r.center().y - h / 2.0).max(48.0))
 }

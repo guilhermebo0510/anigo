@@ -85,7 +85,7 @@ fn synth_manifest(i: usize, r: &mut Rng, dup_of: Option<ContentHash>) -> AssetMa
         tags,
         rating: r.below(6) as u8,
         favorite: r.below(20) == 0,
-        stats: AssetStats { tris: r.next() % 500_000, verts: r.next() % 300_000, materials: (r.next() % 8) as u32, ..Default::default() },
+        stats: synth_stats(kind, r),
         dependencies: vec![],
         materials: vec![],
         importer_ver: IMPORTER_VERSION,
@@ -95,6 +95,21 @@ fn synth_manifest(i: usize, r: &mut Rng, dup_of: Option<ContentHash>) -> AssetMa
         trashed_at: None,
         props: serde_json::Value::Null,
         warnings: vec![],
+    }
+}
+
+/// Estatísticas plausíveis por tipo (textura não tem triângulos; modelos sim).
+fn synth_stats(kind: AssetKind, r: &mut Rng) -> AssetStats {
+    match kind {
+        AssetKind::Model | AssetKind::Character | AssetKind::Outfit | AssetKind::Hair | AssetKind::Accessory | AssetKind::Prefab | AssetKind::Scene => {
+            let tris = 500 + r.next() % 400_000;
+            AssetStats { tris, verts: tris / 2 + r.next() % 1000, meshes: 1 + (r.next() % 6) as u32, materials: 1 + (r.next() % 8) as u32, ..Default::default() }
+        }
+        AssetKind::Texture | AssetKind::Hdri => {
+            let side = [256u32, 512, 1024, 2048, 4096][r.below(5)];
+            AssetStats { width: side, height: side, ..Default::default() }
+        }
+        _ => AssetStats::default(),
     }
 }
 

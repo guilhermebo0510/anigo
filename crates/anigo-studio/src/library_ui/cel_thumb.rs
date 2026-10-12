@@ -217,7 +217,7 @@ pub struct ViewParams {
 
 impl Default for ViewParams {
     fn default() -> Self {
-        Self { yaw: 35f32.to_radians(), pitch: 14f32.to_radians(), zoom: 1.0 }
+        Self { yaw: 35f32.to_radians(), pitch: 22f32.to_radians(), zoom: 1.0 }
     }
 }
 
