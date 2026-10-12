@@ -31,16 +31,17 @@ export const GLB_CHUNK_JSON = 0x4e4f534a; // "JSON"
 export const GLB_CHUNK_BIN = 0x004e4942; // "BIN\0"
 
 /**
- * Component types da spec glTF 2.0 (3.14.1) — GL constants:
- * 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 UNSIGNED_SHORT, 5123 UNSIGNED_INT,
- * 5125 DOUBLE, 5126 FLOAT.
+ * Component types de accessors da spec glTF 2.0 (3.6.2.2) — GL constants:
+ * 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 SHORT, 5123 UNSIGNED_SHORT,
+ * 5125 UNSIGNED_INT, 5126 FLOAT. (5124 INT e DOUBLE NÃO são válidos em
+ * accessors e são rejeitados com `BAD_ACCESSOR_COMPONENT`.)
  */
 export const GLTF_COMPONENT_TYPES = {
-  U8: 5120,
-  U8N: 5121,
-  U16: 5122,
-  U32: 5123,
-  F64: 5125,
+  I8: 5120,
+  U8: 5121,
+  I16: 5122,
+  U16: 5123,
+  U32: 5125,
   F32: 5126,
 } as const;
 
@@ -72,17 +73,28 @@ export function accessorComponentCount(type: string): number {
   }
 }
 
+/** Bytes por componente (spec 3.6.2.2); -1 = componentType inválido. */
+export function componentByteSize(componentType: number): number {
+  switch (componentType) {
+    case GLTF_COMPONENT_TYPES.I8:
+    case GLTF_COMPONENT_TYPES.U8:
+      return 1;
+    case GLTF_COMPONENT_TYPES.I16:
+    case GLTF_COMPONENT_TYPES.U16:
+      return 2;
+    case GLTF_COMPONENT_TYPES.U32:
+    case GLTF_COMPONENT_TYPES.F32:
+      return 4;
+    default:
+      return -1;
+  }
+}
+
 export function accessorByteSize(type: string, componentType: number): number {
   const comps = accessorComponentCount(type);
   if (comps < 0) return -1;
-  const byte =
-    componentType === GLTF_COMPONENT_TYPES.F32 || componentType === GLTF_COMPONENT_TYPES.U32
-      ? 4
-      : componentType === GLTF_COMPONENT_TYPES.F64
-        ? 8
-        : componentType === GLTF_COMPONENT_TYPES.U16
-          ? 2
-          : 1;
+  const byte = componentByteSize(componentType);
+  if (byte < 0) return -1;
   return comps * byte;
 }
 
@@ -456,14 +468,7 @@ export function parseGltfDocument(gltf: Gltf, source: ExternalBufferSource | nul
     if (accessorComponentCount(accessor.type) < 0) {
       fail("BAD_ACCESSOR_TYPE", `accessors[${i}].type='${accessor.type}' inválido`);
     }
-    if (
-      accessor.componentType !== GLTF_COMPONENT_TYPES.U8 &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.U8N &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.U16 &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.U32 &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.F64 &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.F32
-    ) {
+    if (componentByteSize(accessor.componentType) < 0) {
       fail("BAD_ACCESSOR_COMPONENT", `accessors[${i}].componentType=${accessor.componentType} inválido`);
     }
     if (!Number.isInteger(accessor.count) || accessor.count < 0) {
@@ -611,13 +616,19 @@ function decodeScalar(
 ): number {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   switch (componentType) {
-    case GLTF_COMPONENT_TYPES.U8: return dv.getUint8(byteOffset);
-    case GLTF_COMPONENT_TYPES.U8N: return normalized ? dv.getUint8(byteOffset) / 255 : dv.getUint8(byteOffset);
+    case GLTF_COMPONENT_TYPES.I8: {
+      const v = dv.getInt8(byteOffset);
+      return normalized ? Math.max(v / 127, -1) : v;
+    }
+    case GLTF_COMPONENT_TYPES.U8: return normalized ? dv.getUint8(byteOffset) / 255 : dv.getUint8(byteOffset);
+    case GLTF_COMPONENT_TYPES.I16: {
+      const v = dv.getInt16(byteOffset, true);
+      return normalized ? Math.max(v / 32767, -1) : v;
+    }
     case GLTF_COMPONENT_TYPES.U16:
-      // Na spec, 5122 é unsigned; `normalized` divide por 65535.
+      // 5123 UNSIGNED_SHORT; `normalized` divide por 65535.
       return normalized ? dv.getUint16(byteOffset, true) / 65535 : dv.getUint16(byteOffset, true);
     case GLTF_COMPONENT_TYPES.U32: return dv.getUint32(byteOffset, true);
-    case GLTF_COMPONENT_TYPES.F64: return dv.getFloat64(byteOffset, true);
     case GLTF_COMPONENT_TYPES.F32: return dv.getFloat32(byteOffset, true);
     default: fail("BAD_ACCESSOR_COMPONENT", `componentType ${componentType} não decodificável`);
   }
@@ -626,7 +637,7 @@ function decodeScalar(
 /**
  * Lê um accessor como `Float32Array` de `count * componentCount` elementos.
  * Suporta: tipos escalares/vetoriais/matrizes, quantização normalizada
- * (u8n/u8→0..1, u16→0..65535, u32→0..4294967295), `byteStride` (interleaved)
+ * (i8→-1..1, u8→0..1, i16→-1..1, u16→0..1; u32 não é normalizável), `byteStride` (interleaved)
  * e `sparse`.
  */
 export function readAccessorFloats(model: ParsedGltfModel, accessorIndex: number): Float32Array {
@@ -687,6 +698,15 @@ export function readAccessorIndices(model: ParsedGltfModel, accessorIndex: numbe
   const accessor = model.gltf.accessors![accessorIndex];
   const region = accessorRegion(model, accessor);
   const stride = region.view?.byteStride ?? 0;
+  if (accessor.componentType === GLTF_COMPONENT_TYPES.U8) {
+    // UNSIGNED_BYTE é legal em índices; promovido para Uint16 sem perda.
+    const out = new Uint16Array(accessor.count);
+    const dv = new DataView(region.bytes.buffer, region.bytes.byteOffset, region.bytes.byteLength);
+    for (let i = 0; i < accessor.count; i++) {
+      out[i] = dv.getUint8(region.byteOffset + (stride > 0 ? i * stride : i));
+    }
+    return out;
+  }
   if (accessor.componentType === GLTF_COMPONENT_TYPES.U16) {
     const out = new Uint16Array(accessor.count);
     const dv = new DataView(region.bytes.buffer, region.bytes.byteOffset, region.bytes.byteLength);
@@ -705,7 +725,7 @@ export function readAccessorIndices(model: ParsedGltfModel, accessorIndex: numbe
     }
     return out;
   }
-  fail("BAD_ACCESSOR_COMPONENT", `índices exigem uint16/uint32 (recebido ${accessor.componentType})`);
+  fail("BAD_ACCESSOR_COMPONENT", `índices exigem UNSIGNED_BYTE/SHORT/INT = 5121/5123/5125 (recebido ${accessor.componentType})`);
 }
 
 /**

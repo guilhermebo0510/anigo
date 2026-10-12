@@ -139,12 +139,13 @@ export function parseGlbContainer(buffer: ArrayBuffer): GlbContainer {
 // Accessor decoding (quantized-aware, stride-aware)
 // ---------------------------------------------------------------------------
 
+// glTF 2.0 §3.6.2.2. 5124 (INT) e DOUBLE não são válidos em accessors.
 const COMPONENT_SIZES: Record<number, number> = {
   5120: 1, // BYTE (int8)
   5121: 1, // UNSIGNED_BYTE (u8)
-  5122: 2, // UNSIGNED_SHORT (u16)
-  5123: 4, // UNSIGNED_INT (u32)
-  5125: 8, // DOUBLE (f64)
+  5122: 2, // SHORT (i16)
+  5123: 2, // UNSIGNED_SHORT (u16)
+  5125: 4, // UNSIGNED_INT (u32)
   5126: 4, // FLOAT (f32)
 };
 
@@ -167,13 +168,11 @@ function readComponent(
   switch (componentType) {
     case 5126:
       return dv.getFloat32(byteOffset, true);
-    case 5124:
-      return dv.getFloat64(byteOffset, true);
     case 5121: {
       const v = dv.getUint8(byteOffset);
       return normalized ? v / 255.0 : v;
     }
-    case 5122: {
+    case 5123: {
       const v = dv.getUint16(byteOffset, true);
       return normalized ? v / 65535.0 : v;
     }
@@ -181,10 +180,12 @@ function readComponent(
       const v = dv.getInt8(byteOffset);
       return normalized ? Math.max(v / 127.0, -1.0) : v;
     }
-    case 5123:
-      return dv.getUint32(byteOffset, true);
+    case 5122: {
+      const v = dv.getInt16(byteOffset, true);
+      return normalized ? Math.max(v / 32767.0, -1.0) : v;
+    }
     case 5125:
-      return dv.getFloat64(byteOffset, true);
+      return dv.getUint32(byteOffset, true);
     default:
       throw new GlbParseError("BAD_ACCESSOR", `unsupported componentType ${componentType}`);
   }
@@ -261,8 +262,8 @@ export function decodeAccessorIndices(
   for (let i = 0; i < accessor.count; i++) {
     const off = base + i * stride;
     if (accessor.componentType === 5121) out[i] = dv.getUint8(off);
-    else if (accessor.componentType === 5122) out[i] = dv.getUint16(off, true);
-    else if (accessor.componentType === 5123) out[i] = dv.getUint32(off, true);
+    else if (accessor.componentType === 5123) out[i] = dv.getUint16(off, true);
+    else if (accessor.componentType === 5125) out[i] = dv.getUint32(off, true);
     else throw new GlbParseError("BAD_ACCESSOR", `bad index componentType ${accessor.componentType}`);
   }
   return out;

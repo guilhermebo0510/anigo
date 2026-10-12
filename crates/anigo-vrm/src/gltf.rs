@@ -17,13 +17,16 @@ use serde_json::Value;
 // Constantes da spec
 // ---------------------------------------------------------------------------
 
-/// Component types da spec glTF 2.0 (3.14.1): 5120 BYTE, 5121 UNSIGNED_BYTE,
-/// 5122 UNSIGNED_SHORT, 5123 UNSIGNED_INT, 5125 DOUBLE, 5126 FLOAT.
-pub const COMPONENT_U8: u64 = 5120;
-pub const COMPONENT_U8N: u64 = 5121;
-pub const COMPONENT_U16: u64 = 5122;
-pub const COMPONENT_U32: u64 = 5123;
-pub const COMPONENT_F64: u64 = 5125;
+/// Component types de accessors da spec glTF 2.0 (3.6.2.2, GL constants):
+/// 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 SHORT, 5123 UNSIGNED_SHORT,
+/// 5125 UNSIGNED_INT, 5126 FLOAT. (5124 INT existe no GL mas **não** é válido
+/// em accessors; 5130 DOUBLE também não — ambos são rejeitados com
+/// `BadAccessorComponent`.)
+pub const COMPONENT_I8: u64 = 5120;
+pub const COMPONENT_U8: u64 = 5121;
+pub const COMPONENT_I16: u64 = 5122;
+pub const COMPONENT_U16: u64 = 5123;
+pub const COMPONENT_U32: u64 = 5125;
 pub const COMPONENT_F32: u64 = 5126;
 
 const GLB_MAGIC: u32 = 0x4654_6c67; // "glTF"
@@ -150,10 +153,9 @@ pub fn accessor_component_count(tpe: &str) -> u64 {
 /// Bytes por componente (spec 3.14.1); 0 = inválido.
 fn component_bytes(component_type: u64) -> u64 {
     match component_type {
-        COMPONENT_U8 | COMPONENT_U8N => 1,
-        COMPONENT_U16 => 2,
+        COMPONENT_I8 | COMPONENT_U8 => 1,
+        COMPONENT_I16 | COMPONENT_U16 => 2,
         COMPONENT_U32 | COMPONENT_F32 => 4,
-        COMPONENT_F64 => 8,
         _ => 0,
     }
 }
@@ -608,12 +610,27 @@ fn decode_scalar(bytes: &[u8], offset: u64, component_type: u64, normalized: boo
     }
     let base = offset as usize;
     Ok(match component_type {
-        COMPONENT_U8 => bytes[base] as f32,
-        COMPONENT_U8N => {
+        COMPONENT_I8 => {
+            let v = bytes[base] as i8;
+            if normalized {
+                (v as f32 / 127.0).max(-1.0)
+            } else {
+                v as f32
+            }
+        }
+        COMPONENT_U8 => {
             if normalized {
                 bytes[base] as f32 / 255.0
             } else {
                 bytes[base] as f32
+            }
+        }
+        COMPONENT_I16 => {
+            let v = i16::from_le_bytes([bytes[base], bytes[base + 1]]);
+            if normalized {
+                (v as f32 / 32767.0).max(-1.0)
+            } else {
+                v as f32
             }
         }
         COMPONENT_U16 => {
@@ -626,18 +643,6 @@ fn decode_scalar(bytes: &[u8], offset: u64, component_type: u64, normalized: boo
         }
         COMPONENT_U32 => {
             u32::from_le_bytes([bytes[base], bytes[base + 1], bytes[base + 2], bytes[base + 3]]) as f32
-        }
-        COMPONENT_F64 => {
-            f64::from_le_bytes([
-                bytes[base],
-                bytes[base + 1],
-                bytes[base + 2],
-                bytes[base + 3],
-                bytes[base + 4],
-                bytes[base + 5],
-                bytes[base + 6],
-                bytes[base + 7],
-            ]) as f32
         }
         COMPONENT_F32 => {
             f32::from_le_bytes([bytes[base], bytes[base + 1], bytes[base + 2], bytes[base + 3]])
@@ -746,11 +751,17 @@ fn apply_sparse(parsed: &ParsedGltf, accessor: &Value, out: &mut [f32], comps: u
                 .and_then(|w| w.try_into().ok())
                 .map(u16::from_le_bytes)
                 .unwrap_or(0) as usize,
-            _ => index_bytes
+            COMPONENT_U32 => index_bytes
                 .get(index_offset as usize..index_offset as usize + 4)
                 .and_then(|w| w.try_into().ok())
                 .map(u32::from_le_bytes)
                 .unwrap_or(0) as usize,
+            other => {
+                return Err(fail(
+                    GltfErrorCode::BadAccessorComponent,
+                    format!("sparse.indices.componentType {other} inválido (use 5121/5123/5125)"),
+                ))
+            }
         };
         if vertex_index >= accessor_count {
             return Err(fail(GltfErrorCode::SparseOutOfRange, format!("sparse índice {vertex_index} fora da faixa")));
@@ -780,7 +791,7 @@ pub fn read_accessor_indices(parsed: &ParsedGltf, accessor_index: usize) -> Resu
     if component_type != COMPONENT_U8 && component_type != COMPONENT_U16 && component_type != COMPONENT_U32 {
         return Err(fail(
             GltfErrorCode::BadAccessorComponent,
-            format!("índices exigem uint8/uint16/uint32 (recebido {component_type})"),
+            format!("índices exigem UNSIGNED_BYTE/SHORT/INT = 5121/5123/5125 (recebido {component_type})"),
         ));
     }
     let count = accessor_field_count(accessor) as usize;

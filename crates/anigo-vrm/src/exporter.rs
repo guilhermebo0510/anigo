@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::gltf::build_glb;
+use crate::gltf::{build_glb, COMPONENT_F32, COMPONENT_U16, COMPONENT_U32};
 use crate::vrm1::Vrm1Meta;
 
 // ---------------------------------------------------------------------------
@@ -240,45 +240,45 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             let position_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.position).collect();
             let __offset_1 = bin.write_f32(&position_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_1, position_values.len() * 4, Some(34962));
-            attributes.insert("POSITION".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC3")));
+            attributes.insert("POSITION".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_F32, count, "VEC3")));
 
             let normal_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.normal).collect();
             let __offset_2 = bin.write_f32(&normal_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_2, normal_values.len() * 4, Some(34962));
-            attributes.insert("NORMAL".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC3")));
+            attributes.insert("NORMAL".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_F32, count, "VEC3")));
 
             let uv_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.uv).collect();
             let __offset_3 = bin.write_f32(&uv_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_3, uv_values.len() * 4, Some(34962));
-            attributes.insert("TEXCOORD_0".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC2")));
+            attributes.insert("TEXCOORD_0".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_F32, count, "VEC2")));
 
             let color_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.color).collect();
             let __offset_4 = bin.write_f32(&color_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_4, color_values.len() * 4, Some(34962));
-            attributes.insert("COLOR_0".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC4")));
+            attributes.insert("COLOR_0".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_F32, count, "VEC4")));
 
             let joints_values: Vec<u16> = prim.vertices.iter().flat_map(|v| v.joints).collect();
             let __offset_5 = bin.write_u16(&joints_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_5, joints_values.len() * 2, Some(34962));
-            attributes.insert("JOINTS_0".into(), Value::from(push_accessor(&mut accessors, view, 5122, count, "VEC4")));
+            attributes.insert("JOINTS_0".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_U16, count, "VEC4")));
 
             let weights_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.weights).collect();
             let __offset_6 = bin.write_f32(&weights_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_6, weights_values.len() * 4, Some(34962));
-            attributes.insert("WEIGHTS_0".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC4")));
+            attributes.insert("WEIGHTS_0".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_F32, count, "VEC4")));
 
             let (indices_view, indices_component) = if use_u16_indices {
                 let indices_u16: Vec<u16> = prim.indices.iter().map(|i| *i as u16).collect();
                 let offset = bin.write_u16(&indices_u16);
                 (
                     push_view(&mut bin, &mut buffer_views, offset, indices_u16.len() * 2, Some(34963)),
-                    5122,
+                    COMPONENT_U16,
                 )
             } else {
                 let offset = bin.write_u32(&prim.indices);
                 (
                     push_view(&mut bin, &mut buffer_views, offset, prim.indices.len() * 4, Some(34963)),
-                    5123,
+                    COMPONENT_U32,
                 )
             };
             let indices_accessor = push_accessor(&mut accessors, indices_view, indices_component, prim.indices.len() as u64, "SCALAR");
@@ -299,10 +299,10 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
                         let normal_values: Vec<f32> = target.iter().flat_map(|d| d.normal).collect();
                         let __offset_7 = bin.write_f32(&position_values);
                         let pos_view = push_view(&mut bin, &mut buffer_views, __offset_7, position_values.len() * 4, Some(34962));
-                        let pos_accessor = push_accessor(&mut accessors, pos_view, 5126, target.len() as u64, "VEC3");
+                        let pos_accessor = push_accessor(&mut accessors, pos_view, COMPONENT_F32, target.len() as u64, "VEC3");
                         let __offset_8 = bin.write_f32(&normal_values);
                         let norm_view = push_view(&mut bin, &mut buffer_views, __offset_8, normal_values.len() * 4, Some(34962));
-                        let norm_accessor = push_accessor(&mut accessors, norm_view, 5126, target.len() as u64, "VEC3");
+                        let norm_accessor = push_accessor(&mut accessors, norm_view, COMPONENT_F32, target.len() as u64, "VEC3");
                         let mut entry = Map::new();
                         entry.insert("POSITION".into(), Value::from(pos_accessor));
                         entry.insert("NORMAL".into(), Value::from(norm_accessor));
@@ -327,7 +327,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         let mut entry = Map::new();
         entry.insert("name".into(), Value::from(skin.name.clone().unwrap_or_else(|| format!("skin_{skin_index}"))));
         entry.insert("joints".into(), Value::Array(skin.joints.iter().map(|v| Value::from(*v)).collect()));
-        entry.insert("inverseBindMatrices".into(), Value::from(push_accessor(&mut accessors, view, 5126, skin.inverse_bind_matrices.len() as u64, "MAT4")));
+        entry.insert("inverseBindMatrices".into(), Value::from(push_accessor(&mut accessors, view, COMPONENT_F32, skin.inverse_bind_matrices.len() as u64, "MAT4")));
         if let Some(skeleton) = skin.skeleton {
             entry.insert("skeleton".into(), Value::from(skeleton));
         }
@@ -341,7 +341,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         for (track_index, track) in animation.tracks.iter().enumerate() {
             let __offset_10 = bin.write_f32(&track.times);
             let times_view = push_view(&mut bin, &mut buffer_views, __offset_10, track.times.len() * 4, None);
-            let times_accessor = push_accessor(&mut accessors, times_view, 5126, track.times.len() as u64, "SCALAR");
+            let times_accessor = push_accessor(&mut accessors, times_view, COMPONENT_F32, track.times.len() as u64, "SCALAR");
             let value_components: u64 = match track.path.as_str() {
                 "rotation" => 4,
                 "weights" => 1,
@@ -354,7 +354,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             };
             let __offset_11 = bin.write_f32(&track.values);
             let values_view = push_view(&mut bin, &mut buffer_views, __offset_11, track.values.len() * 4, None);
-            let values_accessor = push_accessor(&mut accessors, values_view, 5126, (track.values.len() as u64) / value_components, value_tpe);
+            let values_accessor = push_accessor(&mut accessors, values_view, COMPONENT_F32, (track.values.len() as u64) / value_components, value_tpe);
             let mut sampler = Map::new();
             sampler.insert("input".into(), Value::from(times_accessor));
             sampler.insert("output".into(), Value::from(values_accessor));

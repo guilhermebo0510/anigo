@@ -345,7 +345,7 @@ test("parse GLB hostil: interleaved + quantizado + uint32 + sparse + constraint"
   // COLOR_0 u8 normalized: [255,128,0,255], [0,255,0,255], [0,0,255,255]
   const binStartColor = binParts.length;
   binParts.push(255, 128, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255);
-  // Índices uint32 (5123 = UNSIGNED_INT na spec): 0,1,2
+  // Índices uint32 (5125 = UNSIGNED_INT na spec): 0,1,2
   const binStartIdx = binParts.length;
   for (const index of [0, 1, 2]) {
     binParts.push(index & 0xff, (index >> 8) & 0xff, (index >> 16) & 0xff, (index >> 24) & 0xff);
@@ -377,7 +377,7 @@ test("parse GLB hostil: interleaved + quantizado + uint32 + sparse + constraint"
       { bufferView: 0, byteOffset: 0, componentType: 5126, count: 3, type: "VEC3" },
       { bufferView: 0, byteOffset: 12, componentType: 5126, count: 3, type: "VEC3" },
       { bufferView: 1, componentType: 5121, normalized: true, count: 3, type: "VEC4" },
-      { bufferView: 2, componentType: 5123, count: 3, type: "SCALAR" },
+      { bufferView: 2, componentType: 5125, count: 3, type: "SCALAR" },
     ],
     meshes: [
       {
@@ -625,3 +625,121 @@ test("summarizeImport conta vértices, triângulos, morphs e extensões", () => 
 });
 
 
+
+// ---------------------------------------------------------------------------
+// 8. Component types — tabela da spec glTF 2.0 (§3.6.2.2)
+//    5120 BYTE, 5121 UNSIGNED_BYTE, 5122 SHORT, 5123 UNSIGNED_SHORT,
+//    5125 UNSIGNED_INT, 5126 FLOAT  (5124 INT e DOUBLE são inválidos)
+// ---------------------------------------------------------------------------
+
+/** Escreve valores little-endian e devolve os bytes, alinhados a 4. */
+function packBytes(write: (dv: DataView) => void, length: number): Uint8Array {
+  const padded = Math.ceil(length / 4) * 4;
+  const out = new Uint8Array(padded);
+  write(new DataView(out.buffer));
+  return out;
+}
+
+test("GLB mínimo à mão com códigos corretos: índices u16 (5123), u32 (5125) e joints u8 (5121)", () => {
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const idx16 = packBytes((dv) => [0, 1, 2].forEach((v, i) => dv.setUint16(i * 2, v, true)), 6);
+  const idx32 = packBytes((dv) => [2, 1, 0].forEach((v, i) => dv.setUint32(i * 4, v, true)), 12);
+  const joints8 = new Uint8Array([1, 2, 0, 0, 3, 0, 0, 0, 255, 6, 7, 8]);
+  const parts = [new Uint8Array(positions.buffer), idx16, idx32, joints8];
+  const offsets: number[] = [];
+  let total = 0;
+  for (const part of parts) {
+    offsets.push(total);
+    total += part.length;
+  }
+  const bin = new Uint8Array(total);
+  parts.forEach((part, i) => bin.set(part, offsets[i]));
+
+  const json = {
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    buffers: [{ byteLength: bin.byteLength }],
+    bufferViews: parts.map((part, i) => ({ buffer: 0, byteOffset: offsets[i], byteLength: part.length })),
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: "VEC3" },
+      { bufferView: 1, componentType: 5123, count: 3, type: "SCALAR" },
+      { bufferView: 2, componentType: 5125, count: 3, type: "SCALAR" },
+      { bufferView: 3, componentType: 5121, count: 3, type: "VEC4" },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, JOINTS_0: 3 }, indices: 1, mode: 4 }] }],
+  } as unknown as Gltf;
+
+  const { model } = parseModel(buildRawGlb(json, bin));
+
+  const narrow = readAccessorIndices(model, 1);
+  assert.ok(narrow instanceof Uint16Array, "5123 UNSIGNED_SHORT → Uint16Array");
+  assert.deepEqual(Array.from(narrow), [0, 1, 2]);
+
+  const wide = readAccessorIndices(model, 2);
+  assert.ok(wide instanceof Uint32Array, "5125 UNSIGNED_INT → Uint32Array");
+  assert.deepEqual(Array.from(wide), [2, 1, 0]);
+
+  const joints = readAccessorFloats(model, 3);
+  assert.deepEqual(Array.from(joints), [1, 2, 0, 0, 3, 0, 0, 0, 255, 6, 7, 8], "5121 UNSIGNED_BYTE (joints u8)");
+});
+
+test("componentType 5124 (INT) e DOUBLE são inválidos em accessors (BAD_ACCESSOR_COMPONENT)", () => {
+  for (const componentType of [5124, 5130, 5127]) {
+    const jsonText = JSON.stringify({
+      asset: { version: "2.0" },
+      buffers: [{ uri: "b", byteLength: 16 }],
+      bufferViews: [{ buffer: 0, byteLength: 16 }],
+      accessors: [{ bufferView: 0, componentType, count: 1, type: "SCALAR" }],
+    });
+    assert.throws(
+      () => parseGltfFile(jsonText, new Map([["b", new Uint8Array(16)]])),
+      (error: unknown) => error instanceof GltfError && error.code === "BAD_ACCESSOR_COMPONENT",
+      `componentType ${componentType}`,
+    );
+  }
+});
+
+test("BYTE (5120) e SHORT (5122) assinados são lidos com sinal e normalização", () => {
+  const bin = packBytes((dv) => {
+    dv.setInt8(0, -128);
+    dv.setInt8(1, 127);
+    dv.setInt8(2, -64);
+    dv.setInt16(4, -32768, true);
+    dv.setInt16(6, 32767, true);
+    dv.setInt16(8, -1000, true);
+  }, 10);
+  const json = {
+    asset: { version: "2.0" },
+    buffers: [{ byteLength: bin.byteLength }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 3 },
+      { buffer: 0, byteOffset: 4, byteLength: 6 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5120, count: 3, type: "SCALAR" },
+      { bufferView: 0, componentType: 5120, normalized: true, count: 3, type: "SCALAR" },
+      { bufferView: 1, componentType: 5122, count: 3, type: "SCALAR" },
+      { bufferView: 1, componentType: 5122, normalized: true, count: 3, type: "SCALAR" },
+    ],
+  } as unknown as Gltf;
+  const { model } = parseModel(buildRawGlb(json, bin));
+  assert.deepEqual(Array.from(readAccessorFloats(model, 0)), [-128, 127, -64]);
+  closeToArray(readAccessorFloats(model, 1), [-1, 1, -64 / 127], "BYTE normalizado");
+  assert.deepEqual(Array.from(readAccessorFloats(model, 2)), [-32768, 32767, -1000]);
+  closeToArray(readAccessorFloats(model, 3), [-1, 1, -1000 / 32767], "SHORT normalizado");
+});
+
+test("export ANIGO grava 5123 para índices/joints u16 e 5125 para índices u32", () => {
+  const { json } = exportGltf(sampleScene());
+  const accessors = json.accessors!;
+  const prim = json.meshes![0].primitives[0];
+  assert.equal(accessors[prim.attributes["JOINTS_0"]].componentType, 5123, "JOINTS_0 = UNSIGNED_SHORT");
+  assert.equal(accessors[prim.indices!].componentType, 5123, "índices pequenos = UNSIGNED_SHORT");
+
+  const big = sampleScene();
+  big.meshes[0].primitives[0].indices = [0, 1, 70000];
+  const bigPrim = exportGltf(big).json.meshes![0].primitives[0];
+  assert.equal(exportGltf(big).json.accessors![bigPrim.indices!].componentType, 5125, "índice > 65535 = UNSIGNED_INT");
+});
