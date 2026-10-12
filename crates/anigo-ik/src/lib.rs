@@ -1,6 +1,8 @@
 //! ANIGO Inverse Kinematics (IK) and Skeleton Posing Engine.
 //! Canonical VRM 1.0 Humanoid Rig, Kinematic Hierarchy and Bind Pose Management.
 
+pub mod pose_ik;
+
 use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
