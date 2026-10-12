@@ -44,7 +44,7 @@ impl StudioApp {
 
     // ============================================================ ferramenta: estrutura óssea
 
-    fn rig_panel(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn rig_panel(&mut self, ui: &mut egui::Ui) {
         self.pose_actions_row(ui);
         ui.add_space(4.0);
         self.limits_row(ui);

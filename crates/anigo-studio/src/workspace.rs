@@ -147,7 +147,7 @@ pub const CENARIO: &[ToolDef] = &[
 pub const ANIMACAO: &[ToolDef] = &[
     tool("timeline", icons::CLOCK, "tool.timeline"),
     tool("curves", icons::BEZIER_CURVE, "tool.curves"),
-    tool("lipsync", icons::SMILEY, "tool.lipsync"),
+    tool("clips", icons::FILM_STRIP, "tool.clips"),
 ];
 
 pub const RENDER: &[ToolDef] = &[

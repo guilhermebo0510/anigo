@@ -18,6 +18,7 @@ use egui::{Color32, RichText, Vec2 as EVec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+mod animation_ui;
 mod automation;
 mod character_ui;
 mod gizmo;
@@ -113,6 +114,8 @@ pub struct StudioApp {
     pub(crate) shading_ui: shading_ui::ShadingUi,
     /// Estado do workspace Posing (seleção de ossos, IK, gizmo, Biblioteca de poses); a pose vive em `core`.
     pub(crate) pose_ui: posing_ui::PosingUi,
+    /// Estado do workspace Animação (timeline, clips, auto-key, onion, física); o clip vive no projeto de `core`.
+    pub(crate) anim_ui: animation_ui::AnimUi,
 }
 
 const STORAGE_KEY: &str = "anigo_session_v1";
@@ -285,6 +288,22 @@ impl StudioApp {
             }
         }
 
+        // cenários da Animação: abrem o workspace; os que salvam/aplicam clips usam uma biblioteca temporária vazia
+        if let Some(name) = cli.scenario.as_deref().filter(|n| animation_ui::is_animation_scenario(n)) {
+            if cli.workspace.is_none() {
+                ws = WorkspaceId::Animacao;
+            }
+            if name == "animacao-clips" || name == "animacao-sequencia" {
+                match posing_ui::temp_library() {
+                    Ok((w, dir)) => {
+                        lib_ws = Some(w);
+                        lib_scenario_dir = Some(dir);
+                    }
+                    Err(e) => eprintln!("cenário {name}: {e}"),
+                }
+            }
+        }
+
         Self {
             cli,
             ws,
@@ -322,6 +341,7 @@ impl StudioApp {
             render_ui,
             shading_ui: shading_ui::ShadingUi::default(),
             pose_ui,
+            anim_ui: animation_ui::AnimUi::default(),
         }
     }
 
@@ -379,6 +399,10 @@ impl StudioApp {
         if self.ws == WorkspaceId::Posing {
             self.pose_reset_transients();
         }
+        if self.ws == WorkspaceId::Animacao {
+            // Ctrl+Z/Y vão para a MESMA sessão; o clip/pose amostrados são reavaliados no quadro seguinte
+            self.anim_reset_transients();
+        }
         if let Some(msg) = character_ui::route_undo_redo(self.ws, &mut self.core, &mut self.modeling, undo) {
             if self.ws == WorkspaceId::Cenario {
                 self.scene_ui.message = msg;
@@ -388,6 +412,8 @@ impl StudioApp {
                 self.render_ui.message = msg;
             } else if self.ws == WorkspaceId::Posing {
                 self.pose_ui.message = msg;
+            } else if self.ws == WorkspaceId::Animacao {
+                self.anim_ui.message = msg;
             } else {
                 self.char_ui.message = msg;
             }
@@ -501,6 +527,12 @@ impl StudioApp {
         if self.ws == WorkspaceId::Shading && w != WorkspaceId::Shading {
             self.shading_commit_now();
         }
+        if self.ws == WorkspaceId::Animacao && w != WorkspaceId::Animacao {
+            self.anim_leave();
+        }
+        if w == WorkspaceId::Animacao && self.ws != WorkspaceId::Animacao {
+            self.anim_enter();
+        }
         if w == WorkspaceId::Shading && self.ws != WorkspaceId::Shading {
             self.shading_on_enter(self.ws);
         }
@@ -528,6 +560,8 @@ impl StudioApp {
                     self.shading_ui.message.clone()
                 } else if self.ws == WorkspaceId::Posing && !self.pose_ui.message.is_empty() {
                     self.pose_ui.message.clone()
+                } else if self.ws == WorkspaceId::Animacao && !self.anim_status_text().is_empty() {
+                    self.anim_status_text()
                 } else if !self.modeling.status.is_empty() {
                     self.modeling.status.clone()
                 } else {
@@ -700,7 +734,8 @@ impl StudioApp {
             || (self.ws == WorkspaceId::Iluminacao && self.frame_count < self.cli.frames as u64 + 3000 && self.light_ui.script.as_ref().is_some_and(|s| !s.is_done()))
             || (self.ws == WorkspaceId::Render && self.frame_count < self.cli.frames as u64 + 3000 && self.render_busy())
             || (self.ws == WorkspaceId::Shading && self.frame_count < self.cli.frames as u64 + 3000 && self.shading_ui.script.as_ref().is_some_and(|s| !s.is_done()))
-            || (self.ws == WorkspaceId::Posing && self.frame_count < self.cli.frames as u64 + 3000 && self.pose_ui.script.as_ref().is_some_and(|s| !s.is_done()));
+            || (self.ws == WorkspaceId::Posing && self.frame_count < self.cli.frames as u64 + 3000 && self.pose_ui.script.as_ref().is_some_and(|s| !s.is_done()))
+            || (self.ws == WorkspaceId::Animacao && self.frame_count < self.cli.frames as u64 + 3000 && self.anim_ui.script.as_ref().is_some_and(|s| !s.is_done()));
         if !self.screenshot_requested && self.frame_count >= self.cli.frames as u64 && !library_busy {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -768,6 +803,13 @@ impl eframe::App for StudioApp {
             self.posing_shortcuts(&ui.ctx().clone());
             self.posing_panels(ui);
         }
+        if self.ws == WorkspaceId::Animacao {
+            let ctx = ui.ctx().clone();
+            self.anim_script_tick(&ctx);
+            self.anim_tick(&ctx);
+            self.animation_shortcuts(&ctx);
+            self.animation_panels(ui);
+        }
         if self.ws == WorkspaceId::Modelagem {
             self.inspector_modeling(ui);
             if self.show_uv_editor && self.modeling.mode == Mode::Edit {
@@ -791,7 +833,7 @@ impl eframe::App for StudioApp {
                 self.render_viewport_ui(ui, frame);
             } else if self.ws == WorkspaceId::Shading {
                 self.shading_viewport_ui(ui, frame);
-            } else if self.ws == WorkspaceId::Posing {
+            } else if self.ws == WorkspaceId::Posing || self.ws == WorkspaceId::Animacao {
                 self.posing_viewport_ui(ui, frame);
             } else {
                 self.placeholder_ui(ui);
@@ -825,6 +867,7 @@ impl eframe::App for StudioApp {
 
     fn on_exit(&mut self) {
         self.render_cleanup();
+        self.anim_cleanup();
         // a biblioteca temporária de um cenário não sobrevive ao app (ANIGO_SCENARIO_KEEP=1 preserva para inspeção)
         if let (Some(dir), None) = (self.lib_scenario_dir.take(), std::env::var_os("ANIGO_SCENARIO_KEEP")) {
             let _ = std::fs::remove_dir_all(dir);

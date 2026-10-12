@@ -48,6 +48,10 @@ impl StudioApp {
             self.posing_start_script(&name);
             return; // a máquina de estados vive em `posing_script_tick`
         }
+        if super::animation_ui::is_animation_scenario(&name) {
+            self.anim_start_script(&name);
+            return; // a máquina de estados vive em `anim_script_tick`
+        }
         if name.starts_with("sculpt-") {
             self.run_sculpt_scenario(&name);
             return;

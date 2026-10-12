@@ -28,6 +28,7 @@ use glam::{Mat4, Vec2, Vec3};
 use std::collections::BTreeSet;
 
 pub(crate) use script::{is_posing_scenario, temp_library};
+pub(crate) use viewport::PoseView;
 #[allow(unused_imports)]
 pub use script::POSING_SCENARIOS;
 
@@ -282,6 +283,8 @@ impl StudioApp {
 
     /// Comando discreto (botão): vai direto ao histórico.
     pub(crate) fn pose_apply(&mut self, cmd: Command) {
+        // Animação com auto-key: a edição de pose vira `Batch[SetPose, InsertKeys]` (um passo de histórico)
+        let cmd = self.anim_wrap_pose_cmd(cmd);
         match self.core.apply(cmd) {
             Ok(o) => self.pose_ui.message = describe_pose(&o.description),
             Err(e) => self.pose_report(e),
@@ -318,7 +321,7 @@ impl StudioApp {
             return;
         }
         if let Some(g) = self.pose_ui.num_gesture.take() {
-            match g.finish() {
+            match g.finish().map(|c| self.anim_wrap_pose_cmd(c)) {
                 Some(cmd) => match self.core.commit_preview(cmd) {
                     Ok(o) => self.pose_ui.message = describe_pose(&o.description),
                     Err(e) => self.pose_report(e),

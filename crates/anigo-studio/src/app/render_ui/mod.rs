@@ -438,7 +438,7 @@ impl StudioApp {
 
     // ===================================================================== fila
 
-    fn render_service(&mut self, ctx: &egui::Context) -> &RenderService {
+    pub(crate) fn render_service(&mut self, ctx: &egui::Context) -> &RenderService {
         if self.render_ui.service.is_none() {
             let c = ctx.clone();
             self.render_ui.service = Some(RenderService::start(Some(Arc::new(move || c.request_repaint()))));
@@ -483,7 +483,7 @@ impl StudioApp {
         self.render_submit(ctx, job, notes);
     }
 
-    fn render_submit(&mut self, ctx: &egui::Context, job: JobSpec, notes: Vec<String>) {
+    pub(crate) fn render_submit(&mut self, ctx: &egui::Context, job: JobSpec, notes: Vec<String>) {
         let cancel = Arc::new(AtomicBool::new(false));
         let view = JobView {
             id: job.id,
