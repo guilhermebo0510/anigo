@@ -754,11 +754,17 @@ fn apply_sparse(parsed: &ParsedGltf, accessor: &Value, out: &mut [f32], comps: u
                 .and_then(|w| w.try_into().ok())
                 .map(u16::from_le_bytes)
                 .unwrap_or(0) as usize,
-            _ => index_bytes
+            COMPONENT_U32 => index_bytes
                 .get(index_offset as usize..index_offset as usize + 4)
                 .and_then(|w| w.try_into().ok())
                 .map(u32::from_le_bytes)
                 .unwrap_or(0) as usize,
+            other => {
+                return Err(fail(
+                    GltfErrorCode::BadAccessorComponent,
+                    format!("sparse.indices.componentType {other} inválido (use 5121/5123/5125)"),
+                ))
+            }
         };
         if vertex_index >= accessor_count {
             return Err(fail(GltfErrorCode::SparseOutOfRange, format!("sparse índice {vertex_index} fora da faixa")));
@@ -788,7 +794,7 @@ pub fn read_accessor_indices(parsed: &ParsedGltf, accessor_index: usize) -> Resu
     if component_type != COMPONENT_U8 && component_type != COMPONENT_U16 && component_type != COMPONENT_U32 {
         return Err(fail(
             GltfErrorCode::BadAccessorComponent,
-            format!("índices exigem uint8/uint16/uint32 (recebido {component_type})"),
+            format!("índices exigem UNSIGNED_BYTE/SHORT/INT = 5121/5123/5125 (recebido {component_type})"),
         ));
     }
     let count = accessor_field_count(accessor) as usize;

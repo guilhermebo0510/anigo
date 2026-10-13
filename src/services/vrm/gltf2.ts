@@ -694,6 +694,15 @@ export function readAccessorIndices(model: ParsedGltfModel, accessorIndex: numbe
   const accessor = model.gltf.accessors![accessorIndex];
   const region = accessorRegion(model, accessor);
   const stride = region.view?.byteStride ?? 0;
+  if (accessor.componentType === GLTF_COMPONENT_TYPES.U8) {
+    // UNSIGNED_BYTE é legal em índices (§3.7.2.1); promovido para Uint16 sem perda.
+    const out = new Uint16Array(accessor.count);
+    const dv = new DataView(region.bytes.buffer, region.bytes.byteOffset, region.bytes.byteLength);
+    for (let i = 0; i < accessor.count; i++) {
+      out[i] = dv.getUint8(region.byteOffset + (stride > 0 ? i * stride : i));
+    }
+    return out;
+  }
   if (accessor.componentType === GLTF_COMPONENT_TYPES.U16) {
     const out = new Uint16Array(accessor.count);
     const dv = new DataView(region.bytes.buffer, region.bytes.byteOffset, region.bytes.byteLength);
@@ -712,7 +721,7 @@ export function readAccessorIndices(model: ParsedGltfModel, accessorIndex: numbe
     }
     return out;
   }
-  fail("BAD_ACCESSOR_COMPONENT", `índices exigem uint16/uint32 (recebido ${accessor.componentType})`);
+  fail("BAD_ACCESSOR_COMPONENT", `índices exigem UNSIGNED_BYTE/SHORT/INT = 5121/5123/5125 (recebido ${accessor.componentType})`);
 }
 
 /**

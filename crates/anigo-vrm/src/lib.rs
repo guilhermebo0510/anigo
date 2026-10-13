@@ -553,6 +553,119 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
+    /// GLB mínimo à mão: POSITION f32 (36 B @0), índices u16 (6 B @36),
+    /// índices u32 (12 B @44), JOINTS_0 u8 VEC4 (12 B @56).
+    fn glb_minimo(accessors: serde_json::Value) -> Vec<u8> {
+        let mut bin: Vec<u8> = Vec::new();
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [0u16, 1, 2] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        bin.extend_from_slice(&[0, 0]); // alinha em 4
+        for v in [2u32, 1, 0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        bin.extend_from_slice(&[1, 2, 0, 0, 3, 0, 0, 0, 255, 6, 7, 8]);
+        assert_eq!(bin.len(), 68);
+        let json = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "mesh": 0 }],
+            "buffers": [{ "byteLength": bin.len() }],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6 },
+                { "buffer": 0, "byteOffset": 44, "byteLength": 12 },
+                { "buffer": 0, "byteOffset": 56, "byteLength": 12 }
+            ],
+            "accessors": accessors,
+            "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0, "JOINTS_0": 3 }, "indices": 1, "mode": 4 }] }]
+        });
+        crate::gltf::build_glb(&json, &bin)
+    }
+
+    #[test]
+    fn component_types_seguem_a_spec_5123_u16_5125_u32_5121_u8() {
+        let bytes = glb_minimo(serde_json::json!([
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+            { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" },
+            { "bufferView": 2, "componentType": 5125, "count": 3, "type": "SCALAR" },
+            { "bufferView": 3, "componentType": 5121, "count": 3, "type": "VEC4" }
+        ]));
+        let result = parse_model(&bytes).expect("GLB mínimo com códigos corretos deve parsear");
+        assert_eq!(read_accessor_indices(&result.model, 1).expect("u16 (5123)"), vec![0, 1, 2]);
+        assert_eq!(read_accessor_indices(&result.model, 2).expect("u32 (5125)"), vec![2, 1, 0]);
+        assert_eq!(
+            read_accessor_f32(&result.model, 3).expect("joints u8 (5121)"),
+            vec![1.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 255.0, 6.0, 7.0, 8.0]
+        );
+    }
+
+    #[test]
+    fn component_types_invalidos_em_accessors_sao_rejeitados() {
+        for code in [5124u64, 5127, 5130] {
+            let bytes = glb_minimo(serde_json::json!([
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": code, "count": 3, "type": "SCALAR" },
+                { "bufferView": 2, "componentType": 5125, "count": 3, "type": "SCALAR" },
+                { "bufferView": 3, "componentType": 5121, "count": 3, "type": "VEC4" }
+            ]));
+            let error = parse_model(&bytes).expect_err("componentType fora da spec");
+            assert_eq!(error.code, GltfErrorCode::BadAccessorComponent, "código {code}");
+        }
+    }
+
+    #[test]
+    fn byte_e_short_assinados_sao_lidos_com_sinal() {
+        let mut bin: Vec<u8> = vec![(-128i8) as u8, 127, (-64i8) as u8, 0];
+        for v in [-32768i16, 32767, -1000, 0] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let json = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "buffers": [{ "byteLength": bin.len() }],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 3 },
+                { "buffer": 0, "byteOffset": 4, "byteLength": 6 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5120, "count": 3, "type": "SCALAR" },
+                { "bufferView": 0, "componentType": 5120, "normalized": true, "count": 3, "type": "SCALAR" },
+                { "bufferView": 1, "componentType": 5122, "count": 3, "type": "SCALAR" },
+                { "bufferView": 1, "componentType": 5122, "normalized": true, "count": 3, "type": "SCALAR" }
+            ]
+        });
+        let result = parse_model(&crate::gltf::build_glb(&json, &bin)).expect("parse");
+        assert_eq!(read_accessor_f32(&result.model, 0).unwrap(), vec![-128.0, 127.0, -64.0]);
+        let n8 = read_accessor_f32(&result.model, 1).unwrap();
+        assert!((n8[0] + 1.0).abs() < 1e-6 && (n8[1] - 1.0).abs() < 1e-6 && (n8[2] + 64.0 / 127.0).abs() < 1e-6);
+        assert_eq!(read_accessor_f32(&result.model, 2).unwrap(), vec![-32768.0, 32767.0, -1000.0]);
+        let n16 = read_accessor_f32(&result.model, 3).unwrap();
+        assert!((n16[0] + 1.0).abs() < 1e-6 && (n16[1] - 1.0).abs() < 1e-6 && (n16[2] + 1000.0 / 32767.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn export_grava_component_types_da_spec() {
+        let bytes = export_model(&sample_scene(), None);
+        let result = parse_model(&bytes).expect("parse");
+        let json = &result.model.json;
+        let prim = json.pointer("/meshes/0/primitives/0").expect("primitiva");
+        let component = |accessor: u64| json.pointer(&format!("/accessors/{accessor}/componentType")).and_then(Value::as_u64);
+        assert_eq!(component(prim.pointer("/attributes/JOINTS_0").and_then(Value::as_u64).unwrap()), Some(5123), "JOINTS_0 = UNSIGNED_SHORT");
+        assert_eq!(component(prim.get("indices").and_then(Value::as_u64).unwrap()), Some(5123), "índices pequenos = UNSIGNED_SHORT");
+
+        let mut big = sample_scene();
+        big.meshes[0].primitives[0].indices = vec![0, 1, 70000];
+        let result = parse_model(&export_model(&big, None)).expect("parse");
+        let json = &result.model.json;
+        let prim = json.pointer("/meshes/0/primitives/0").expect("primitiva");
+        let idx = prim.get("indices").and_then(Value::as_u64).unwrap();
+        assert_eq!(json.pointer(&format!("/accessors/{idx}/componentType")).and_then(Value::as_u64), Some(5125));
+    }
+
     #[test]
     fn mip_level_count_segue_a_spec() {
         assert_eq!(mip_level_count(1, 1), 1);
