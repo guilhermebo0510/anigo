@@ -181,7 +181,7 @@ async fn discovery_follows_a_restart_with_new_port_and_token() {
     }
     // sem arquivo e sem Tauri: erro claro
     let e = client.send_command("PING", json!({})).await.unwrap_err().to_string();
-    assert!(e.contains("not running"), "{e}");
+    assert!(e.contains("not running") || e.contains("not responding"), "{e}"); // Windows: conectar em 127.0.0.1:1 estoura o prazo em vez de recusar
 }
 
 #[tokio::test]

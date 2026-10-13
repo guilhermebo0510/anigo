@@ -48,7 +48,9 @@ pub fn allowed_dirs() -> Vec<PathBuf> {
 
     // 3. Env ANIGO_MCP_ALLOWED_DIRS extra (colon/semicolon separated)
     if let Ok(extra) = std::env::var("ANIGO_MCP_ALLOWED_DIRS") {
-        for p in extra.split(|c| c == ';' || c == ':') {
+        // no Windows ':' faz parte da letra da unidade (`C:\x`): só `;` separa
+        let sep = |c: char| c == ';' || (!cfg!(windows) && c == ':');
+        for p in extra.split(sep) {
             if !p.trim().is_empty() {
                 dirs.push(PathBuf::from(p.trim()));
             }
@@ -87,6 +89,34 @@ fn contains_parent_dir(p: &Path) -> bool {
     false
 }
 
+/// Canonicaliza o ANCESTRAL existente mais próximo e reanexa o resto: um destino ainda inexistente (`<permitida>/sub/x.png`)
+/// ganha a mesma forma canônica (`\\?\C:\…` no Windows) das pastas permitidas, senão `starts_with` nunca casa.
+fn canonical_lenient(p: &Path) -> PathBuf {
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        if let Ok(c) = cur.canonicalize() {
+            let mut out = c;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match (cur.file_name().map(|n| n.to_os_string()), cur.parent().map(|q| q.to_path_buf())) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                cur = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+fn inside_allowed(p: &Path, allowed: &[PathBuf]) -> bool {
+    let cand = canonical_lenient(p);
+    allowed.iter().any(|a| cand.starts_with(canonical_lenient(a)) || p.starts_with(a))
+}
+
 /// Validate that a path does NOT escape via ".." and is within allowlist for write.
 pub fn sanitize_save_path(input: &str) -> Result<PathBuf> {
     // Env kill-switch
@@ -114,34 +144,12 @@ pub fn sanitize_save_path(input: &str) -> Result<PathBuf> {
     }
 
     let candidate: PathBuf = if is_rooted(&p) {
-        // Absolute must be inside allowlist
-        let canon_candidate = p.canonicalize().unwrap_or_else(|_| p.clone());
-        // Check parent canonicalization for non-existing file
-        let parent = canon_candidate.parent().unwrap_or(Path::new("/"));
-        let parent_canon = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
-
-        let mut ok = false;
-        for a in &allowed {
-            let a_canon = a.canonicalize().unwrap_or_else(|_| a.clone());
-            if canon_candidate.starts_with(&a_canon) || parent_canon.starts_with(&a_canon) {
-                ok = true;
-                break;
-            }
+        // Absoluto: sem `..` (um `..` textual "dentro" da pasta permitida escaparia) e dentro da lista, comparando as formas CANÔNICAS
+        if contains_parent_dir(&p) {
+            bail!("Path traversal detected: {:?} contains '..'", input);
         }
-        if !ok {
-            // Also allow if absolute path is exactly inside cwd/tmp/baselines even if not canonicalized yet
-            // We check if the path's prefix matches allowed after making both absolute
-            let abs_input = if is_rooted(&p) { p.clone() } else { std::env::current_dir().unwrap_or_default().join(&p) };
-            let mut ok2 = false;
-            for a in &allowed {
-                if abs_input.starts_with(a) {
-                    ok2 = true;
-                    break;
-                }
-            }
-            if !ok2 {
-                bail!("Path {:?} is not in allowlist {:?}. Allowed: Documents/ANIGO, ./baselines, ./tmp/anigo-mcp", p, allowed);
-            }
+        if !inside_allowed(&p, &allowed) {
+            bail!("Path {:?} is not in allowlist {:?}. Allowed: Documents/ANIGO, ./baselines, ./tmp/anigo-mcp", p, allowed);
         }
         p
     } else {
@@ -232,19 +240,12 @@ pub fn sanitize_read_path(input: &str) -> Result<PathBuf> {
 
     let allowed = allowed_dirs();
     let candidate: PathBuf = if is_rooted(&p) {
-        // Must be inside allowlist OR be a file inside cwd
+        // Dentro da lista OU do diretório atual (formas canônicas); `..` nunca
+        if contains_parent_dir(&p) {
+            bail!("Path traversal detected in read path: {:?}", input);
+        }
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mut ok = false;
-        for a in &allowed {
-            if p.starts_with(a) {
-                ok = true;
-                break;
-            }
-        }
-        if p.starts_with(&cwd) {
-            ok = true;
-        }
-        if !ok {
+        if !inside_allowed(&p, &allowed) && !inside_allowed(&p, &[cwd]) {
             bail!("Read path {:?} is not in allowlist {:?} nor current directory", p, allowed);
         }
         p
@@ -370,6 +371,19 @@ mod tests {
         assert!(sanitize_save_path("/etc/anigo_nope.png").is_err());
         assert!(sanitize_save_path("/anigo_raiz_nope/x.png").is_err());
         assert!(sanitize_read_path("/anigo_raiz_nope/x.png").is_err());
+    }
+
+    #[test]
+    fn nonexistent_subfolders_of_an_allowed_dir_are_accepted_and_dotdot_escapes_are_not() {
+        // sem mexer em variáveis de ambiente (os testes rodam em paralelo): o diretório atual já é permitido
+        let base = std::env::current_dir().unwrap().join("target").join(format!("anigo_sb_{}", std::process::id()));
+        let ok = base.join("novo").join("fundo").join("x.png");
+        assert!(sanitize_save_path(&ok.display().to_string()).is_ok(), "subpasta ainda inexistente dentro da permitida");
+        assert!(sanitize_read_path(&base.join("qualquer.glb").display().to_string()).is_ok());
+        let esc = base.join("a").join("..").join("..").join("fora.png");
+        assert!(sanitize_save_path(&esc.display().to_string()).is_err(), "`..` não escapa");
+        assert!(sanitize_read_path(&esc.display().to_string()).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
