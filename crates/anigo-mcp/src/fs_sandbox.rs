@@ -72,6 +72,12 @@ pub fn allowed_dirs() -> Vec<PathBuf> {
     out
 }
 
+/// Caminho absoluto OU com raiz explícita (`/x`, `\x`). No Windows esses últimos não têm letra de unidade e `is_absolute()`
+/// dá `false`: tratá-los como relativos os REDIRECIONARIA para dentro do sandbox (e gravaria o arquivo) em vez de recusar.
+fn is_rooted(p: &Path) -> bool {
+    p.is_absolute() || p.has_root()
+}
+
 fn contains_parent_dir(p: &Path) -> bool {
     for comp in p.components() {
         if matches!(comp, Component::ParentDir) {
@@ -107,7 +113,7 @@ pub fn sanitize_save_path(input: &str) -> Result<PathBuf> {
         bail!("No allowed directories configured");
     }
 
-    let candidate: PathBuf = if p.is_absolute() {
+    let candidate: PathBuf = if is_rooted(&p) {
         // Absolute must be inside allowlist
         let canon_candidate = p.canonicalize().unwrap_or_else(|_| p.clone());
         // Check parent canonicalization for non-existing file
@@ -125,7 +131,7 @@ pub fn sanitize_save_path(input: &str) -> Result<PathBuf> {
         if !ok {
             // Also allow if absolute path is exactly inside cwd/tmp/baselines even if not canonicalized yet
             // We check if the path's prefix matches allowed after making both absolute
-            let abs_input = if p.is_absolute() { p.clone() } else { std::env::current_dir().unwrap_or_default().join(&p) };
+            let abs_input = if is_rooted(&p) { p.clone() } else { std::env::current_dir().unwrap_or_default().join(&p) };
             let mut ok2 = false;
             for a in &allowed {
                 if abs_input.starts_with(a) {
@@ -225,7 +231,7 @@ pub fn sanitize_read_path(input: &str) -> Result<PathBuf> {
     }
 
     let allowed = allowed_dirs();
-    let candidate: PathBuf = if p.is_absolute() {
+    let candidate: PathBuf = if is_rooted(&p) {
         // Must be inside allowlist OR be a file inside cwd
         let cwd = std::env::current_dir().unwrap_or_default();
         let mut ok = false;
@@ -354,6 +360,16 @@ mod tests {
     fn contains_parent_dir_detects_dotdot() {
         assert!(contains_parent_dir(Path::new("../etc")));
         assert!(!contains_parent_dir(Path::new("baselines/a.png")));
+    }
+
+    #[test]
+    fn rooted_paths_without_a_drive_are_rejected_not_redirected_into_the_sandbox() {
+        // no Windows `/etc/x` não é `is_absolute()`: antes virava `baselines/x` e GRAVAVA o arquivo
+        assert!(is_rooted(Path::new("/etc/anigo_nope.png")));
+        assert!(!is_rooted(Path::new("baselines/a.png")));
+        assert!(sanitize_save_path("/etc/anigo_nope.png").is_err());
+        assert!(sanitize_save_path("/anigo_raiz_nope/x.png").is_err());
+        assert!(sanitize_read_path("/anigo_raiz_nope/x.png").is_err());
     }
 
     #[test]
