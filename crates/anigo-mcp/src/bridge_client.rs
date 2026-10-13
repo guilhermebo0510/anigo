@@ -55,7 +55,7 @@ pub fn read_timeout_for(action: &str) -> Duration {
         "SCREENSHOT" | "PLACE_ASSET" | "RENDER_FRAME" | "LIST_ASSETS" | "MODEL" | "HAIR" | "WEIGHTS" | "MESHDATA" | "SHADING" | "ANIM" | "RENDER" | "POSE" | "LIGHT" | "SCENE" | "CHAR" | "APP" => Duration::from_secs(30),
         "LIBRARY" => Duration::from_secs(60),
         "GET_SNAPSHOT" | "GET_PROJECT" => Duration::from_secs(20),
-        "APPLY_COMMAND" | "UNDO" | "REDO" | "GET_LOG" | "SET_WORKSPACE" | "GET_WORKSPACE" | "GET_SELECTION" | "GET_UI_STATE" | "UI_ACTION" | "INPUT" | "RENDER_STATUS" | "GET_METRICS" => Duration::from_secs(12),
+        "APPLY_COMMAND" | "UNDO" | "REDO" | "GET_LOG" | "SET_WORKSPACE" | "GET_WORKSPACE" | "GET_SELECTION" | "GET_UI_STATE" | "UI_ACTION" | "INPUT" | "RENDER_STATUS" | "GET_METRICS" | "GET_STATUS" => Duration::from_secs(12),
         _ => Duration::from_secs(2),
     }
 }

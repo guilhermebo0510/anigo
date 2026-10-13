@@ -613,6 +613,11 @@ pub fn definitions() -> Vec<Value> {
             json!({ "op": { "type": "string", "enum": ["lang", "frame", "export_active_to_library"] }, "value": { "type": "string", "enum": ["pt", "en"] } }), &["op"], ann(false, false, false),
         ),
         tool(
+            "anigo_native_ping",
+            "Cheap probe answered OUTSIDE the UI thread: pong, bridge protocol/version and ui_drawing (false when the ANIGO window is minimized/hidden and therefore not drawing frames — every other native tool would then fail after ~2.5 s with a clear message; restore the window). ui_idle_ms = time since the last drawn frame.",
+            json!({}), &[], ann(true, false, true),
+        ),
+        tool(
             "anigo_native_get_selection",
             "Reads the current selection state: scene node ids, modeling selection counts, posing bones and Library selection.",
             json!({}), &[], ann(true, false, true),
@@ -1042,6 +1047,7 @@ async fn dispatch(name: &str, args: &Value, client: &LiveBridgeClient, m: &McpMe
             op_call(client, m, "APP", Some("layout"), &a, &["action", "name", "path"], &[]).await
         }
         "anigo_native_app_control" => op_call(client, m, "APP", None, args, &["op", "value"], &["lang", "frame", "export_active_to_library"]).await,
+        "anigo_native_ping" => op_call_plain(client, m, "PING", args).await,
         "anigo_native_get_selection" => {
             only_keys(args, &[])?;
             let data = call_bridge(client, m, "GET_SELECTION", json!({})).await?;
@@ -1115,6 +1121,12 @@ fn sandbox_arg(m: &McpMetrics, args: &mut Value, key: &str, write: bool) -> Resu
         args[key] = json!(sandboxed_abs_dir(m, &p, write)?);
     }
     Ok(())
+}
+
+async fn op_call_plain(client: &LiveBridgeClient, m: &McpMetrics, action: &str, args: &Value) -> Result<Vec<Value>> {
+    only_keys(args, &[])?;
+    let data = call_bridge(client, m, action, json!({})).await?;
+    Ok(vec![json_text(&data)?])
 }
 
 async fn op_call(client: &LiveBridgeClient, m: &McpMetrics, bridge_action: &str, fixed_op: Option<&str>, args: &Value, allowed: &[&str], ops: &[&str]) -> Result<Vec<Value>> {

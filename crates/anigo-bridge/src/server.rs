@@ -23,6 +23,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Quem executa as ações (a UI do studio, ou uma sessão de teste).
 pub trait Backend: Send + Sync + 'static {
     fn call(&self, req: &Request) -> BridgeResult;
+    /// Há quanto tempo a UI dona do estado não desenha um quadro (`None` = backend sem UI ou ainda sem quadros).
+    fn ui_idle(&self) -> Option<Duration> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -499,7 +503,14 @@ fn process(sh: &Shared, req: &Request, header_token: Option<&str>) -> (BridgeRes
         return (Err(BridgeError::new(code::RATE_LIMITED, "Rate limit exceeded")), false);
     }
     let result = match req.action.as_str() {
-        "PING" => Ok(json!({ "pong": true, "engine": sh.cfg.engine, "protocol": PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION") })),
+        // respondido FORA da UI: serve de sonda mesmo com a janela minimizada
+        "PING" => {
+            let idle = sh.backend.ui_idle();
+            Ok(json!({
+                "pong": true, "engine": sh.cfg.engine, "protocol": PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION"),
+                "ui_idle_ms": idle.map(|d| d.as_millis() as u64), "ui_drawing": idle.is_some_and(|d| d < Duration::from_secs(2)),
+            }))
+        }
         "GET_METRICS" => {
             let mut m = sh.metrics.snapshot();
             m["uptime_seconds"] = json!(sh.started.elapsed().as_secs_f64());

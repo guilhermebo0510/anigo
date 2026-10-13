@@ -40,12 +40,24 @@ fn merge(base: &mut Value, patch: &Value) {
     }
 }
 
+/// O serde OMITE `npr` (e `npr.ramp_custom`) quando estão no padrão: sem recolocá-los, um patch como `{ "npr": { "ramp_blend": 1 } }`
+/// seria recusado como "campo desconhecido" em qualquer material que ainda não os usa.
+fn fill_omitted(v: &mut Value) {
+    use anigo_core::npr::{NprParams, RampCustom};
+    let Some(m) = v.as_object_mut() else { return };
+    let npr = m.entry("npr").or_insert_with(|| serde_json::to_value(NprParams::default()).unwrap_or(Value::Null));
+    if let Some(n) = npr.as_object_mut() {
+        n.entry("ramp_custom").or_insert_with(|| serde_json::to_value(RampCustom::DEFAULT).unwrap_or(Value::Null));
+    }
+}
+
 /// `base` + patch JSON parcial → material. Chaves desconhecidas são erro (o serde recusa campos que não existem).
 pub(crate) fn patch_material(base: &StylizedMaterial, patch: &Value) -> Result<StylizedMaterial, BridgeError> {
     if !patch.is_object() {
         return Err(BridgeError::invalid_params("'patch' deve ser um objeto"));
     }
     let mut v = serde_json::to_value(base).map_err(|e| BridgeError::failed(e.to_string()))?;
+    fill_omitted(&mut v);
     super::bridge_model::reject_unknown_keys(&v, patch, "patch")?;
     merge(&mut v, patch);
     serde_json::from_value(v).map_err(|e| BridgeError::invalid_params(format!("material inválido: {e}")))
@@ -191,5 +203,14 @@ mod tests {
         assert_eq!(source_key(Source::Personagem), "personagem");
         assert_eq!(source_key(Source::Cenario), "cenario");
         assert_eq!(source_key(Source::Modelagem), "modelagem");
+    }
+
+    #[test]
+    fn patches_may_touch_nested_fields_the_serializer_omits_when_default() {
+        let base = StylizedMaterial::default();
+        let p = patch_material(&base, &json!({ "npr": { "ramp_blend": 0.7, "ramp_custom": { "constant": [true, false, false, false] } } })).unwrap();
+        assert_eq!(p.npr.ramp_blend, 0.7);
+        assert!(p.npr.ramp_custom.constant[0]);
+        assert!(patch_material(&base, &json!({ "npr": { "campo_que_nao_existe": 1 } })).is_err());
     }
 }

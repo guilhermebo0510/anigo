@@ -215,8 +215,8 @@ Smoke de entrada do Shading **sem xdotool** (roda em qualquer SO): `python scrip
 
 ## 6. O que NÃO foi validado / limites
 
-* **Windows**: nada rodou lá. Falta conferir o caminho `%LOCALAPPDATA%\ANIGO\bridge\bridge.json` e que a ACL herdada do perfil impede outros usuários de lê-lo (no Unix o modo 0600 é testado; no Windows não há `mode`, é herança de ACL **[C]**), antivírus/firewall com loopback, `rename` sobre arquivo aberto.
-* **Janela minimizada/oculta/oclusa**: o loop de quadros do eframe pode pausar; `request_repaint` costuma acordá-lo, mas o pedido pode expirar com `-32002` ("a UI não respondeu"; nada é aplicado).
+* **Windows** (validado nesta máquina): o `bridge.json` fica em `%LOCALAPPDATA%\ANIGOridgeridge.json` e agora a ACL é restrita ao usuário atual (`icacls /inheritance:r`; antes herdava SYSTEM, Administradores e outras contas do perfil). Melhor esforço: se o `icacls` falhar vale a ACL por usuário do perfil. Ainda sem teste: antivírus/firewall com loopback e `rename` sobre arquivo aberto.
+* **Janela minimizada/oculta** (testado): o eframe para de desenhar quadros e a UI não drena a fila. Antes o cliente esperava 10–20 s; agora, se nenhum quadro é desenhado em ~2,5 s, a ação falha com `-32002` e a causa ("a janela do ANIGO está minimizada ou oculta (restaure-a)"), sem aplicar nada. `PING` (e `anigo_native_ping`) é respondido FORA da UI e traz `ui_drawing`/`ui_idle_ms`, então serve de sonda mesmo minimizado. Uma UI viva mas ocupada continua com o prazo inteiro da ação.
 * **GPU real** e latências reais (no lavapipe um quadro leva ~140 ms; o smoke usa folgas largas). `fps` vem do `stable_dt` do egui.
 * **Cliente MCP real** (Claude Desktop/Code) configurado com o subprocesso `anigo-mcp`: só o CLI e os testes foram usados.
 * `UNDO`/`REDO` da bridge agem na `CoreSession`. No workspace Modelagem o Ctrl+Z do usuário age na `ModelingSession` (histórico separado) e o Shading tem histórico próprio: a bridge não os controla.
