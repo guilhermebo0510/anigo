@@ -73,26 +73,31 @@ export type {
   ParsedGltfModel,
 } from "./gltf2";
 export {
+  SPRING_BONE_SPEC_VERSION,
   VRM1_EXPRESSION_PRESETS,
   Vrm1Error,
+  isExtendedColliderShape,
   isVrmDocument,
   mapMToonToAnimeMaterial,
+  parseSpringBone,
   parseVrm1,
 } from "./vrm1";
+export { springBoneToJson } from "./exporter";
 export type {
   MToonMaterialMapping,
   ParsedVrm1,
-  Vrm1CapsuleCollider,
-  Vrm1Colliders,
+  Vrm1Collider,
+  Vrm1ColliderGroup,
+  Vrm1ColliderShape,
   Vrm1Expression,
   Vrm1ExpressionPresetName,
   Vrm1Humanoid,
   Vrm1Meta,
   Vrm1MToon,
   Vrm1NodeConstraint,
+  Vrm1Spring,
   Vrm1SpringBone,
-  Vrm1SpringGroup,
-  Vrm1SphereCollider,
+  Vrm1SpringJoint,
 } from "./vrm1";
 
 // ---------------------------------------------------------------------------

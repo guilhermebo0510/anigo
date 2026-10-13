@@ -19,8 +19,8 @@ import {
   faceSdfTheta,
   faceSdfThreshold,
   faceSdfFactor,
+  faceSdfMirrorU,
   faceShadowApply,
-  FACE_SDF_DARKENING,
 } from "../../src/services/face_shadow";
 import { RENDER_CONTRACT } from "../../src/contracts/render_contract.v1";
 
@@ -70,14 +70,25 @@ test("o WGSL do cel usa as mesmas fórmulas do bloco canônico", () => {
   const cel = readRepoFile("crates/anigo-renderer/shaders/cel_shading.wgsl");
   const canonical = readRepoFile("crates/anigo-renderer/shaders/face_sdf.wgsl");
 
-  // Projeção angular: theta = atan2(dot(L, eixoX_local), dot(L, eixoZ_local))
-  // — as colunas 0 e 2 da matriz de modelo (frente do rosto = eixo Z local).
-  assert.match(cel, /face_sdf_theta\(camera\.model\[0\]\.xyz,\s*camera\.model\[2\]\.xyz,\s*L\)/);
+  // Projeção angular: theta = atan2(dot(L, eixoX_local), dot(L, eixoZ_local)) —
+  // os eixos do rosto vêm da junta da cabeça (motor cel): o vertex shader os leva ao
+  // mundo (`face_right`/`face_forward`); com paleta identidade são as colunas 0 e 2
+  // da matriz de modelo, como antes.
+  assert.match(cel, /face_sdf_theta\(in\.face_right,\s*in\.face_forward,\s*L\)/);
+  assert.match(cel, /out\.face_right = \(camera\.model \* \(head_skin \* vec4<f32>\(1\.0, 0\.0, 0\.0, 0\.0\)\)\)\.xyz;/);
+  assert.match(cel, /out\.face_forward = \(camera\.model \* \(head_skin \* vec4<f32>\(0\.0, 0\.0, 1\.0, 0\.0\)\)\)\.xyz;/);
+  assert.match(cel, new RegExp(`const FACE_HEAD_JOINT: u32 = ${faceSdf.head_joint}u;`));
   // Threshold desloca até 0.25 com o azimut (mesma constante do bloco).
   assert.match(canonical, /return 0\.5 \+ \(1\.0 - light_front\) \* 0\.25 \+ offset;/);
-  // Escurecimento do passe de cel (mesma constante do serviço TS).
-  assert.ok(cel.includes(`base_cel * ${FACE_SDF_DARKENING}`), "cel precisa escurecer com 0.72");
-  assert.equal(FACE_SDF_DARKENING, faceSdf.darkening, "constante do escurecimento diverge do contrato");
+  // Cor da sombra facial = cor de sombra do material (não mais `base_cel * 0.72`).
+  assert.ok(
+    cel.includes("mix(base_cel, min(base_cel, shadow_color), face_factor)"),
+    "cel precisa sombrear o rosto com a cor de sombra do material"
+  );
+  assert.ok(!cel.includes("base_cel * 0.72"), "o escurecimento fixo 0.72 foi removido");
+  assert.equal(faceSdf.shadow_tone, "mix(base_cel, min(base_cel, shadow_color), factor)");
+  // Espelhamento pelo lado da luz (params8.w = eixo de simetria; 0 = desligado).
+  assert.match(cel, /face_sdf_mirror_uv\(in\.uv, face_theta, material\.params8\.w\)/);
   // Gating por material: sem o flag o bloco não roda (frame congelado intacto).
   assert.match(cel, /if \(material\.params7\.z > 0\.5\)/);
 });
@@ -90,11 +101,16 @@ test("headless ancora o SDF no neutro 1x1 e declara os bindings 16/17", () => {
       `layout/binding group do cel sem o binding ${binding} (SDF facial)`
     );
   }
-  // O slot SDF recebe o mesmo neutro 1x1 branco dos slots MToon (R=1 → fator 0).
-  const anchorCount = headless.match(
-    /binding: 16,\s*resource: wgpu::BindingResource::TextureView\(&self\.mtoon_neutral_view\)/g
-  )?.length ?? 0;
-  assert.ok(anchorCount >= 1, "o SDF precisa estar ancorado no bind group do cel");
+  // O slot SDF recebe o mapa do renderer quando o material o usa (`set_face_sdf_map`)
+  // e, senão, o mesmo neutro 1x1 branco dos slots MToon (R=1 → fator 0).
+  assert.ok(
+    /binding: 16,\s*resource: wgpu::BindingResource::TextureView\(face_sdf_view\)/.test(headless),
+    "o SDF precisa estar ancorado no bind group do cel"
+  );
+  assert.ok(
+    /face_sdf_map\.as_ref\(\)\.unwrap_or\(&self\.mtoon_neutral_view\)/.test(headless),
+    "sem mapa, o slot SDF cai no neutro 1x1"
+  );
 });
 
 test("o viewport vincula os bindings 16/17 no bind group do cel", () => {
@@ -107,20 +123,31 @@ test("o viewport vincula os bindings 16/17 no bind group do cel", () => {
 });
 
 test("o neutral 1x1 devolve a cor base intacta (frame congelado)", () => {
+  const shadow: [number, number, number] = [0.3, 0.25, 0.4];
   // sdf = 1.0 (branco ancorado) → fator 0 para qualquer threshold calibrado.
   for (const azimuth of [0, 45, 90, 135, 180]) {
     const radians = (azimuth * Math.PI) / 180;
     const theta = faceSdfTheta(IDENTITY, [Math.sin(radians), 0, Math.cos(radians)]);
-    const [r, g, b] = faceShadowApply([1.0, 0.4, 0.8], 1.0, theta, 0.2, 0.05);
+    const [r, g, b] = faceShadowApply([1.0, 0.4, 0.8], shadow, 1.0, theta, 0.2, 0.05);
     assert.equal(r, 1.0);
     assert.equal(g, 0.4);
     assert.equal(b, 0.8);
   }
-  // sdf = 0.0 (centro da região) com luz traseira → escurecimento máximo.
-  const [r, g, b] = faceShadowApply([1.0, 1.0, 1.0], 0.0, Math.PI, 0.2, 0.05);
-  assert.ok(Math.abs(r - FACE_SDF_DARKENING) < 1e-9);
-  assert.ok(Math.abs(g - FACE_SDF_DARKENING) < 1e-9);
-  assert.ok(Math.abs(b - FACE_SDF_DARKENING) < 1e-9);
+  // sdf = 0.0 (centro da região) com luz traseira → a cor de sombra do material
+  // (min por canal com a base: nunca clareia).
+  const [r, g, b] = faceShadowApply([1.0, 1.0, 1.0], shadow, 0.0, Math.PI, 0.2, 0.05);
+  assert.ok(Math.abs(r - 0.3) < 1e-9);
+  assert.ok(Math.abs(g - 0.25) < 1e-9);
+  assert.ok(Math.abs(b - 0.4) < 1e-9);
+  const [dr] = faceShadowApply([0.1, 0.1, 0.1], shadow, 0.0, Math.PI, 0.2, 0.05);
+  assert.equal(dr, 0.1);
+});
+
+test("espelhamento do u do mapa pelo lado da luz (mesma fórmula do WGSL)", () => {
+  assert.equal(faceSdfMirrorU(0.1, 0.5, 0.25), 0.1); // luz em +X: sem espelho
+  assert.ok(Math.abs(faceSdfMirrorU(0.1, -0.5, 0.25) - 0.4) < 1e-12); // 2·0.25 − 0.1
+  assert.equal(faceSdfMirrorU(0.1, -0.5, 0), 0.1); // 0 = desligado
+  assert.equal(faceSdfMirrorU(0.1, 0, 0.25), 0.1); // theta = 0 não espelha
 });
 
 test("o bloco compartilhado existe nos dois shaders (byte-identity)", () => {

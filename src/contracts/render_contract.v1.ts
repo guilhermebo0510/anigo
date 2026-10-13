@@ -301,7 +301,22 @@ export interface RenderContractV1 {
     codes: Array<{ code: string; meaning: string }>;
   };
   shaders: ShaderSourceV1[];
-  vertex_layout: { stride: number; step_mode: string; attributes: VertexAttributeV1[] };
+  vertex_layout: {
+    stride: number;
+    step_mode: string;
+    attributes: VertexAttributeV1[];
+    /**
+     * Motor cel (Fase 1): segundo stream do pipeline `outline` (normal de
+     * extrusão do contorno). O viewport TS reaproveita o VBO principal
+     * (`viewport_fallback`: stride 72, offset 12 = a própria normal).
+     */
+    outline_stream?: {
+      stride: number;
+      step_mode: string;
+      attributes: VertexAttributeV1[];
+      viewport_fallback: { stride: number; offset: number; source: string };
+    };
+  };
   uniforms: Record<string, UniformLayoutV1>;
   bind_groups: BindGroupV1[];
   passes: PassSpecV1[];
@@ -600,6 +615,31 @@ export function vertexBufferLayout(): {
     attributes: layout.attributes.map((attribute) => ({
       shaderLocation: attribute.shader_location,
       offset: attribute.offset,
+      format: attribute.format,
+    })),
+  };
+}
+
+/**
+ * Layout do segundo stream do contorno NO VIEWPORT: o mesmo VBO de 72 B lido
+ * como normal (`viewport_fallback`), então o contorno do viewport TS usa a
+ * normal da malha (sem a suavização do renderer nativo) com o MESMO shader.
+ */
+export function outlineStreamViewportLayout(): {
+  arrayStride: number;
+  stepMode: "vertex";
+  attributes: Array<{ shaderLocation: number; offset: number; format: string }>;
+} {
+  const stream = RENDER_CONTRACT.vertex_layout.outline_stream;
+  if (!stream) {
+    throw new RenderContractError("missing_outline_stream", "vertex_layout.outline_stream não está no contrato");
+  }
+  return {
+    arrayStride: stream.viewport_fallback.stride,
+    stepMode: "vertex",
+    attributes: stream.attributes.map((attribute) => ({
+      shaderLocation: attribute.shader_location,
+      offset: stream.viewport_fallback.offset,
       format: attribute.format,
     })),
   };

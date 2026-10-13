@@ -1,0 +1,14 @@
+[package]
+name = "anigo-physics"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO real-time secondary-motion physics: VRM-exact spring bones, XPBD chains (hair/accessories) and cloth proxies. Pure Rust, GPU-free, deterministic."
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anigo-core = { workspace = true }

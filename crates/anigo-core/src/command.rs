@@ -17,16 +17,19 @@
 //! of its own, it only displays `can_undo`/`can_redo` and the descriptions.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::hierarchy::NodeKind;
 use crate::ids::{AssetId, LightId, MaterialId, MorphId, NodeId};
+use crate::level::{NodeAssetEntry, NodeAttrs, NodeCopy, NodePatch, NodeTransformEntry};
 use crate::math::{Camera, Transform};
 use crate::mesh::BaseGender;
 use crate::morph_catalog::find_slider_def;
+use crate::pose::{HandsPose, PoseBoneEntry, PoseOp};
 use crate::project::{
-    MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
+    AssetEntry, MeshRef, NodeSlot, ProjectError, ProjectState, SceneState, URI_BASE_FEMALE, URI_BASE_MALE,
     URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
 use crate::scene::StylizedMaterial;
@@ -172,6 +175,10 @@ pub struct MaterialPatch {
     pub gaze_tracking_enabled: Option<bool>,
     pub gaze_saccade_amplitude: Option<f32>,
     pub gaze_damping: Option<f32>,
+    /// Motor cel NPR: substitui o grupo inteiro (rampa 2D, contorno, SDF facial).
+    /// Omitido quando `None` para não mudar o formato dos logs de comando antigos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npr: Option<crate::npr::NprParams>,
 }
 
 impl MaterialPatch {
@@ -306,6 +313,9 @@ impl MaterialPatch {
         if let Some(value) = self.gaze_damping {
             material.gaze_damping = value;
         }
+        if let Some(value) = self.npr {
+            material.npr = value;
+        }
     }
 
     /// Builds the inverse patch from the current material values.
@@ -382,12 +392,130 @@ impl MaterialPatch {
                 .gaze_saccade_amplitude
                 .map(|_| material.gaze_saccade_amplitude),
             gaze_damping: self.gaze_damping.map(|_| material.gaze_damping),
+            npr: self.npr.map(|_| material.npr),
         }
     }
 
     /// `true` when no field is set (a no-op patch is rejected).
     pub fn is_empty(&self) -> bool {
         *self == MaterialPatch::default()
+    }
+
+    /// Todos os números do patch precisam ser finitos (NaN/inf não entram no projeto).
+    pub fn validate(&self) -> Result<(), String> {
+        let mut scratch = StylizedMaterial::default();
+        self.apply_to(&mut scratch);
+        let value = serde_json::to_value(&scratch).map_err(|e| e.to_string())?;
+        fn has_null(v: &serde_json::Value) -> bool {
+            match v {
+                serde_json::Value::Null => true,
+                serde_json::Value::Array(a) => a.iter().any(has_null),
+                serde_json::Value::Object(o) => o.values().any(has_null),
+                _ => false,
+            }
+        }
+        if has_null(&value) {
+            return Err("material patch has a non-finite number".into());
+        }
+        Ok(())
+    }
+
+    /// Patch que escreve TODOS os campos com os valores de `m` (colar material, aplicar preset).
+    pub fn from_material(m: &StylizedMaterial) -> MaterialPatch {
+        MaterialPatch {
+            base_color: Some(m.base_color),
+            shade_color: Some(m.shade_color),
+            outline_color: Some(m.outline_color),
+            outline_width: Some(m.outline_width),
+            shadow_threshold: Some(m.shadow_threshold),
+            shadow_smoothness: Some(m.shadow_smoothness),
+            spec_intensity: Some(m.spec_intensity),
+            spec_power: Some(m.spec_power),
+            rim_intensity: Some(m.rim_intensity),
+            rim_spread: Some(m.rim_spread),
+            hue_shift: Some(m.hue_shift),
+            toon_steps: Some(m.toon_steps),
+            specular_color: Some(m.specular_color),
+            specular_softness: Some(m.specular_softness),
+            specular_offset: Some(m.specular_offset),
+            rim_color: Some(m.rim_color),
+            outline_opacity: Some(m.outline_opacity),
+            outline_smoothness: Some(m.outline_smoothness),
+            outline_depth_bias: Some(m.outline_depth_bias),
+            specular_size: Some(m.specular_size),
+            ao_intensity: Some(m.ao_intensity),
+            mtoon_emission_color: Some(m.mtoon_emission_color),
+            mtoon_emission_intensity: Some(m.mtoon_emission_intensity),
+            mtoon_second_shade_shift: Some(m.mtoon_second_shade_shift),
+            mtoon_second_shade_softness: Some(m.mtoon_second_shade_softness),
+            mtoon_matcap_intensity: Some(m.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: Some(m.mtoon_main_texture_enabled),
+            mtoon_shade_texture_enabled: Some(m.mtoon_shade_texture_enabled),
+            mtoon_second_shade_texture_enabled: Some(m.mtoon_second_shade_texture_enabled),
+            mtoon_emission_texture_enabled: Some(m.mtoon_emission_texture_enabled),
+            mtoon_matcap_enabled: Some(m.mtoon_matcap_enabled),
+            mtoon_matcap_mode: Some(m.mtoon_matcap_mode),
+            mtoon_shade_toony: Some(m.mtoon_shade_toony),
+            face_shadow_offset: Some(m.face_shadow_offset),
+            face_shadow_smoothness: Some(m.face_shadow_smoothness),
+            face_sdf_enabled: Some(m.face_sdf_enabled),
+            eye_depth_scale: Some(m.eye_depth_scale),
+            eye_highlight_intensity: Some(m.eye_highlight_intensity),
+            eye_enabled: Some(m.eye_enabled),
+            gaze_tracking_enabled: Some(m.gaze_tracking_enabled),
+            gaze_saccade_amplitude: Some(m.gaze_saccade_amplitude),
+            gaze_damping: Some(m.gaze_damping),
+            npr: Some(m.npr),
+        }
+    }
+
+    /// Patch mínimo que leva `old` a `new` (só os campos que diferem). Vazio se forem iguais.
+    pub fn diff(old: &StylizedMaterial, new: &StylizedMaterial) -> MaterialPatch {
+        MaterialPatch {
+            base_color: (old.base_color != new.base_color).then_some(new.base_color),
+            shade_color: (old.shade_color != new.shade_color).then_some(new.shade_color),
+            outline_color: (old.outline_color != new.outline_color).then_some(new.outline_color),
+            outline_width: (old.outline_width != new.outline_width).then_some(new.outline_width),
+            shadow_threshold: (old.shadow_threshold != new.shadow_threshold).then_some(new.shadow_threshold),
+            shadow_smoothness: (old.shadow_smoothness != new.shadow_smoothness).then_some(new.shadow_smoothness),
+            spec_intensity: (old.spec_intensity != new.spec_intensity).then_some(new.spec_intensity),
+            spec_power: (old.spec_power != new.spec_power).then_some(new.spec_power),
+            rim_intensity: (old.rim_intensity != new.rim_intensity).then_some(new.rim_intensity),
+            rim_spread: (old.rim_spread != new.rim_spread).then_some(new.rim_spread),
+            hue_shift: (old.hue_shift != new.hue_shift).then_some(new.hue_shift),
+            toon_steps: (old.toon_steps != new.toon_steps).then_some(new.toon_steps),
+            specular_color: (old.specular_color != new.specular_color).then_some(new.specular_color),
+            specular_softness: (old.specular_softness != new.specular_softness).then_some(new.specular_softness),
+            specular_offset: (old.specular_offset != new.specular_offset).then_some(new.specular_offset),
+            rim_color: (old.rim_color != new.rim_color).then_some(new.rim_color),
+            outline_opacity: (old.outline_opacity != new.outline_opacity).then_some(new.outline_opacity),
+            outline_smoothness: (old.outline_smoothness != new.outline_smoothness).then_some(new.outline_smoothness),
+            outline_depth_bias: (old.outline_depth_bias != new.outline_depth_bias).then_some(new.outline_depth_bias),
+            specular_size: (old.specular_size != new.specular_size).then_some(new.specular_size),
+            ao_intensity: (old.ao_intensity != new.ao_intensity).then_some(new.ao_intensity),
+            mtoon_emission_color: (old.mtoon_emission_color != new.mtoon_emission_color).then_some(new.mtoon_emission_color),
+            mtoon_emission_intensity: (old.mtoon_emission_intensity != new.mtoon_emission_intensity).then_some(new.mtoon_emission_intensity),
+            mtoon_second_shade_shift: (old.mtoon_second_shade_shift != new.mtoon_second_shade_shift).then_some(new.mtoon_second_shade_shift),
+            mtoon_second_shade_softness: (old.mtoon_second_shade_softness != new.mtoon_second_shade_softness).then_some(new.mtoon_second_shade_softness),
+            mtoon_matcap_intensity: (old.mtoon_matcap_intensity != new.mtoon_matcap_intensity).then_some(new.mtoon_matcap_intensity),
+            mtoon_main_texture_enabled: (old.mtoon_main_texture_enabled != new.mtoon_main_texture_enabled).then_some(new.mtoon_main_texture_enabled),
+            mtoon_shade_texture_enabled: (old.mtoon_shade_texture_enabled != new.mtoon_shade_texture_enabled).then_some(new.mtoon_shade_texture_enabled),
+            mtoon_second_shade_texture_enabled: (old.mtoon_second_shade_texture_enabled != new.mtoon_second_shade_texture_enabled).then_some(new.mtoon_second_shade_texture_enabled),
+            mtoon_emission_texture_enabled: (old.mtoon_emission_texture_enabled != new.mtoon_emission_texture_enabled).then_some(new.mtoon_emission_texture_enabled),
+            mtoon_matcap_enabled: (old.mtoon_matcap_enabled != new.mtoon_matcap_enabled).then_some(new.mtoon_matcap_enabled),
+            mtoon_matcap_mode: (old.mtoon_matcap_mode != new.mtoon_matcap_mode).then_some(new.mtoon_matcap_mode),
+            mtoon_shade_toony: (old.mtoon_shade_toony != new.mtoon_shade_toony).then_some(new.mtoon_shade_toony),
+            face_shadow_offset: (old.face_shadow_offset != new.face_shadow_offset).then_some(new.face_shadow_offset),
+            face_shadow_smoothness: (old.face_shadow_smoothness != new.face_shadow_smoothness).then_some(new.face_shadow_smoothness),
+            face_sdf_enabled: (old.face_sdf_enabled != new.face_sdf_enabled).then_some(new.face_sdf_enabled),
+            eye_depth_scale: (old.eye_depth_scale != new.eye_depth_scale).then_some(new.eye_depth_scale),
+            eye_highlight_intensity: (old.eye_highlight_intensity != new.eye_highlight_intensity).then_some(new.eye_highlight_intensity),
+            eye_enabled: (old.eye_enabled != new.eye_enabled).then_some(new.eye_enabled),
+            gaze_tracking_enabled: (old.gaze_tracking_enabled != new.gaze_tracking_enabled).then_some(new.gaze_tracking_enabled),
+            gaze_saccade_amplitude: (old.gaze_saccade_amplitude != new.gaze_saccade_amplitude).then_some(new.gaze_saccade_amplitude),
+            gaze_damping: (old.gaze_damping != new.gaze_damping).then_some(new.gaze_damping),
+            npr: (old.npr != new.npr).then_some(new.npr),
+        }
     }
 }
 
@@ -500,6 +628,9 @@ pub enum Command {
         ambient_sky: Option<[f32; 3]>,
         #[serde(default)]
         ambient_ground: Option<[f32; 3]>,
+        /// Sombra projetada (substitui o grupo inteiro). Omitida do JSON quando `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadow: Option<crate::scene::LightShadow>,
     },
     /// Patches a material (defaults to the character material).
     SetMaterialParams {
@@ -533,6 +664,10 @@ pub enum Command {
         #[serde(default)]
         material_id: Option<MaterialId>,
         index: u32,
+        /// Editor de cenário: visível/bloqueado/tags/pasta/camada/origem/overrides do nó. Ausente
+        /// = tudo no padrão (o JSON dos comandos antigos não muda).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attrs: Option<NodeAttrs>,
     },
     /// Issue #12: remove um nó e toda a sua subárvore.
     ///
@@ -581,6 +716,52 @@ pub enum Command {
     },
     /// Renames the project.
     RenameProject { name: String },
+    /// Editor de cenário: patcha o TRS **local** de vários nós de uma vez (um gesto de gizmo com
+    /// multisseleção = um comando). Nós inexistentes recusam o comando inteiro.
+    SetNodesTransform { entries: Vec<NodeTransformEntry> },
+    /// Editor de cenário: duplica nós remapeando ids e pais (cópia de um filho cujo pai também foi
+    /// copiado aponta para a cópia do pai). `offset` (translação local) vai nas raízes copiadas.
+    DuplicateNodes {
+        copies: Vec<NodeCopy>,
+        #[serde(default)]
+        offset: Option<[f32; 3]>,
+    },
+    /// Editor de cenário: patcha nome/cadeado/tags/pasta/camada/overrides/origem de um nó.
+    SetNodeProps { node_id: NodeId, patch: NodePatch },
+    /// Editor de cenário: troca a malha/origem de vários nós preservando a transformação
+    /// ("Substituir selecionados por…", atualizar para uma revisão nova do ativo).
+    ReplaceNodesAsset { entries: Vec<NodeAssetEntry> },
+    /// Editor de cenário: registra/atualiza (`put`) e remove (`remove`) entradas do registro de ativos
+    /// do projeto. Existe como comando próprio para que o undo seja exato (colocar um ativo da
+    /// Biblioteca = `Batch[PatchAssets, AddNode]`).
+    PatchAssets {
+        put: Vec<AssetEntry>,
+        #[serde(default)]
+        remove: Vec<AssetId>,
+    },
+    /// Workspace Render: saída de render (resolução, escala, supersampling, fundo transparente, formato,
+    /// AOVs, DoF), espaço de cor do arquivo e planos near/far/aspecto da câmera de render.
+    SetRenderOutput { patch: crate::render_output::RenderOutputPatch },
+    /// Workspace Posing: patcha a POSE do personagem (delta de rotação local por osso, translação do
+    /// root/quadril e curvatura dos dedos). Cada entrada traz a rotação FINAL do osso (identidade = repouso),
+    /// então o inverso é exato. Mirror/Reset/Apply/Paste/Preset/IK/Olhar são planejadores puros que
+    /// produzem este comando (`pose::plan_pose_change`); `op` só rotula o histórico.
+    SetPose {
+        #[serde(default)]
+        bones: Vec<PoseBoneEntry>,
+        #[serde(default)]
+        root_translation: Option<[f32; 3]>,
+        #[serde(default)]
+        hips_translation: Option<[f32; 3]>,
+        #[serde(default)]
+        hands: Option<HandsPose>,
+        #[serde(default)]
+        op: PoseOp,
+    },
+    /// Workspace Animação: UMA edição atômica dos clips do projeto (inserir/apagar/mover chaves, interpolação,
+    /// faixa, loop, fps, marcadores, criar/remover/renomear clips — ver `crate::animation::AnimEdit`). Todas têm
+    /// inverso exato; agrupe várias em `Batch` (ex.: auto-key = `Batch[SetPose, EditAnimation(InsertKeys)]`).
+    EditAnimation { edit: crate::animation::AnimEdit },
     /// Applies several commands atomically (single undo entry).
     Batch { commands: Vec<Command> },
 }
@@ -659,6 +840,28 @@ impl Command {
             Command::SetBackgroundColor { .. } => "Background".to_string(),
             Command::SetRenderSettings { .. } => "Render settings".to_string(),
             Command::RenameProject { .. } => "Rename project".to_string(),
+            Command::SetNodesTransform { entries } => match entries.as_slice() {
+                [one] => format!("Transform {}", one.node_id),
+                _ => format!("Transform {} nodes", entries.len()),
+            },
+            Command::DuplicateNodes { copies, .. } => format!("Duplicate {} nodes", copies.len()),
+            Command::SetNodeProps { node_id, patch } => {
+                if patch.name.is_some() {
+                    format!("Rename {node_id}")
+                } else if patch.locked.is_some() {
+                    format!("Lock {node_id}")
+                } else {
+                    format!("Properties {node_id}")
+                }
+            }
+            Command::ReplaceNodesAsset { entries } => format!("Replace asset of {} nodes", entries.len()),
+            Command::PatchAssets { put, remove } => format!("Assets +{} -{}", put.len(), remove.len()),
+            Command::SetRenderOutput { .. } => "Render output".to_string(),
+            Command::SetPose { op, bones, .. } => match (op, bones.as_slice()) {
+                (PoseOp::Edit, [one]) => format!("Pose {}", one.bone),
+                _ => format!("Pose {}", op.label()),
+            },
+            Command::EditAnimation { edit } => edit.description(),
             Command::Batch { commands } => {
                 format!("Batch of {} commands", commands.len())
             }
@@ -671,7 +874,8 @@ impl Command {
             Command::SetMorphValue { .. }
             | Command::ResetMorphs
             | Command::SetSomatotype { .. }
-            | Command::SetGenderDimorphism { .. } => ChangeScope::Deformation,
+            | Command::SetGenderDimorphism { .. }
+            | Command::SetPose { .. } => ChangeScope::Deformation,
             Command::SetBaseGender { .. }
             | Command::SetProportions { .. }
             | Command::SetNodeMesh { .. }
@@ -690,7 +894,14 @@ impl Command {
             | Command::AddNode { .. }
             | Command::RemoveNode { .. }
             | Command::SetNodeParent { .. }
-            | Command::SetNodeTransform { .. } => ChangeScope::Presentation,
+            | Command::SetNodeTransform { .. }
+            | Command::SetNodesTransform { .. }
+            | Command::DuplicateNodes { .. }
+            | Command::SetNodeProps { .. }
+            | Command::ReplaceNodesAsset { .. }
+            | Command::PatchAssets { .. }
+            | Command::SetRenderOutput { .. }
+            | Command::EditAnimation { .. } => ChangeScope::Presentation,
             Command::RenameProject { .. } => ChangeScope::Project,
             Command::Batch { commands } => commands
                 .iter()
@@ -733,11 +944,26 @@ impl Command {
                 None => vec![node_id.to_string()],
             },
             Command::SetNodeTransform { node_id, .. } => vec![node_id.to_string()],
+            Command::SetNodesTransform { entries } => entries.iter().map(|e| e.node_id.to_string()).collect(),
+            Command::DuplicateNodes { copies, .. } => copies.iter().map(|c| c.copy.to_string()).collect(),
+            Command::SetNodeProps { node_id, .. } => vec![node_id.to_string()],
+            Command::ReplaceNodesAsset { entries } => entries.iter().map(|e| e.node_id.to_string()).collect(),
+            Command::PatchAssets { put, remove } => put
+                .iter()
+                .map(|e| e.asset_id.to_string())
+                .chain(remove.iter().map(AssetId::to_string))
+                .collect(),
             Command::LoadMeshPreset { .. } => vec![NodeId::canonical_character().to_string()],
-            Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } => {
+            Command::SetBackgroundColor { .. } | Command::SetRenderSettings { .. } | Command::SetRenderOutput { .. } => {
                 vec!["rnd_main".to_string()]
             }
             Command::RenameProject { .. } => vec!["prj_*".to_string()],
+            Command::SetPose { bones, .. } => {
+                let mut ids = vec!["chr_canonical".to_string()];
+                ids.extend(bones.iter().map(|b| b.bone.clone()));
+                ids
+            }
+            Command::EditAnimation { edit } => vec![edit.clip_id().map(|c| c.to_string()).unwrap_or_else(|| "ani_*".to_string())],
             Command::Batch { commands } => {
                 commands.iter().flat_map(Command::affected).collect()
             }
@@ -913,8 +1139,15 @@ impl Command {
                 shadow_saturation,
                 ambient_sky,
                 ambient_ground,
+                shadow,
             } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
+                if let Some(shadow) = shadow {
+                    shadow.validate().map_err(|detail| CommandError::InvalidValue {
+                        field: "shadow".to_string(),
+                        detail,
+                    })?;
+                }
                 if state.light(&id).is_none() && id != LightId::canonical_key() {
                     return Err(CommandError::UnknownTarget {
                         kind: "light",
@@ -929,6 +1162,7 @@ impl Command {
                     && shadow_saturation.is_none()
                     && ambient_sky.is_none()
                     && ambient_ground.is_none()
+                    && shadow.is_none()
                 {
                     return Err(CommandError::NoOp("empty light patch".to_string()));
                 }
@@ -950,6 +1184,10 @@ impl Command {
                 if patch.is_empty() {
                     return Err(CommandError::NoOp("empty material patch".to_string()));
                 }
+                patch.validate().map_err(|detail| CommandError::InvalidValue {
+                    field: "patch".to_string(),
+                    detail,
+                })?;
                 Ok(())
             }
             Command::SetNodeVisibility { node_id, .. } | Command::SetNodeMesh { node_id, .. } => {
@@ -989,6 +1227,7 @@ impl Command {
                 transform,
                 mesh,
                 material_id,
+                attrs,
                 ..
             } => {
                 if state.scene.nodes.iter().any(|node| &node.node_id == node_id) {
@@ -1029,6 +1268,19 @@ impl Command {
                     }
                 }
                 validate_transform("transform", *transform)?;
+                if let Some(attrs) = attrs {
+                    crate::level::validate_tags(&attrs.tags)
+                        .map_err(|detail| CommandError::InvalidValue { field: "tags".to_string(), detail })?;
+                    attrs
+                        .overrides
+                        .validate()
+                        .map_err(|detail| CommandError::InvalidValue { field: "overrides".to_string(), detail })?;
+                    if let Some(source) = &attrs.source {
+                        source
+                            .validate()
+                            .map_err(|detail| CommandError::InvalidValue { field: "source".to_string(), detail })?;
+                    }
+                }
                 Ok(())
             }
             Command::RemoveNode { node_id } => {
@@ -1179,6 +1431,169 @@ impl Command {
                 }
                 Ok(())
             }
+            Command::SetNodesTransform { entries } => {
+                if entries.is_empty() {
+                    return Err(CommandError::NoOp("empty transform batch".to_string()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                let mut changed = false;
+                for entry in entries {
+                    let node = find_node(state, &entry.node_id)?;
+                    if !seen.insert(entry.node_id.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "entries".to_string(),
+                            detail: format!("node '{}' listed twice", entry.node_id),
+                        });
+                    }
+                    let mut transform = node.transform;
+                    if let Some(translation) = entry.translation {
+                        validate_vector("translation", translation)?;
+                        transform.translation = glam::Vec3::from_array(translation);
+                    }
+                    if let Some(rotation) = entry.rotation {
+                        validate_quaternion(rotation)?;
+                        transform.rotation = glam::Quat::from_array(rotation);
+                    }
+                    if let Some(scale) = entry.scale {
+                        validate_vector("scale", scale)?;
+                        transform.scale = glam::Vec3::from_array(scale);
+                    }
+                    validate_transform("transform", transform)?;
+                    changed |= transform != node.transform;
+                }
+                if !changed {
+                    return Err(CommandError::NoOp("no node transform changes".to_string()));
+                }
+                Ok(())
+            }
+            Command::DuplicateNodes { copies, offset } => {
+                if copies.is_empty() {
+                    return Err(CommandError::NoOp("nothing to duplicate".to_string()));
+                }
+                if let Some(offset) = offset {
+                    validate_vector("offset", *offset)?;
+                }
+                let mut new_ids = std::collections::BTreeSet::new();
+                let mut sources = std::collections::BTreeSet::new();
+                for copy in copies {
+                    let source = find_node(state, &copy.source)?;
+                    if matches!(source.kind, NodeKind::CharacterRoot | NodeKind::HumanoidBone) {
+                        return Err(CommandError::InvalidValue {
+                            field: "copies".to_string(),
+                            detail: format!("node '{}' cannot be duplicated", copy.source),
+                        });
+                    }
+                    if state.scene.node(&copy.copy).is_some() || !new_ids.insert(copy.copy.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "copies".to_string(),
+                            detail: format!("copy id '{}' already exists", copy.copy),
+                        });
+                    }
+                    if !sources.insert(copy.source.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "copies".to_string(),
+                            detail: format!("node '{}' listed twice", copy.source),
+                        });
+                    }
+                    if copy.name.trim().is_empty() {
+                        return Err(CommandError::InvalidValue {
+                            field: "name".to_string(),
+                            detail: "copy name must not be empty".to_string(),
+                        });
+                    }
+                }
+                Ok(())
+            }
+            Command::SetNodeProps { node_id, patch } => {
+                let node = find_node(state, node_id)?;
+                if patch.is_empty() {
+                    return Err(CommandError::NoOp("empty node patch".to_string()));
+                }
+                patch.validate()?;
+                if let Some(source) = &patch.source {
+                    // trocar a origem de/para um ativo da Biblioteca exige malha coerente: use ReplaceNodesAsset
+                    if source.library_uri() != node.source.as_ref().and_then(|s| s.library_uri()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "source".to_string(),
+                            detail: "library assets are replaced with ReplaceNodesAsset".to_string(),
+                        });
+                    }
+                }
+                if patch.is_noop_for(node) {
+                    return Err(CommandError::NoOp(format!("node '{node_id}' already has those properties")));
+                }
+                Ok(())
+            }
+            Command::ReplaceNodesAsset { entries } => {
+                if entries.is_empty() {
+                    return Err(CommandError::NoOp("nothing to replace".to_string()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for entry in entries {
+                    find_node(state, &entry.node_id)?;
+                    if !seen.insert(entry.node_id.clone()) {
+                        return Err(CommandError::InvalidValue {
+                            field: "entries".to_string(),
+                            detail: format!("node '{}' listed twice", entry.node_id),
+                        });
+                    }
+                    if let Some(reference) = &entry.mesh {
+                        require_known_asset(state, &reference.asset_id)?;
+                    }
+                    if let Some(source) = &entry.source {
+                        source
+                            .validate()
+                            .map_err(|detail| CommandError::InvalidValue { field: "source".to_string(), detail })?;
+                    }
+                    if let Some(name) = &entry.name {
+                        if name.trim().is_empty() {
+                            return Err(CommandError::InvalidValue {
+                                field: "name".to_string(),
+                                detail: "node name must not be empty".to_string(),
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Command::PatchAssets { put, remove } => {
+                if put.is_empty() && remove.is_empty() {
+                    return Err(CommandError::NoOp("empty asset patch".to_string()));
+                }
+                for entry in put {
+                    if Path::new(&entry.uri).is_absolute() || entry.uri.trim().is_empty() {
+                        return Err(CommandError::InvalidValue {
+                            field: "put".to_string(),
+                            detail: "asset uri must be a non-empty portable uri".to_string(),
+                        });
+                    }
+                    if remove.contains(&entry.asset_id) {
+                        return Err(CommandError::InvalidValue {
+                            field: "remove".to_string(),
+                            detail: format!("asset '{}' is both put and removed", entry.asset_id),
+                        });
+                    }
+                }
+                let changed = put.iter().any(|e| state.assets.get(&e.asset_id) != Some(e))
+                    || remove.iter().any(|id| state.assets.contains_key(id));
+                if !changed {
+                    return Err(CommandError::NoOp("asset registry already up to date".to_string()));
+                }
+                Ok(())
+            }
+            Command::SetRenderOutput { patch } => {
+                if patch.is_empty() {
+                    return Err(CommandError::NoOp("empty render output patch".to_string()));
+                }
+                patch.validate_against(state).map_err(|detail| CommandError::InvalidValue {
+                    field: "render_output".to_string(),
+                    detail,
+                })?;
+                if !patch.would_change(state) {
+                    return Err(CommandError::NoOp("render output already has those values".to_string()));
+                }
+                Ok(())
+            }
             Command::Batch { commands } => {
                 if commands.is_empty() {
                     return Err(CommandError::NoOp("empty batch".to_string()));
@@ -1194,6 +1609,53 @@ impl Command {
                 }
                 Ok(())
             }
+            Command::SetPose { bones, root_translation, hips_translation, hands, .. } => {
+                if bones.is_empty() && root_translation.is_none() && hips_translation.is_none() && hands.is_none() {
+                    return Err(CommandError::NoOp("empty pose patch".to_string()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                let mut next = state.character.pose.clone();
+                for entry in bones {
+                    let Some(index) = crate::pose::bone_index(&entry.bone) else {
+                        return Err(CommandError::UnknownTarget { kind: "bone", target: entry.bone.clone() });
+                    };
+                    if !seen.insert(index) {
+                        return Err(CommandError::InvalidValue {
+                            field: "bones".to_string(),
+                            detail: format!("bone '{}' listed twice", entry.bone),
+                        });
+                    }
+                    validate_quaternion(entry.rotation)?;
+                }
+                for (field, value) in [("root_translation", root_translation), ("hips_translation", hips_translation)] {
+                    if let Some(v) = value {
+                        validate_vector(field, *v)?;
+                        if v.iter().any(|c| c.abs() > crate::pose::MAX_TRANSLATION) {
+                            return Err(CommandError::InvalidValue {
+                                field: field.to_string(),
+                                detail: format!("must be within ±{} m", crate::pose::MAX_TRANSLATION),
+                            });
+                        }
+                    }
+                }
+                if let Some(h) = hands {
+                    for value in h.left.iter().chain(h.right.iter()) {
+                        require_finite("hands", *value)?;
+                        if !(0.0..=1.0).contains(value) {
+                            return Err(CommandError::InvalidValue {
+                                field: "hands".to_string(),
+                                detail: format!("finger curl must be within [0, 1], found {value}"),
+                            });
+                        }
+                    }
+                }
+                next.apply_patch(bones, *root_translation, *hips_translation, *hands);
+                if next == state.character.pose {
+                    return Err(CommandError::NoOp("pose already matches".to_string()));
+                }
+                Ok(())
+            }
+            Command::EditAnimation { edit } => edit.validate(state).map_err(anim_error),
         }
     }
 
@@ -1283,7 +1745,7 @@ impl Command {
                 dx: -*dx,
                 dy: -*dy,
             }),
-            Command::SetLight { light_id, .. } => {
+            Command::SetLight { light_id, shadow: patch_shadow, .. } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
                 let light = state
                     .light(&id)
@@ -1299,6 +1761,8 @@ impl Command {
                     shadow_saturation: Some(light.shadow_saturation),
                     ambient_sky: Some(light.ambient_sky),
                     ambient_ground: Some(light.ambient_ground),
+                    // só restaura a sombra quando o comando a tocou (JSON de logs antigos intacto)
+                    shadow: patch_shadow.is_some().then_some(light.shadow),
                 })
             }
             Command::SetMaterialParams {
@@ -1373,6 +1837,7 @@ impl Command {
                         mesh: slot.mesh.clone(),
                         material_id: slot.material_id.clone(),
                         index: index as u32,
+                        attrs: NodeAttrs::of(slot),
                     });
                     if parent_inside {
                         links.push(Command::SetNodeParent {
@@ -1457,6 +1922,67 @@ impl Command {
             Command::RenameProject { .. } => Ok(Command::RenameProject {
                 name: state.name.clone(),
             }),
+            Command::SetNodesTransform { entries } => {
+                let mut inverse = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let node = find_node(state, &entry.node_id)?;
+                    inverse.push(NodeTransformEntry {
+                        node_id: entry.node_id.clone(),
+                        translation: entry.translation.map(|_| node.transform.translation.to_array()),
+                        rotation: entry.rotation.map(|_| node.transform.rotation.to_array()),
+                        scale: entry.scale.map(|_| node.transform.scale.to_array()),
+                    });
+                }
+                Ok(Command::SetNodesTransform { entries: inverse })
+            }
+            Command::DuplicateNodes { copies, .. } => {
+                // Remover as cópias de topo remove as subárvores copiadas (o inverso é exato: as cópias
+                // são acrescentadas no fim da lista).
+                let source_to_copy: BTreeMap<&NodeId, &NodeId> = copies.iter().map(|c| (&c.source, &c.copy)).collect();
+                let mut roots = Vec::new();
+                for copy in copies {
+                    let source = find_node(state, &copy.source)?;
+                    let parent_copied = source.parent_id.as_ref().is_some_and(|p| source_to_copy.contains_key(p));
+                    if !parent_copied {
+                        roots.push(Command::RemoveNode { node_id: copy.copy.clone() });
+                    }
+                }
+                Ok(if roots.len() == 1 { roots.remove(0) } else { Command::Batch { commands: roots } })
+            }
+            Command::SetNodeProps { node_id, patch } => {
+                let node = find_node(state, node_id)?;
+                Ok(Command::SetNodeProps { node_id: node_id.clone(), patch: patch.inverse_of(node) })
+            }
+            Command::ReplaceNodesAsset { entries } => {
+                let mut inverse = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let node = find_node(state, &entry.node_id)?;
+                    inverse.push(NodeAssetEntry {
+                        node_id: entry.node_id.clone(),
+                        mesh: node.mesh.clone(),
+                        source: node.source.clone(),
+                        name: entry.name.as_ref().map(|_| node.name.clone()),
+                    });
+                }
+                Ok(Command::ReplaceNodesAsset { entries: inverse })
+            }
+            Command::PatchAssets { put, remove } => {
+                let mut restore_put = Vec::new();
+                let mut restore_remove = Vec::new();
+                for entry in put {
+                    match state.assets.get(&entry.asset_id) {
+                        Some(previous) => restore_put.push(previous.clone()),
+                        None => restore_remove.push(entry.asset_id.clone()),
+                    }
+                }
+                for id in remove {
+                    if let Some(previous) = state.assets.get(id) {
+                        restore_put.push(previous.clone());
+                    }
+                }
+                Ok(Command::PatchAssets { put: restore_put, remove: restore_remove })
+            }
+            Command::SetRenderOutput { patch } => Ok(Command::SetRenderOutput { patch: patch.inverse(state) }),
             Command::Batch { commands } => {
                 // Inverse of a batch is the reversed batch of inverses. The
                 // intermediate states are replayed on a scratch copy so each
@@ -1469,6 +1995,32 @@ impl Command {
                 }
                 inverses.reverse();
                 Ok(Command::Batch { commands: inverses })
+            }
+            Command::SetPose { bones, root_translation, hips_translation, hands, op } => {
+                let pose = &state.character.pose;
+                let previous = bones
+                    .iter()
+                    .map(|entry| {
+                        let rotation = crate::pose::bone_index(&entry.bone).map(|i| pose.rotation(i).to_array()).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                        PoseBoneEntry { bone: entry.bone.clone(), rotation }
+                    })
+                    .collect();
+                Ok(Command::SetPose {
+                    bones: previous,
+                    root_translation: root_translation.map(|_| pose.root_translation),
+                    hips_translation: hips_translation.map(|_| pose.hips_translation),
+                    hands: hands.map(|_| pose.hands),
+                    op: *op,
+                })
+            }
+            Command::EditAnimation { edit } => {
+                let mut inverse: Vec<Command> = edit
+                    .inverse(&state.animation)
+                    .map_err(anim_error)?
+                    .into_iter()
+                    .map(|edit| Command::EditAnimation { edit })
+                    .collect();
+                Ok(if inverse.len() == 1 { inverse.remove(0) } else { Command::Batch { commands: inverse } })
             }
         }
     }
@@ -1605,9 +2157,13 @@ impl Command {
                 shadow_saturation,
                 ambient_sky,
                 ambient_ground,
+                shadow,
             } => {
                 let id = light_id.clone().unwrap_or_else(LightId::canonical_key);
                 let light = state.key_light_mut_for(&id);
+                if let Some(value) = shadow {
+                    light.shadow = *value;
+                }
                 if let Some(value) = direction {
                     light.direction = *value;
                 }
@@ -1676,8 +2232,9 @@ impl Command {
                 mesh,
                 material_id,
                 index,
+                attrs,
             } => {
-                let slot = NodeSlot {
+                let mut slot = NodeSlot {
                     node_id: node_id.clone(),
                     name: name.clone(),
                     transform: *transform,
@@ -1686,7 +2243,16 @@ impl Command {
                     visible: true,
                     parent_id: parent_id.clone(),
                     kind: *node_kind,
+                    locked: false,
+                    tags: Vec::new(),
+                    folder: None,
+                    layer: None,
+                    source: None,
+                    overrides: Default::default(),
                 };
+                if let Some(attrs) = attrs {
+                    attrs.apply_to(&mut slot);
+                }
                 let position = (*index as usize).min(state.scene.nodes.len());
                 state.scene.nodes.insert(position, slot);
                 Ok(())
@@ -1775,6 +2341,78 @@ impl Command {
                 state.name = name.clone();
                 Ok(())
             }
+            Command::SetNodesTransform { entries } => {
+                for entry in entries {
+                    let node = find_node_mut(state, &entry.node_id)?;
+                    if let Some(translation) = entry.translation {
+                        node.transform.translation = glam::Vec3::from_array(translation);
+                    }
+                    if let Some(rotation) = entry.rotation {
+                        node.transform.rotation = glam::Quat::from_array(rotation).normalize();
+                    }
+                    if let Some(scale) = entry.scale {
+                        node.transform.scale = glam::Vec3::from_array(scale);
+                    }
+                }
+                Ok(())
+            }
+            Command::DuplicateNodes { copies, offset } => {
+                let map: BTreeMap<NodeId, NodeId> = copies.iter().map(|c| (c.source.clone(), c.copy.clone())).collect();
+                let mut fresh = Vec::with_capacity(copies.len());
+                for copy in copies {
+                    let source = find_node(state, &copy.source)?.clone();
+                    let mut slot = source.clone();
+                    slot.node_id = copy.copy.clone();
+                    slot.name = copy.name.clone();
+                    match source.parent_id.as_ref().and_then(|p| map.get(p)) {
+                        // pai também copiado: a cópia vai sob a cópia do pai
+                        Some(new_parent) => slot.parent_id = Some(new_parent.clone()),
+                        // pai fora do conjunto: mantém o pai original; só aqui entra o offset
+                        None => {
+                            if let Some(offset) = offset {
+                                slot.transform.translation += glam::Vec3::from_array(*offset);
+                            }
+                        }
+                    }
+                    fresh.push(slot);
+                }
+                state.scene.nodes.extend(fresh);
+                Ok(())
+            }
+            Command::SetNodeProps { node_id, patch } => {
+                let node = find_node_mut(state, node_id)?;
+                patch.apply_to(node);
+                Ok(())
+            }
+            Command::ReplaceNodesAsset { entries } => {
+                for entry in entries {
+                    let node = find_node_mut(state, &entry.node_id)?;
+                    node.mesh = entry.mesh.clone();
+                    node.source = entry.source.clone();
+                    if let Some(name) = &entry.name {
+                        node.name = name.trim().to_string();
+                    }
+                }
+                Ok(())
+            }
+            Command::PatchAssets { put, remove } => {
+                for id in remove {
+                    state.assets.remove(id);
+                }
+                for entry in put {
+                    state.assets.insert(entry.asset_id.clone(), entry.clone());
+                }
+                Ok(())
+            }
+            Command::SetRenderOutput { patch } => {
+                patch.apply(state);
+                Ok(())
+            }
+            Command::SetPose { bones, root_translation, hips_translation, hands, .. } => {
+                state.character.pose.apply_patch(bones, *root_translation, *hips_translation, *hands);
+                Ok(())
+            }
+            Command::EditAnimation { edit } => edit.apply(&mut state.animation).map_err(anim_error),
             Command::Batch { commands } => {
                 for command in commands {
                     command.apply_unchecked(state)?;
@@ -1855,6 +2493,15 @@ fn scope_priority(scope: ChangeScope) -> u8 {
         ChangeScope::Camera => 2,
         ChangeScope::Presentation => 1,
         ChangeScope::Project => 0,
+    }
+}
+
+fn anim_error(error: crate::animation::AnimError) -> CommandError {
+    use crate::animation::AnimError;
+    match error {
+        AnimError::NoOp(message) => CommandError::NoOp(message),
+        AnimError::Invalid(detail) => CommandError::InvalidValue { field: "animation".to_string(), detail },
+        AnimError::Unknown { kind, target } => CommandError::UnknownTarget { kind, target },
     }
 }
 
@@ -2117,6 +2764,29 @@ impl CommandHistory {
     /// Description of the next redoable command.
     pub fn last_redo_description(&self) -> Option<&str> {
         self.redo.last().map(|entry| entry.description.as_str())
+    }
+
+    /// Descrições dos passos desfazíveis, do mais antigo ao mais recente (painel de histórico).
+    pub fn undo_descriptions(&self) -> Vec<&str> {
+        self.undo.iter().map(|entry| entry.description.as_str()).collect()
+    }
+
+    /// Descrições dos passos refazíveis, do próximo a refazer ao mais distante.
+    pub fn redo_descriptions(&self) -> Vec<&str> {
+        self.redo.iter().rev().map(|entry| entry.description.as_str()).collect()
+    }
+
+    /// Profundidade máxima do desfazer.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Ajusta a profundidade máxima (descarta os passos mais antigos se necessário).
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.max(1);
+        while self.undo.len() > self.limit {
+            self.undo.remove(0);
+        }
     }
 
     /// Serializes the session log (deterministic; used by tests + autosave).
@@ -2517,6 +3187,7 @@ mod tests {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             },
             Command::SetMaterialParams {
                 material_id: None,
@@ -2564,6 +3235,7 @@ mod tests {
                 mesh: None,
                 material_id: None,
                 index: 1,
+                attrs: None,
             },
             Command::SetNodeTransform {
                 node_id: NodeId::canonical_character(),
@@ -2573,6 +3245,18 @@ mod tests {
             },
             Command::RenameProject {
                 name: "Projeto de Teste".to_string(),
+            },
+            Command::SetRenderOutput {
+                patch: crate::render_output::RenderOutputPatch {
+                    width: Some(2480),
+                    height: Some(3508),
+                    transparent: Some(true),
+                    supersample: Some(2),
+                    display_space: Some(crate::project::ColorSpace::DisplayP3),
+                    camera_near: Some(0.2),
+                    camera_far: Some(300.0),
+                    ..Default::default()
+                },
             },
             // Regression guard for the undo-involution fix: switching the base
             // gender must round-trip exactly. Its inverse is `SetBaseGender`
@@ -2647,6 +3331,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 1,
+                    attrs: None,
                 },
             )
             .expect("add node");
@@ -2662,6 +3347,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 2,
+                    attrs: None,
                 },
             )
             .expect("add child node");
@@ -2745,6 +3431,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 3,
+                    attrs: None,
                 },
             )
             .expect("add second root");
@@ -2969,6 +3656,7 @@ mod tests {
                     mesh: None,
                     material_id: None,
                     index: 0,
+                    attrs: None,
                 },
             ),
             Err(CommandError::InvalidValue { .. })
@@ -2985,6 +3673,7 @@ mod tests {
                 mesh: None,
                 material_id: None,
                 index: 1,
+                attrs: None,
             },
         );
         assert!(matches!(orphan, Err(CommandError::UnknownTarget { .. })));
@@ -3354,6 +4043,7 @@ mod tests {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             },
             Command::SetMaterialParams {
                 material_id: None,
@@ -3470,6 +4160,7 @@ mod tests {
                 shadow_saturation: None,
                 ambient_sky: None,
                 ambient_ground: None,
+                shadow: None,
             },
             Command::SetRenderSettings {
                 msaa_samples: None,
@@ -3782,5 +4473,161 @@ mod tests {
         assert_eq!(scene_of(&state).nodes.len(), state.scene.nodes.len());
         let overrides = morph_overrides(&state);
         assert_eq!(overrides.get("mrf_head_width"), Some(&1.2));
+    }
+
+    // ---------------------------------------------------------------- sombra da luz principal
+
+    fn set_shadow(shadow: crate::scene::LightShadow) -> Command {
+        Command::SetLight {
+            light_id: None,
+            direction: None,
+            color: None,
+            intensity: None,
+            shadow_color: None,
+            ambient_intensity: None,
+            shadow_saturation: None,
+            ambient_sky: None,
+            ambient_ground: None,
+            shadow: Some(shadow),
+        }
+    }
+
+    #[test]
+    fn set_light_shadow_applies_undoes_and_redoes_exactly() {
+        let mut state = project();
+        let mut history = CommandHistory::new(16);
+        let before = state.content_fingerprint();
+        let on = crate::scene::LightShadow { enabled: true, hardness: 0.4, resolution: 1024, ..Default::default() };
+        history.execute(&mut state, set_shadow(on)).expect("liga a sombra");
+        assert_eq!(state.light(&crate::ids::LightId::canonical_key()).unwrap().shadow, on);
+        assert_ne!(state.content_fingerprint(), before);
+        history.undo(&mut state).unwrap();
+        assert_eq!(state.content_fingerprint(), before, "undo restaura a sombra desligada");
+        history.redo(&mut state).unwrap();
+        assert_eq!(state.light(&crate::ids::LightId::canonical_key()).unwrap().shadow, on);
+    }
+
+    #[test]
+    fn set_light_shadow_rejects_invalid_values_without_touching_the_project() {
+        let mut state = project();
+        let mut history = CommandHistory::new(4);
+        let before = state.content_fingerprint();
+        for bad in [
+            crate::scene::LightShadow { strength: 2.0, ..Default::default() },
+            crate::scene::LightShadow { bias: f32::NAN, ..Default::default() },
+            crate::scene::LightShadow { resolution: 777, ..Default::default() },
+            crate::scene::LightShadow { distance: -1.0, ..Default::default() },
+        ] {
+            assert!(history.execute(&mut state, set_shadow(bad)).is_err());
+        }
+        assert_eq!(state.content_fingerprint(), before);
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn set_light_without_shadow_keeps_the_command_json_unchanged() {
+        let cmd = Command::SetLight {
+            light_id: None,
+            direction: Some([0.0, 1.0, 0.0]),
+            color: None,
+            intensity: None,
+            shadow_color: None,
+            ambient_intensity: None,
+            shadow_saturation: None,
+            ambient_sky: None,
+            ambient_ground: None,
+            shadow: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains("shadow\":"), "campo shadow omitido quando None: {json}");
+        // o inverso de um SetLight que NÃO tocou a sombra também não a carrega
+        let state = project();
+        let inverse = cmd.inverse(&state).unwrap();
+        assert!(!serde_json::to_string(&inverse).unwrap().contains("\"shadow\":{"));
+        // e um JSON antigo (sem o campo) ainda desserializa
+        let old: Command = serde_json::from_str(&json).unwrap();
+        assert_eq!(old, cmd);
+    }
+
+    #[test]
+    fn render_output_command_validates_undoes_and_serializes() {
+        use crate::render_output::RenderOutputPatch;
+        let mut state = project();
+        let mut history = CommandHistory::new(16);
+        let before = state.clone();
+        let cmd = Command::SetRenderOutput {
+            patch: RenderOutputPatch { width: Some(1080), height: Some(1350), dpi: Some(300), camera_near: Some(0.3), ..Default::default() },
+        };
+        // JSON do contrato TS: `kind: set_render_output`
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"kind\":\"set_render_output\""), "{json}");
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        history.execute(&mut state, cmd).unwrap();
+        assert_eq!((state.render.output.width, state.render.output.height), (1080, 1350));
+        assert!((state.scene.camera.camera.aspect - 0.8).abs() < 1e-6);
+        assert_eq!(state.scene.camera.camera.z_near, 0.3);
+        history.undo(&mut state).unwrap();
+        assert_eq!(state, before);
+        history.redo(&mut state).unwrap();
+        assert_eq!(state.render.output.dpi, 300);
+        // near >= far, valores fora da faixa e patch vazio são recusados sem tocar o projeto
+        for bad in [
+            RenderOutputPatch { camera_near: Some(500.0), ..Default::default() },
+            RenderOutputPatch { width: Some(2), ..Default::default() },
+            RenderOutputPatch::default(),
+        ] {
+            let snapshot = state.clone();
+            assert!(Command::SetRenderOutput { patch: bad }.apply(&mut state).is_err());
+            assert_eq!(state, snapshot);
+        }
+        // repetir o mesmo valor é NoOp
+        let again = Command::SetRenderOutput { patch: RenderOutputPatch { dpi: Some(300), ..Default::default() } };
+        assert!(matches!(again.apply(&mut state), Err(CommandError::NoOp(_))));
+    }
+}
+
+#[cfg(test)]
+mod material_patch_diff_tests {
+    use super::*;
+    use crate::npr::NprParams;
+
+    #[test]
+    fn diff_of_equal_materials_is_empty_and_diff_lists_only_changes() {
+        let a = StylizedMaterial::default();
+        assert!(MaterialPatch::diff(&a, &a).is_empty());
+        let mut b = a.clone();
+        b.shade_color = [0.1, 0.2, 0.3, 1.0];
+        b.rim_intensity = 2.0;
+        b.npr.ramp_blend = 1.0;
+        let d = MaterialPatch::diff(&a, &b);
+        assert_eq!(d.shade_color, Some([0.1, 0.2, 0.3, 1.0]));
+        assert_eq!(d.rim_intensity, Some(2.0));
+        assert_eq!(d.npr.map(|n| n.ramp_blend), Some(1.0));
+        assert!(d.base_color.is_none() && d.outline_width.is_none());
+        let mut applied = a.clone();
+        d.apply_to(&mut applied);
+        assert_eq!(applied, b);
+    }
+
+    #[test]
+    fn from_material_replaces_everything_and_its_inverse_restores_it() {
+        let mut target = StylizedMaterial::default();
+        target.base_color = [0.9, 0.1, 0.1, 1.0];
+        target.outline_width = 0.01;
+        target.npr = NprParams { outline_taper: 0.5, ..NprParams::default() };
+        target.mtoon_matcap_enabled = true;
+        let mut other = StylizedMaterial::default();
+        other.hue_shift = 40.0;
+        other.spec_power = 90.0;
+        let patch = MaterialPatch::from_material(&target);
+        let inverse = patch.inverse_of(&other);
+        let mut m = other.clone();
+        patch.apply_to(&mut m);
+        // o nome não faz parte do patch; todo o resto vira o alvo
+        m.name = target.name.clone();
+        assert_eq!(m, target);
+        inverse.apply_to(&mut m);
+        m.name = other.name.clone();
+        assert_eq!(m, other);
     }
 }

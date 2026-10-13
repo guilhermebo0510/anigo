@@ -8,8 +8,10 @@ mod bridge_client;
 mod win32_interact;
 #[cfg(not(target_os = "windows"))]
 mod win32_stub;
+mod cli;
 mod fs_sandbox;
 mod metrics;
+mod native;
 mod validate;
 
 use std::io::{self, BufRead, Write};
@@ -66,6 +68,11 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // subcomandos de linha de comando (CI/smoke): falam com a bridge SEM iniciar o renderer headless
+    if let Some(code) = cli::maybe_run(std::env::args().skip(1).collect()).await {
+        std::process::exit(code);
+    }
+
     tracing::info!("Initializing ANIGO MCP Server with WebGPU engine & Live Socket Bridge...");
 
     let renderer = HeadlessRenderer::new()
@@ -88,14 +95,13 @@ async fn main() -> Result<()> {
     node.material = Some(current_mat);
     scene.add_node(node);
 
-    let bridge_addr = std::env::var("ANIGO_BRIDGE_ADDR").unwrap_or_else(|_| "127.0.0.1:39090".to_string());
-
+    // T-2.13: ANIGO_BRIDGE_ADDR fixa o destino; senão descobre o app nativo (arquivo de descoberta) com o Tauri (39090) de reserva
     let metrics = Arc::new(metrics::McpMetrics::new());
 
     let state = Arc::new(AppState {
         renderer: Arc::new(renderer),
         scene: Arc::new(RwLock::new(scene)),
-        bridge: Arc::new(LiveBridgeClient::new(bridge_addr)),
+        bridge: Arc::new(LiveBridgeClient::from_env()),
         current_gender: Arc::new(RwLock::new(initial_gender)),
         morph_catalog: Arc::new(RwLock::new(morph_catalog)),
         base_mesh: Arc::new(RwLock::new(base_mesh)),
@@ -163,7 +169,10 @@ async fn main() -> Result<()> {
                 tracing::debug!(rpc_id = %req_id, "Client initialized");
             }
             "tools/list" => {
-                let tools = get_tool_definitions();
+                let mut tools = get_tool_definitions();
+                if let Some(list) = tools.as_array_mut() {
+                    list.extend(native::definitions());
+                }
                 let res = json!({
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -867,6 +876,11 @@ async fn handle_tool_call(
     rpc_id: String,
 ) -> Result<Vec<Value>> {
     let mut warnings: Vec<String> = Vec::new();
+
+    // T-2.13: ferramentas do app nativo (`anigo_native_*`) têm módulo próprio
+    if let Some(result) = native::call(name, &args, &state.bridge, &state.metrics).await {
+        return result;
+    }
 
     match name {
         "anigo_ping" => {

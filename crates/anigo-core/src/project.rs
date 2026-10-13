@@ -30,9 +30,11 @@ use crate::ids::{
     MorphId, NodeId, ProjectId, SceneId,
 };
 use crate::hierarchy::{self, NodeKind};
+use crate::level::{NodeOverrides, NodeSource};
 use crate::math::{Camera, Transform};
 use crate::mesh::{BaseGender, Mesh};
 use crate::morph_catalog::{find_slider_def, ALL_MORPH_SLIDERS};
+use crate::pose::PoseState;
 use crate::scene::{Scene, SceneNode, StylizedLight, StylizedMaterial};
 use crate::somatotype::SomatotypeCoords;
 
@@ -183,6 +185,10 @@ pub struct CharacterState {
     /// Accessory attachment.
     #[serde(default)]
     pub accessory: AccessoryAttachment,
+    /// Pose do esqueleto (workspace Posing). Aditivo: omitido em repouso, então projetos antigos e os
+    /// fixtures não mudam. Ver `crate::pose`.
+    #[serde(default, skip_serializing_if = "PoseState::is_rest")]
+    pub pose: PoseState,
 }
 
 /// Bone-driven macro proportions of the character.
@@ -375,6 +381,25 @@ pub struct NodeSlot {
     /// `hair`, `accessory`, `humanoid_bone`, `mesh`, `light`, `camera`, `group`).
     #[serde(default)]
     pub kind: NodeKind,
+    /// Editor de cenário: o nó não pode ser selecionado/transformado na viewport (cadeado).
+    /// Os campos abaixo são aditivos: ausentes do JSON enquanto estiverem no padrão.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+    /// Etiquetas livres (buscáveis no Outliner).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Pasta do Outliner (organização; não afeta a transformação). `Pai/Filho` = aninhada.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Camada de cena (BG/MG/FG/…): organização e, no futuro, passes de render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// De onde o nó veio (ativo da Biblioteca, primitiva, câmera de cena…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NodeSource>,
+    /// Substituições de material por instância.
+    #[serde(default, skip_serializing_if = "NodeOverrides::is_default")]
+    pub overrides: NodeOverrides,
 }
 
 impl NodeSlot {
@@ -389,6 +414,12 @@ impl NodeSlot {
             visible: true,
             parent_id: None,
             kind,
+            locked: false,
+            tags: Vec::new(),
+            folder: None,
+            layer: None,
+            source: None,
+            overrides: NodeOverrides::default(),
         }
     }
 
@@ -441,6 +472,17 @@ pub struct AnimationState {
     pub active_clip: Option<AnimationClipId>,
     #[serde(default)]
     pub playhead_seconds: f32,
+    /// Taxa de quadros do projeto (aditivo: 24 fps no padrão, omitido do JSON nesse caso).
+    #[serde(default = "default_animation_fps", skip_serializing_if = "is_default_animation_fps")]
+    pub fps: f32,
+}
+
+fn default_animation_fps() -> f32 {
+    crate::animation::DEFAULT_FPS
+}
+
+fn is_default_animation_fps(fps: &f32) -> bool {
+    *fps == crate::animation::DEFAULT_FPS
 }
 
 impl Default for AnimationState {
@@ -449,11 +491,21 @@ impl Default for AnimationState {
             clips: BTreeMap::new(),
             active_clip: None,
             playhead_seconds: 0.0,
+            fps: crate::animation::DEFAULT_FPS,
         }
     }
 }
 
-/// Animation clip with per-node transform tracks.
+fn is_default_hold_step(v: &u8) -> bool {
+    *v <= 1
+}
+
+fn default_hold_step() -> u8 {
+    1
+}
+
+/// Animation clip with per-node transform tracks (legado) e canais tipados por osso/nó/sol/câmera
+/// (`crate::animation`). Todos os campos novos são aditivos (`serde(default)`, omitidos no padrão).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnimationClip {
     pub clip_id: AnimationClipId,
@@ -461,6 +513,29 @@ pub struct AnimationClip {
     pub duration_seconds: f32,
     #[serde(default)]
     pub tracks: Vec<AnimationTrack>,
+    /// Canais com chaves tipadas e interpolação por chave; sempre ordenados por alvo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<crate::animation::Channel>,
+    /// Faixa do clip em quadros `[início, fim]`; `None` = automática (0 até a maior chave).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "is_default_loop_mode")]
+    pub loop_mode: crate::animation::LoopMode,
+    #[serde(default, skip_serializing_if = "is_default_extrapolation")]
+    pub extrapolation: crate::animation::Extrapolation,
+    /// "Animar em 2s/3s": o quadro avaliado é congelado em múltiplos de `hold_step` (1 = todo quadro).
+    #[serde(default = "default_hold_step", skip_serializing_if = "is_default_hold_step")]
+    pub hold_step: u8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<crate::animation::Marker>,
+}
+
+fn is_default_loop_mode(v: &crate::animation::LoopMode) -> bool {
+    *v == crate::animation::LoopMode::Once
+}
+
+fn is_default_extrapolation(v: &crate::animation::Extrapolation) -> bool {
+    *v == crate::animation::Extrapolation::Constant
 }
 
 /// Track binding keyframes to a node.
@@ -506,6 +581,10 @@ pub struct RenderState {
     /// rejeição antecipada no fragment shader).
     #[serde(default)]
     pub depth_prepass: bool,
+    /// Saída de render (resolução, supersampling, fundo transparente, AOVs, DoF…). Aditivo: omitido do
+    /// JSON canônico enquanto estiver no padrão.
+    #[serde(default, skip_serializing_if = "crate::render_output::RenderOutput::is_default")]
+    pub output: crate::render_output::RenderOutput,
 }
 
 impl Default for RenderState {
@@ -519,6 +598,7 @@ impl Default for RenderState {
             graph_order: Vec::new(),
             graph_disabled: Vec::new(),
             depth_prepass: false,
+            output: crate::render_output::RenderOutput::default(),
         }
     }
 }
@@ -663,6 +743,7 @@ impl Default for CharacterState {
             hair: HairParameters::default(),
             cloth: ClothParameters::default(),
             accessory: AccessoryAttachment::default(),
+            pose: PoseState::default(),
         }
     }
 }
@@ -683,6 +764,12 @@ impl Default for SceneState {
             // Issue #12: o manequim é a raiz do personagem na cena canônica.
             parent_id: None,
             kind: NodeKind::CharacterRoot,
+            locked: false,
+            tags: Vec::new(),
+            folder: None,
+            layer: None,
+            source: None,
+            overrides: NodeOverrides::default(),
         };
 
         Self {
@@ -935,6 +1022,11 @@ impl ProjectState {
             )?;
         }
 
+        self.character.pose.validate().map_err(|detail| ProjectError::InvalidValue {
+            field: "character.pose".to_string(),
+            detail,
+        })?;
+
         if self.scene.nodes.is_empty() {
             return Err(ProjectError::EmptyScene);
         }
@@ -973,6 +1065,24 @@ impl ProjectState {
             }
             for component in node.transform.rotation.to_array() {
                 require_finite("scene.nodes[].transform.rotation", component)?;
+            }
+            // Editor de cenário: dados extras do nó.
+            let invalid = |detail: String| ProjectError::InvalidValue {
+                field: format!("scene.nodes.{}", node.node_id),
+                detail,
+            };
+            crate::level::validate_tags(&node.tags).map_err(&invalid)?;
+            node.overrides.validate().map_err(&invalid)?;
+            if let Some(source) = &node.source {
+                source.validate().map_err(&invalid)?;
+                if let Some(uri) = source.library_uri() {
+                    let expected = AssetId::for_uri(uri);
+                    if node.mesh.as_ref().map(|m| &m.asset_id) != Some(&expected) {
+                        return Err(invalid(format!(
+                            "library asset node must reference mesh asset '{expected}'"
+                        )));
+                    }
+                }
             }
         }
 
@@ -1018,6 +1128,31 @@ impl ProjectState {
                     });
                 }
             }
+            clip.validate_shape().map_err(|detail| ProjectError::InvalidValue {
+                field: format!("animation.clips.{}", clip.clip_id),
+                detail,
+            })?;
+            for ch in &clip.channels {
+                use crate::animation::ChannelTarget as T;
+                if let T::NodeTranslation { node_id } | T::NodeRotation { node_id } | T::NodeScale { node_id } = &ch.target {
+                    if !node_ids.contains(node_id.as_str()) {
+                        return Err(ProjectError::DanglingReference {
+                            field: "animation.clips[].channels[].target.node_id",
+                            kind: "scene node",
+                            target: node_id.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        if !self.animation.fps.is_finite() || !(crate::animation::MIN_FPS..=crate::animation::MAX_FPS).contains(&self.animation.fps) {
+            return Err(ProjectError::InvalidValue {
+                field: "animation.fps".to_string(),
+                detail: format!("must be within [{}, {}]", crate::animation::MIN_FPS, crate::animation::MAX_FPS),
+            });
+        }
+        if self.animation.clips.len() > crate::animation::MAX_CLIPS {
+            return Err(ProjectError::InvalidValue { field: "animation.clips".to_string(), detail: "too many clips".to_string() });
         }
         if let Some(active) = &self.animation.active_clip {
             if !self.animation.clips.contains_key(active) {
@@ -1077,6 +1212,10 @@ impl ProjectState {
         for component in self.render.background_color {
             require_range("render.background_color", component, 0.0, 1.0)?;
         }
+        self.render.output.validate().map_err(|detail| ProjectError::InvalidValue {
+            field: "render.output".to_string(),
+            detail,
+        })?;
 
         Ok(())
     }
@@ -1092,6 +1231,7 @@ impl ProjectState {
         }
 
         self.character.gender_dimorphism = clamp01(self.character.gender_dimorphism, 1.0);
+        self.character.pose.sanitize();
         self.character.somatotype = SomatotypeCoords::new(
             component_or(self.character.somatotype.endomorph, 1.0 / 3.0),
             component_or(self.character.somatotype.mesomorph, 1.0 / 3.0),
@@ -1113,6 +1253,25 @@ impl ProjectState {
             }
         }
         self.character.morph_values = morph_values;
+
+        // Nós de ativos da Biblioteca: o registro e a referência de malha são reparados a partir da
+        // URI de origem (o arquivo pode estar ausente nesta máquina — a UI mostra um marcador; o nó
+        // nunca vira o manequim por engano).
+        for node in &mut self.scene.nodes {
+            if let Some(NodeSource::LibraryAsset { uri, .. }) = &node.source {
+                let entry = AssetEntry::from_uri(AssetKind::Mesh, uri.clone());
+                node.mesh = Some(MeshRef { asset_id: entry.asset_id.clone(), primitive_index: 0 });
+                self.assets.entry(entry.asset_id.clone()).or_insert(entry);
+            }
+            // tags: sem vazias, sem repetidas (sem diferenciar maiúsculas), no máximo 64 de 64 caracteres
+            let mut seen = BTreeSet::new();
+            node.tags = std::mem::take(&mut node.tags)
+                .into_iter()
+                .map(|t| t.trim().chars().take(64).collect::<String>())
+                .filter(|t| !t.is_empty() && seen.insert(t.to_lowercase()))
+                .take(64)
+                .collect();
+        }
 
         // Dangling mesh references become procedural canonical bases.
         for node in &mut self.scene.nodes {
@@ -1183,6 +1342,15 @@ impl ProjectState {
             .collect();
         for clip in self.animation.clips.values_mut() {
             clip.tracks.retain(|track| known_nodes.contains(&track.node_id));
+            clip.sanitize(&known_nodes);
+        }
+        if !self.animation.fps.is_finite() || !(crate::animation::MIN_FPS..=crate::animation::MAX_FPS).contains(&self.animation.fps) {
+            self.animation.fps = crate::animation::DEFAULT_FPS;
+        }
+        while self.animation.clips.len() > crate::animation::MAX_CLIPS {
+            if let Some(last) = self.animation.clips.keys().next_back().cloned() {
+                self.animation.clips.remove(&last);
+            }
         }
         if let Some(active) = self.animation.active_clip.clone() {
             if !self.animation.clips.contains_key(&active) {
@@ -1207,6 +1375,7 @@ impl ProjectState {
         for component in self.render.background_color.iter_mut() {
             *component = component_or(*component, 0.0).clamp(0.0, 1.0);
         }
+        self.render.output.sanitize();
 
         self.settings.autosave_interval_minutes = self.settings.autosave_interval_minutes.clamp(1, 240);
         self.settings.history_limit = self.settings.history_limit.clamp(1, 1000);

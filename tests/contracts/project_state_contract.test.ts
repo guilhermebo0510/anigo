@@ -122,6 +122,8 @@ describe("ProjectState v1 — schema parity with the Rust core", () => {
         "graph_order",
         "graph_disabled",
         "depth_prepass",
+        // Workspace Render: aditivo, omitido do JSON canônico enquanto estiver no padrão.
+        "output",
       ])
     );
     const scene = fieldsOf(RUST_PROJECT, "SceneState");

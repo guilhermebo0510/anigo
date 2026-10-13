@@ -17,13 +17,22 @@
  */
 
 import {
+  ANIM_EDIT_OPS,
   COMMAND_KINDS,
   NODE_KINDS,
+  POSE_BONE_NAMES,
+  type AnimEditWire,
   type CameraProjectionPatchWire,
   type CommandWire,
+  type HandsPoseWire,
+  type PoseBoneEntryWire,
+  type PoseOpWire,
   type MaterialPatchWire,
   type MeshPresetWire,
   type NodeKindWire,
+  type NodePatchWire,
+  type RenderOutputPatchWire,
+  type NodeSourceWire,
   type TonemapOperatorWire,
   type TransformWire,
 } from "../contracts/commands.v1";
@@ -209,6 +218,54 @@ export type CommandIntent =
       depth_prepass?: boolean;
     }
   | { kind: "rename_project"; name: string; current_name?: string }
+  /** Editor de cenário: transformação local de vários nós num só comando. */
+  | {
+      kind: "nodes_transform";
+      entries: Array<{
+        node_id: string;
+        translation?: [number, number, number];
+        rotation?: [number, number, number, number];
+        scale?: [number, number, number];
+      }>;
+    }
+  /** Editor de cenário: duplica nós com ids novos (o remapeamento vem da UI/planejador). */
+  | {
+      kind: "duplicate_nodes";
+      copies: Array<{ source: string; copy: string; name: string }>;
+      offset?: [number, number, number];
+    }
+  /** Editor de cenário: nome, cadeado, tags, pasta, camada, overrides ou origem de um nó. */
+  | { kind: "node_props"; node_id: string; patch: NodePatchWire }
+  /** Editor de cenário: troca a malha/origem de nós preservando a transformação. */
+  | {
+      kind: "replace_nodes_asset";
+      entries: Array<{
+        node_id: string;
+        mesh_uri?: string | null;
+        primitive_index?: number;
+        source?: NodeSourceWire | null;
+        name?: string | null;
+      }>;
+    }
+  /** Editor de cenário: registra/remove ativos no registro do projeto (URI → id derivado). */
+  | {
+      kind: "patch_assets";
+      put: Array<{ uri: string; byte_len?: number | null; content_hash?: string | null }>;
+      remove_uris?: string[];
+    }
+  /** Workspace Render: saída de render (resolução, supersampling, fundo, AOVs, DoF, cor, near/far). */
+  | { kind: "render_output"; patch: RenderOutputPatchWire }
+  /** Workspace Posing: rotações finais por osso (delta sobre o repouso), translações do root/quadril e dedos. */
+  | {
+      kind: "pose";
+      bones?: PoseBoneEntryWire[];
+      root_translation?: [number, number, number];
+      hips_translation?: [number, number, number];
+      hands?: HandsPoseWire;
+      op?: PoseOpWire;
+    }
+  /** Workspace Animação: UMA edição atômica dos clips (chaves, interpolação, faixa, fps, marcadores, clips). */
+  | { kind: "animation"; edit: AnimEditWire }
   | { kind: "batch"; intents: CommandIntent[] };
 
 // ---------------------------------------------------------------------------
@@ -741,6 +798,248 @@ export function buildCommand(intent: CommandIntent): CommandBuildResult {
         return fail("no_op", `o projeto já se chama '${intent.name}'`, "name");
       }
       return { ok: true, command: { kind: "rename_project", name: intent.name } };
+    }
+
+    case "nodes_transform": {
+      if (intent.entries.length === 0) return fail("empty_batch", "nenhum nó para transformar");
+      const seen = new Set<string>();
+      const entries: Array<Record<string, unknown>> = [];
+      for (const entry of intent.entries) {
+        if (!isValidStableId(entry.node_id, "node")) {
+          return fail("unknown_target", `node_id '${entry.node_id}' inválido`, "node_id");
+        }
+        if (seen.has(entry.node_id)) {
+          return fail("invalid_value", `o nó '${entry.node_id}' aparece duas vezes`, "entries");
+        }
+        seen.add(entry.node_id);
+        const out: Record<string, unknown> = { node_id: entry.node_id };
+        if (entry.translation !== undefined) {
+          const problem = buildVec3(entry.translation, "translation");
+          if (problem) return problem;
+          out["translation"] = [...entry.translation];
+        }
+        if (entry.rotation !== undefined) {
+          const problem = checkQuaternion(entry.rotation);
+          if (problem) return problem;
+          out["rotation"] = [...entry.rotation];
+        }
+        if (entry.scale !== undefined) {
+          const problem = buildVec3(entry.scale, "scale");
+          if (problem) return problem;
+          out["scale"] = [...entry.scale];
+        }
+        entries.push(out);
+      }
+      return {
+        ok: true,
+        command: { kind: "set_nodes_transform", entries } as unknown as CommandWire,
+        unverifiedTarget: true,
+      };
+    }
+
+    case "duplicate_nodes": {
+      if (intent.copies.length === 0) return fail("no_op", "nada para duplicar");
+      const copies = new Set<string>();
+      for (const c of intent.copies) {
+        if (!isValidStableId(c.source, "node")) {
+          return fail("unknown_target", `source '${c.source}' inválido`, "copies");
+        }
+        if (!isValidStableId(c.copy, "node") || copies.has(c.copy)) {
+          return fail("invalid_value", `id de cópia '${c.copy}' inválido ou repetido`, "copies");
+        }
+        if (c.name.trim().length === 0) return fail("invalid_value", "o nome da cópia não pode ser vazio", "name");
+        copies.add(c.copy);
+      }
+      if (intent.offset !== undefined) {
+        const problem = buildVec3(intent.offset, "offset");
+        if (problem) return problem;
+      }
+      const command: CommandWire = {
+        kind: "duplicate_nodes",
+        copies: intent.copies.map((c) => ({ ...c })),
+      };
+      if (intent.offset !== undefined) command.offset = [...intent.offset];
+      return { ok: true, command, unverifiedTarget: true };
+    }
+
+    case "node_props": {
+      if (!isValidStableId(intent.node_id, "node")) {
+        return fail("unknown_target", `node_id '${intent.node_id}' inválido`, "node_id");
+      }
+      if (Object.keys(intent.patch).length === 0) return fail("no_op", "patch de propriedades vazio");
+      if (intent.patch.name !== undefined && intent.patch.name.trim().length === 0) {
+        return fail("invalid_value", "o nome do nó não pode ser vazio", "name");
+      }
+      if (intent.patch.tags !== undefined) {
+        const lower = intent.patch.tags.map((t) => t.toLowerCase());
+        if (intent.patch.tags.some((t) => t.trim().length === 0 || t.length > 64) || new Set(lower).size !== lower.length) {
+          return fail("invalid_value", "tags vazias, longas ou repetidas", "tags");
+        }
+      }
+      return { ok: true, command: { kind: "set_node_props", node_id: intent.node_id, patch: { ...intent.patch } }, unverifiedTarget: true };
+    }
+
+    case "replace_nodes_asset": {
+      if (intent.entries.length === 0) return fail("no_op", "nada para substituir");
+      const entries = [];
+      for (const e of intent.entries) {
+        if (!isValidStableId(e.node_id, "node")) {
+          return fail("unknown_target", `node_id '${e.node_id}' inválido`, "node_id");
+        }
+        const out: Record<string, unknown> = { node_id: e.node_id };
+        if (e.mesh_uri !== undefined) {
+          out["mesh"] =
+            e.mesh_uri === null
+              ? null
+              : e.primitive_index !== undefined
+                ? { asset_id: assetIdForUri(e.mesh_uri), primitive_index: e.primitive_index }
+                : { asset_id: assetIdForUri(e.mesh_uri) };
+        }
+        if (e.source !== undefined) out["source"] = e.source;
+        if (e.name !== undefined) out["name"] = e.name;
+        entries.push(out);
+      }
+      return { ok: true, command: { kind: "replace_nodes_asset", entries } as unknown as CommandWire, unverifiedTarget: true };
+    }
+
+    case "patch_assets": {
+      if (intent.put.length === 0 && (intent.remove_uris?.length ?? 0) === 0) {
+        return fail("no_op", "registro de ativos sem mudanças");
+      }
+      const put = intent.put.map((e) => ({
+        asset_id: assetIdForUri(e.uri),
+        kind: "mesh" as const,
+        uri: e.uri,
+        ...(e.byte_len !== undefined ? { byte_len: e.byte_len } : {}),
+        ...(e.content_hash !== undefined ? { content_hash: e.content_hash } : {}),
+      }));
+      if (put.some((e) => e.uri.length === 0 || e.uri.startsWith("/"))) {
+        return fail("invalid_value", "uri de ativo vazia ou absoluta", "put");
+      }
+      const command: CommandWire = { kind: "patch_assets", put };
+      if (intent.remove_uris !== undefined) command.remove = intent.remove_uris.map(assetIdForUri);
+      return { ok: true, command };
+    }
+
+    case "render_output": {
+      const p = intent.patch;
+      if (typeof p !== "object" || p === null || Object.keys(p).length === 0) {
+        return fail("no_op", "saída de render vazia");
+      }
+      for (const [field, lo, hi] of [
+        ["width", 16, 16384],
+        ["height", 16, 16384],
+        ["scale_percent", 10, 400],
+        ["supersample", 1, 4],
+        ["jpeg_quality", 1, 100],
+        ["dpi", 36, 1200],
+        ["camera_near", 0.001, 1000],
+        ["camera_far", 0.1, 100000],
+      ] as const) {
+        const value = (p as Record<string, unknown>)[field];
+        if (value === undefined) continue;
+        const problem = finite(value as number, field) ?? inRange(value as number, lo, hi, field);
+        if (problem) return problem;
+      }
+      if (p.display_space !== undefined && p.display_space !== "srgb" && p.display_space !== "display_p3") {
+        return fail("invalid_value", "display_space precisa ser srgb ou display_p3", "display_space");
+      }
+      if (p.format !== undefined && !["png8", "png16", "jpeg"].includes(p.format)) {
+        return fail("invalid_value", `formato '${p.format}' desconhecido`, "format");
+      }
+      return { ok: true, command: { kind: "set_render_output", patch: { ...p } } };
+    }
+
+    case "pose": {
+      const bones = intent.bones ?? [];
+      if (bones.length === 0 && !intent.root_translation && !intent.hips_translation && !intent.hands) {
+        return fail("no_op", "pose sem mudanças");
+      }
+      const seen = new Set<string>();
+      for (const entry of bones) {
+        if (!(POSE_BONE_NAMES as readonly string[]).includes(entry.bone)) {
+          return fail("unknown_target", `osso desconhecido '${entry.bone}'`, "bones");
+        }
+        if (seen.has(entry.bone)) return fail("invalid_value", `osso '${entry.bone}' repetido`, "bones");
+        seen.add(entry.bone);
+        for (const c of entry.rotation) {
+          const bad = finite(c, "rotation");
+          if (bad) return bad;
+        }
+        if (entry.rotation.reduce((a, c) => a + c * c, 0) < 1e-12) {
+          return fail("invalid_value", "quaternion nulo", "rotation");
+        }
+      }
+      for (const [field, v] of [["root_translation", intent.root_translation], ["hips_translation", intent.hips_translation]] as const) {
+        if (!v) continue;
+        for (const c of v) {
+          const bad = finite(c, field);
+          if (bad) return bad;
+          if (Math.abs(c) > 50) return fail("invalid_value", `'${field}' fora de ±50 m`, field);
+        }
+      }
+      for (const curls of [intent.hands?.left, intent.hands?.right]) {
+        for (const c of curls ?? []) {
+          const bad = finite(c, "hands");
+          if (bad) return bad;
+          if (c < 0 || c > 1) return fail("invalid_value", "curvatura de dedo fora de [0, 1]", "hands");
+        }
+      }
+      const command: CommandWire = { kind: "set_pose" };
+      if (bones.length > 0) command.bones = bones;
+      if (intent.root_translation) command.root_translation = intent.root_translation;
+      if (intent.hips_translation) command.hips_translation = intent.hips_translation;
+      if (intent.hands) command.hands = intent.hands;
+      if (intent.op) command.op = intent.op;
+      return { ok: true, command };
+    }
+
+    case "animation": {
+      const edit = intent.edit;
+      if (!(ANIM_EDIT_OPS as readonly string[]).includes(edit.op)) {
+        return fail("invalid_value", `operação de animação '${(edit as { op: string }).op}' desconhecida`, "edit.op");
+      }
+      const frames: number[] = [];
+      if (edit.op === "insert_keys") {
+        if (edit.keys.length === 0) return fail("no_op", "nenhuma chave", "keys");
+        for (const k of edit.keys) {
+          frames.push(k.key.frame);
+          const v = k.key.value.v;
+          for (const c of Array.isArray(v) ? v : [v]) {
+            const bad = finite(c, "value");
+            if (bad) return bad;
+          }
+        }
+      } else if (edit.op === "delete_keys" || edit.op === "set_interpolation") {
+        if (edit.keys.length === 0) return fail("no_op", "nenhuma chave", "keys");
+        for (const k of edit.keys) frames.push(k.frame);
+      } else if (edit.op === "move_keys") {
+        if (edit.moves.length === 0) return fail("no_op", "nenhum movimento", "moves");
+        for (const m of edit.moves) frames.push(m.frame, m.to_frame);
+      } else if (edit.op === "set_fps") {
+        const bad = finite(edit.fps, "fps") ?? inRange(edit.fps, 1, 240, "fps");
+        if (bad) return bad;
+      } else if (edit.op === "set_clip_range" && edit.range) {
+        frames.push(edit.range[0], edit.range[1]);
+        if (edit.range[1] < edit.range[0]) return fail("invalid_value", "faixa invertida", "range");
+      } else if (edit.op === "set_clip_playback" && edit.hold_step != null) {
+        const bad = inRange(edit.hold_step, 1, 12, "hold_step");
+        if (bad) return bad;
+      }
+      for (const f of frames) {
+        if (!Number.isInteger(f) || f < 0 || f > 1_000_000) {
+          return fail("invalid_value", `quadro ${f} precisa ser um inteiro em [0, 1000000]`, "frame");
+        }
+      }
+      if (edit.op === "set_interpolation" && edit.interp.kind === "bezier") {
+        const [x1, y1, x2, y2] = edit.interp.c;
+        for (const [value, name] of [[x1, "x1"], [y1, "y1"], [x2, "x2"], [y2, "y2"]] as const) {
+          const bad = finite(value, name);
+          if (bad) return bad;
+        }
+        if (x1 < 0 || x1 > 1 || x2 < 0 || x2 > 1) return fail("invalid_value", "alças Bézier: x precisa estar em [0, 1]", "interp");
+      }
+      return { ok: true, command: { kind: "edit_animation", edit } };
     }
 
     case "batch": {

@@ -26,6 +26,7 @@ use anigo_core::deformation::{catalog_weights, prepare_base_mesh, DeformationInp
 use anigo_core::ids::{fnv1a64, NodeId};
 use anigo_core::mesh::Mesh;
 use anigo_core::morph::SparseMorphSet;
+use anigo_core::pose::{finger_curl_mesh, PoseRig, PoseState};
 use anigo_core::morph_catalog::build_canonical_sparse_morph_set;
 use anigo_core::project::{ProjectState, URI_BASE_FEMALE, URI_BASE_MALE};
 use anigo_core::scene::{Scene, SceneNode};
@@ -57,6 +58,16 @@ pub struct CoreSession {
     geometry: Option<CachedGeometry>,
     static_revision: u64,
     dynamic_revision: u64,
+    /// Gesto de preview em curso (arrasto de slider): ver [`CoreSession::begin_preview`].
+    preview: Option<PreviewGesture>,
+    /// Rig de posing ajustado à malha deformada (chave = geometria + pesos de morph).
+    rig_cache: Option<(u64, PoseRig)>,
+}
+
+/// Estado de um gesto de preview: projeto de partida + se algum passo mexeu na geometria base.
+struct PreviewGesture {
+    base: ProjectState,
+    touched_base_geometry: bool,
 }
 
 impl Default for CoreSession {
@@ -99,6 +110,8 @@ impl CoreSession {
             // então o primeiro snapshot sempre traz a parte estática.
             static_revision: 1,
             dynamic_revision: 0,
+            preview: None,
+            rig_cache: None,
         }
     }
 
@@ -131,9 +144,11 @@ impl CoreSession {
         let project = ProjectState::from_json(raw).map_err(|error| error.to_string())?;
         project.validate().map_err(|error| error.to_string())?;
         let limit = project.settings.history_limit as usize;
+        self.preview = None;
         self.project = project;
         self.history = CommandHistory::new(limit);
         self.geometry = None;
+        self.rig_cache = None;
         self.static_revision += 1;
         self.dynamic_revision = 0;
         Ok(())
@@ -182,6 +197,7 @@ impl CoreSession {
 
     /// Valida + aplica + empilha um comando. Estado intacto quando inválido.
     pub fn apply(&mut self, command: Command) -> Result<CommandOutcome, String> {
+        self.cancel_preview();
         let outcome = self
             .history
             .execute(&mut self.project, command)
@@ -193,6 +209,67 @@ impl CoreSession {
         Ok(outcome)
     }
 
+    // ------------------------------------------------------------------ preview
+    //
+    // Arrastar um slider precisa de feedback ao vivo SEM gerar um passo de desfazer por
+    // quadro. O gesto de preview aplica os comandos direto no projeto (mesma validação e
+    // mesma transação do núcleo), mas fora do `CommandHistory`; ao soltar, o projeto volta
+    // ao estado de partida e o comando final entra pelo caminho normal (`apply`), deixando
+    // exatamente UM passo de desfazer e UMA entrada no log de sessão.
+
+    /// `true` enquanto há um gesto de preview aberto.
+    pub fn is_previewing(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    /// Abre um gesto de preview (idempotente: já aberto = nada muda).
+    pub fn begin_preview(&mut self) {
+        if self.preview.is_none() {
+            self.preview = Some(PreviewGesture {
+                base: self.project.clone(),
+                touched_base_geometry: false,
+            });
+        }
+    }
+
+    /// Aplica `command` ao vivo, sem tocar o histórico. Abre o gesto se preciso.
+    /// Comando inválido (ou sem efeito) deixa o projeto intacto e devolve `Err`.
+    pub fn preview(&mut self, command: Command) -> Result<(), String> {
+        self.begin_preview();
+        let applied = command.apply(&mut self.project).map_err(|error| error.to_string())?;
+        self.dynamic_revision += 1;
+        if applied.scope.requires_static_rebuild() {
+            if let Some(gesture) = self.preview.as_mut() {
+                gesture.touched_base_geometry = true;
+            }
+            self.invalidate_geometry();
+        }
+        Ok(())
+    }
+
+    /// Fecha o gesto: restaura o projeto de partida e aplica `final_command` como um
+    /// único passo de histórico. Se o comando final for inválido/sem efeito (o usuário
+    /// voltou ao valor inicial), o projeto fica no estado de partida e o `Err` informa.
+    pub fn commit_preview(&mut self, final_command: Command) -> Result<CommandOutcome, String> {
+        self.restore_preview_base();
+        self.apply(final_command)
+    }
+
+    /// Descarta o gesto e volta ao estado de partida. Sem gesto aberto, não faz nada.
+    pub fn cancel_preview(&mut self) {
+        self.restore_preview_base();
+    }
+
+    fn restore_preview_base(&mut self) {
+        if let Some(gesture) = self.preview.take() {
+            self.project = gesture.base;
+            self.dynamic_revision += 1;
+            if gesture.touched_base_geometry {
+                self.invalidate_geometry();
+            }
+        }
+    }
+
     /// Aplica um comando serializado (mesma representação do contrato TS).
     pub fn apply_json(&mut self, raw: &str) -> Result<CommandOutcome, String> {
         let command = Command::from_json(raw).map_err(|error| error.to_string())?;
@@ -201,6 +278,7 @@ impl CoreSession {
 
     /// Desfaz o último comando aceito.
     pub fn undo(&mut self) -> Result<CommandOutcome, String> {
+        self.cancel_preview();
         let outcome = self.history.undo(&mut self.project).map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
         if outcome.scope.requires_static_rebuild() {
@@ -211,12 +289,36 @@ impl CoreSession {
 
     /// Refaz o último comando desfeito.
     pub fn redo(&mut self) -> Result<CommandOutcome, String> {
+        self.cancel_preview();
         let outcome = self.history.redo(&mut self.project).map_err(|error| error.to_string())?;
         self.dynamic_revision += 1;
         if outcome.scope.requires_static_rebuild() {
             self.invalidate_geometry();
         }
         Ok(outcome)
+    }
+
+    /// Profundidade máxima do desfazer (o editor de cenário usa bem mais que o padrão do projeto).
+    pub fn set_history_limit(&mut self, limit: usize) {
+        self.history.set_limit(limit);
+    }
+
+    /// Salta no histórico até restarem exatamente `target_depth` passos desfazíveis
+    /// (painel "Histórico": clicar numa linha desfaz/refaz até ali). Devolve quantos passos andou.
+    pub fn jump_to_depth(&mut self, target_depth: usize) -> Result<usize, String> {
+        self.cancel_preview();
+        let total = self.history.undo_depth() + self.history.redo_depth();
+        let target = target_depth.min(total);
+        let mut steps = 0;
+        while self.history.undo_depth() > target {
+            self.undo()?;
+            steps += 1;
+        }
+        while self.history.undo_depth() < target {
+            self.redo()?;
+            steps += 1;
+        }
+        Ok(steps)
     }
 
     /// Descarta a geometria em cache (reconstruída no próximo snapshot, que já
@@ -228,15 +330,9 @@ impl CoreSession {
         }
     }
 
-    /// Snapshot canônico para o viewport.
-    ///
-    /// `client_static_revision == Some(atual)` faz o núcleo enviar só a parte
-    /// dinâmica (pesos/câmera/luz/materiais) — é o caminho de um slider vivo.
-    pub fn snapshot(
-        &mut self,
-        include_static: bool,
-        client_static_revision: Option<u64>,
-    ) -> Result<CoreSnapshot, String> {
+    /// Reconstrói a geometria base em cache quando a chave (gênero + proporções +
+    /// dimorfismo) mudou. Não gera snapshot nem serializa nada.
+    fn ensure_geometry(&mut self) -> Result<(), String> {
         let geometry_key = geometry_key(&self.project);
         let stale = match &self.geometry {
             Some(cached) => cached.key != geometry_key,
@@ -250,7 +346,7 @@ impl CoreSession {
                 anigo_core::mesh::BaseGender::Male => URI_BASE_MALE,
                 anigo_core::mesh::BaseGender::Female => URI_BASE_FEMALE,
             };
-            tracing::info!(
+            tracing::debug!(
                 target: "anigo::core_session",
                 vertices = base_mesh.vertices.len(),
                 indices = base_mesh.indices.len(),
@@ -270,6 +366,19 @@ impl CoreSession {
             });
         }
 
+        Ok(())
+    }
+
+    /// Snapshot canônico para o viewport.
+    ///
+    /// `client_static_revision == Some(atual)` faz o núcleo enviar só a parte
+    /// dinâmica (pesos/câmera/luz/materiais) — é o caminho de um slider vivo.
+    pub fn snapshot(
+        &mut self,
+        include_static: bool,
+        client_static_revision: Option<u64>,
+    ) -> Result<CoreSnapshot, String> {
+        self.ensure_geometry()?;
         let geometry = self
             .geometry
             .as_ref()
@@ -306,7 +415,7 @@ impl CoreSession {
 
     /// Malha totalmente deformada pelo núcleo (base + morphs ativos).
     pub fn deformed_mesh(&mut self) -> Result<Mesh, String> {
-        let _ = self.snapshot(true, None)?;
+        self.ensure_geometry()?;
         let geometry = self
             .geometry
             .as_ref()
@@ -319,13 +428,92 @@ impl CoreSession {
         Ok(out)
     }
 
+    // ------------------------------------------------------------------ animação
+
+    /// Aplica uma amostra de animação (scrub/reprodução) ao projeto **sem histórico**: pose, transform de nós,
+    /// sol e câmera de cena passam a valer o que o clip diz no quadro avaliado. É estado DERIVADO do clip + playhead
+    /// (como o Blender/Sequencer), não uma edição: não entra no undo e some quando o playhead sai do quadro.
+    ///
+    /// Recusa (devolve `false`) durante um gesto de preview aberto (arrasto): o gesto guarda o projeto de partida
+    /// e a amostra o sobrescreveria. Só mexe nas revisões quando algo mudou de fato.
+    pub fn apply_animation_sample(&mut self, sample: &anigo_core::animation::Sample) -> bool {
+        if self.preview.is_some() {
+            return false;
+        }
+        if sample.apply_to_project(&mut self.project) {
+            self.dynamic_revision += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Posição do playhead em segundos, persistida no projeto mas fora do histórico (mover o playhead não é uma edição).
+    pub fn set_playhead_seconds(&mut self, seconds: f32) {
+        if self.preview.is_none() && seconds.is_finite() && self.project.animation.playhead_seconds != seconds {
+            self.project.animation.playhead_seconds = seconds;
+        }
+    }
+
+    // ------------------------------------------------------------------ pose
+
+    /// Pose atual do personagem (somente leitura; edite com `Command::SetPose`).
+    pub fn pose(&self) -> &PoseState {
+        &self.project.character.pose
+    }
+
+    /// Rig de posing ajustado à malha deformada atual (proporções + morphs). Em cache: só recalcula quando a
+    /// geometria base ou algum peso de morph muda.
+    pub fn rig(&mut self) -> Result<PoseRig, String> {
+        self.ensure_geometry()?;
+        let weights = self.channel_weights();
+        let geometry_key = self.geometry.as_ref().map(|g| g.key).unwrap_or(0);
+        let mut key = geometry_key ^ 0xcbf2_9ce4_8422_2325;
+        for w in &weights {
+            key ^= u64::from(w.to_bits());
+            key = key.wrapping_mul(0x100_0000_01b3);
+        }
+        if let Some((cached, rig)) = &self.rig_cache {
+            if *cached == key {
+                return Ok(rig.clone());
+            }
+        }
+        let dim = self.project.character.gender_dimorphism;
+        let male = anigo_core::deformation::canonical_base_mesh(anigo_core::mesh::BaseGender::Male);
+        let female = anigo_core::deformation::canonical_base_mesh(anigo_core::mesh::BaseGender::Female);
+        let reference = anigo_core::deformation::interpolate_gender(&male, &female, dim).map_err(|e| e.to_string())?;
+        let deformed = self.deformed_mesh()?;
+        let rig = PoseRig::fit(&reference, &deformed, dim);
+        self.rig_cache = Some((key, rig.clone()));
+        Ok(rig)
+    }
+
+    /// Paleta de skinning (24 × 16 floats) da pose atual.
+    pub fn pose_palette(&mut self) -> Result<Vec<f32>, String> {
+        let rig = self.rig()?;
+        Ok(rig.palette_floats(self.pose()))
+    }
+
     /// Espelha o estado canônico na `Scene` que o renderer headless desenha.
     ///
     /// O viewport do webview consome o snapshot; esta sincronização existe para
     /// que o frame PNG do núcleo (exportação/headless) use exatamente a mesma
     /// geometria e o mesmo material do projeto.
     pub fn sync_scene(&mut self, scene: &mut Scene) -> Result<(), String> {
-        let mesh = self.deformed_mesh()?;
+        let mut mesh = self.deformed_mesh()?;
+        // Posing: dedos (CPU, antes do skinning) + paleta de skinning da pose. Em repouso a paleta é a
+        // identidade exata e a malha não muda um bit: o frame dourado e o contrato congelado ficam como estão.
+        let pose = self.project.character.pose.clone();
+        if !pose.hands.is_rest() {
+            finger_curl_mesh(&mut mesh, &pose.hands);
+        }
+        if pose.is_rest() {
+            scene.skin = anigo_core::snapshot::SkinPayload::canonical_base();
+        } else {
+            let rig = self.rig()?;
+            scene.skin.palette = rig.palette_floats(&pose);
+            scene.skin.palette_is_identity = anigo_core::skinning::flat_palette_is_identity(&scene.skin.palette);
+        }
         let material = self.project.character_material().map(|entry| entry.material.clone());
         let light = self.project.scene.lights.first().map(|slot| slot.light.clone());
         let camera = self.project.scene.camera.camera.clone();
@@ -787,5 +975,323 @@ mod tests {
         );
         let snapshot = restored.snapshot(true, None).expect("snapshot");
         assert!(snapshot.static_payload.is_some());
+    }
+
+    fn morph(id: &str, value: f32) -> Command {
+        Command::SetMorphValue {
+            target: anigo_core::ids::MorphId::for_slider(id),
+            value,
+        }
+    }
+
+    #[test]
+    fn a_20_step_drag_leaves_exactly_one_undo_step() {
+        let mut session = CoreSession::new();
+        let start = session.project().content_fingerprint();
+        session.begin_preview();
+        for step in 1..=20 {
+            session.preview(morph("head_width", 1.0 + step as f32 * 0.01)).expect("preview");
+        }
+        // ao vivo: o projeto já reflete o valor do arrasto, mas o histórico não cresceu
+        assert!((session.project().morph_value("head_width") - 1.2).abs() < 1e-5);
+        assert_eq!(session.history().undo_depth(), 0);
+        assert!(session.is_previewing());
+
+        session.commit_preview(morph("head_width", 1.2)).expect("commit");
+        assert!(!session.is_previewing());
+        assert_eq!(session.history().undo_depth(), 1, "um arrasto = um passo");
+        let log = session.history().log_json().expect("log");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&log).expect("json");
+        assert_eq!(entries.len(), 1, "o log de sessão também recebe só o comando final");
+
+        session.undo().expect("undo único");
+        assert_eq!(session.project().content_fingerprint(), start);
+        assert!(!session.history().can_undo());
+        session.redo().expect("redo");
+        assert!((session.project().morph_value("head_width") - 1.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dragging_back_to_the_start_value_adds_no_history() {
+        let mut session = CoreSession::new();
+        let start = session.project().content_fingerprint();
+        session.begin_preview();
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.preview(morph("head_width", 1.0 + 1e-8)).ok();
+        let result = session.commit_preview(morph("head_width", 1.0));
+        assert!(result.is_err(), "comando sem efeito não entra no histórico");
+        assert_eq!(session.history().undo_depth(), 0);
+        assert_eq!(session.project().content_fingerprint(), start);
+    }
+
+    #[test]
+    fn cancel_restores_and_apply_or_undo_close_an_open_gesture() {
+        let mut session = CoreSession::new();
+        let start = session.project().content_fingerprint();
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.cancel_preview();
+        assert_eq!(session.project().content_fingerprint(), start);
+
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.apply(morph("eye_scale_uniform", 1.2)).expect("apply fecha o gesto");
+        assert!(!session.is_previewing());
+        assert!((session.project().morph_value("head_width") - 1.0).abs() < 1e-6);
+        assert_eq!(session.history().undo_depth(), 1);
+
+        session.preview(morph("head_width", 1.3)).expect("preview");
+        session.undo().expect("undo fecha o gesto e desfaz o último passo");
+        assert!(!session.is_previewing());
+        assert_eq!(session.project().content_fingerprint(), start);
+    }
+
+    #[test]
+    fn invalid_preview_leaves_the_project_untouched() {
+        let mut session = CoreSession::new();
+        session.begin_preview();
+        let before = session.project().content_fingerprint();
+        assert!(session.preview(morph("head_width", 99.0)).is_err());
+        assert_eq!(session.project().content_fingerprint(), before);
+    }
+
+    #[test]
+    fn preview_of_proportions_rebuilds_geometry_and_cancel_restores_it() {
+        let mut session = CoreSession::new();
+        let base = session.deformed_mesh().expect("mesh");
+        let top = |m: &Mesh| m.vertices.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);
+        session
+            .preview(Command::SetProportions {
+                head_scale: None,
+                head_ratio: None,
+                shoulder_width: None,
+                leg_length: None,
+                arm_length: None,
+                neck_length: None,
+                torso_length: None,
+                height_overall: Some(1.3),
+            })
+            .expect("preview");
+        let taller = session.deformed_mesh().expect("mesh");
+        assert!(top(&taller) > top(&base) * 1.2);
+        session.cancel_preview();
+        let back = session.deformed_mesh().expect("mesh");
+        assert!((top(&back) - top(&base)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn jump_to_depth_walks_the_history_both_ways() {
+        let mut session = CoreSession::new();
+        session.set_history_limit(50);
+        for i in 0..5 {
+            session
+                .apply(Command::RenameProject { name: format!("Projeto {i}") })
+                .expect("apply");
+        }
+        assert_eq!(session.history().undo_depth(), 5);
+        assert_eq!(session.jump_to_depth(2).expect("jump"), 3);
+        assert_eq!(session.project().name, "Projeto 1");
+        assert_eq!(session.history().redo_depth(), 3);
+        assert_eq!(session.jump_to_depth(4).expect("jump"), 2);
+        assert_eq!(session.project().name, "Projeto 3");
+        // alvo além do fim é limitado ao topo; zero volta ao projeto inicial
+        assert_eq!(session.jump_to_depth(99).expect("jump"), 1);
+        assert_eq!(session.project().name, "Projeto 4");
+        session.jump_to_depth(0).expect("jump");
+        assert_eq!(session.project().name, "Untitled Project");
+    }
+
+    #[test]
+    fn scene_gesture_is_one_undo_step_through_preview_and_commit() {
+        use anigo_core::level::NodeTransformEntry;
+        use anigo_core::{NodeId, Transform};
+        let mut session = CoreSession::new();
+        let id = NodeId::canonical_character();
+        let entry = |x: f32| NodeTransformEntry::full(id.clone(), Transform::from_translation(glam::Vec3::new(x, 0.0, 0.0)));
+        // arrasto: vários passos ao vivo, nenhum no histórico
+        for x in [0.1, 0.5, 1.0, 2.5] {
+            session.preview(Command::SetNodesTransform { entries: vec![entry(x)] }).expect("preview");
+        }
+        assert_eq!(session.history().undo_depth(), 0);
+        session.commit_preview(Command::SetNodesTransform { entries: vec![entry(2.5)] }).expect("commit");
+        assert_eq!(session.history().undo_depth(), 1, "o gesto inteiro vira UM passo");
+        assert_eq!(session.project().scene.nodes[0].transform.translation.x, 2.5);
+        session.undo().expect("undo");
+        assert_eq!(session.project().scene.nodes[0].transform.translation.x, 0.0);
+    }
+
+    // ---------------------------------------------------------------- pose (Posing)
+
+    fn pose_cmd(bone: &str, deg: f32, axis: glam::Vec3) -> Command {
+        let q = glam::Quat::from_axis_angle(axis, deg.to_radians());
+        Command::SetPose {
+            bones: vec![anigo_core::PoseBoneEntry { bone: bone.into(), rotation: q.to_array() }],
+            root_translation: None,
+            hips_translation: None,
+            hands: None,
+            op: anigo_core::PoseOp::Edit,
+        }
+    }
+
+    #[test]
+    fn a_pose_changes_the_scene_palette_and_undo_restores_the_exact_identity() {
+        let mut session = CoreSession::new();
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(scene.skin.palette_is_identity);
+        let rest = scene.skin.palette.clone();
+        assert_eq!(rest, anigo_core::skinning::identity_palette_floats(24));
+
+        session.apply(pose_cmd("LeftElbow", -90.0, glam::Vec3::X)).expect("apply");
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(!scene.skin.palette_is_identity);
+        assert_ne!(scene.skin.palette, rest);
+        assert_eq!(scene.skin.palette.len(), 384);
+        assert!(scene.skin.palette.iter().all(|v| v.is_finite()));
+        // só o cotovelo esquerdo e a mão (descendente) saíram da identidade
+        let moved: Vec<usize> = scene
+            .skin
+            .palette
+            .chunks_exact(16)
+            .enumerate()
+            .filter(|(_, m)| !anigo_core::skinning::flat_palette_is_identity(m))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(moved, vec![anigo_core::pose::bone::L_ELBOW, anigo_core::pose::bone::L_WRIST]);
+
+        session.undo().expect("undo");
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(scene.skin.palette_is_identity);
+        assert_eq!(scene.skin.palette, rest, "desfazer volta à identidade bit a bit");
+    }
+
+    #[test]
+    fn a_pose_drag_is_one_undo_step_and_cancel_restores_rest() {
+        let mut session = CoreSession::new();
+        for deg in [10.0, 40.0, 75.0, 90.0] {
+            session.preview(pose_cmd("Head", deg, glam::Vec3::Y)).expect("preview");
+        }
+        assert_eq!(session.history().undo_depth(), 0);
+        assert!(!session.pose().is_rest());
+        session.cancel_preview();
+        assert!(session.pose().is_rest());
+        for deg in [10.0, 90.0] {
+            session.preview(pose_cmd("Head", deg, glam::Vec3::Y)).expect("preview");
+        }
+        session.commit_preview(pose_cmd("Head", 90.0, glam::Vec3::Y)).expect("commit");
+        assert_eq!(session.history().undo_depth(), 1);
+        assert_eq!(session.history().last_undo_description(), Some("Pose Head"));
+        session.undo().expect("undo");
+        assert!(session.pose().is_rest());
+    }
+
+    #[test]
+    fn the_rig_follows_proportions_morphs_and_is_cached() {
+        let mut session = CoreSession::new();
+        let a = session.rig().expect("rig");
+        let again = session.rig().expect("rig");
+        assert_eq!(a, again);
+        session
+            .apply(Command::SetProportions {
+                head_scale: None,
+                head_ratio: None,
+                shoulder_width: None,
+                leg_length: None,
+                arm_length: None,
+                neck_length: None,
+                torso_length: None,
+                height_overall: Some(1.2),
+            })
+            .expect("proportions");
+        let b = session.rig().expect("rig");
+        assert!(b.bind[anigo_core::pose::bone::HEAD].y > a.bind[anigo_core::pose::bone::HEAD].y + 0.2);
+        // um morph também desloca juntas (ajuste pelos vértices vizinhos)
+        let mut s2 = CoreSession::new();
+        let before = s2.rig().expect("rig");
+        s2.apply(morph("neck_length", 1.0)).ok();
+        let after = s2.rig().expect("rig");
+        assert!(before.bind.iter().zip(after.bind.iter()).all(|(x, y)| x.is_finite() && y.is_finite()));
+    }
+
+    #[test]
+    fn finger_curls_change_only_the_scene_mesh_and_rest_is_untouched() {
+        let mut session = CoreSession::new();
+        let mut rest_scene = Scene::new_empty();
+        session.sync_scene(&mut rest_scene).expect("sync");
+        let rest_mesh = rest_scene.nodes.iter().find_map(|n| n.mesh.clone()).expect("mesh");
+        let cmd = Command::SetPose {
+            bones: vec![],
+            root_translation: None,
+            hips_translation: None,
+            hands: Some(anigo_core::pose::HandsPose { left: [1.0; 5], right: [0.0; 5] }),
+            op: anigo_core::PoseOp::Hand,
+        };
+        session.apply(cmd).expect("hands");
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).expect("sync");
+        let mesh = scene.nodes.iter().find_map(|n| n.mesh.clone()).expect("mesh");
+        let changed = rest_mesh.vertices.iter().zip(&mesh.vertices).filter(|(a, b)| a.position != b.position).count();
+        assert!(changed > 100 && changed <= 175, "só os dedos da mão esquerda mudam: {changed}");
+        assert!(scene.skin.palette_is_identity, "mão não mexe na paleta");
+    }
+
+    // ---------------------------------------------------------------- animação
+
+    fn clip_with_elbow_keys() -> anigo_core::project::AnimationClip {
+        use anigo_core::animation::{Channel, ChannelTarget, Key, KeyValue};
+        let mut clip = anigo_core::project::AnimationClip::new(anigo_core::AnimationClipId::from_slug("walk"), "Walk");
+        clip.range = Some([0, 24]);
+        let rot = |deg: f32| KeyValue::Quat(glam::Quat::from_rotation_x(deg.to_radians()).to_array());
+        clip.channels = vec![Channel { target: ChannelTarget::bone("LeftElbow"), keys: vec![Key::new(0, rot(0.0)), Key::new(24, rot(-90.0))] }];
+        clip
+    }
+
+    #[test]
+    fn sampling_a_clip_poses_the_scene_without_touching_the_history_and_undo_resamples() {
+        use anigo_core::animation::AnimEdit;
+        let mut session = CoreSession::new();
+        let clip = clip_with_elbow_keys();
+        let id = clip.clip_id.clone();
+        session.apply(Command::EditAnimation { edit: AnimEdit::PutClip { clip } }).expect("put");
+        assert_eq!(session.history().undo_depth(), 1);
+        let rev = session.dynamic_revision();
+        let fps = session.project().animation.fps;
+        let sample = session.project().animation.clips[&id].evaluate(fps, 12.0);
+        assert!(session.apply_animation_sample(&sample));
+        assert!(session.dynamic_revision() > rev);
+        assert_eq!(session.history().undo_depth(), 1, "scrub não entra no histórico");
+        assert!(!session.pose().is_rest());
+        // a paleta do renderer acompanha a amostra
+        let mut scene = Scene::new_empty();
+        session.sync_scene(&mut scene).expect("sync");
+        assert!(!scene.skin.palette_is_identity);
+        // a mesma amostra de novo não bumpa a revisão
+        let rev = session.dynamic_revision();
+        assert!(!session.apply_animation_sample(&sample));
+        assert_eq!(session.dynamic_revision(), rev);
+        // amostras diferentes dão poses diferentes (scrub muda a pose)
+        let a = session.pose().clone();
+        let s2 = session.project().animation.clips[&id].evaluate(fps, 24.0);
+        session.apply_animation_sample(&s2);
+        assert_ne!(&a, session.pose());
+        // desfazer a criação do clip remove o clip; reamostrar o clip ativo some com os canais
+        session.undo().expect("undo");
+        assert!(session.project().animation.clips.is_empty());
+    }
+
+    #[test]
+    fn sampling_is_refused_while_a_preview_gesture_is_open() {
+        use anigo_core::animation::AnimEdit;
+        let mut session = CoreSession::new();
+        let clip = clip_with_elbow_keys();
+        let id = clip.clip_id.clone();
+        session.apply(Command::EditAnimation { edit: AnimEdit::PutClip { clip } }).expect("put");
+        session.begin_preview();
+        let sample = session.project().animation.clips[&id].evaluate(24.0, 24.0);
+        assert!(!session.apply_animation_sample(&sample));
+        assert!(session.pose().is_rest());
+        session.cancel_preview();
+        assert!(session.apply_animation_sample(&sample));
+        session.set_playhead_seconds(1.0);
+        assert_eq!(session.project().animation.playhead_seconds, 1.0);
+        assert_eq!(session.history().undo_depth(), 1);
     }
 }

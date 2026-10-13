@@ -139,7 +139,6 @@ export function parseGlbContainer(buffer: ArrayBuffer): GlbContainer {
 // Accessor decoding (quantized-aware, stride-aware)
 // ---------------------------------------------------------------------------
 
-// glTF 2.0 §3.6.2.2. 5124 (INT) e DOUBLE não são válidos em accessors.
 const COMPONENT_SIZES: Record<number, number> = {
   5120: 1, // BYTE (int8)
   5121: 1, // UNSIGNED_BYTE (u8)
@@ -176,13 +175,13 @@ function readComponent(
       const v = dv.getUint16(byteOffset, true);
       return normalized ? v / 65535.0 : v;
     }
-    case 5120: {
-      const v = dv.getInt8(byteOffset);
-      return normalized ? Math.max(v / 127.0, -1.0) : v;
-    }
     case 5122: {
       const v = dv.getInt16(byteOffset, true);
       return normalized ? Math.max(v / 32767.0, -1.0) : v;
+    }
+    case 5120: {
+      const v = dv.getInt8(byteOffset);
+      return normalized ? Math.max(v / 127.0, -1.0) : v;
     }
     case 5125:
       return dv.getUint32(byteOffset, true);
@@ -235,7 +234,7 @@ export function decodeAccessorFloat(
   return { data: out, count: accessor.count, numComponents };
 }
 
-/** Decodes an index accessor (5121/5123/5125) to Uint32Array. */
+/** Decodes an index accessor (UNSIGNED_BYTE 5121 / UNSIGNED_SHORT 5123 / UNSIGNED_INT 5125) to Uint32Array. */
 export function decodeAccessorIndices(
   json: GltfJson,
   bin: ArrayBuffer,

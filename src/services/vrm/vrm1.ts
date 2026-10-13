@@ -9,8 +9,10 @@
  *  - `VRMC_materials_mtoon`— parâmetros MToon por material (subEmission,
  *                            shadowColor, shadeShift, shadeToony, rim,
  *                            lightDirection, specular, smooth, sphere/matcap);
- *  - `VRMC_springBone`     — rig secundário: grupos de juntas (molas) e
- *                            colisores esféricos/capsulares;
+ *  - `VRMC_springBone`     — rig secundário no schema oficial 1.0 (`springs[].joints[]`,
+ *                            `colliders[].shape`, `colliderGroups`, `center`), mais
+ *                            `VRMC_springBone_extended_collider` (inside/plane); o formato
+ *                            legado do ANIGO (`secondaryRig`) ainda é lido e convertido;
  *  - `VRMC_node_constraint`— limites de rotação/traução/escala por nó.
  *
  * O parse é *tolerante a omissões opcionais* (cada campo segue o default da
@@ -67,46 +69,64 @@ export interface Vrm1Expression {
   custom: Record<string, Vrm1ExpressionBinding>;
 }
 
+/** Versão da spec `VRMC_springBone` / `VRMC_springBone_extended_collider` emitida pelo exportador. */
+export const SPRING_BONE_SPEC_VERSION = "1.0";
+
+/**
+ * Junta de uma cadeia (`springs[i].joints[j]`, schema oficial `VRMC_springBone-1.0`).
+ * Defaults da spec: hitRadius=0, stiffness=1, gravityPower=0, gravityDir=[0,-1,0], dragForce=0.5.
+ * A última junta da cadeia só serve de "cauda" (parâmetros não usados).
+ */
 export interface Vrm1SpringJoint {
   node: number;
-  distance: number;
-  hitRadius?: number;
-  gravityPower?: number;
-  gravityDir?: [number, number, number];
-  springStiffness?: number;
-  springDamping?: number;
+  hitRadius: number;
+  stiffness: number;
+  gravityPower: number;
+  gravityDir: [number, number, number];
+  dragForce: number;
 }
 
-export interface Vrm1SpringGroup {
-  name: string;
-  center: Vrm1SpringJoint;
+export interface Vrm1Spring {
+  name?: string;
   joints: Vrm1SpringJoint[];
+  /** Índices em `VRMC_springBone.colliderGroups`. */
   colliderGroups: number[];
+  /** Nó raiz do "center space" (undefined = espaço do mundo). */
+  center?: number;
 }
 
-export interface Vrm1SphereCollider {
-  group: number;
+/**
+ * Forma de um collider. `sphere`/`capsule` com `inside=false` são a spec base;
+ * `inside=true` e `plane` vêm de `VRMC_springBone_extended_collider`.
+ */
+export type Vrm1ColliderShape =
+  | { sphere: { offset: [number, number, number]; radius: number; inside: boolean } }
+  | { capsule: { offset: [number, number, number]; radius: number; tail: [number, number, number]; inside: boolean } }
+  | { plane: { offset: [number, number, number]; normal: [number, number, number] } };
+
+export interface Vrm1Collider {
   node: number;
-  radius: number;
-  offset?: [number, number, number];
+  shape: Vrm1ColliderShape;
 }
 
-export interface Vrm1CapsuleCollider {
-  group: number;
-  node: number;
-  from: [number, number, number];
-  to: [number, number, number];
-  radius: number;
-}
-
-export interface Vrm1Colliders {
-  spheres: Vrm1SphereCollider[];
-  capsules: Vrm1CapsuleCollider[];
+export interface Vrm1ColliderGroup {
+  name?: string;
+  /** Índices em `VRMC_springBone.colliders`. */
+  colliders: number[];
 }
 
 export interface Vrm1SpringBone {
-  groups: Vrm1SpringGroup[];
-  colliders: Vrm1Colliders[];
+  specVersion: string;
+  colliders: Vrm1Collider[];
+  colliderGroups: Vrm1ColliderGroup[];
+  springs: Vrm1Spring[];
+}
+
+/** `true` quando a forma precisa de `VRMC_springBone_extended_collider`. */
+export function isExtendedColliderShape(shape: Vrm1ColliderShape): boolean {
+  if ("plane" in shape) return true;
+  if ("sphere" in shape) return shape.sphere.inside;
+  return shape.capsule.inside;
 }
 
 /** MToon (VRMC_materials_mtoon) — parâmetros por material. */
@@ -237,8 +257,8 @@ function asNode(value: unknown, where: string): number | null {
 
 /** `true` quando o documento declara e exige `VRMC_vrm` (um .vrm de fato). */
 export function isVrmDocument(gltf: Gltf): boolean {
-  const required = gltf.asset?.extensionsRequired ?? [];
-  const used = gltf.asset?.extensionsUsed ?? [];
+  const required = gltf.extensionsRequired ?? gltf.asset?.extensionsRequired ?? [];
+  const used = gltf.extensionsUsed ?? gltf.asset?.extensionsUsed ?? [];
   return required.includes("VRMC_vrm") || used.includes("VRMC_vrm");
 }
 
@@ -361,93 +381,343 @@ function parseMToon(raw: unknown, where: string): Vrm1MToon {
   };
 }
 
-function parseSpringJoint(raw: unknown, where: string): Vrm1SpringJoint {
-  if (!isRecord(raw)) fail("BAD_SPRINGBONE", `${where}: joint inválido`);
-  const node = asNode(raw["node"], `${where}.node`);
-  if (node === null) fail("BAD_SPRINGBONE", `${where}.node ausente`);
-  const distance = asNumber(raw["distance"], 0, `${where}.distance`);
-  if (distance < 0) fail("BAD_SPRINGBONE", `${where}.distance deve ser >= 0`);
-  return {
-    node,
-    distance,
-    hitRadius: asNumber(raw["hitRadius"], 0.05, `${where}.hitRadius`),
-    gravityPower: asNumber(raw["gravityPower"], 0, `${where}.gravityPower`),
-    gravityDir: asVec(raw["gravityDir"], 3, [0, -1, 0], `${where}.gravityDir`),
-    springStiffness: asNumber(raw["springStiffness"], 0.5, `${where}.springStiffness`),
-    springDamping: asNumber(raw["springDamping"], 0.5, `${where}.springDamping`),
-  };
+// ---------------------------------------------------------------------------
+// VRMC_springBone (schema oficial 1.0 + leitura tolerante do formato legado)
+// ---------------------------------------------------------------------------
+
+function sbFail(message: string): never {
+  return fail("BAD_SPRINGBONE", message);
 }
 
-function parseSpringBone(raw: unknown, nodeCount: number, warnings: string[]): Vrm1SpringBone {
-  if (!isRecord(raw)) fail("BAD_SPRINGBONE", "VRMC_springBone inválido");
-  const rig = raw["secondaryRig"];
-  if (!isRecord(rig)) fail("BAD_SPRINGBONE", "VRMC_springBone.secondaryRig ausente");
-  const checkNode = (node: number, where: string): void => {
-    if (node < 0 || node >= nodeCount) {
-      warnings.push(`springBone ${where}.node=${node} fora da faixa de nodes — mola será ignorada em runtime`);
+function sbNumber(value: unknown, fallback: number, where: string): number {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value)) sbFail(`${where}: número finito esperado`);
+  return value;
+}
+
+function sbVec3(value: unknown, fallback: [number, number, number], where: string): [number, number, number] {
+  if (value === undefined || value === null) return [...fallback];
+  if (!Array.isArray(value) || value.length !== 3) sbFail(`${where}: vetor de 3 números esperado`);
+  return [sbNumber(value[0], 0, where), sbNumber(value[1], 0, where), sbNumber(value[2], 0, where)];
+}
+
+function sbNode(value: unknown, where: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    sbFail(`${where}: índice de nó (inteiro >= 0) obrigatório`);
+  }
+  return value;
+}
+
+function sbIndexList(value: unknown, where: string): number[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) sbFail(`${where}: lista de índices esperada`);
+  return value.map((entry) => {
+    if (typeof entry !== "number" || !Number.isInteger(entry) || entry < 0) {
+      sbFail(`${where}: índice inteiro >= 0 esperado`);
     }
-  };
-  const groupsRaw = Array.isArray(rig["groups"]) ? (rig["groups"] as unknown[]) : [];
-  // Spec: `colliders` é um ARRAY de objetos {spheres?, capsules?}. Aceitamos
-  // também o formato objeto único (algumas ferramentas antigas).
-  const collidersValue = rig["colliders"];
-  const collidersRaw = Array.isArray(collidersValue)
-    ? (collidersValue as unknown[])
-    : isRecord(collidersValue)
-      ? [collidersValue]
-      : [];
-  const groups: Vrm1SpringGroup[] = groupsRaw.flatMap((groupRaw, i) => {
-    if (!isRecord(groupRaw)) fail("BAD_SPRINGBONE", `groups[${i}] inválido`);
-    const jointsRaw = Array.isArray(groupRaw["joints"]) ? (groupRaw["joints"] as unknown[]) : [];
-    const center = parseSpringJoint(groupRaw["center"], `groups[${i}].center`);
-    const joints = jointsRaw.map((jointRaw, j) => parseSpringJoint(jointRaw, `groups[${i}].joints[${j}]`));
-    checkNode(center.node, `groups[${i}].center`);
-    joints.forEach((joint, j) => checkNode(joint.node, `groups[${i}].joints[${j}]`));
-    return [{
-      name: typeof groupRaw["name"] === "string" ? (groupRaw["name"] as string) : `group_${i}`,
-      center,
-      joints,
-      colliderGroups: Array.isArray(groupRaw["colliderGroups"])
-        ? (groupRaw["colliderGroups"] as unknown[]).filter(
-            (value): value is number => typeof value === "number" && Number.isInteger(value),
-          )
-        : [],
-    }];
+    return entry;
   });
-  const colliders: Vrm1Colliders = {
-    spheres: (Array.isArray(collidersRaw) ? (collidersRaw as unknown[]) : []).flatMap((colliderRaw, i) => {
-      if (!isRecord(colliderRaw)) fail("BAD_SPRINGBONE", `colliders[${i}] inválido`);
-      const spheres = Array.isArray(colliderRaw["spheres"]) ? (colliderRaw["spheres"] as unknown[]) : [];
-      return spheres.map((sphereRaw, j) => {
-        if (!isRecord(sphereRaw)) fail("BAD_SPRINGBONE", `colliders[${i}].spheres[${j}] inválido`);
-        const node = asNode(sphereRaw["node"], `colliders[${i}].spheres[${j}].node`) ?? 0;
-        checkNode(node, `colliders[${i}].spheres[${j}]`);
-        return {
-          group: asNumber(sphereRaw["group"], 0, `colliders[${i}].spheres[${j}].group`),
-          node,
-          radius: asNumber(sphereRaw["radius"], 0, `colliders[${i}].spheres[${j}].radius`),
-          offset: asVec(sphereRaw["offset"], 3, [0, 0, 0], `colliders[${i}].spheres[${j}].offset`),
-        } as Vrm1SphereCollider;
-      });
-    }),
-    capsules: (Array.isArray(collidersRaw) ? (collidersRaw as unknown[]) : []).flatMap((colliderRaw, i) => {
-      if (!isRecord(colliderRaw)) fail("BAD_SPRINGBONE", `colliders[${i}] inválido`);
-      const capsules = Array.isArray(colliderRaw["capsules"]) ? (colliderRaw["capsules"] as unknown[]) : [];
-      return capsules.map((capsuleRaw, j) => {
-        if (!isRecord(capsuleRaw)) fail("BAD_SPRINGBONE", `colliders[${i}].capsules[${j}] inválido`);
-        const node = asNode(capsuleRaw["node"], `colliders[${i}].capsules[${j}].node`) ?? 0;
-        checkNode(node, `colliders[${i}].capsules[${j}]`);
-        return {
-          group: asNumber(capsuleRaw["group"], 0, `colliders[${i}].capsules[${j}].group`),
-          node,
-          from: asVec(capsuleRaw["from"], 3, [0, 0, 0], `colliders[${i}].capsules[${j}].from`),
-          to: asVec(capsuleRaw["to"], 3, [0, 0, 0], `colliders[${i}].capsules[${j}].to`),
-          radius: asNumber(capsuleRaw["radius"], 0, `colliders[${i}].capsules[${j}].radius`),
-        } as Vrm1CapsuleCollider;
-      });
-    }),
+}
+
+function sbName(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function nodeParents(nodes: ReadonlyArray<{ children?: number[] }>): Array<number | null> {
+  const parents: Array<number | null> = nodes.map(() => null);
+  nodes.forEach((node, i) => {
+    for (const child of node.children ?? []) {
+      if (Number.isInteger(child) && child >= 0 && child < parents.length) parents[child] = i;
+    }
+  });
+  return parents;
+}
+
+function isAncestor(parents: Array<number | null>, ancestor: number, node: number): boolean {
+  let cursor = parents[node] ?? null;
+  let guard = 0;
+  while (cursor !== null) {
+    if (cursor === ancestor) return true;
+    if (++guard > parents.length) return false;
+    cursor = parents[cursor] ?? null;
+  }
+  return false;
+}
+
+function parseOfficialShape(shape: unknown, where: string): Vrm1ColliderShape {
+  if (!isRecord(shape)) sbFail(`${where}: objeto esperado`);
+  const nonNegative = (v: number, what: string): number => {
+    if (v < 0) sbFail(`${where}.${what} deve ser >= 0`);
+    return v;
   };
-  return { groups, colliders };
+  const sphere = shape["sphere"];
+  if (isRecord(sphere)) {
+    return {
+      sphere: {
+        offset: sbVec3(sphere["offset"], [0, 0, 0], `${where}.sphere.offset`),
+        radius: nonNegative(sbNumber(sphere["radius"], 0, `${where}.sphere.radius`), "sphere.radius"),
+        inside: sphere["inside"] === true,
+      },
+    };
+  }
+  const capsule = shape["capsule"];
+  if (isRecord(capsule)) {
+    return {
+      capsule: {
+        offset: sbVec3(capsule["offset"], [0, 0, 0], `${where}.capsule.offset`),
+        radius: nonNegative(sbNumber(capsule["radius"], 0, `${where}.capsule.radius`), "capsule.radius"),
+        tail: sbVec3(capsule["tail"], [0, 0, 0], `${where}.capsule.tail`),
+        inside: capsule["inside"] === true,
+      },
+    };
+  }
+  const plane = shape["plane"];
+  if (isRecord(plane)) {
+    const normal = sbVec3(plane["normal"], [0, 0, 1], `${where}.plane.normal`);
+    const len = Math.hypot(normal[0], normal[1], normal[2]);
+    if (len < 1e-6) sbFail(`${where}.plane.normal não pode ser o vetor nulo`);
+    return {
+      plane: {
+        offset: sbVec3(plane["offset"], [0, 0, 0], `${where}.plane.offset`),
+        normal: [normal[0] / len, normal[1] / len, normal[2] / len],
+      },
+    };
+  }
+  return sbFail(`${where}: shape deve ter exatamente um de sphere/capsule/plane`);
+}
+
+function parseOfficialJoint(raw: unknown, where: string): Vrm1SpringJoint {
+  if (!isRecord(raw)) sbFail(`${where}: objeto esperado`);
+  const joint: Vrm1SpringJoint = {
+    node: sbNode(raw["node"], `${where}.node`),
+    hitRadius: sbNumber(raw["hitRadius"], 0, `${where}.hitRadius`),
+    stiffness: sbNumber(raw["stiffness"], 1, `${where}.stiffness`),
+    gravityPower: sbNumber(raw["gravityPower"], 0, `${where}.gravityPower`),
+    gravityDir: sbVec3(raw["gravityDir"], [0, -1, 0], `${where}.gravityDir`),
+    dragForce: sbNumber(raw["dragForce"], 0.5, `${where}.dragForce`),
+  };
+  if (joint.hitRadius < 0) sbFail(`${where}.hitRadius deve ser >= 0`);
+  if (joint.stiffness < 0) sbFail(`${where}.stiffness deve ser >= 0`);
+  if (joint.dragForce < 0 || joint.dragForce > 1) sbFail(`${where}.dragForce deve estar em [0, 1]`);
+  return joint;
+}
+
+function parseOfficialSpringBone(
+  raw: Record<string, unknown>,
+  nodes: ReadonlyArray<{ children?: number[] }>,
+  warnings: string[],
+): Vrm1SpringBone {
+  if (typeof raw["specVersion"] !== "string") {
+    warnings.push('VRMC_springBone.specVersion ausente (obrigatório na spec) — assumindo "1.0"');
+  } else if (raw["specVersion"] !== SPRING_BONE_SPEC_VERSION) {
+    warnings.push(`VRMC_springBone.specVersion="${raw["specVersion"]}" não é "1.0" — lendo como 1.0`);
+  }
+  const nodeCount = nodes.length;
+  const parents = nodeParents(nodes);
+  const checkNode = (node: number, where: string): void => {
+    if (node >= nodeCount) warnings.push(`springBone ${where}.node=${node} fora da faixa de nodes — será ignorado em runtime`);
+  };
+
+  const colliders: Vrm1Collider[] = [];
+  if (Array.isArray(raw["colliders"])) {
+    raw["colliders"].forEach((entry: unknown, i: number) => {
+      const w = `colliders[${i}]`;
+      if (!isRecord(entry)) sbFail(`${w}: objeto esperado`);
+      const node = sbNode(entry["node"], `${w}.node`);
+      checkNode(node, w);
+      const ext = isRecord(entry["extensions"]) ? entry["extensions"]["VRMC_springBone_extended_collider"] : undefined;
+      const extShape = isRecord(ext) && isRecord(ext["shape"]) ? ext["shape"] : undefined;
+      const baseShape = isRecord(entry["shape"]) ? entry["shape"] : undefined;
+      if (extShape) {
+        colliders.push({ node, shape: parseOfficialShape(extShape, `${w}.extensions.VRMC_springBone_extended_collider.shape`) });
+      } else if (baseShape) {
+        colliders.push({ node, shape: parseOfficialShape(baseShape, `${w}.shape`) });
+      } else {
+        sbFail(`${w}.shape obrigatório`);
+      }
+    });
+  }
+
+  const colliderGroups: Vrm1ColliderGroup[] = [];
+  if (Array.isArray(raw["colliderGroups"])) {
+    raw["colliderGroups"].forEach((entry: unknown, i: number) => {
+      const w = `colliderGroups[${i}]`;
+      if (!isRecord(entry)) sbFail(`${w}: objeto esperado`);
+      const all = sbIndexList(entry["colliders"], `${w}.colliders`);
+      const kept = all.filter((c) => c < colliders.length);
+      if (kept.length !== all.length) warnings.push(`springBone ${w}.colliders referencia collider inexistente — referência descartada`);
+      colliderGroups.push({ name: sbName(entry["name"]), colliders: kept });
+    });
+  }
+
+  const springs: Vrm1Spring[] = [];
+  const seen = new Map<number, number>();
+  if (Array.isArray(raw["springs"])) {
+    raw["springs"].forEach((entry: unknown, i: number) => {
+      const w = `springs[${i}]`;
+      if (!isRecord(entry)) sbFail(`${w}: objeto esperado`);
+      if (!Array.isArray(entry["joints"])) sbFail(`${w}.joints obrigatório`);
+      const joints = entry["joints"].map((jointRaw: unknown, j: number) => {
+        const jw = `${w}.joints[${j}]`;
+        const joint = parseOfficialJoint(jointRaw, jw);
+        checkNode(joint.node, jw);
+        const prev = seen.get(joint.node);
+        if (prev !== undefined) {
+          warnings.push(`springBone ${jw}.node=${joint.node} já pertence à cadeia springs[${prev}] (cadeias duplicadas são proibidas pela spec)`);
+        }
+        seen.set(joint.node, i);
+        return joint;
+      });
+      if (joints.length < 2) warnings.push(`springBone ${w}.joints tem ${joints.length} junta(s); a spec exige >= 2 — cadeia sem efeito`);
+      for (let j = 0; j + 1 < joints.length; j++) {
+        const a = joints[j].node;
+        const b = joints[j + 1].node;
+        if (a < nodeCount && b < nodeCount && !isAncestor(parents, a, b)) {
+          warnings.push(`springBone ${w}: nó ${b} não é descendente do nó ${a} — a spec exige joints[n] ancestral de joints[n+1]`);
+        }
+      }
+      const groupsAll = sbIndexList(entry["colliderGroups"], `${w}.colliderGroups`);
+      const groups = groupsAll.filter((g) => g < colliderGroups.length);
+      if (groups.length !== groupsAll.length) warnings.push(`springBone ${w}.colliderGroups referencia grupo inexistente — referência descartada`);
+      let center: number | undefined;
+      if (entry["center"] !== undefined && entry["center"] !== null) {
+        center = sbNode(entry["center"], `${w}.center`);
+        checkNode(center, `${w}.center`);
+      }
+      springs.push({ name: sbName(entry["name"]), joints, colliderGroups: groups, ...(center !== undefined ? { center } : {}) });
+    });
+  }
+  return { specVersion: SPRING_BONE_SPEC_VERSION, colliders, colliderGroups, springs };
+}
+
+/**
+ * Formato legado do ANIGO (`secondaryRig.groups[]/colliders[]{spheres,capsules}`), anterior ao
+ * schema oficial: convertido para o modelo novo para não perder arquivos já gerados.
+ */
+function parseLegacySpringBone(rig: Record<string, unknown>, nodeCount: number, warnings: string[]): Vrm1SpringBone {
+  warnings.push(
+    "VRMC_springBone em formato legado (secondaryRig) convertido para o schema oficial 1.0; reexporte para gravar o formato novo",
+  );
+  const checkNode = (node: number, where: string): void => {
+    if (node >= nodeCount) warnings.push(`springBone ${where}.node=${node} fora da faixa — será ignorado em runtime`);
+  };
+  const legacyJoint = (raw: unknown, where: string): Vrm1SpringJoint => {
+    if (!isRecord(raw)) return sbFail(`${where}: joint inválido`);
+    const distance = sbNumber(raw["distance"], 0, `${where}.distance`);
+    if (distance < 0) sbFail(`${where}.distance deve ser >= 0`);
+    return {
+      node: sbNode(raw["node"], `${where}.node`),
+      hitRadius: Math.max(0, sbNumber(raw["hitRadius"], 0.05, `${where}.hitRadius`)),
+      gravityPower: sbNumber(raw["gravityPower"], 0, `${where}.gravityPower`),
+      gravityDir: sbVec3(raw["gravityDir"], [0, -1, 0], `${where}.gravityDir`),
+      stiffness: Math.max(0, sbNumber(raw["springStiffness"], 0.5, `${where}.springStiffness`)),
+      dragForce: Math.min(1, Math.max(0, sbNumber(raw["springDamping"], 0.5, `${where}.springDamping`))),
+    };
+  };
+
+  const collidersValue = rig["colliders"];
+  const colliderObjs: unknown[] = Array.isArray(collidersValue) ? collidersValue : isRecord(collidersValue) ? [collidersValue] : [];
+  const colliders: Vrm1Collider[] = [];
+  const colliderGroupIds: number[] = [];
+  colliderObjs.forEach((entry, i) => {
+    if (!isRecord(entry)) sbFail(`colliders[${i}] inválido`);
+    if (Array.isArray(entry["spheres"])) {
+      entry["spheres"].forEach((s: unknown, j: number) => {
+        const w = `colliders[${i}].spheres[${j}]`;
+        if (!isRecord(s)) sbFail(`${w} inválido`);
+        const node = typeof s["node"] === "number" && Number.isInteger(s["node"]) && s["node"] >= 0 ? s["node"] : 0;
+        checkNode(node, w);
+        colliders.push({
+          node,
+          shape: {
+            sphere: {
+              offset: sbVec3(s["offset"], [0, 0, 0], `${w}.offset`),
+              radius: Math.max(0, sbNumber(s["radius"], 0, `${w}.radius`)),
+              inside: false,
+            },
+          },
+        });
+        colliderGroupIds.push(typeof s["group"] === "number" && Number.isInteger(s["group"]) && s["group"] >= 0 ? s["group"] : 0);
+      });
+    }
+    if (Array.isArray(entry["capsules"])) {
+      entry["capsules"].forEach((c: unknown, j: number) => {
+        const w = `colliders[${i}].capsules[${j}]`;
+        if (!isRecord(c)) sbFail(`${w} inválido`);
+        const node = typeof c["node"] === "number" && Number.isInteger(c["node"]) && c["node"] >= 0 ? c["node"] : 0;
+        checkNode(node, w);
+        colliders.push({
+          node,
+          shape: {
+            capsule: {
+              offset: sbVec3(c["from"], [0, 0, 0], `${w}.from`),
+              tail: sbVec3(c["to"], [0, 0, 0], `${w}.to`),
+              radius: Math.max(0, sbNumber(c["radius"], 0, `${w}.radius`)),
+              inside: false,
+            },
+          },
+        });
+        colliderGroupIds.push(typeof c["group"] === "number" && Number.isInteger(c["group"]) && c["group"] >= 0 ? c["group"] : 0);
+      });
+    }
+  });
+
+  const springs: Vrm1Spring[] = [];
+  const springGroupIds: number[][] = [];
+  const referenced: number[] = [...colliderGroupIds];
+  const groupsRaw = Array.isArray(rig["groups"]) ? (rig["groups"] as unknown[]) : [];
+  groupsRaw.forEach((entry, i) => {
+    if (!isRecord(entry)) sbFail(`groups[${i}] inválido`);
+    let center: number | undefined;
+    if (entry["center"] !== undefined && entry["center"] !== null) {
+      center = legacyJoint(entry["center"], `groups[${i}].center`).node;
+      checkNode(center, `groups[${i}].center`);
+    }
+    const joints = (Array.isArray(entry["joints"]) ? (entry["joints"] as unknown[]) : []).map((raw, j) => {
+      const joint = legacyJoint(raw, `groups[${i}].joints[${j}]`);
+      checkNode(joint.node, `groups[${i}].joints[${j}]`);
+      return joint;
+    });
+    const ids = (Array.isArray(entry["colliderGroups"]) ? (entry["colliderGroups"] as unknown[]) : []).filter(
+      (v): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0,
+    );
+    referenced.push(...ids);
+    springGroupIds.push(ids);
+    springs.push({
+      name: sbName(entry["name"]) ?? `group_${i}`,
+      joints,
+      colliderGroups: [],
+      ...(center !== undefined ? { center } : {}),
+    });
+  });
+
+  const sortedIds = [...new Set(referenced)].sort((a, b) => a - b);
+  const colliderGroups: Vrm1ColliderGroup[] = sortedIds.map((id) => ({
+    name: `group_${id}`,
+    colliders: colliderGroupIds.flatMap((g, idx) => (g === id ? [idx] : [])),
+  }));
+  springs.forEach((spring, i) => {
+    spring.colliderGroups = springGroupIds[i].flatMap((id) => {
+      const pos = sortedIds.indexOf(id);
+      return pos >= 0 ? [pos] : [];
+    });
+  });
+  return { specVersion: SPRING_BONE_SPEC_VERSION, colliders, colliderGroups, springs };
+}
+
+/** Lê um bloco `VRMC_springBone` (oficial ou legado). */
+export function parseSpringBone(
+  raw: unknown,
+  nodes: ReadonlyArray<{ children?: number[] }>,
+  warnings: string[],
+): Vrm1SpringBone {
+  if (!isRecord(raw)) sbFail("VRMC_springBone inválido (objeto esperado)");
+  if ("secondaryRig" in raw) {
+    const rig = raw["secondaryRig"];
+    if (!isRecord(rig)) sbFail("VRMC_springBone.secondaryRig inválido");
+    return parseLegacySpringBone(rig, nodes.length, warnings);
+  }
+  return parseOfficialSpringBone(raw, nodes, warnings);
 }
 
 function parseNodeConstraint(raw: unknown, nodeIndex: number): Vrm1NodeConstraint {
@@ -496,7 +766,7 @@ export function parseVrm1(model: ParsedGltfModel): ParsedVrm1 {
   const humanoid = parseHumanoid(vrmRaw["humanoid"]);
   const expression = parseExpression(vrmRaw["expression"]);
   const springBone = vrmRaw["secondary"] !== undefined || gltf.extensions?.["VRMC_springBone"] !== undefined
-    ? parseSpringBone(vrmRaw["secondary"] ?? gltf.extensions?.["VRMC_springBone"], (gltf.nodes ?? []).length, warnings)
+    ? parseSpringBone(vrmRaw["secondary"] ?? gltf.extensions?.["VRMC_springBone"], gltf.nodes ?? [], warnings)
     : null;
 
   const materials = new Map<number, Vrm1MToon>();

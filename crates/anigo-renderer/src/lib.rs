@@ -1,10 +1,13 @@
 pub mod culling;
 pub mod device_recovery;
 pub mod diagnostics;
+pub mod face_sdf_map;
 pub mod headless;
 pub mod mesh_validation;
+pub mod outline_normals;
 pub mod render_contract;
 pub mod render_graph;
+pub mod render_targets;
 pub mod uniforms;
 
 pub use device_recovery::{
@@ -13,6 +16,7 @@ pub use device_recovery::{
 };
 pub use culling::{cull_volumes, CullReport, SceneVolume};
 pub use headless::{HeadlessRenderer, RenderMetrics};
+pub use render_targets::{RenderTarget, RenderTargetCache};
 pub use diagnostics::{
     entries as diagnostics_entries, report as report_diagnostic, summary as diagnostics_summary,
     RenderDiagnostic, Severity as DiagnosticSeverity,

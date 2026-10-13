@@ -31,10 +31,9 @@ export const GLB_CHUNK_JSON = 0x4e4f534a; // "JSON"
 export const GLB_CHUNK_BIN = 0x004e4942; // "BIN\0"
 
 /**
- * Component types de accessors da spec glTF 2.0 (3.6.2.2) — GL constants:
+ * Component types da spec glTF 2.0 (3.6.2.2) — constantes GL:
  * 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 SHORT, 5123 UNSIGNED_SHORT,
- * 5125 UNSIGNED_INT, 5126 FLOAT. (5124 INT e DOUBLE NÃO são válidos em
- * accessors e são rejeitados com `BAD_ACCESSOR_COMPONENT`.)
+ * 5125 UNSIGNED_INT, 5126 FLOAT. `normalized` é flag do accessor; glTF não tem 64 bits.
  */
 export const GLTF_COMPONENT_TYPES = {
   I8: 5120,
@@ -73,28 +72,15 @@ export function accessorComponentCount(type: string): number {
   }
 }
 
-/** Bytes por componente (spec 3.6.2.2); -1 = componentType inválido. */
-export function componentByteSize(componentType: number): number {
-  switch (componentType) {
-    case GLTF_COMPONENT_TYPES.I8:
-    case GLTF_COMPONENT_TYPES.U8:
-      return 1;
-    case GLTF_COMPONENT_TYPES.I16:
-    case GLTF_COMPONENT_TYPES.U16:
-      return 2;
-    case GLTF_COMPONENT_TYPES.U32:
-    case GLTF_COMPONENT_TYPES.F32:
-      return 4;
-    default:
-      return -1;
-  }
-}
-
 export function accessorByteSize(type: string, componentType: number): number {
   const comps = accessorComponentCount(type);
   if (comps < 0) return -1;
-  const byte = componentByteSize(componentType);
-  if (byte < 0) return -1;
+  const byte =
+    componentType === GLTF_COMPONENT_TYPES.F32 || componentType === GLTF_COMPONENT_TYPES.U32
+      ? 4
+      : componentType === GLTF_COMPONENT_TYPES.U16 || componentType === GLTF_COMPONENT_TYPES.I16
+        ? 2
+        : 1;
   return comps * byte;
 }
 
@@ -281,6 +267,9 @@ export interface Gltf {
   lights?: unknown[];
   extensions?: Record<string, unknown>;
   extras?: unknown;
+  /** Posição correta pela spec glTF 2.0 (raiz). `asset.*` é lido só por compatibilidade com arquivos antigos do ANIGO. */
+  extensionsUsed?: string[];
+  extensionsRequired?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -432,13 +421,13 @@ export function parseGltfDocument(gltf: Gltf, source: ExternalBufferSource | nul
   const major = Number(asset.version.split(".")[0]);
   if (major !== 2) fail("UNSUPPORTED_VERSION", `asset.version ${asset.version} (esperado major 2)`);
 
-  const required = asset.extensionsRequired ?? [];
+  const required = gltf.extensionsRequired ?? asset.extensionsRequired ?? [];
   for (const ext of required) {
     if (UNSUPPORTED_EXTENSIONS.has(ext)) {
       fail("BAD_ASSET", `extensão obrigatória não suportada pelo ANIGO: ${ext}`);
     }
   }
-  const used = asset.extensionsUsed ?? [];
+  const used = gltf.extensionsUsed ?? asset.extensionsUsed ?? [];
   for (const ext of used) {
     if (UNSUPPORTED_EXTENSIONS.has(ext)) {
       warnings.push(`extensão usada não suportada (mantida crua): ${ext}`);
@@ -468,7 +457,14 @@ export function parseGltfDocument(gltf: Gltf, source: ExternalBufferSource | nul
     if (accessorComponentCount(accessor.type) < 0) {
       fail("BAD_ACCESSOR_TYPE", `accessors[${i}].type='${accessor.type}' inválido`);
     }
-    if (componentByteSize(accessor.componentType) < 0) {
+    if (
+      accessor.componentType !== GLTF_COMPONENT_TYPES.I8 &&
+      accessor.componentType !== GLTF_COMPONENT_TYPES.U8 &&
+      accessor.componentType !== GLTF_COMPONENT_TYPES.I16 &&
+      accessor.componentType !== GLTF_COMPONENT_TYPES.U16 &&
+      accessor.componentType !== GLTF_COMPONENT_TYPES.U32 &&
+      accessor.componentType !== GLTF_COMPONENT_TYPES.F32
+    ) {
       fail("BAD_ACCESSOR_COMPONENT", `accessors[${i}].componentType=${accessor.componentType} inválido`);
     }
     if (!Number.isInteger(accessor.count) || accessor.count < 0) {
@@ -616,18 +612,18 @@ function decodeScalar(
 ): number {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   switch (componentType) {
+    case GLTF_COMPONENT_TYPES.U8: return normalized ? dv.getUint8(byteOffset) / 255 : dv.getUint8(byteOffset);
     case GLTF_COMPONENT_TYPES.I8: {
       const v = dv.getInt8(byteOffset);
       return normalized ? Math.max(v / 127, -1) : v;
     }
-    case GLTF_COMPONENT_TYPES.U8: return normalized ? dv.getUint8(byteOffset) / 255 : dv.getUint8(byteOffset);
+    case GLTF_COMPONENT_TYPES.U16:
+      // `normalized` divide por 65535.
+      return normalized ? dv.getUint16(byteOffset, true) / 65535 : dv.getUint16(byteOffset, true);
     case GLTF_COMPONENT_TYPES.I16: {
       const v = dv.getInt16(byteOffset, true);
       return normalized ? Math.max(v / 32767, -1) : v;
     }
-    case GLTF_COMPONENT_TYPES.U16:
-      // 5123 UNSIGNED_SHORT; `normalized` divide por 65535.
-      return normalized ? dv.getUint16(byteOffset, true) / 65535 : dv.getUint16(byteOffset, true);
     case GLTF_COMPONENT_TYPES.U32: return dv.getUint32(byteOffset, true);
     case GLTF_COMPONENT_TYPES.F32: return dv.getFloat32(byteOffset, true);
     default: fail("BAD_ACCESSOR_COMPONENT", `componentType ${componentType} não decodificável`);
@@ -637,7 +633,7 @@ function decodeScalar(
 /**
  * Lê um accessor como `Float32Array` de `count * componentCount` elementos.
  * Suporta: tipos escalares/vetoriais/matrizes, quantização normalizada
- * (i8→-1..1, u8→0..1, i16→-1..1, u16→0..1; u32 não é normalizável), `byteStride` (interleaved)
+ * (u8n/u8→0..1, u16→0..65535, u32→0..4294967295), `byteStride` (interleaved)
  * e `sparse`.
  */
 export function readAccessorFloats(model: ParsedGltfModel, accessorIndex: number): Float32Array {
@@ -699,7 +695,7 @@ export function readAccessorIndices(model: ParsedGltfModel, accessorIndex: numbe
   const region = accessorRegion(model, accessor);
   const stride = region.view?.byteStride ?? 0;
   if (accessor.componentType === GLTF_COMPONENT_TYPES.U8) {
-    // UNSIGNED_BYTE é legal em índices; promovido para Uint16 sem perda.
+    // UNSIGNED_BYTE é legal em índices (§3.7.2.1); promovido para Uint16 sem perda.
     const out = new Uint16Array(accessor.count);
     const dv = new DataView(region.bytes.buffer, region.bytes.byteOffset, region.bytes.byteLength);
     for (let i = 0; i < accessor.count; i++) {

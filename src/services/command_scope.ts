@@ -28,6 +28,8 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   set_morph_value: "deformation",
   reset_morphs: "deformation",
   set_somatotype: "deformation",
+  // Posing: a pose altera a malha avaliada (paleta de skinning), não a geometria base.
+  set_pose: "deformation",
   set_gender_dimorphism: "deformation",
   set_base_gender: "base_geometry",
   set_proportions: "base_geometry",
@@ -46,6 +48,15 @@ const SCOPE_BY_KIND: Record<string, ChangeScope> = {
   remove_node: "presentation",
   set_node_parent: "presentation",
   set_node_transform: "presentation",
+  // Editor de cenário (Fase 1): tudo apresentação.
+  set_nodes_transform: "presentation",
+  duplicate_nodes: "presentation",
+  set_node_props: "presentation",
+  replace_nodes_asset: "presentation",
+  patch_assets: "presentation",
+  set_render_output: "presentation",
+  // Animação: clips/chaves são dados do projeto, não invalidam geometria nem a paleta de skinning.
+  edit_animation: "presentation",
   set_background_color: "presentation",
   set_render_settings: "presentation",
   rename_project: "project",

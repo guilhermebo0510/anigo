@@ -35,6 +35,7 @@ import {
   shaderOf,
   toonRampBytes,
   toonRampFingerprint,
+  outlineStreamViewportLayout,
   uniformFloats,
   uniformOffset,
   uniformSize,
@@ -146,6 +147,22 @@ test("o repositório tem uma única cópia de cada shader de produção", () => 
 // Layouts: vértice, uniforms, bind groups
 // ---------------------------------------------------------------------------
 
+test("segundo stream do contorno (motor cel) não mexe no vértice de 72 B", () => {
+  // O stream 2 é só do pipeline `outline`: 12 B/vértice nativo, e o viewport lê a
+  // normal do VBO principal (stride 72, offset 12 = `normal`).
+  const stream = RENDER_CONTRACT.vertex_layout.outline_stream!;
+  assert.equal(stream.stride, 12);
+  assert.deepEqual(
+    stream.attributes.map((attribute) => [attribute.shader_location, attribute.offset, attribute.format]),
+    [[6, 0, "float32x3"]]
+  );
+  const viewport = outlineStreamViewportLayout();
+  assert.equal(viewport.arrayStride, 72);
+  assert.deepEqual(viewport.attributes, [{ shaderLocation: 6, offset: 12, format: "float32x3" }]);
+  assert.equal(vertexBufferLayout().arrayStride, 72);
+  assert.equal(vertexBufferLayout().attributes.length, 6);
+});
+
 test("vertex layout de 72 B fecha com o bloco vertex_raw", () => {
   const layout = vertexBufferLayout();
   assert.equal(layout.arrayStride, 72);
@@ -183,7 +200,8 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   // #43: +params8 (olho anime) → 52 floats (208 B)
   assert.equal(uniformSize("material"), 208);
   assert.equal(uniformFloats("material"), 52);
-  assert.equal(uniformFloats("outline"), 12);
+  // Motor cel (Fase 1): +params3 (taper/piso) → 16 floats (64 B)
+  assert.equal(uniformFloats("outline"), 16);
   assert.equal(uniformFloats("sparse_morph_header"), 4);
   // P1-04: paleta de skinning — 24 ossos × mat4 (16 floats) = 384 floats
   assert.equal(uniformSize("bones"), 1536);
@@ -207,6 +225,12 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
   assert.equal(uniformOffset("material", "params8"), 192);
   assert.equal(uniformOffset("light", "ambient_ground"), 64);
   assert.equal(uniformOffset("outline", "params2"), 32);
+  assert.equal(uniformOffset("outline", "params3"), 48);
+  // Sombra projetada da luz principal (aditivo): matriz da luz + 2 vec4 = 96 B
+  assert.equal(uniformSize("shadow"), 96);
+  assert.equal(uniformFloats("shadow"), 24);
+  assert.equal(uniformOffset("shadow", "params"), 64);
+  assert.equal(uniformOffset("shadow", "params2"), 80);
 
   const spaces = Object.fromEntries(
     Object.entries(RENDER_CONTRACT.uniforms).map(([name, layout]) => [name, layout.address_space])
@@ -218,6 +242,7 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
     light: "uniform",
     material: "uniform",
     outline: "uniform",
+    shadow: "uniform", // sombra projetada da luz principal (96 B)
     sparse_morph_header: "uniform",
     morph_channel: "storage_read",
     sparse_morph_delta: "storage_read",
@@ -239,7 +264,7 @@ test("os blocos de uniform batem com os structs #[repr(C)] do Rust", () => {
       // Fase 2 (#18): MToon; #17: SDF facial; #43: olho anime
       "emission_color", "params4", "params5", "params6", "params7", "params8",
     ],
-    outline: ["color", "params", "params2"],
+    outline: ["color", "params", "params2", "params3"],
     // Fase 2 (#53): Anime Bokeh DoF (48 B / 12 floats)
     dof: ["params", "resolution", "limits"],
   };
@@ -589,7 +614,7 @@ test("contrato inválido falha com erro explícito e recuperável", () => {
   rejects(mutate((copy) => (copy.uniforms.camera.size = 210)), "bad_uniform_size");
   rejects(mutate((copy) => (copy.uniforms.vertex_raw.address_space = "teleport")), "bad_address_space");
   rejects(
-    mutate((copy) => (copy.uniforms.outline.fields[2].offset = 44)),
+    mutate((copy) => (copy.uniforms.outline.fields[2].offset = 56)),
     "bad_uniform_field"
   );
   assert.throws(() => shaderOf("nao_existe"), /não está no contrato/);

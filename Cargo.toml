@@ -1,13 +1,21 @@
 [workspace]
 members = [
     "crates/anigo-core",
+    "crates/anigo-session",
+    "crates/anigo-bridge",
+    "crates/anigo-modeling",
+    "crates/anigo-studio",
+    "crates/anigo-native",
     "crates/anigo-renderer",
     "crates/anigo-mcp",
     "crates/anigo-ik",
     "crates/anigo-hair",
     "crates/anigo-cloth",
+    "crates/anigo-physics",
     "crates/anigo-vrm",
     "crates/anigo-ai",
+    "crates/anigo-assets",
+    "crates/anigo-charbase",
     "src-tauri",
 ]
 resolver = "2"
@@ -25,7 +33,8 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
-wgpu = "24"
+wgpu = "30.0.1"
 anigo-core = { path = "crates/anigo-core" }
 anigo-renderer = { path = "crates/anigo-renderer" }
 anigo-vrm = { path = "crates/anigo-vrm" }
+anigo-physics = { path = "crates/anigo-physics" }

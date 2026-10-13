@@ -1,0 +1,46 @@
+[package]
+name = "anigo-studio"
+version = "0.1.0"
+edition = "2021"
+description = "ANIGO Studio nativo: UI e viewport 100% Rust (egui + wgpu)"
+
+[[bin]]
+name = "anigo-studio"
+path = "src/main.rs"
+
+[dependencies]
+anigo-core = { workspace = true }
+anigo-modeling = { path = "../anigo-modeling" }
+anigo-renderer = { workspace = true }
+anigo-session = { path = "../anigo-session" }
+anigo-ik = { path = "../anigo-ik" }
+anigo-bridge = { path = "../anigo-bridge" }
+anigo-physics = { path = "../anigo-physics" }
+anigo-vrm = { path = "../anigo-vrm" }
+anigo-assets = { path = "../anigo-assets", default-features = false, features = ["fbx", "watch"] }
+anigo-native = { path = "../anigo-native", default-features = false, features = ["ufbx"] }
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland", "default_fonts", "persistence"] }
+egui = "0.36"
+# docking/tiling (T-2.12): compatível com egui 0.36 (0.17.x); sem serde — o layout persiste num formato próprio
+egui_tiles = { version = "0.17", default-features = false }
+egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
+glam = { workspace = true }
+base64 = { workspace = true }
+bytemuck = { workspace = true }
+image = { workspace = true }
+# mesma versão que o `image` já compila: PNG com iTXt/cICP/pHYs e profundidade 16 bits
+png = "0.17"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+notify = "8"
+pollster = { workspace = true }
+crossbeam-channel = "0.5"
+lru = "0.18"
+blake3 = "1.8"
+
+[dev-dependencies]
+tempfile = "3"

@@ -91,7 +91,329 @@ export interface MeshRefWire {
   primitive_index?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Editor de cenário (Fase 1) — espelha `crates/anigo-core/src/level.rs`.
+// ---------------------------------------------------------------------------
+
+export type PrimitiveShapeWire = "cube" | "sphere" | "plane" | "cylinder" | "cone";
+
+/** Origem de um nó (tag `type`, snake_case). */
+export type NodeSourceWire =
+  | { type: "library_asset"; uri: string; revision?: number }
+  | { type: "primitive"; shape: PrimitiveShapeWire }
+  | { type: "light"; kind: "directional" | "point"; color: [number, number, number]; intensity: number }
+  | { type: "camera"; focal_mm: number; sensor_width_mm: number; sensor_height_mm: number }
+  | { type: "card"; texture_uri?: string | null; width_m: number; height_m: number };
+
+/** Substituições de material por instância. */
+export interface NodeOverridesWire {
+  base_color?: [number, number, number, number];
+  shade_color?: [number, number, number, number];
+  outline_width?: number;
+  /** Material completo da instância (workspace Shading): patch aplicado depois dos campos acima. */
+  material?: MaterialPatchWire;
+}
+
+/** Atributos extras de `add_node` (tudo no padrão = omitido). */
+export interface NodeAttrsWire {
+  visible?: boolean;
+  locked?: boolean;
+  tags?: string[];
+  folder?: string | null;
+  layer?: string | null;
+  source?: NodeSourceWire | null;
+  overrides?: NodeOverridesWire;
+}
+
+/** Patch de propriedades do nó; `folder`/`layer` = "" limpam. */
+export interface NodePatchWire {
+  name?: string;
+  locked?: boolean;
+  tags?: string[];
+  folder?: string;
+  layer?: string;
+  overrides?: NodeOverridesWire;
+  source?: NodeSourceWire;
+}
+
+export interface NodeTransformEntryWire {
+  node_id: string;
+  translation?: [number, number, number];
+  rotation?: [number, number, number, number];
+  scale?: [number, number, number];
+}
+
+export interface NodeCopyWire {
+  source: string;
+  copy: string;
+  name: string;
+}
+
+export interface NodeAssetEntryWire {
+  node_id: string;
+  mesh?: MeshRefWire | null;
+  source?: NodeSourceWire | null;
+  name?: string | null;
+}
+
+/** Nomes canônicos dos 24 ossos da pose, na ordem do Rust (`anigo-core::pose::BONE_NAMES`). */
+export const POSE_BONE_NAMES = [
+  "Root",
+  "Hips",
+  "Pelvis",
+  "Spine",
+  "Chest",
+  "UpperChest",
+  "Neck",
+  "Head",
+  "LeftClavicle",
+  "LeftShoulder",
+  "LeftElbow",
+  "LeftWrist",
+  "RightClavicle",
+  "RightShoulder",
+  "RightElbow",
+  "RightWrist",
+  "LeftThigh",
+  "LeftKnee",
+  "LeftAnkle",
+  "LeftToes",
+  "RightThigh",
+  "RightKnee",
+  "RightAnkle",
+  "RightToes",
+] as const;
+
+/** Um osso de `set_pose`: rotação FINAL (delta local sobre o repouso, `[x, y, z, w]`; identidade = repouso). */
+export interface PoseBoneEntryWire {
+  bone: string;
+  rotation: [number, number, number, number];
+}
+
+/** Curvatura 0–1 dos dedos (polegar, indicador, médio, anelar, mínimo) das duas mãos. */
+export interface HandsPoseWire {
+  left?: [number, number, number, number, number];
+  right?: [number, number, number, number, number];
+}
+
+/** Rótulo da operação de pose (só descrição/telemetria). */
+export type PoseOpWire = "edit" | "mirror" | "reset" | "apply" | "paste" | "preset" | "ik" | "gaze" | "hand" | "ground";
+
+// ---------------------------------------------------------------------------
+// Workspace Animação — espelha `crates/anigo-core/src/animation.rs`.
+// ---------------------------------------------------------------------------
+
+export type LoopModeWire = "once" | "loop" | "ping_pong";
+export type ExtrapolationWire = "constant" | "linear";
+export type HandSideWire = "left" | "right";
+export type SunPropWire = "intensity" | "direction" | "color";
+export type CameraPropWire = "fov" | "eye" | "target";
+
+/** Interpolação DA CHAVE ATÉ A PRÓXIMA; `bezier.c` = `[x1, y1, x2, y2]` normalizado no segmento (`x ∈ [0, 1]`). */
+export type InterpWire =
+  | { kind: "step" }
+  | { kind: "linear" }
+  | { kind: "ease" }
+  | { kind: "ease_in" }
+  | { kind: "ease_out" }
+  | { kind: "bezier"; c: [number, number, number, number] };
+
+/** O que um canal anima (rotação de osso, translação do root/quadril, dedos, transform de nó, sol, câmera de cena). */
+export type ChannelTargetWire =
+  | { kind: "bone"; bone: string }
+  | { kind: "root" }
+  | { kind: "hips" }
+  | { kind: "hand"; side: HandSideWire }
+  | { kind: "node_translation"; node_id: string }
+  | { kind: "node_rotation"; node_id: string }
+  | { kind: "node_scale"; node_id: string }
+  | { kind: "sun"; prop: SunPropWire }
+  | { kind: "camera"; prop: CameraPropWire };
+
+/** Valor tipado de uma chave (precisa casar com o tipo do canal). */
+export type KeyValueWire =
+  | { t: "scalar"; v: number }
+  | { t: "vec3"; v: [number, number, number] }
+  | { t: "quat"; v: [number, number, number, number] }
+  | { t: "curl"; v: [number, number, number, number, number] };
+
+export interface KeyWire {
+  frame: number;
+  value: KeyValueWire;
+  interp?: InterpWire;
+}
+
+export interface ChannelWire {
+  target: ChannelTargetWire;
+  keys: KeyWire[];
+}
+
+export interface MarkerWire {
+  frame: number;
+  name: string;
+}
+
+export interface KeyInsertWire {
+  target: ChannelTargetWire;
+  key: KeyWire;
+}
+
+export interface KeyRefWire {
+  target: ChannelTargetWire;
+  frame: number;
+}
+
+export interface KeyMoveWire {
+  target: ChannelTargetWire;
+  frame: number;
+  to_frame: number;
+}
+
+export interface TransformKeyframeWire {
+  time_seconds: number;
+  translation: [number, number, number];
+  rotation: [number, number, number, number];
+  scale: [number, number, number];
+}
+
+export interface AnimationTrackWire {
+  node_id: string;
+  keyframes?: TransformKeyframeWire[];
+}
+
+/** Clip de animação (`AnimationClip`): os campos novos são aditivos e opcionais. */
+export interface AnimationClipWire {
+  clip_id: string;
+  name: string;
+  duration_seconds: number;
+  tracks?: AnimationTrackWire[];
+  channels?: ChannelWire[];
+  range?: [number, number] | null;
+  loop_mode?: LoopModeWire;
+  extrapolation?: ExtrapolationWire;
+  hold_step?: number;
+  markers?: MarkerWire[];
+}
+
+/** Uma edição atômica da animação (inverso exato no núcleo). */
+export type AnimEditWire =
+  | { op: "put_clip"; clip: AnimationClipWire }
+  | { op: "remove_clip"; clip_id: string }
+  | { op: "set_active_clip"; clip_id?: string | null }
+  | { op: "rename_clip"; clip_id: string; name: string }
+  | { op: "insert_keys"; clip_id: string; keys: KeyInsertWire[] }
+  | { op: "delete_keys"; clip_id: string; keys: KeyRefWire[] }
+  | { op: "move_keys"; clip_id: string; moves: KeyMoveWire[] }
+  | { op: "set_interpolation"; clip_id: string; keys: KeyRefWire[]; interp: InterpWire }
+  | { op: "set_clip_range"; clip_id: string; range?: [number, number] | null }
+  | { op: "set_clip_playback"; clip_id: string; loop_mode?: LoopModeWire | null; extrapolation?: ExtrapolationWire | null; hold_step?: number | null }
+  | { op: "set_fps"; fps: number; retime?: boolean }
+  | { op: "set_markers"; clip_id: string; markers: MarkerWire[] };
+
+/** Operações de `AnimEditWire` (drift-checked contra o enum Rust `AnimEdit`). */
+export const ANIM_EDIT_OPS = [
+  "put_clip",
+  "remove_clip",
+  "set_active_clip",
+  "rename_clip",
+  "insert_keys",
+  "delete_keys",
+  "move_keys",
+  "set_interpolation",
+  "set_clip_range",
+  "set_clip_playback",
+  "set_fps",
+  "set_markers",
+] as const;
+
+export interface AssetEntryWire {
+  asset_id: string;
+  kind: "mesh" | "texture" | "hair" | "cloth" | "audio" | "other";
+  uri: string;
+  byte_len?: number | null;
+  content_hash?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace Render — espelha `crates/anigo-core/src/render_output.rs`.
+// ---------------------------------------------------------------------------
+
+export type OutputFormatWire = "png8" | "png16" | "jpeg";
+
+export interface AovSelectionWire {
+  outline?: boolean;
+  depth?: boolean;
+  mask?: boolean;
+  object_id?: boolean;
+  normal?: boolean;
+}
+
+export interface DofSettingsWire {
+  enabled?: boolean;
+  focus_distance?: number;
+  f_number?: number;
+  focal_mm?: number;
+  bokeh_shape?: number;
+  max_radius_px?: number;
+}
+
+/** Patch de `RenderOutput` (+ espaço de cor do arquivo e near/far/aspecto da câmera de render). */
+export interface RenderOutputPatchWire {
+  width?: number;
+  height?: number;
+  scale_percent?: number;
+  supersample?: number;
+  transparent?: boolean;
+  format?: OutputFormatWire;
+  jpeg_quality?: number;
+  dpi?: number;
+  aov?: AovSelectionWire;
+  dof?: DofSettingsWire;
+  display_space?: "srgb" | "display_p3";
+  camera_aspect?: number;
+  camera_near?: number;
+  camera_far?: number;
+}
+
 /** Patch of the stylized material — only `Some` fields are written (Rust `Option`). */
+/**
+ * Motor cel NPR (Fase 0/1): parâmetros opcionais por material — espelha
+ * `anigo-core::npr::NprParams`. O viewport TS não os consome (o renderer nativo
+ * sim); existem aqui só para o patch de material ser completo. Todos no padrão
+ * = comportamento anterior.
+ */
+export interface NprParamsWire {
+  ramp_blend: number;
+  ramp_row: number;
+  outline_smooth_normals: number;
+  outline_distance_falloff: number;
+  outline_ref_distance: number;
+  outline_min_width_scale: number;
+  outline_taper: number;
+  outline_ink_blend: number;
+  outline_ink_darken: number;
+  outline_ink_saturation: number;
+  face_sdf_mirror_center: number;
+  /** Gradiente próprio por linha da rampa 2D (workspace Shading); omitido no padrão. */
+  ramp_custom?: {
+    count: [number, number, number, number];
+    constant: [boolean, boolean, boolean, boolean];
+    pos: number[][];
+    val: number[][];
+  };
+}
+
+/** Sombra projetada da luz principal (espelha `anigo_core::scene::LightShadow`). */
+export interface LightShadowWire {
+  enabled: boolean;
+  strength: number;
+  hardness: number;
+  bias: number;
+  normal_bias: number;
+  resolution: 512 | 1024 | 2048 | 4096;
+  distance: number;
+}
+
 export interface MaterialPatchWire {
   base_color?: [number, number, number, number];
   shade_color?: [number, number, number, number];
@@ -139,6 +461,8 @@ export interface MaterialPatchWire {
   gaze_tracking_enabled?: boolean;
   gaze_saccade_amplitude?: number;
   gaze_damping?: number;
+  /** Motor cel NPR: substitui o grupo inteiro (omitido = não mexe). */
+  npr?: NprParamsWire;
 }
 
 export type CommandWire =
@@ -180,6 +504,7 @@ export type CommandWire =
       shadow_saturation?: number;
       ambient_sky?: [number, number, number];
       ambient_ground?: [number, number, number];
+      shadow?: LightShadowWire;
     }
   | { kind: "set_material_params"; material_id?: string; patch: MaterialPatchWire }
   | { kind: "set_node_visibility"; node_id: string; visible: boolean }
@@ -194,6 +519,7 @@ export type CommandWire =
       mesh?: MeshRefWire | null;
       material_id?: string | null;
       index: number;
+      attrs?: NodeAttrsWire | null;
     }
   | { kind: "remove_node"; node_id: string }
   | { kind: "set_node_parent"; node_id: string; parent_id?: string | null }
@@ -218,6 +544,21 @@ export type CommandWire =
       depth_prepass?: boolean;
     }
   | { kind: "rename_project"; name: string }
+  | { kind: "set_nodes_transform"; entries: NodeTransformEntryWire[] }
+  | { kind: "duplicate_nodes"; copies: NodeCopyWire[]; offset?: [number, number, number] | null }
+  | { kind: "set_node_props"; node_id: string; patch: NodePatchWire }
+  | { kind: "replace_nodes_asset"; entries: NodeAssetEntryWire[] }
+  | { kind: "patch_assets"; put: AssetEntryWire[]; remove?: string[] }
+  | { kind: "set_render_output"; patch: RenderOutputPatchWire }
+  | {
+      kind: "set_pose";
+      bones?: PoseBoneEntryWire[];
+      root_translation?: [number, number, number];
+      hips_translation?: [number, number, number];
+      hands?: HandsPoseWire;
+      op?: PoseOpWire;
+    }
+  | { kind: "edit_animation"; edit: AnimEditWire }
   | { kind: "batch"; commands: CommandWire[] };
 
 /** Kinds known by this contract version (drift-checked against the Rust enum). */
@@ -244,6 +585,14 @@ export const COMMAND_KINDS = [
   "set_background_color",
   "set_render_settings",
   "rename_project",
+  "set_nodes_transform",
+  "duplicate_nodes",
+  "set_node_props",
+  "replace_nodes_asset",
+  "patch_assets",
+  "set_render_output",
+  "set_pose",
+  "edit_animation",
   "batch",
 ] as const;
 

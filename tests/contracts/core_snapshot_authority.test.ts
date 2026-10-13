@@ -49,7 +49,7 @@ const RENDERER_SOURCE = readRepoFile("src/components/viewport/webgpu_renderer.ts
 const VIEWPORT_SOURCE = readRepoFile("src/components/viewport/Viewport.svelte");
 const APP_SOURCE = readRepoFile("src/App.svelte");
 const MAIN_RS = readRepoFile("src-tauri/src/main.rs");
-const CORE_SESSION_RS = readRepoFile("src-tauri/src/core_session.rs");
+const CORE_SESSION_RS = readRepoFile("crates/anigo-session/src/core_session.rs");
 
 describe("P0 itens 4–5 — geometria do viewport vem do snapshot", () => {
   it("decodifica o snapshot do contrato sem recalcular nada", () => {
