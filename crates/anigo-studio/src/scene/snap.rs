@@ -54,7 +54,8 @@ impl Default for SnapSettings {
     fn default() -> Self {
         Self {
             grid_on: true,
-            grid_m: 0.5,
+            // 10 cm como no Unreal: com 0,5 m o objeto "pulava" de meio em meio metro ao arrastar (parecia travado)
+            grid_m: 0.1,
             rot_on: true,
             rot_deg: 15.0,
             scale_on: false,

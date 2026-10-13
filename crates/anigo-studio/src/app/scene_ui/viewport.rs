@@ -600,7 +600,7 @@ impl StudioApp {
             return false;
         }
         let pivot = frame.origin;
-        self.scene_ui.session = Some(GizmoSession { drag, xf, pivot, dup, last: None, label: String::new(), moved: false, start_sel, start_bounds: self.scene_ui.runtime.bounds_of_many(&ids) });
+        self.scene_ui.session = Some(GizmoSession { drag, xf, pivot, dup, last: None, label: String::new(), moved: false, start_sel, start_bounds: self.scene_ui.runtime.bounds_of_many(&ids), shift: Vec3::ZERO });
         true
     }
 
@@ -638,6 +638,7 @@ impl StudioApp {
                     };
                     d = snap_translation_delta(frame.origin, delta, &basis, eff.grid_m, eff.absolute);
                 }
+                s.shift = d;
                 hud = format!("{} {}   {}", tr("scene.hud.move"), super::fmt_vec3(d), self.fmt_len(eff.grid_m, eff.grid_on));
                 let mut out = gizmo::apply_translate(&s.xf, d);
                 if eff.surface_on && handle == Handle::Center && eff.align_to_normal && s.xf.len() == 1 {
@@ -914,11 +915,11 @@ impl StudioApp {
             self.scene_ui.snap.rot_deg = rsteps[i.saturating_sub(1)];
         }
         if consume("cenario.grid_coarser") {
-            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(4);
+            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(2);
             self.scene_ui.snap.grid_m = steps[(i + 1).min(steps.len() - 1)];
         }
         if consume("cenario.grid_finer") {
-            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(4);
+            let i = steps.iter().position(|s| (*s - self.scene_ui.snap.grid_m).abs() < 1e-6).unwrap_or(2);
             self.scene_ui.snap.grid_m = steps[i.saturating_sub(1)];
         }
         // visão
@@ -1215,7 +1216,12 @@ impl StudioApp {
 
         // ---- gizmo
         if su.tool != GizmoMode::Select || su.session.is_some() {
-            let drag_frame = su.session.as_ref().map(|s| s.drag.frame);
+            // o gizmo acompanha o objeto: o quadro do início do arrasto + o deslocamento já aplicado
+            let drag_frame = su.session.as_ref().map(|s| {
+                let mut f = s.drag.frame;
+                f.origin += s.shift;
+                f
+            });
             let frame = drag_frame.or_else(|| self.gizmo_frame(view));
             if let Some(f) = frame {
                 let active = su.session.as_ref().map(|s| s.drag.handle);

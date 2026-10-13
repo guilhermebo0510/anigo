@@ -52,15 +52,15 @@ impl WorkspaceId {
 
     pub fn icon(self) -> &'static str {
         match self {
-            WorkspaceId::Personagem => icons::USER,
-            WorkspaceId::Modelagem => icons::CUBE,
-            WorkspaceId::Posing => icons::BONE,
-            WorkspaceId::Shading => icons::PALETTE,
-            WorkspaceId::Iluminacao => icons::SUN,
-            WorkspaceId::Cenario => icons::MOUNTAINS,
-            WorkspaceId::Animacao => icons::FILM_STRIP,
-            WorkspaceId::Render => icons::CAMERA,
-            WorkspaceId::Biblioteca => icons::SQUARES_FOUR,
+            WorkspaceId::Personagem => icons::ani::WS_PERSONAGEM,
+            WorkspaceId::Modelagem => icons::ani::WS_MODELAGEM,
+            WorkspaceId::Posing => icons::ani::WS_POSING,
+            WorkspaceId::Shading => icons::ani::WS_SHADING,
+            WorkspaceId::Iluminacao => icons::ani::WS_ILUMINACAO,
+            WorkspaceId::Cenario => icons::ani::WS_CENARIO,
+            WorkspaceId::Animacao => icons::ani::WS_ANIMACAO,
+            WorkspaceId::Render => icons::ani::WS_RENDER,
+            WorkspaceId::Biblioteca => icons::ani::WS_BIBLIOTECA,
         }
     }
 
@@ -98,68 +98,68 @@ const fn tool(id: &'static str, icon: &'static str, label_key: &'static str) -> 
 }
 
 pub const PERSONAGEM: &[ToolDef] = &[
-    tool("body", icons::USER, "tool.body"),
-    tool("face", icons::SMILEY, "tool.face"),
-    tool("hair", icons::SCISSORS, "tool.hair"),
-    tool("cloth", icons::T_SHIRT, "tool.cloth"),
-    tool("accessories", icons::CUBE, "tool.accessories"),
-    tool("paint", icons::PAINT_BRUSH, "tool.paint"),
+    tool("body", icons::ani::T_BODY, "tool.body"),
+    tool("face", icons::ani::T_FACE, "tool.face"),
+    tool("hair", icons::ani::T_HAIR, "tool.hair"),
+    tool("cloth", icons::ani::T_CLOTH, "tool.cloth"),
+    tool("accessories", icons::ani::T_ACCESSORIES, "tool.accessories"),
+    tool("paint", icons::ani::T_PAINT, "tool.paint"),
 ];
 
 /// Ferramentas do modo Objeto do workspace Modelagem.
 pub const MODELAGEM_OBJECT: &[ToolDef] = &[
-    tool("select_box", icons::SELECTION, "tool.select_box"),
-    tool("move", icons::ARROWS_OUT_CARDINAL, "tool.move"),
-    tool("rotate", icons::ARROWS_CLOCKWISE, "tool.rotate"),
-    tool("scale", icons::ARROWS_OUT, "tool.scale"),
-    tool("add_cube", icons::CUBE, "tool.add_primitive"),
+    tool("select_box", icons::ani::T_SELECT, "tool.select_box"),
+    tool("move", icons::ani::T_MOVE, "tool.move"),
+    tool("rotate", icons::ani::T_ROTATE, "tool.rotate"),
+    tool("scale", icons::ani::T_SCALE, "tool.scale"),
+    tool("add_cube", icons::ani::T_ADD_CUBE, "tool.add_primitive"),
 ];
 
 pub const POSING: &[ToolDef] = &[
-    tool("rig", icons::BONE, "tool.rig"),
-    tool("ik", icons::TARGET, "tool.ik"),
-    tool("poses_preset", icons::PERSON_SIMPLE_RUN, "tool.poses_preset"),
+    tool("rig", icons::ani::T_RIG, "tool.rig"),
+    tool("ik", icons::ani::T_IK, "tool.ik"),
+    tool("poses_preset", icons::ani::T_POSE, "tool.poses_preset"),
 ];
 
 pub const SHADING: &[ToolDef] = &[
-    tool("cel_shader", icons::CIRCLE, "tool.cel_shader"),
-    tool("rim", icons::SPARKLE, "tool.rim"),
-    tool("outline", icons::POLYGON, "tool.outline"),
-    tool("palette", icons::PALETTE, "tool.palette"),
-    tool("shader_ball", icons::SPHERE, "tool.shader_ball"),
+    tool("cel_shader", icons::ani::T_CEL_SHADER, "tool.cel_shader"),
+    tool("rim", icons::ani::T_RIM, "tool.rim"),
+    tool("outline", icons::ani::T_OUTLINE, "tool.outline"),
+    tool("palette", icons::ani::T_PALETTE, "tool.palette"),
+    tool("shader_ball", icons::ani::T_SHADER_BALL, "tool.shader_ball"),
 ];
 
 pub const ILUMINACAO: &[ToolDef] = &[
-    tool("sun", icons::SUN, "tool.sun"),
-    tool("shadows", icons::CIRCLE, "tool.shadows"),
-    tool("ambient", icons::CLOUD, "tool.ambient"),
-    tool("rigs", icons::LIGHTBULB, "tool.rigs"),
+    tool("sun", icons::ani::T_SUN, "tool.sun"),
+    tool("shadows", icons::ani::T_SHADOWS, "tool.shadows"),
+    tool("ambient", icons::ani::T_AMBIENT, "tool.ambient"),
+    tool("rigs", icons::ani::T_RIGS, "tool.rigs"),
 ];
 
 /// Ferramentas do Cenário (esquema do Unreal): Q seleção, W mover, E girar, R escalar.
 pub const CENARIO: &[ToolDef] = &[
-    tool("select_box", icons::CURSOR, "tool.select_box"),
-    tool("move", icons::ARROWS_OUT_CARDINAL, "tool.move"),
-    tool("rotate", icons::ARROWS_CLOCKWISE, "tool.rotate"),
-    tool("scale", icons::ARROWS_OUT, "tool.scale"),
+    tool("select_box", icons::ani::T_SELECT, "tool.select_box"),
+    tool("move", icons::ani::T_MOVE, "tool.move"),
+    tool("rotate", icons::ani::T_ROTATE, "tool.rotate"),
+    tool("scale", icons::ani::T_SCALE, "tool.scale"),
 ];
 
 pub const ANIMACAO: &[ToolDef] = &[
-    tool("timeline", icons::CLOCK, "tool.timeline"),
-    tool("curves", icons::BEZIER_CURVE, "tool.curves"),
-    tool("clips", icons::FILM_STRIP, "tool.clips"),
+    tool("timeline", icons::ani::T_TIMELINE, "tool.timeline"),
+    tool("curves", icons::ani::T_CURVES, "tool.curves"),
+    tool("clips", icons::ani::T_CLIPS, "tool.clips"),
 ];
 
 pub const RENDER: &[ToolDef] = &[
-    tool("camera", icons::CAMERA, "tool.camera"),
-    tool("passes", icons::STACK, "tool.passes"),
-    tool("export", icons::FILM_REEL, "tool.export"),
+    tool("camera", icons::ani::T_LENS, "tool.camera"),
+    tool("passes", icons::ani::T_PASSES, "tool.passes"),
+    tool("export", icons::ani::T_EXPORT, "tool.export"),
 ];
 
 pub const BIBLIOTECA: &[ToolDef] = &[
-    tool("browser", icons::GRID_FOUR, "tool.browser"),
-    tool("search", icons::MAGNIFYING_GLASS, "tool.search"),
-    tool("filters", icons::SLIDERS, "tool.filters"),
+    tool("browser", icons::ani::T_GRID, "tool.browser"),
+    tool("search", icons::ani::T_SEARCH, "tool.search"),
+    tool("filters", icons::ani::T_FILTER, "tool.filters"),
 ];
 
 #[cfg(test)]

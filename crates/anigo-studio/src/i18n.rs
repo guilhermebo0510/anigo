@@ -165,6 +165,10 @@ pub const TABLE: &[(&str, &str, &str)] = &[
     ("viewport.cel", "Cel Shading", "Cel Shading"),
     ("viewport.overlays", "Overlays", "Overlays"),
     ("viewport.xray", "Raio-X", "X-Ray"),
+    ("nav.pan", "Pan: arraste para mover a vista (Shift + arrastar também)", "Pan: drag to move the view (Shift + drag also works)"),
+    ("nav.zoom", "Zoom: arraste para aproximar/afastar (roda do mouse também)", "Zoom: drag to move closer/farther (mouse wheel also works)"),
+    ("nav.to_ortho", "Mudar para vista ortogonal", "Switch to orthographic view"),
+    ("nav.to_perspective", "Mudar para vista em perspectiva", "Switch to perspective view"),
     // Painéis e geral
     ("panel.tools", "Ferramentas", "Tools"),
     ("panel.inspector", "Propriedades", "Properties"),

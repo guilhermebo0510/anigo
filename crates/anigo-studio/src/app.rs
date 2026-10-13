@@ -783,24 +783,29 @@ impl StudioApp {
     }
 
     fn tool_shelf(&mut self, ui: &mut egui::Ui) {
+        // faixa de ferramentas como um cartão, na mesma linguagem do viewport e dos painéis (moldura + cartão arredondado)
         egui::Panel::left("toolshelf")
-            .exact_size(46.0)
+            .exact_size(theme::CARD_GAP + 46.0)
             .resizable(false)
+            .frame(egui::Frame::NONE.fill(theme::BG_FRAME).inner_margin(egui::Margin { left: theme::CARD_GAP as i8, right: 0, top: theme::CARD_GAP as i8, bottom: theme::CARD_GAP as i8 }))
             .show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.vertical_centered(|ui| {
-                    let tools = self.shelf_tools();
-                    let cur = *self.tool_idx.get(&self.ws).unwrap_or(&0);
-                    for (i, t) in tools.iter().enumerate() {
-                        let selected = cur == i;
-                        let btn = egui::Button::new(RichText::new(t.icon).size(20.0))
-                            .min_size(EVec2::new(34.0, 34.0))
-                            .selected(selected);
-                        if ui.add(btn).on_hover_text(tr(t.label_key)).clicked() {
-                            self.tool_idx.insert(self.ws, i);
-                            self.on_tool_selected(t.id);
+                let card = egui::Frame::NONE.fill(theme::BG_PANEL).corner_radius(theme::CARD_RADIUS).inner_margin(egui::Margin::symmetric(4, 6));
+                card.show(ui, |ui| {
+                    ui.set_width(38.0);
+                    ui.vertical_centered(|ui| {
+                        let tools = self.shelf_tools();
+                        let cur = *self.tool_idx.get(&self.ws).unwrap_or(&0);
+                        for (i, t) in tools.iter().enumerate() {
+                            let selected = cur == i;
+                            let btn = egui::Button::new(RichText::new(t.icon).size(22.0))
+                                .min_size(EVec2::new(38.0, 38.0))
+                                .selected(selected);
+                            if ui.add(btn).on_hover_text(tr(t.label_key)).clicked() {
+                                self.tool_idx.insert(self.ws, i);
+                                self.on_tool_selected(t.id);
+                            }
                         }
-                    }
+                    });
                 });
             });
     }

@@ -108,6 +108,8 @@ pub(crate) struct GizmoSession {
     pub start_sel: Vec<NodeId>,
     /// Caixa mundial da seleção no início (surface snapping: a base da caixa pousa na superfície).
     pub start_bounds: Option<crate::scene::bvh::Aabb>,
+    /// Deslocamento já aplicado à seleção (mundo): o gizmo SEGUE o objeto durante o arrasto em vez de ficar parado onde começou.
+    pub shift: Vec3,
 }
 
 /// Retângulo de seleção em andamento.

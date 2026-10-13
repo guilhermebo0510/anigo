@@ -27,6 +27,7 @@ pub mod i18n_posing;
 pub mod i18n_scene;
 pub mod i18n_shading;
 pub mod icons;
+pub mod icons_anigo;
 pub mod keymap;
 pub mod layout;
 pub mod library;

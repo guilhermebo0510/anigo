@@ -11,6 +11,19 @@ pub const BG_HOVER: Color32 = Color32::from_rgb(0x36, 0x36, 0x40);
 pub const BORDER: Color32 = Color32::from_rgb(0x38, 0x38, 0x42);
 pub const TEXT: Color32 = Color32::from_rgb(0xd8, 0xd8, 0xe0);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(0x8c, 0x8c, 0x99);
+/// Fundo "entre os painéis" (a moldura): mais escuro que o painel e que o cabeçalho, como no Blender 4.
+pub const BG_FRAME: Color32 = Color32::from_rgb(0x0d, 0x0d, 0x10);
+/// Espaço entre os cartões (viewport e painéis) e raio dos cantos.
+pub const CARD_GAP: f32 = 6.0;
+pub const CARD_RADIUS: u8 = 6;
+
+/// Arredonda os cantos de um cartão desenhado por cima (imagem do viewport, texturas): pinta a moldura por fora da borda
+/// arredondada. A espessura cobre o canto reto (≥ 0,42 do raio) e cabe no espaço entre cartões.
+pub fn round_card(painter: &egui::Painter, rect: egui::Rect) {
+    let w = CARD_RADIUS as f32 * 0.5 + 1.0;
+    painter.rect_stroke(rect, CornerRadius::same(CARD_RADIUS), Stroke::new(w, BG_FRAME), egui::StrokeKind::Outside);
+}
+
 /// Laranja de seleção (padrão Blender).
 pub const SELECT: Color32 = Color32::from_rgb(0xff, 0x9a, 0x2e);
 

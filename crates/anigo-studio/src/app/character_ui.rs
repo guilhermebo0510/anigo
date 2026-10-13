@@ -655,6 +655,10 @@ impl StudioApp {
 
             self.char_camera_input(ui, &resp, rect);
             self.char_viewport_header(ui, rect);
+            // gizmo de navegação (orbitar/alinhar nos eixos, pan, zoom, perspectiva/ortogonal)
+            if crate::viewport::nav_gizmo::show(ui, rect, &mut self.char_ui.camera, "personagem").changed {
+                self.char_ui.turntable = false;
+            }
         });
     }
 
@@ -680,6 +684,10 @@ impl StudioApp {
         let delta = ui.input(|i| i.pointer.delta());
         // sem ferramentas de seleção aqui: arrastar com o botão esquerdo também orbita
         let drag = resp.dragged_by(PointerButton::Primary) || resp.dragged_by(PointerButton::Middle);
+        // botão direito arrastando = pan (sem precisar do Shift)
+        if resp.dragged_by(PointerButton::Secondary) {
+            cam.pan(delta.x, delta.y, size.y);
+        }
         if drag {
             if shift {
                 cam.pan(delta.x, delta.y, size.y);

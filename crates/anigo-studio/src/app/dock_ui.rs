@@ -108,7 +108,8 @@ impl DockBehavior<'_> {
     /// Cabeçalho de um painel sem barra de abas: alça de arrastar + ícone/título + fechar.
     fn header(&mut self, ui: &mut egui::Ui, rect: Rect, spec: &PanelSpec, tile_id: TileId) -> UiResponse {
         let hdr = Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER_H));
-        ui.painter().rect_filled(hdr, 0.0, theme::BG_DEEP);
+        let r = theme::CARD_RADIUS;
+        ui.painter().rect_filled(hdr, egui::CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, theme::BG_DEEP);
         ui.painter().hline(hdr.x_range(), hdr.bottom(), Stroke::new(1.0, theme::BORDER));
         let closable = spec.kind == PanelKind::Panel;
         let close_rect = Rect::from_center_size(egui::pos2(hdr.right() - 12.0, hdr.center().y), egui::vec2(16.0, 16.0));
@@ -169,9 +170,10 @@ impl Behavior<PaneId> for DockBehavior<'_> {
         if central && spec.id != "biblioteca.browser" {
             self.app.dock_draw(ui, self.frame, spec.id);
             self.show_closed_side_panel(ui, rect);
+            theme::round_card(ui.painter(), rect);
             return UiResponse::None;
         }
-        ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+        ui.painter().rect_filled(rect, theme::CARD_RADIUS as f32, ui.visuals().panel_fill);
         let mut resp = UiResponse::None;
         let mut body = rect;
         if !self.in_tabs.contains(&tile_id) {
@@ -188,6 +190,7 @@ impl Behavior<PaneId> for DockBehavior<'_> {
             child.spacing_mut().slider_width = (w - 185.0).clamp(60.0, 220.0);
         }
         self.app.dock_draw(&mut child, self.frame, spec.id);
+        theme::round_card(ui.painter(), rect);
         resp
     }
 
@@ -219,7 +222,7 @@ impl Behavior<PaneId> for DockBehavior<'_> {
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
-        1.0
+        theme::CARD_GAP
     }
 
     fn min_size(&self) -> f32 {
@@ -235,11 +238,12 @@ impl Behavior<PaneId> for DockBehavior<'_> {
         theme::BG_DEEP
     }
 
-    fn resize_stroke(&self, style: &egui::Style, state: egui_tiles::ResizeState) -> Stroke {
+    fn resize_stroke(&self, _style: &egui::Style, state: egui_tiles::ResizeState) -> Stroke {
         match state {
-            egui_tiles::ResizeState::Idle => Stroke::new(1.0, theme::BORDER),
-            egui_tiles::ResizeState::Hovering => style.visuals.widgets.hovered.fg_stroke,
-            egui_tiles::ResizeState::Dragging => style.visuals.widgets.active.fg_stroke,
+            // o espaço entre cartões já é a divisória; só ganha cor quando o ponteiro está nele
+            egui_tiles::ResizeState::Idle => Stroke::NONE,
+            egui_tiles::ResizeState::Hovering => Stroke::new(2.0, theme::ACCENT_DIM),
+            egui_tiles::ResizeState::Dragging => Stroke::new(2.0, theme::ACCENT),
         }
     }
 }
@@ -537,7 +541,12 @@ impl StudioApp {
             .iter()
             .find(|p| p.kind == PanelKind::Panel && p.home == crate::layout::model::Home::Right && tiles::find_pane(&tree, p.id).is_none() && self.dock_flag(p.id).is_none());
         let mut behavior = DockBehavior { app: self, frame, in_tabs, closed: Vec::new(), edited: false, closed_side };
-        tree.ui(&mut behavior, ui);
+        // moldura escura ao redor e entre os cartões (viewport e painéis)
+        ui.painter().rect_filled(rect, 0.0, theme::BG_FRAME);
+        let inner = rect.shrink(theme::CARD_GAP);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+            tree.ui(&mut behavior, ui);
+        });
         let DockBehavior { closed, edited, .. } = behavior;
         self.dock.trees.insert(ws, tree);
         if edited {
