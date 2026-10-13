@@ -1,6 +1,7 @@
 //! Viewport do Posing: navegação, seleção de juntas (clique/marquee), gizmo FK de rotação, handles de IK
 //! (mãos/pés com pole), quadril, alvo do olhar, cones de limites, equilíbrio e render cel do personagem posado.
 
+use crate::app::multiview::ViewLayout;
 use super::{character_xf, DragKind, Hot, Marquee, PoseDrag, StudioApp};
 use crate::i18n::tr;
 use crate::icons;
@@ -26,6 +27,9 @@ const CENTER_COL: Color32 = Color32::from_rgb(0xd0, 0xd0, 0xdc);
 const IK_COL: Color32 = Color32::from_rgb(0xff, 0xd0, 0x40);
 const OK_COL: Color32 = Color32::from_rgb(0x58, 0xd0, 0x7a);
 const BAD_COL: Color32 = Color32::from_rgb(0xff, 0x5a, 0x4a);
+
+/// Altura reservada à barra de ferramentas do viewport quando há várias vistas (elas começam abaixo dela).
+const HEADER_RESERVE: f32 = 44.0;
 
 fn e2g(v: egui::Vec2) -> Vec2 {
     Vec2::new(v.x, v.y)
@@ -93,9 +97,48 @@ impl StudioApp {
 
     pub(crate) fn posing_viewport_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            let avail = ui.available_size();
-            let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
+            let full = ui.available_rect_before_wrap();
             let ppp = ui.ctx().pixels_per_point();
+            {
+                let pu = &mut self.pose_ui;
+                pu.mview.seed(&pu.camera);
+                // o arrasto de um osso/gizmo mantém a vista em que começou
+                let busy = pu.drag.is_some();
+                pu.mview.follow_pointer(&mut pu.camera, ui.ctx(), busy);
+            }
+            // com várias vistas a barra de ferramentas ganha uma faixa própria em vez de cobrir o topo das vistas
+            let multi = self.pose_ui.mview.layout != ViewLayout::Single;
+            let area = if multi { Rect::from_min_max(full.min + egui::vec2(0.0, HEADER_RESERVE), full.max) } else { full };
+            let slots = self.pose_ui.mview.visible();
+            let rects = self.pose_ui.mview.pane_rects(area);
+            for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                self.pose_ui.mview.rects[slot] = rect;
+            }
+            let active = self.pose_ui.mview.active;
+            for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                if slot != active {
+                    std::mem::swap(&mut self.pose_ui.camera, &mut self.pose_ui.mview.cams[slot]);
+                }
+                self.pose_pane(ui, frame, slot, rect, slot == active, ppp);
+                if slot != active {
+                    std::mem::swap(&mut self.pose_ui.camera, &mut self.pose_ui.mview.cams[slot]);
+                }
+            }
+            if slots.len() > 1 {
+                ui.painter().rect_stroke(self.pose_ui.mview.rects[active].shrink(0.5), 0.0, Stroke::new(1.5, theme::ACCENT_DIM), egui::StrokeKind::Inside);
+                self.pose_ui.mview.dividers_ui(ui, area);
+            }
+            let painter = ui.painter_at(full);
+            self.posing_header(ui, full);
+            self.posing_finish_gesture(ui.ctx());
+            self.posing_hud(&painter, full, ui.ctx());
+        });
+    }
+
+    /// Uma vista do Posing/Animação: entrada (só a ativa), render no alvo do seu slot e overlays. `pose_ui.camera` já é a dela.
+    fn pose_pane(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, slot: usize, rect: Rect, is_active: bool, ppp: f32) {
+        let resp = ui.interact(rect, ui.id().with(("pose_pane", slot)), Sense::click_and_drag());
+        if is_active {
             self.pose_ui.view_size = Vec2::new(rect.width(), rect.height());
             // sessão de arrasto invalidada por outro comando (undo, apply…)?
             if self.pose_ui.drag.is_some() && !self.core.is_previewing() {
@@ -103,36 +146,43 @@ impl StudioApp {
             }
             let pv = self.pose_view();
             self.posing_input(ui, &resp, rect, &pv);
-            let pv = self.pose_view();
-            self.posing_render(frame, rect, ppp);
+        }
+        let pv = self.pose_view();
+        self.posing_render(frame, rect, ppp, slot, is_active);
 
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, theme::BG_DEEP);
-            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            if let Some(g) = self.gpu.as_ref() {
-                if let Some(t) = g.tex {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, theme::BG_DEEP);
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        if let Some(g) = self.gpu.as_ref() {
+            if let Some(t) = if slot == 0 { g.tex } else { g.view_tex[slot - 1] } {
+                painter.image(t, rect, uv, Color32::WHITE);
+            }
+            if self.pose_ui.show_mesh {
+                if let Some(t) = g.cel_tex_of(slot) {
                     painter.image(t, rect, uv, Color32::WHITE);
                 }
-                if self.pose_ui.show_mesh {
-                    if let Some(t) = g.cel_tex {
-                        painter.image(t, rect, uv, Color32::WHITE);
-                    }
-                }
-                if g.cel.is_none() {
-                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr("char.no_preview"), egui::FontId::proportional(14.0), theme::TEXT_DIM);
-                }
             }
-            let view = CamView::from_orbit(&self.pose_ui.camera, Vec2::new(rect.width(), rect.height()));
-            self.posing_overlays(&painter, rect, &view, &pv);
-            if self.ws == crate::workspace::WorkspaceId::Animacao {
-                self.anim_viewport_overlays(&painter, rect, &view, &pv);
+            if !g.has_cel(slot) {
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr("char.no_preview"), egui::FontId::proportional(14.0), theme::TEXT_DIM);
+            }
+        }
+        let view = CamView::from_orbit(&self.pose_ui.camera, Vec2::new(rect.width(), rect.height()));
+        self.posing_overlays(&painter, rect, &view, &pv);
+        if self.ws == crate::workspace::WorkspaceId::Animacao {
+            self.anim_viewport_overlays(&painter, rect, &view, &pv);
+            if is_active {
                 self.anim_trace(ui.ctx());
             }
-            self.posing_header(ui, rect);
+        }
+        if is_active {
             self.posing_trace(ui.ctx(), rect, &view, &pv);
-            self.posing_finish_gesture(ui.ctx());
-            self.posing_hud(&painter, rect, ui.ctx());
-        });
+        }
+        if self.pose_ui.mview.layout != ViewLayout::Single {
+            let area = Rect::from_min_size(rect.min + egui::vec2(8.0, 6.0), egui::vec2((rect.width() - 16.0).clamp(60.0, 330.0), 22.0));
+            if let Some(k) = crate::app::multiview::view_kind_menu(ui, area, &self.pose_ui.camera, "") {
+                k.apply(&mut self.pose_ui.camera);
+            }
+        }
     }
 
     fn posing_hud(&mut self, painter: &egui::Painter, rect: Rect, ctx: &egui::Context) {
@@ -155,7 +205,7 @@ impl StudioApp {
 
     // ===================================================================== render
 
-    fn posing_render(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32) {
+    fn posing_render(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32, slot: usize, is_active: bool) {
         if !self.ensure_gpu(frame) {
             return;
         }
@@ -165,41 +215,40 @@ impl StudioApp {
             return;
         };
         let settings = ViewSettings { shading: ShadingMode::Solid, xray: false, ..self.settings };
+        gpu.wb.set_slot(slot);
         let recreated = gpu.wb.render(size_px, &self.pose_ui.camera, &[], &settings);
+        gpu.ensure_cel(slot);
         let mut cel_recreated = false;
-        if let Some(cel) = gpu.cel.as_mut() {
+        let mut frame_to: Option<(glam::Vec3, glam::Vec3)> = None;
+        if let Some(cel) = gpu.cel_slot(slot) {
             cel.sync_character(&mut self.core, &self.pose_ui.camera, aspect, true);
             cel_recreated = cel.render(size_px);
             if let Some(e) = &cel.last_error {
                 self.shader_error = Some(format!("cel: {e}"));
             }
-            if !self.pose_ui.framed {
-                if let Some((lo, hi)) = cel.character_bounds {
-                    super::super::character_ui::frame_character(&mut self.pose_ui.camera, lo, hi);
-                    self.pose_ui.framed = true;
-                }
+            if !self.pose_ui.framed && is_active {
+                frame_to = cel.character_bounds;
             }
         }
+        if let Some((lo, hi)) = frame_to {
+            super::super::character_ui::frame_character(&mut self.pose_ui.camera, lo, hi);
+            self.pose_ui.framed = true;
+        }
         if let Some(rs) = frame.wgpu_render_state() {
-            if recreated || gpu.tex.is_none() {
+            let slot_tex = if slot == 0 { &mut gpu.tex } else { &mut gpu.view_tex[slot - 1] };
+            if recreated || slot_tex.is_none() {
                 let mut renderer = rs.renderer.write();
-                if let Some(old) = gpu.tex.take() {
+                if let Some(old) = slot_tex.take() {
                     renderer.free_texture(&old);
                 }
                 if let Some(view) = gpu.wb.output_view() {
-                    gpu.tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
+                    *slot_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
                 }
             }
-            if cel_recreated || gpu.cel_tex.is_none() {
-                let mut renderer = rs.renderer.write();
-                if let Some(old) = gpu.cel_tex.take() {
-                    renderer.free_texture(&old);
-                }
-                if let Some(view) = gpu.cel.as_ref().and_then(|c| c.view()) {
-                    gpu.cel_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
-                }
-            }
+            gpu.refresh_cel_tex(slot, cel_recreated, rs);
         }
+        // os outros workspaces usam o alvo 0 sem saber de slots
+        gpu.wb.set_slot(0);
     }
 
     // ===================================================================== entrada
@@ -766,6 +815,7 @@ impl StudioApp {
     // ===================================================================== barras
 
     fn posing_header(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let multi_btns = true;
         let header = Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), egui::vec2(rect.width() - 12.0, 30.0));
         let bounds = self.gpu.as_ref().and_then(|g| g.cel.as_ref()).and_then(|c| c.character_bounds);
         ui.scope_builder(egui::UiBuilder::new().max_rect(header), |ui| {
@@ -796,6 +846,11 @@ impl StudioApp {
                     ui.selectable_value(&mut self.pose_ui.space_local, false, tr("pose.space.world"));
                     ui.selectable_value(&mut self.pose_ui.space_local, true, tr("pose.space.local"));
                     ui.separator();
+                    if multi_btns {
+                        let pu = &mut self.pose_ui;
+                        crate::app::multiview::layout_buttons(ui, &mut pu.mview, &mut pu.camera, false);
+                        ui.separator();
+                    }
                     ui.toggle_value(&mut self.pose_ui.symmetry, format!("{}  {}", icons::FLIP_HORIZONTAL, tr("pose.symmetry"))).on_hover_text(tr("pose.symmetry_tip"));
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(tr("pose.snap")).color(theme::TEXT_DIM));

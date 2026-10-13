@@ -31,6 +31,21 @@ pub struct LevelNodeIn {
     pub material: anigo_core::StylizedMaterial,
 }
 
+/// Câmera do renderer canônico a partir da câmera orbital do editor — INCLUINDO a projeção ortogonal (com a mesma
+/// altura de volume que o Workbench usa: `2·distância·tan(fov/2)`), senão o preview Cel ficaria em perspectiva.
+fn core_camera(camera: &OrbitCamera, aspect: f32) -> Camera {
+    Camera {
+        eye: camera.eye(),
+        target: camera.target,
+        up: camera.up(),
+        fov_y: camera.fov_y,
+        aspect,
+        z_near: camera.near,
+        z_far: camera.far,
+        orthographic: camera.orthographic.then(|| anigo_core::OrthographicBounds::from_height(2.0 * camera.distance * (camera.fov_y * 0.5).tan(), aspect)),
+    }
+}
+
 pub struct CelPreview {
     renderer: HeadlessRenderer,
     device: Arc<wgpu::Device>,
@@ -202,18 +217,7 @@ impl CelPreview {
         self.scene.rebuild_children();
         self.scene.background_color = background;
         self.scene.light = light;
-        self.scene.camera = Camera {
-            eye: camera.eye(),
-            target: camera.target,
-            up: camera.up(),
-            fov_y: camera.fov_y,
-            aspect,
-            z_near: camera.near,
-            z_far: camera.far,
-            orthographic: camera.orthographic.then(|| {
-                anigo_core::OrthographicBounds::from_height(2.0 * camera.distance * (camera.fov_y * 0.5).tan(), aspect)
-            }),
-        };
+        self.scene.camera = core_camera(camera, aspect);
         for b in camera.eye().to_array().into_iter().chain(camera.target.to_array()).chain([camera.fov_y, camera.distance, aspect]) {
             mix(b.to_bits());
         }
@@ -278,16 +282,7 @@ impl CelPreview {
             self.node_keys.clear();
             self.owner = SceneOwner::Character;
         }
-        self.scene.camera = Camera {
-            eye: camera.eye(),
-            target: camera.target,
-            up: camera.up(),
-            fov_y: camera.fov_y,
-            aspect,
-            z_near: camera.near,
-            z_far: camera.far,
-            orthographic: None,
-        };
+        self.scene.camera = core_camera(camera, aspect);
         let mut light = self.char_light.clone();
         if light_follows_camera {
             let back = -camera.forward();
@@ -352,16 +347,7 @@ impl CelPreview {
         for (node, obj) in self.scene.nodes.iter_mut().zip(doc.objects.iter().filter(|o| o.visible)) {
             node.transform = obj.transform;
         }
-        self.scene.camera = Camera {
-            eye: camera.eye(),
-            target: camera.target,
-            up: camera.up(),
-            fov_y: camera.fov_y,
-            aspect,
-            z_near: camera.near,
-            z_far: camera.far,
-            orthographic: None,
-        };
+        self.scene.camera = core_camera(camera, aspect);
         let mut light = self.light.clone();
         if self.light_follows_camera {
             // luz de estúdio presa à câmera: esquerda/acima/frente (mesma ideia do Workbench)

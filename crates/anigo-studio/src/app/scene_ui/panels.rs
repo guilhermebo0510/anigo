@@ -1,6 +1,7 @@
 //! Painéis do Cenário: Outliner, Histórico, Details, Colocar atores, Content Drawer (Biblioteca) e o
 //! diálogo de salvar/abrir cena.
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::actions::prim_label_key;
 use super::{describe_scene, OutlinerDragPayload, PlaceDragPayload, PlaceKind, SceneDialog, StudioApp};
 use crate::character::persist;
@@ -99,7 +100,7 @@ impl StudioApp {
 
     /// Painel Detalhes do nó selecionado.
     pub(crate) fn scene_details_body(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().id_salt("scene_details").auto_shrink([false, false]).show(ui, |ui| self.details_panel(ui));
+        self.details_panel(ui);
     }
 
     /// Content Drawer (a grade da Biblioteca dentro do Cenário).
@@ -477,16 +478,37 @@ impl StudioApp {
     }
 
     fn details_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
-        ui.label(RichText::new(format!("{}  {}", icons::SLIDERS, tr("scene.details"))).strong());
-        ui.separator();
         let sel = self.scene_ui.selection.ids().to_vec();
         let project = self.core.project().clone();
         let slots: Vec<&anigo_core::NodeSlot> = sel.iter().filter_map(|i| project.scene.node(i)).collect();
-        if slots.is_empty() {
-            self.scene_settings_panel(ui, &project);
+        // abas que valem para a seleção: Ativo só para ativos da Biblioteca, Lente só para uma câmera de cena
+        let mut tabs: Vec<PropTab> = Vec::new();
+        if let Some(first) = slots.first() {
+            tabs.push(PropTab::Transform);
+            if matches!(first.source, Some(NodeSource::LibraryAsset { .. })) {
+                tabs.push(PropTab::Asset);
+            }
+            if matches!(first.source, Some(NodeSource::Camera { .. })) && slots.len() == 1 {
+                tabs.push(PropTab::Lens);
+            }
+            if first.kind != NodeKind::Group && first.kind != NodeKind::Camera {
+                tabs.push(PropTab::Material);
+            }
+            tabs.push(PropTab::Organize);
+        }
+        tabs.push(PropTab::Scene);
+        let (tab, mut content) = self.tabbed_with(ui, TabSet::Cenario, &tabs);
+        let ui = &mut content;
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().id_salt("scene_details").auto_shrink([false, false]).show(ui, |ui| self.details_tab(ui, tab, &project, &slots));
+    }
+
+    fn details_tab(&mut self, ui: &mut egui::Ui, tab: PropTab, project: &anigo_core::ProjectState, slots: &[&anigo_core::NodeSlot]) {
+        if slots.is_empty() || tab == PropTab::Scene {
+            self.scene_settings_panel(ui, project);
             return;
         }
+        let project = project.clone();
         let editable: Vec<NodeId> = slots.iter().filter(|s| !s.locked).map(|s| s.node_id.clone()).collect();
         let first = slots[0];
         // ---- nome + visível/bloqueado
@@ -524,12 +546,12 @@ impl StudioApp {
         }
 
         // ---- transform
-        egui::CollapsingHeader::new(RichText::new(tr("scene.details.transform")).strong()).default_open(true).show(ui, |ui| {
-            self.transform_section(ui, &project, &editable, &slots);
-        });
+        if tab == PropTab::Transform {
+            self.transform_section(ui, &project, &editable, slots);
+        }
 
         // ---- ativo / origem
-        if let Some(NodeSource::LibraryAsset { uri, revision }) = &first.source {
+        if let (PropTab::Asset, Some(NodeSource::LibraryAsset { uri, revision })) = (tab, &first.source) {
             egui::CollapsingHeader::new(RichText::new(tr("scene.details.asset")).strong()).default_open(true).show(ui, |ui| {
                 let resolved = self.scene_ui.cache.resolved(uri).cloned();
                 match resolved {
@@ -572,7 +594,7 @@ impl StudioApp {
         }
 
         // ---- câmera de cena: lente
-        if let Some(NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm }) = first.source.clone() {
+        if let (PropTab::Lens, Some(NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm })) = (tab, first.source.clone()) {
             if slots.len() == 1 {
                 egui::CollapsingHeader::new(RichText::new(tr("scene.details.lens")).strong()).default_open(true).show(ui, |ui| {
                     self.lens_section(ui, first.node_id.clone(), focal_mm, sensor_width_mm, sensor_height_mm);
@@ -581,16 +603,14 @@ impl StudioApp {
         }
 
         // ---- material (overrides)
-        if first.kind != NodeKind::Group && first.kind != NodeKind::Camera {
-            egui::CollapsingHeader::new(RichText::new(tr("scene.details.material")).strong()).default_open(false).show(ui, |ui| {
-                self.material_section(ui, &editable, &slots);
-            });
+        if tab == PropTab::Material && first.kind != NodeKind::Group && first.kind != NodeKind::Camera {
+            self.material_section(ui, &editable, slots);
         }
 
         // ---- organização
-        egui::CollapsingHeader::new(RichText::new(tr("scene.details.organize")).strong()).default_open(true).show(ui, |ui| {
-            self.organize_section(ui, &editable, &slots);
-        });
+        if tab == PropTab::Organize {
+            self.organize_section(ui, &editable, slots);
+        }
     }
 
     fn transform_section(&mut self, ui: &mut egui::Ui, project: &anigo_core::ProjectState, editable: &[NodeId], slots: &[&anigo_core::NodeSlot]) {

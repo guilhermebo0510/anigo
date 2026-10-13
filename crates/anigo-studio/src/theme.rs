@@ -44,9 +44,13 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.active.weak_bg_fill = ACCENT_DIM;
     v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
     v.window_corner_radius = CornerRadius::same(6);
-    ctx.set_visuals(v);
+    // O ANIGO é escuro por padrão e NÃO segue o tema do sistema: sem fixar a preferência, o egui usa o
+    // tema do SO (claro no Windows padrão) e `set_visuals` só alcançaria o slot que estava ativo no startup.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
 
-    ctx.global_style_mut(|style| {
+    ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(6.0, 5.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.slider_width = 150.0;

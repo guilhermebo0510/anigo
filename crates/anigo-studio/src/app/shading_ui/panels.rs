@@ -1,5 +1,6 @@
 //! Painéis do Shading: alvos + presets (esquerda) e parâmetros agrupados, rampa, paleta e texturas (direita).
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::ramp::{ramp_editor, RampEdit};
 use super::sources::TargetRow;
 use super::{FaceMap, PresetTab, Source, StudioApp, Target};
@@ -395,6 +396,12 @@ impl StudioApp {
     // =================================================================== direita
 
     pub(crate) fn shading_params_body(&mut self, ui: &mut egui::Ui) {
+        // pedir foco num grupo (clique no preview, cenários) abre a aba onde ele mora
+        if let Some(g) = self.shading_ui.focus_group {
+            self.set_prop_tab(TabSet::Shading, tab_of_group(g));
+        }
+        let (tab, mut content) = self.tabbed(ui, TabSet::Shading);
+        let ui = &mut content;
         ui.add_space(4.0);
         self.shading_header(ui);
         ui.separator();
@@ -413,12 +420,14 @@ impl StudioApp {
                 }
             }
             let link = self.shading_ui.link_shade.then_some(self.shading_ui.recipe);
-            for g in Group::ALL {
+            for g in Group::ALL.into_iter().filter(|g| tab_of_group(*g) == tab) {
                 if let Some(e) = self.shading_group(ui, g, &mat, link, &mut trace_rects) {
                     edit = Some(e);
                 }
             }
-            self.shading_textures_section(ui);
+            if tab == PropTab::Textures {
+                self.shading_textures_section(ui);
+            }
         });
         if let Some(e) = edit {
             self.shading_apply_edit(e);
@@ -479,7 +488,7 @@ impl StudioApp {
         let mut edit: Option<Edit> = None;
         let modified = params::group_modified_count(mat, g);
         let id = ui.make_persistent_id(("shading_group", g.id()));
-        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, matches!(g, Group::Base));
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, matches!(g, Group::Base | Group::Specular | Group::Rim | Group::Face));
         let focus = self.shading_ui.focus_group == Some(g);
         if focus {
             state.set_open(true);
@@ -701,7 +710,7 @@ impl StudioApp {
         }
     }
 
-    fn shading_save_project_palette(&mut self) {
+    pub(crate) fn shading_save_project_palette(&mut self) {
         let mut p = self.shading_ui.palette.clone();
         p.name = "projeto".into();
         if let Err(e) = p.save(&self.shading_ui.palette_dir) {
@@ -899,3 +908,13 @@ impl StudioApp {
 
 #[allow(dead_code)]
 fn _keep(_: RampCustom) {}
+
+/// Aba do painel de parâmetros onde cada grupo do material mora.
+pub(crate) fn tab_of_group(g: Group) -> PropTab {
+    match g {
+        Group::Base | Group::Ramp => PropTab::Shade,
+        Group::Specular | Group::Matcap | Group::Emission => PropTab::Highlight,
+        Group::Rim | Group::Outline => PropTab::Edge,
+        Group::Face | Group::Eye => PropTab::Face,
+    }
+}

@@ -124,7 +124,7 @@ fn opt_u64(m: &serde_json::Map<String, Value>, k: &str) -> Result<Option<u64>, B
     }
 }
 
-fn vec3(v: &Value, name: &str) -> Result<glam::Vec3, BridgeError> {
+pub(super) fn vec3(v: &Value, name: &str) -> Result<glam::Vec3, BridgeError> {
     let a = v.as_array().filter(|a| a.len() == 3).ok_or_else(|| BridgeError::invalid_params(format!("'{name}' deve ter 3 números")))?;
     let mut o = [0f32; 3];
     for (i, x) in a.iter().enumerate() {
@@ -176,6 +176,9 @@ impl StudioApp {
             self.bridge_dispatch(ctx, r, since);
         }
         self.bridge_poll_shots(ctx);
+        if self.input.pending() > 0 {
+            ctx.request_repaint();
+        }
         if self.bridge.as_ref().is_some_and(|b| !b.deferred.is_empty() || !b.shots.is_empty()) {
             ctx.request_repaint_after(Duration::from_millis(30));
         }
@@ -218,7 +221,7 @@ impl StudioApp {
 
     /// Zera gestos transitórios dos workspaces (arrasto/preview em andamento) antes de mexer na sessão pelo lado
     /// da bridge — mesmo que `undo_redo` faz para o usuário.
-    fn bridge_reset_gestures(&mut self) {
+    pub(super) fn bridge_reset_gestures(&mut self) {
         self.char_ui.gesture = None;
         self.scene_ui.session = None;
         self.scene_ui.gesture = None;
@@ -273,7 +276,7 @@ impl StudioApp {
                 "available": WorkspaceId::ALL.iter().map(|w| w.key()).collect::<Vec<_>>(),
             }))),
             "SET_WORKSPACE" => Some(self.bridge_set_workspace(params)),
-            // compatibilidade com `anigo_ui_action`: só a troca de aba tem equivalente nativo
+            // `select_tab` mantém a compatibilidade com `anigo_ui_action`; o resto é a UI nativa (`bridge_ui`)
             "UI_ACTION" => Some((|| {
                 let m = as_obj(params)?;
                 match opt_str(m, "action")? {
@@ -281,14 +284,28 @@ impl StudioApp {
                         let tab = opt_str(m, "value")?.ok_or_else(|| BridgeError::invalid_params("select_tab exige 'value'"))?;
                         self.bridge_set_workspace(&json!({ "workspace": tab }))
                     }
-                    other => Err(BridgeError::invalid_params(format!(
-                        "UI_ACTION {other:?} não é suportada pelo app nativo; use APPLY_COMMAND (Commands do núcleo) ou SET_WORKSPACE"
-                    ))),
+                    Some(a) => self.bridge_ui_action(a, m),
+                    None => Err(BridgeError::invalid_params("UI_ACTION exige 'action'")),
                 }
             })()),
+            "GET_UI_STATE" => Some(Ok(self.bridge_ui_state())),
+            "INPUT" => Some(self.bridge_input(params)),
+            "MODEL" => Some(self.bridge_model(params)),
+            "HAIR" => Some(self.bridge_hair(params)),
+            "SHADING" => self.bridge_shading_ctx(ctx, params),
+            "ANIM" => self.bridge_anim_ctx(ctx, params),
+            "MESHDATA" => Some(self.bridge_meshdata(params)),
+            "WEIGHTS" => Some(self.bridge_weights(params)),
             "GET_SELECTION" => Some(Ok(self.bridge_selection())),
             "LIST_ASSETS" => self.bridge_list_assets(ctx, params),
             "PLACE_ASSET" => self.bridge_place_asset(ctx, params),
+            "POSE" => Some(self.bridge_pose(params)),
+            "SCENE" => Some(self.bridge_scene(params)),
+            "CHAR" => Some(self.bridge_char(params)),
+            "APP" => Some(self.bridge_app(params)),
+            "LIGHT" => Some(self.bridge_light(params)),
+            "RENDER" => self.bridge_render(ctx, params),
+            "LIBRARY" => self.bridge_library_op(ctx, params),
             "RENDER_FRAME" => self.bridge_render_frame(ctx),
             "RENDER_STATUS" => Some(self.bridge_render_status(ctx, params)),
             other => Some(Err(BridgeError::unknown_action(other))),
@@ -348,7 +365,7 @@ impl StudioApp {
     }
 
     /// A Biblioteca pronta (clone barato) ou `None` depois de pedir a abertura em segundo plano.
-    fn bridge_library(&mut self, ctx: &egui::Context) -> Option<anigo_assets::Library> {
+    pub(super) fn bridge_library(&mut self, ctx: &egui::Context) -> Option<anigo_assets::Library> {
         if let Some(lib) = self.lib_ws.as_ref().and_then(|w| w.library().cloned()) {
             return Some(lib);
         }
@@ -356,6 +373,33 @@ impl StudioApp {
         w.ensure_open();
         w.pump(ctx);
         w.library().cloned()
+    }
+
+    /// `LIBRARY`: o Asset Browser sem janela (`library_ui/bridge.rs`); `edit_in_modeling` precisa do app inteiro.
+    fn bridge_library_op(&mut self, ctx: &egui::Context, params: &Value) -> Option<BridgeResult> {
+        let m = match as_obj(params) {
+            Ok(m) => m,
+            Err(e) => return Some(Err(e)),
+        };
+        let lib = self.bridge_library(ctx)?; // adia enquanto a Biblioteca abre
+        if matches!(opt_str(m, "op"), Ok(Some("edit_in_modeling"))) {
+            return Some((|| {
+                let id: anigo_assets::AssetId = opt_str(m, "asset_id")?.ok_or_else(|| BridgeError::invalid_params("'asset_id' é obrigatório"))?.parse().map_err(|e: anigo_assets::AssetError| BridgeError::invalid_params(e.to_string()))?;
+                let row = lib.require_row(&id).map_err(|e| BridgeError::failed(e.to_string()))?;
+                let f = lib.resolve_files(&id).map_err(|e| BridgeError::failed(e.to_string()))?;
+                if !f.exists {
+                    return Err(BridgeError::failed("o arquivo do ativo não está disponível (local offline ou apagado)"));
+                }
+                let before = self.modeling.doc.objects.len();
+                self.edit_library_asset(&f.primary, &row.format, &row.name);
+                let after = self.modeling.doc.objects.len();
+                if after <= before {
+                    return Err(BridgeError::failed(self.modeling.status.clone()));
+                }
+                Ok(json!({ "workspace": self.ws.key(), "objects": after, "status": self.modeling.status }))
+            })());
+        }
+        Some(self.lib_workspace().bridge_call(ctx, params))
     }
 
     fn bridge_list_assets(&mut self, ctx: &egui::Context, params: &Value) -> Option<BridgeResult> {
@@ -456,7 +500,7 @@ impl StudioApp {
         Some(Ok(json!({ "placed": placed.len(), "node_ids": placed, "history": self.core.history_report() })))
     }
 
-    fn bridge_render_frame(&mut self, ctx: &egui::Context) -> Option<BridgeResult> {
+    pub(super) fn bridge_render_frame(&mut self, ctx: &egui::Context) -> Option<BridgeResult> {
         let before = self.render_ui.jobs.len();
         let next_id = self.render_ui.next_id;
         self.render_enqueue(ctx);

@@ -52,9 +52,10 @@ pub struct LiveBridgeClient {
 /// Prazo de leitura por ação: as ações antigas continuam com 2 s; as do app nativo esperam a UI.
 pub fn read_timeout_for(action: &str) -> Duration {
     match action {
-        "SCREENSHOT" | "PLACE_ASSET" | "RENDER_FRAME" | "LIST_ASSETS" => Duration::from_secs(30),
+        "SCREENSHOT" | "PLACE_ASSET" | "RENDER_FRAME" | "LIST_ASSETS" | "MODEL" | "HAIR" | "WEIGHTS" | "MESHDATA" | "SHADING" | "ANIM" | "RENDER" | "POSE" | "LIGHT" | "SCENE" | "CHAR" | "APP" => Duration::from_secs(30),
+        "LIBRARY" => Duration::from_secs(60),
         "GET_SNAPSHOT" | "GET_PROJECT" => Duration::from_secs(20),
-        "APPLY_COMMAND" | "UNDO" | "REDO" | "GET_LOG" | "SET_WORKSPACE" | "GET_WORKSPACE" | "GET_SELECTION" | "RENDER_STATUS" | "GET_METRICS" => Duration::from_secs(12),
+        "APPLY_COMMAND" | "UNDO" | "REDO" | "GET_LOG" | "SET_WORKSPACE" | "GET_WORKSPACE" | "GET_SELECTION" | "GET_UI_STATE" | "UI_ACTION" | "INPUT" | "RENDER_STATUS" | "GET_METRICS" => Duration::from_secs(12),
         _ => Duration::from_secs(2),
     }
 }

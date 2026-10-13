@@ -158,6 +158,8 @@ pub(crate) struct SceneUi {
     pub speed: f32,
     pub fly_active: bool,
     pub view_kind: SceneViewKind,
+    /// Multi-vista do viewport (layout, câmeras das vistas não ativas, vista ativa); a câmera ativa é `camera`.
+    pub mview: crate::app::multiview::MultiView,
     // ---- ferramenta e snap
     pub tool: GizmoMode,
     pub space: GizmoSpace,
@@ -216,6 +218,7 @@ impl Default for SceneUi {
             speed: 1.0,
             fly_active: false,
             view_kind: SceneViewKind::Perspective,
+            mview: Default::default(),
             tool: GizmoMode::Translate,
             space: GizmoSpace::World,
             snap: SnapSettings::default(),

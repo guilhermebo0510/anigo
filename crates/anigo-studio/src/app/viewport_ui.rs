@@ -7,6 +7,7 @@ use crate::i18n::tr;
 use crate::icons;
 use crate::modeling::{Axis, ModalContext, Mode, TransformKind};
 use crate::theme;
+use super::multiview::{ViewKind, ViewLayout};
 use crate::viewport::camera::ViewPreset;
 use crate::viewport::picking::{self, ClickHit, PickContext};
 use crate::workbench::{build_draw_data, build_draw_data_eval, BuildOptions, DrawItem, ShadingMode};
@@ -14,6 +15,9 @@ use anigo_modeling::{SelectMode, Selection, Topology};
 use eframe::wgpu;
 use egui::{Color32, Key, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
 use glam::{Mat4, Vec2, Vec3};
+
+/// Altura reservada ao cabeçalho do viewport quando há várias vistas (elas começam abaixo dele).
+const HEADER_RESERVE: f32 = 40.0;
 
 fn to_glam(p: egui::Vec2) -> Vec2 {
     Vec2::new(p.x, p.y)
@@ -35,38 +39,89 @@ impl StudioApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                let avail = ui.available_size();
-                let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
-                self.viewport_hovered = resp.hovered();
+                let full = ui.available_rect_before_wrap();
                 let ppp = ui.ctx().pixels_per_point();
-                self.render_into(frame, rect, ppp);
-
-                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-                ui.painter().rect_filled(rect, 0.0, theme::BG_DEEP);
-                if self.view_shading == ViewShading::Cel {
-                    if let Some(tex) = self.gpu.as_ref().and_then(|g| g.cel_tex) {
-                        ui.painter().image(tex, rect, uv, Color32::WHITE);
+                self.mview.seed(&self.camera);
+                let busy = self.modeling.modal_active() || self.gizmo_drag || self.box_start.is_some();
+                self.mview.follow_pointer(&mut self.camera, ui.ctx(), busy);
+                // com várias vistas o cabeçalho (modo/shading/layout) ganha uma faixa própria em vez de cobrir o topo das vistas
+                let area = if self.mview.layout == ViewLayout::Single { full } else { Rect::from_min_max(full.min + egui::vec2(0.0, HEADER_RESERVE), full.max) };
+                let slots = self.mview.visible();
+                let rects = self.mview.pane_rects(area);
+                for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                    self.mview.rects[slot] = rect;
+                }
+                let active = self.mview.active;
+                for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                    // a câmera da vista ativa já está em `self.camera`; as outras entram só enquanto são desenhadas
+                    if slot != active {
+                        std::mem::swap(&mut self.camera, &mut self.mview.cams[slot]);
+                    }
+                    self.view_pane(ui, frame, slot, rect, slot == active, ppp);
+                    if slot != active {
+                        std::mem::swap(&mut self.camera, &mut self.mview.cams[slot]);
                     }
                 }
-                if let Some(tex) = self.gpu.as_ref().and_then(|g| g.tex) {
-                    ui.painter().image(tex, rect, uv, Color32::WHITE);
+                if slots.len() > 1 {
+                    // moldura da vista ativa; as divisórias ficam por cima das bordas e são arrastáveis
+                    ui.painter().rect_stroke(self.mview.rects[active].shrink(0.5), 0.0, Stroke::new(1.5, theme::ACCENT_DIM), egui::StrokeKind::Inside);
+                    self.mview.dividers_ui(ui, area);
                 }
-
-                let size = Vec2::new(rect.width(), rect.height());
-                self.uv.view_aspect = size.x / size.y.max(1.0);
-                let local = |p: Pos2| to_glam(p - rect.min);
-                if let Some(p) = resp.hover_pos().or(ui.input(|i| i.pointer.latest_pos())) {
-                    self.last_mouse = p;
-                }
-                self.handle_viewport_input(ui, &resp, rect, size, ppp);
-                self.draw_overlays(ui, rect, size);
-                let _ = local;
+                self.draw_header(ui, full);
             });
+    }
+
+    /// Uma vista do viewport: render no alvo do seu slot, entrada (só a ativa) e overlays. `self.camera` já é a dela.
+    fn view_pane(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, slot: usize, rect: Rect, is_active: bool, ppp: f32) {
+        let resp = ui.interact(rect, ui.id().with(("mview_pane", slot)), Sense::click_and_drag());
+        if is_active {
+            self.viewport_hovered = resp.hovered();
+        }
+        self.render_into(frame, rect, ppp, slot);
+
+        let painter = ui.painter_at(rect);
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        painter.rect_filled(rect, 0.0, theme::BG_DEEP);
+        if self.view_shading == ViewShading::Cel {
+            if let Some(tex) = self.gpu.as_ref().and_then(|g| g.cel_tex_of(slot)) {
+                painter.image(tex, rect, uv, Color32::WHITE);
+            }
+        }
+        let tex = self.gpu.as_ref().and_then(|g| if slot == 0 { g.tex } else { g.view_tex[slot - 1] });
+        if let Some(tex) = tex {
+            painter.image(tex, rect, uv, Color32::WHITE);
+        }
+
+        let size = Vec2::new(rect.width(), rect.height());
+        if is_active {
+            self.uv.view_aspect = size.x / size.y.max(1.0);
+            if let Some(p) = resp.hover_pos().or(ui.input(|i| i.pointer.latest_pos())) {
+                self.last_mouse = p;
+            }
+            self.handle_viewport_input(ui, &resp, rect, size, ppp);
+        }
+        self.draw_overlays(ui, rect, size, slot, is_active);
+    }
+
+    // ---------------------------------------------------------------- multi-vista
+
+    pub(crate) fn mview_set_layout(&mut self, layout: ViewLayout) {
+        self.mview.set_layout(&mut self.camera, layout);
+    }
+
+    /// Seletor do tipo de vista no canto da vista, ao lado do nome do objeto.
+    fn view_kind_menu(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let obj_name = self.modeling.active_object().map(|o| o.name.clone()).unwrap_or_else(|| "—".into());
+        let dy = if self.mview.layout == ViewLayout::Single { 40.0 } else { 6.0 };
+        let area = Rect::from_min_size(rect.min + egui::vec2(8.0, dy), egui::vec2((rect.width() - 16.0).clamp(60.0, 330.0), 22.0));
+        if let Some(k) = super::multiview::view_kind_menu(ui, area, &self.camera, &obj_name) {
+            k.apply(&mut self.camera);
+        }
     }
 
     // ---------------------------------------------------------------- GPU sync
 
-    fn render_into(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32) {
+    fn render_into(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32, slot: usize) {
         if !self.ensure_gpu(frame) {
             return;
         }
@@ -173,13 +228,15 @@ impl StudioApp {
             ViewShading::Wireframe => ShadingMode::Wireframe,
             ViewShading::Cel => ShadingMode::OverlayOnly,
         };
+        gpu.wb.set_slot(slot);
         let recreated = gpu.wb.render(size_px, &self.camera, &items, &settings);
         drop(items);
 
         // preview cel-shaded (renderer canônico) por baixo dos overlays
         let mut cel_recreated = false;
         if self.view_shading == ViewShading::Cel {
-            if let Some(cel) = gpu.cel.as_mut() {
+            gpu.ensure_cel(slot);
+            if let Some(cel) = gpu.cel_slot(slot) {
                 cel.sync_scene(&self.modeling.doc, &self.camera, size_px.0 as f32 / size_px.1.max(1) as f32);
                 cel_recreated = cel.render(size_px);
                 if let Some(e) = &cel.last_error {
@@ -189,25 +246,22 @@ impl StudioApp {
         }
 
         if let Some(rs) = frame.wgpu_render_state() {
-            if recreated || gpu.tex.is_none() {
+            let slot_tex = if slot == 0 { &mut gpu.tex } else { &mut gpu.view_tex[slot - 1] };
+            if recreated || slot_tex.is_none() {
                 let mut renderer = rs.renderer.write();
-                if let Some(old) = gpu.tex.take() {
+                if let Some(old) = slot_tex.take() {
                     renderer.free_texture(&old);
                 }
                 if let Some(view) = gpu.wb.output_view() {
-                    gpu.tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
+                    *slot_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
                 }
             }
-            if self.view_shading == ViewShading::Cel && (cel_recreated || gpu.cel_tex.is_none()) {
-                let mut renderer = rs.renderer.write();
-                if let Some(old) = gpu.cel_tex.take() {
-                    renderer.free_texture(&old);
-                }
-                if let Some(view) = gpu.cel.as_ref().and_then(|c| c.view()) {
-                    gpu.cel_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
-                }
+            if self.view_shading == ViewShading::Cel {
+                gpu.refresh_cel_tex(slot, cel_recreated, rs);
             }
         }
+        // os outros workspaces usam o alvo 0 sem saber de slots
+        gpu.wb.set_slot(0);
     }
 
     // ------------------------------------------------------------------- entrada
@@ -374,6 +428,17 @@ impl StudioApp {
         }
         if consume(ui, "modelagem.toggle_edit") {
             self.modeling.toggle_edit_mode();
+        }
+        // vistas: valem em todos os modos (inclusive Cabelo, que retorna mais abaixo)
+        if consume(ui, "modelagem.view_quad") {
+            self.mview_set_layout(if self.mview.layout == ViewLayout::Quad { ViewLayout::Single } else { ViewLayout::Quad });
+        }
+        if consume(ui, "modelagem.view_maximize") {
+            self.mview.toggle_maximize(&mut self.camera);
+        }
+        if consume(ui, "modelagem.view_ortho") {
+            let to = if self.camera.orthographic { ViewKind::Perspective } else { ViewKind::Ortho };
+            to.apply(&mut self.camera);
         }
         if self.modeling.mode == Mode::Hair {
             self.hair_hotkeys(ui);
@@ -560,11 +625,11 @@ impl StudioApp {
 
     // ------------------------------------------------------------------- overlays
 
-    fn draw_overlays(&mut self, ui: &mut egui::Ui, rect: Rect, size: Vec2) {
+    fn draw_overlays(&mut self, ui: &mut egui::Ui, rect: Rect, size: Vec2, slot: usize, is_active: bool) {
         let painter = ui.painter_at(rect);
 
         // caixa de seleção
-        if let (Some(start), true) = (self.box_start, ui.input(|i| i.pointer.primary_down())) {
+        if let (Some(start), true, true) = (self.box_start, is_active, ui.input(|i| i.pointer.primary_down())) {
             let a = rect.min + egui::vec2(start.x, start.y);
             let b = self.last_mouse;
             let r = Rect::from_two_pos(a, b);
@@ -575,21 +640,13 @@ impl StudioApp {
         // gizmo
         if !self.modeling.modal_active() || self.gizmo_drag {
             if let (Some(pivot), Some(kind)) = (self.gizmo_pivot(), self.current_transform_tool()) {
-                self.draw_gizmo(&painter, rect, size, pivot, kind);
+                self.draw_gizmo(&painter, rect, size, pivot, kind, is_active);
             }
         }
 
-        // info
-        let obj_name = self.modeling.active_object().map(|o| o.name.as_str()).unwrap_or("—");
-        let persp = if self.camera.orthographic { "Ortogonal" } else { "Perspectiva" };
-        painter.text(
-            rect.min + egui::vec2(10.0, 44.0),
-            egui::Align2::LEFT_TOP,
-            format!("{persp}  |  {obj_name}"),
-            egui::FontId::proportional(12.0),
-            Color32::from_rgba_unmultiplied(220, 220, 230, 190),
-        );
-        if let Some(err) = &self.shader_error {
+        // tipo da vista (perspectiva/ortogonal/frente/…) + objeto ativo
+        self.view_kind_menu(ui, rect);
+        if let (Some(err), true) = (&self.shader_error, slot == 0 || is_active) {
             painter.text(
                 rect.min + egui::vec2(10.0, 62.0),
                 egui::Align2::LEFT_TOP,
@@ -598,7 +655,7 @@ impl StudioApp {
                 Color32::from_rgb(0xff, 0x70, 0x70),
             );
         }
-        if self.modeling.modal_active() && !self.modeling.status.is_empty() {
+        if is_active && self.modeling.modal_active() && !self.modeling.status.is_empty() {
             let pos = Pos2::new(rect.center().x, rect.bottom() - 28.0);
             let text = self.modeling.status.clone();
             let galley = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), Color32::WHITE);
@@ -607,18 +664,17 @@ impl StudioApp {
             painter.galley(bg.center() - galley.size() * 0.5, galley, Color32::WHITE);
         }
 
-        if self.modeling.mode == Mode::Sculpt {
+        if is_active && self.modeling.mode == Mode::Sculpt {
             self.sculpt_overlay(ui, rect, size);
         }
-        if self.modeling.mode == Mode::Hair {
+        if is_active && self.modeling.mode == Mode::Hair {
             self.hair_overlay(ui, rect, size);
         }
         self.normals_overlay(ui, rect, size);
         self.draw_axis_widget(ui, rect);
-        self.draw_header(ui, rect);
     }
 
-    fn draw_gizmo(&self, painter: &egui::Painter, rect: Rect, size: Vec2, pivot: Vec3, kind: TransformKind) {
+    fn draw_gizmo(&self, painter: &egui::Painter, rect: Rect, size: Vec2, pivot: Vec3, kind: TransformKind, is_active: bool) {
         let cam = &self.camera;
         let s = gizmo::world_size(cam, pivot, size.y);
         let to_screen = |p: Vec3| -> Option<Pos2> {
@@ -627,7 +683,7 @@ impl StudioApp {
         let Some(origin) = to_screen(pivot) else {
             return;
         };
-        let active_axis = if self.modeling.modal_active() {
+        let active_axis = if self.modeling.modal_active() || !is_active {
             None
         } else {
             gizmo::hit_test(kind, cam, size, pivot, to_glam(self.last_mouse - rect.min))
@@ -750,6 +806,8 @@ impl StudioApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // espaço para o widget de eixos
                             ui.add_space(0.0);
+                            super::multiview::layout_switcher(ui, &mut self.mview, &mut self.camera);
+                            ui.separator();
                             let mut shading = self.view_shading;
                             egui::ComboBox::from_id_salt("shading")
                                 .selected_text(shading_label(shading))

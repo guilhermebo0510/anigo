@@ -26,6 +26,9 @@ use egui::{Color32, Key, PointerButton, Pos2, Rect, RichText, Sense, Stroke};
 use glam::{Mat4, Quat, Vec2, Vec3};
 use std::collections::{BTreeSet, HashSet};
 
+/// Altura das duas barras de ferramentas do viewport; com várias vistas elas ocupam uma faixa acima delas.
+const TOOLBARS_RESERVE: f32 = 78.0;
+
 const AXIS_COLORS: [Color32; 3] = [Color32::from_rgb(0xe8, 0x4a, 0x4a), Color32::from_rgb(0x6a, 0xcc, 0x4a), Color32::from_rgb(0x4a, 0x84, 0xf0)];
 const HILITE: Color32 = Color32::from_rgb(0xff, 0xe0, 0x3a);
 
@@ -91,37 +94,49 @@ enum MenuAction {
 impl StudioApp {
     pub(crate) fn scene_viewport_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            let avail = ui.available_size();
-            let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
+            let full = ui.available_rect_before_wrap();
             let ppp = ui.ctx().pixels_per_point();
-            self.scene_ui.view_size = Vec2::new(rect.width(), rect.height());
-            self.scene_refresh();
-            self.scene_input(ui, &resp, rect);
-            self.scene_refresh();
-            let (cam, render_rect) = self.scene_effective_camera(rect);
-            self.scene_render(frame, render_rect, ppp, &cam);
-
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, theme::BG_DEEP);
-            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            if let Some(g) = self.gpu.as_ref() {
-                if self.scene_ui.shading == SceneShading::Cel {
-                    if let Some(t) = g.cel_tex {
-                        painter.image(t, render_rect, uv, Color32::WHITE);
+            {
+                let su = &mut self.scene_ui;
+                let fresh: Vec<usize> = su.mview.visible().into_iter().filter(|s| !su.mview.seeded[*s]).collect();
+                su.mview.seed(&su.camera);
+                // as vistas que acabaram de aparecer enquadram a cena (a ortogonal herdaria a distância da perspectiva)
+                if let Some(b) = su.runtime.bounds {
+                    for s in fresh {
+                        crate::scene::camview::frame_box(&mut su.mview.cams[s], b.min, b.max);
+                        // folga: as barras de ferramentas cobrem o topo das vistas de cima
+                        su.mview.cams[s].distance *= 1.3;
                     }
                 }
-                if let Some(t) = g.tex {
-                    painter.image(t, render_rect, uv, Color32::WHITE);
+                // gestos (gizmo, marquee, voo) mantêm a vista em que começaram
+                let busy = su.session.is_some() || su.marquee.is_some() || su.fly_active;
+                su.mview.follow_pointer(&mut su.camera, ui.ctx(), busy);
+            }
+            // com várias vistas as duas barras de ferramentas ganham uma faixa própria em vez de cobrir o topo das vistas
+            let area = if self.scene_ui.mview.layout == crate::app::multiview::ViewLayout::Single { full } else { Rect::from_min_max(full.min + egui::vec2(0.0, TOOLBARS_RESERVE), full.max) };
+            let slots = self.scene_ui.mview.visible();
+            let rects = self.scene_ui.mview.pane_rects(area);
+            for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                self.scene_ui.mview.rects[slot] = rect;
+            }
+            let active = self.scene_ui.mview.active;
+            for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                // a câmera da vista ativa já está em `scene_ui.camera`; as outras entram só enquanto são desenhadas
+                if slot != active {
+                    std::mem::swap(&mut self.scene_ui.camera, &mut self.scene_ui.mview.cams[slot]);
                 }
-                if self.scene_ui.shading == SceneShading::Cel && g.cel.is_none() {
-                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr("char.no_preview"), egui::FontId::proportional(14.0), theme::TEXT_DIM);
+                self.scene_pane(ui, frame, slot, rect, slot == active, ppp);
+                if slot != active {
+                    std::mem::swap(&mut self.scene_ui.camera, &mut self.scene_ui.mview.cams[slot]);
                 }
             }
-            let view = CamView::from_orbit(&cam, Vec2::new(render_rect.width(), render_rect.height()));
-            self.scene_overlays(ui, &painter, rect, render_rect, &view);
-            self.scene_toolbars(ui, rect);
+            if slots.len() > 1 {
+                ui.painter().rect_stroke(self.scene_ui.mview.rects[active].shrink(0.5), 0.0, Stroke::new(1.5, theme::ACCENT_DIM), egui::StrokeKind::Inside);
+                self.scene_ui.mview.dividers_ui(ui, area);
+            }
+            let painter = ui.painter_at(full);
+            self.scene_toolbars(ui, full);
             self.scene_finish_gesture(ui.ctx());
-            self.scene_trace(ui.ctx(), rect, render_rect, &view);
             if self.scene_ui.message_seen.0 != self.scene_ui.message {
                 self.scene_ui.message_seen = (self.scene_ui.message.clone(), Some(std::time::Instant::now()));
             }
@@ -131,13 +146,58 @@ impl StudioApp {
                 if fresh {
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                 }
-                let pos = rect.left_bottom() + egui::vec2(10.0, -10.0);
+                let pos = full.left_bottom() + egui::vec2(10.0, -10.0);
                 let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.5), Color32::WHITE);
                 let r = Rect::from_min_size(pos - egui::vec2(0.0, galley.size().y), galley.size()).expand2(egui::vec2(6.0, 3.0));
                 painter.rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(20, 20, 26, 205));
                 painter.galley(r.min + egui::vec2(6.0, 3.0), galley, Color32::WHITE);
             }
         });
+    }
+
+    /// Uma vista do Cenário: entrada (só a ativa), render no alvo do seu slot e overlays. `scene_ui.camera` já é a dela.
+    #[allow(clippy::too_many_arguments)]
+    fn scene_pane(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, slot: usize, rect: Rect, is_active: bool, ppp: f32) {
+        let resp = ui.interact(rect, ui.id().with(("scene_pane", slot)), Sense::click_and_drag());
+        if is_active {
+            self.scene_ui.view_size = Vec2::new(rect.width(), rect.height());
+            self.scene_refresh();
+            self.scene_input(ui, &resp, rect);
+            self.scene_refresh();
+        }
+        let (cam, render_rect) = self.scene_effective_camera(rect, is_active);
+        self.scene_render(frame, render_rect, ppp, &cam, slot);
+
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, theme::BG_DEEP);
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        if let Some(g) = self.gpu.as_ref() {
+            let cel = self.scene_ui.shading == SceneShading::Cel;
+            if cel {
+                if let Some(t) = g.cel_tex_of(slot) {
+                    painter.image(t, render_rect, uv, Color32::WHITE);
+                }
+            }
+            if let Some(t) = if slot == 0 { g.tex } else { g.view_tex[slot - 1] } {
+                painter.image(t, render_rect, uv, Color32::WHITE);
+            }
+            if cel && !g.has_cel(slot) {
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr("char.no_preview"), egui::FontId::proportional(14.0), theme::TEXT_DIM);
+            }
+        }
+        let view = CamView::from_orbit(&cam, Vec2::new(render_rect.width(), render_rect.height()));
+        self.scene_overlays(ui, &painter, rect, render_rect, &view, is_active);
+        if is_active {
+            self.scene_trace(ui.ctx(), rect, render_rect, &view);
+        }
+        if self.scene_ui.mview.layout != crate::app::multiview::ViewLayout::Single {
+            // tipo da vista no canto (as barras de ferramentas têm faixa própria acima das vistas)
+            let y = 6.0;
+            let area = Rect::from_min_size(rect.min + egui::vec2(8.0, y), egui::vec2((rect.width() - 16.0).clamp(60.0, 330.0), 22.0));
+            if let Some(k) = crate::app::multiview::view_kind_menu(ui, area, &self.scene_ui.camera, "") {
+                self.scene_apply_view_kind(k);
+            }
+        }
     }
 
     /// `ANIGO_TRACE_SCENE=1`: uma linha `scenetrace ...` por mudança de estado, para o smoke de xdotool
@@ -197,9 +257,10 @@ impl StudioApp {
     }
 
     /// Câmera da viewport e o retângulo onde a imagem é desenhada (letterbox na vista pela câmera da cena).
-    fn scene_effective_camera(&self, rect: Rect) -> (OrbitCamera, Rect) {
+    fn scene_effective_camera(&self, rect: Rect, is_active: bool) -> (OrbitCamera, Rect) {
         let su = &self.scene_ui;
-        if su.camera_view {
+        // "olhar pela câmera da cena" vale só para a vista ativa; as outras continuam com a câmera de edição delas
+        if su.camera_view && is_active {
             let c = &self.core.project().scene.camera.camera;
             let r = letterbox(rect.shrink(18.0), c.aspect.clamp(0.3, 4.0));
             (orbit_from_camera(c.eye, c.target, c.fov_y), r)
@@ -872,6 +933,15 @@ impl StudioApp {
                 self.scene_set_view(view);
             }
         }
+        if consume("cenario.view_quad") {
+            let su = &mut self.scene_ui;
+            let to = if su.mview.layout == crate::app::multiview::ViewLayout::Quad { crate::app::multiview::ViewLayout::Single } else { crate::app::multiview::ViewLayout::Quad };
+            su.mview.set_layout(&mut su.camera, to);
+        }
+        if consume("cenario.view_maximize") {
+            let su = &mut self.scene_ui;
+            su.mview.toggle_maximize(&mut su.camera);
+        }
         for (id, sh) in [("cenario.shading_wire", SceneShading::Wire), ("cenario.shading_solid", SceneShading::Solid), ("cenario.shading_cel", SceneShading::Cel)] {
             if consume(id) {
                 self.scene_ui.shading = sh;
@@ -881,7 +951,7 @@ impl StudioApp {
 
     // ===================================================================== render
 
-    pub(crate) fn scene_render(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32, cam: &OrbitCamera) {
+    pub(crate) fn scene_render(&mut self, frame: &mut eframe::Frame, rect: Rect, ppp: f32, cam: &OrbitCamera, slot: usize) {
         if !self.ensure_gpu(frame) {
             return;
         }
@@ -989,12 +1059,14 @@ impl StudioApp {
             xray: false,
             grid_scale: 1.0,
         };
+        gpu.wb.set_slot(slot);
         let recreated = gpu.wb.render(size_px, cam, &items, &settings);
         drop(items);
 
         let mut cel_recreated = false;
         if su.shading == SceneShading::Cel {
-            if let Some(cel) = gpu.cel.as_mut() {
+            gpu.ensure_cel(slot);
+            if let Some(cel) = gpu.cel_slot(slot) {
                 let mut light = project.scene.lights.first().map(|l| l.light.clone()).unwrap_or_default();
                 if let Some(dir) = su.light_dir_override {
                     light.direction = dir;
@@ -1007,37 +1079,34 @@ impl StudioApp {
             }
         }
         if let Some(rs) = frame.wgpu_render_state() {
-            if recreated || gpu.tex.is_none() {
+            let slot_tex = if slot == 0 { &mut gpu.tex } else { &mut gpu.view_tex[slot - 1] };
+            if recreated || slot_tex.is_none() {
                 let mut renderer = rs.renderer.write();
-                if let Some(old) = gpu.tex.take() {
+                if let Some(old) = slot_tex.take() {
                     renderer.free_texture(&old);
                 }
                 if let Some(view) = gpu.wb.output_view() {
-                    gpu.tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
+                    *slot_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
                 }
             }
-            if su.shading == SceneShading::Cel && (cel_recreated || gpu.cel_tex.is_none()) {
-                let mut renderer = rs.renderer.write();
-                if let Some(old) = gpu.cel_tex.take() {
-                    renderer.free_texture(&old);
-                }
-                if let Some(view) = gpu.cel.as_ref().and_then(|c| c.view()) {
-                    gpu.cel_tex = Some(renderer.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear));
-                }
+            if su.shading == SceneShading::Cel {
+                gpu.refresh_cel_tex(slot, cel_recreated, rs);
             }
         }
+        // os outros workspaces usam o alvo 0 sem saber de slots
+        gpu.wb.set_slot(0);
     }
 
     // ===================================================================== overlays
 
-    fn scene_overlays(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, render_rect: Rect, view: &CamView) {
+    fn scene_overlays(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, rect: Rect, render_rect: Rect, view: &CamView, is_active: bool) {
         let to_screen = |p: Vec2| Pos2::new(render_rect.min.x + p.x, render_rect.min.y + p.y);
         let proj = |w: Vec3| view.project(w).map(|(p, _)| to_screen(p));
         let su = &self.scene_ui;
         let game = su.game_view;
 
-        // máscara + guias na vista pela câmera
-        if su.camera_view {
+        // máscara + guias na vista pela câmera (só na vista ativa)
+        if su.camera_view && is_active {
             let dim = Color32::from_rgba_unmultiplied(8, 8, 12, 215);
             for r in [
                 Rect::from_min_max(rect.min, Pos2::new(rect.max.x, render_rect.min.y)),
@@ -1150,12 +1219,13 @@ impl StudioApp {
             let frame = drag_frame.or_else(|| self.gizmo_frame(view));
             if let Some(f) = frame {
                 let active = su.session.as_ref().map(|s| s.drag.handle);
-                self.draw_scene_gizmo(painter, &f, view, render_rect, active.or(su.hover_handle), su.session.is_some());
+                let hot = if is_active { active.or(su.hover_handle) } else { None };
+                self.draw_scene_gizmo(painter, &f, view, render_rect, hot, su.session.is_some() && is_active);
             }
         }
 
         // ---- marquee
-        if let Some(m) = &su.marquee {
+        if let (Some(m), true) = (&su.marquee, is_active) {
             if (m.cur - m.start).length() > 4.0 {
                 let r = Rect::from_two_pos(to_screen(m.start), to_screen(m.cur));
                 painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(0x8a, 0x6c, 0xff, 40));
@@ -1360,7 +1430,7 @@ impl StudioApp {
     }
 
     fn view_controls(&mut self, ui: &mut egui::Ui) {
-        let mut set_view: Option<SceneViewKind> = None;
+        let mut set_view: Option<crate::app::multiview::ViewKind> = None;
         let su = &mut self.scene_ui;
         // sombreamento
         for (s, key, icon) in [(SceneShading::Cel, "viewport.cel", icons::SPARKLE), (SceneShading::Solid, "viewport.solid", icons::CUBE), (SceneShading::Wire, "viewport.wireframe", icons::POLYGON)] {
@@ -1370,9 +1440,10 @@ impl StudioApp {
         }
         ui.separator();
         // vistas
-        ui.menu_button(format!("{}  {}", icons::VIDEO, tr(su.view_kind.key())), |ui| {
-            for v in SceneViewKind::ALL {
-                if ui.selectable_label(su.view_kind == v, tr(v.key())).clicked() {
+        let cur = crate::app::multiview::ViewKind::of(&su.camera);
+        ui.menu_button(format!("{}  {}", icons::VIDEO, tr(cur.label_key())), |ui| {
+            for v in crate::app::multiview::ViewKind::ALL {
+                if ui.selectable_label(cur == v, tr(v.label_key())).clicked() {
                     set_view = Some(v);
                     ui.close();
                 }
@@ -1398,8 +1469,12 @@ impl StudioApp {
         ui.separator();
         ui.toggle_value(&mut su.drawer_open, RichText::new(icons::SQUARES_FOUR).size(15.0)).on_hover_text(format!("{}  (Ctrl+Space)", tr("scene.drawer")));
         ui.toggle_value(&mut su.place_open, RichText::new(icons::PLUS_SQUARE).size(15.0)).on_hover_text(tr("scene.place"));
+        ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::app::multiview::layout_switcher(ui, &mut self.scene_ui.mview, &mut self.scene_ui.camera);
+        });
         if let Some(v) = set_view {
-            self.scene_set_view(v);
+            self.scene_apply_view_kind(v);
         }
         if std::mem::take(&mut self.scene_ui.pending_focus) {
             self.scene_focus();

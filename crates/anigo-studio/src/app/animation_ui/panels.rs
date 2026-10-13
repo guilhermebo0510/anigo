@@ -1,6 +1,7 @@
 //! Barra de transporte (topo do painel inferior) e inspetor (direita): clip, chave selecionada, onion skin, marcadores,
 //! física secundária, arquivos (glTF/VRMA/BVH/clip), Biblioteca de clips e fila de render da sequência.
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::{describe_anim, AnimUi, InterpPick, SideTab, StudioApp};
 use crate::anim::keys;
 use crate::anim::secondary::{bake, SecondarySim};
@@ -35,12 +36,16 @@ impl StudioApp {
 
     /// Painel Inspetor da Animação (corpo): abas Clip/Osso.
     pub(crate) fn animation_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Clip, format!("{}  {}", icons::FILM_STRIP, tr("anim.tab.clip")));
-            ui.selectable_value(&mut self.anim_ui.side_tab, SideTab::Bone, format!("{}  {}", icons::BONE, tr("anim.tab.bone")));
-        });
-        ui.separator();
+        // a aba do Clipe/Osso continua sendo `anim_ui.side_tab` (outros trechos a leem): a faixa só a espelha
+        let want = match self.anim_ui.side_tab {
+            SideTab::Clip => PropTab::Clip,
+            SideTab::Bone => PropTab::Bone,
+        };
+        self.set_prop_tab(TabSet::Animacao, want);
+        let (tab, mut content) = self.tabbed(ui, TabSet::Animacao);
+        self.anim_ui.side_tab = if tab == PropTab::Bone { SideTab::Bone } else { SideTab::Clip };
+        let ui = &mut content;
+        ui.add_space(4.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| match self.anim_ui.side_tab {
                 SideTab::Clip => self.inspector_clip_tab(ui),
@@ -556,6 +561,9 @@ impl StudioApp {
 
     /// Pasta padrão das exportações.
     fn anim_export_dir(&self) -> std::path::PathBuf {
+        if let Some(d) = &self.anim_ui.export_dir {
+            return d.clone();
+        }
         if let Some(d) = std::env::var_os("ANIGO_ANIMATION_DIR") {
             return std::path::PathBuf::from(d);
         }

@@ -399,6 +399,9 @@ impl StudioApp {
                 ui.label(format!("{}: {}", tr("about.version"), env!("CARGO_PKG_VERSION")));
                 if let Some(g) = &self.gpu {
                     ui.label(format!("{}: {} ({})", tr("about.gpu"), g.adapter_name, g.backend));
+                    if let Some(m) = g.cel.as_ref().and_then(|c| c.metrics.as_ref()) {
+                        ui.label(RichText::new(format!("cel: {} draws · {} descartados · {} tris", m.draw_calls, m.culled_draw_calls, m.triangle_count)).size(11.5).color(theme::TEXT_DIM));
+                    }
                 }
                 ui.separator();
                 let path_text = |p: Option<&std::path::Path>| p.map(|p| p.display().to_string()).unwrap_or_else(|| tr("about.no_persist").to_string());

@@ -53,6 +53,89 @@ pub enum OpKind {
 }
 
 impl OpKind {
+    pub const ALL: [OpKind; 35] = [
+        OpKind::Extrude,
+        OpKind::ExtrudeIndividual,
+        OpKind::Inset,
+        OpKind::InsetIndividual,
+        OpKind::Bevel,
+        OpKind::LoopCut,
+        OpKind::Bisect,
+        OpKind::DeleteVerts,
+        OpKind::DeleteEdges,
+        OpKind::DeleteFaces,
+        OpKind::DeleteOnlyFaces,
+        OpKind::MergeCenter,
+        OpKind::MergeByDistance,
+        OpKind::DissolveVerts,
+        OpKind::DissolveEdges,
+        OpKind::DissolveFaces,
+        OpKind::LimitedDissolve,
+        OpKind::FillHole,
+        OpKind::GridFill,
+        OpKind::Bridge,
+        OpKind::Triangulate,
+        OpKind::TrisToQuads,
+        OpKind::FlipNormals,
+        OpKind::RecalcOutside,
+        OpKind::Smooth,
+        OpKind::Relax,
+        OpKind::Subdivide,
+        OpKind::Poke,
+        OpKind::MarkSharp,
+        OpKind::ClearSharp,
+        OpKind::MarkSeam,
+        OpKind::ClearSeam,
+        OpKind::SetCrease,
+        OpKind::HideSelected,
+        OpKind::RevealAll,
+    ];
+
+    /// Nome estável (snake_case) usado pela bridge/MCP.
+    pub fn key(self) -> &'static str {
+        match self {
+            OpKind::Extrude => "extrude",
+            OpKind::ExtrudeIndividual => "extrude_individual",
+            OpKind::Inset => "inset",
+            OpKind::InsetIndividual => "inset_individual",
+            OpKind::Bevel => "bevel",
+            OpKind::LoopCut => "loop_cut",
+            OpKind::Bisect => "bisect",
+            OpKind::DeleteVerts => "delete_verts",
+            OpKind::DeleteEdges => "delete_edges",
+            OpKind::DeleteFaces => "delete_faces",
+            OpKind::DeleteOnlyFaces => "delete_only_faces",
+            OpKind::MergeCenter => "merge_center",
+            OpKind::MergeByDistance => "merge_by_distance",
+            OpKind::DissolveVerts => "dissolve_verts",
+            OpKind::DissolveEdges => "dissolve_edges",
+            OpKind::DissolveFaces => "dissolve_faces",
+            OpKind::LimitedDissolve => "limited_dissolve",
+            OpKind::FillHole => "fill_hole",
+            OpKind::GridFill => "grid_fill",
+            OpKind::Bridge => "bridge",
+            OpKind::Triangulate => "triangulate",
+            OpKind::TrisToQuads => "tris_to_quads",
+            OpKind::FlipNormals => "flip_normals",
+            OpKind::RecalcOutside => "recalc_outside",
+            OpKind::Smooth => "smooth",
+            OpKind::Relax => "relax",
+            OpKind::Subdivide => "subdivide",
+            OpKind::Poke => "poke",
+            OpKind::MarkSharp => "mark_sharp",
+            OpKind::ClearSharp => "clear_sharp",
+            OpKind::MarkSeam => "mark_seam",
+            OpKind::ClearSeam => "clear_seam",
+            OpKind::SetCrease => "set_crease",
+            OpKind::HideSelected => "hide_selected",
+            OpKind::RevealAll => "reveal_all",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<OpKind> {
+        Self::ALL.into_iter().find(|o| o.key() == k)
+    }
+
     /// Operadores que exigem uma seleção/ação direta (sem painel de ajuste de parâmetros).
     pub fn has_params(self) -> bool {
         matches!(
@@ -173,6 +256,48 @@ impl Default for OpParams {
             poke_offset: 0.0,
             lock_boundary: true,
         }
+    }
+}
+
+impl OpParams {
+    /// Aplica sobreposições vindas de JSON (`{"thickness":0.2,"segments":3,…}`). Chave desconhecida ou tipo errado = erro
+    /// (nada é aplicado pela metade).
+    pub fn apply_json(&mut self, m: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+        let mut next = self.clone();
+        for (k, v) in m {
+            let num = || v.as_f64().filter(|f| f.is_finite()).map(|f| f as f32).ok_or_else(|| format!("'{k}' deve ser número"));
+            let uint = || v.as_u64().filter(|n| *n <= 10_000).map(|n| n as u32).ok_or_else(|| format!("'{k}' deve ser inteiro 0..10000"));
+            let flag = || v.as_bool().ok_or_else(|| format!("'{k}' deve ser true|false"));
+            match k.as_str() {
+                "distance" => next.distance = num()?,
+                "thickness" => next.thickness = num()?,
+                "depth" => next.depth = num()?,
+                "outset" => next.outset = flag()?,
+                "even" => next.even = flag()?,
+                "width" => next.width = num()?,
+                "segments" => next.segments = uint()?.max(1),
+                "profile" => next.profile = num()?,
+                "cuts" => next.cuts = uint()?.max(1),
+                "slide" => next.slide = num()?,
+                "plane_axis" => next.plane_axis = (uint()? as usize).min(2),
+                "plane_offset" => next.plane_offset = num()?,
+                "clear_inner" => next.clear_inner = flag()?,
+                "clear_outer" => next.clear_outer = flag()?,
+                "fill" => next.fill = flag()?,
+                "factor" => next.factor = num()?,
+                "iterations" => next.iterations = uint()?.max(1),
+                "merge_distance" => next.merge_distance = num()?,
+                "dissolve_angle_deg" => next.dissolve_angle_deg = num()?,
+                "subdiv_cuts" => next.subdiv_cuts = uint()?.max(1),
+                "subdiv_smooth" => next.subdiv_smooth = num()?,
+                "crease" => next.crease = num()?,
+                "poke_offset" => next.poke_offset = num()?,
+                "lock_boundary" => next.lock_boundary = flag()?,
+                other => return Err(format!("parâmetro desconhecido: '{other}'")),
+            }
+        }
+        *self = next;
+        Ok(())
     }
 }
 
@@ -623,6 +748,34 @@ pub fn tool_to_op(tool_id: &str) -> Option<OpKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn op_keys_are_unique_snake_case_and_roundtrip() {
+        let mut seen = std::collections::HashSet::new();
+        for k in OpKind::ALL {
+            assert!(seen.insert(k.key()), "chave repetida: {}", k.key());
+            assert!(k.key().chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", k.key());
+            assert_eq!(OpKind::from_key(k.key()), Some(k));
+        }
+        assert_eq!(seen.len(), 35);
+        assert_eq!(OpKind::from_key("nao_existe"), None);
+    }
+
+    #[test]
+    fn json_overrides_are_validated_and_atomic() {
+        let mut p = OpParams::default();
+        let ok = serde_json::json!({ "thickness": 0.3, "segments": 4, "outset": true, "cuts": 0 });
+        p.apply_json(ok.as_object().unwrap()).unwrap();
+        assert_eq!((p.thickness, p.segments, p.outset), (0.3, 4, true));
+        assert_eq!(p.cuts, 1, "contagens nunca chegam a zero");
+        // chave desconhecida, tipo errado e valor fora do intervalo recusam TUDO (nada aplicado pela metade)
+        let before = p.clone();
+        for bad in [serde_json::json!({ "width": 0.9, "bogus": 1 }), serde_json::json!({ "width": "x" }), serde_json::json!({ "segments": 99999 }), serde_json::json!({ "outset": 1 })] {
+            assert!(p.apply_json(bad.as_object().unwrap()).is_err(), "{bad}");
+            assert_eq!(p, before, "{bad}");
+        }
+    }
+
     use crate::modeling::{ModelingSession, PrimitiveKind};
     use anigo_modeling::{SelectMode, Topology};
 

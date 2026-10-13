@@ -6,6 +6,7 @@
 //! `Command`s (ver `crate::character`); o núcleo valida, aplica e desfaz, e a malha deformada
 //! vem de `CoreSession::sync_scene` — nada é deformado aqui.
 
+use super::props_tabs::{PropTab, TabSet};
 use super::StudioApp;
 use crate::character::macros::{self, Proportion, PAD_ECTO, PAD_ENDO, PAD_H, PAD_MESO, PAD_W};
 use crate::character::sliders::{self, Region};
@@ -163,23 +164,25 @@ impl StudioApp {
 
     /// Corpo do painel Inspetor do Personagem (o dock fornece o quadro e o cabeçalho).
     pub(crate) fn char_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr(&format!("tool.{}", self.char_tool_id()))).strong().size(14.0));
-        });
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let st = self.core.project().clone();
-            self.char_project_section(ui);
-            match self.char_tool_id() {
-                "body" => {
-                    self.char_macro_sections(ui, &st);
-                    self.char_slider_list(ui, &st, Region::Body);
+        let (tab, mut content) = self.tabbed(ui, TabSet::Personagem);
+        let ui = &mut content;
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
+            PropTab::Project => self.char_project_section(ui),
+            PropTab::History => self.char_history_section(ui),
+            _ => {
+                ui.label(RichText::new(tr(&format!("tool.{}", self.char_tool_id()))).strong().size(14.0));
+                ui.separator();
+                let st = self.core.project().clone();
+                match self.char_tool_id() {
+                    "body" => {
+                        self.char_macro_sections(ui, &st);
+                        self.char_slider_list(ui, &st, Region::Body);
+                    }
+                    "face" => self.char_slider_list(ui, &st, Region::Face),
+                    other => self.char_soon_panel(ui, &st, other),
                 }
-                "face" => self.char_slider_list(ui, &st, Region::Face),
-                other => self.char_soon_panel(ui, &st, other),
             }
-            self.char_history_section(ui);
         });
     }
 

@@ -2,6 +2,7 @@
 //! explicação) e a cena de prova. Cada controle é ligado a um dado real do projeto: edições contínuas viram
 //! `preview` + UM comando ao soltar (`light_edit`), botões viram um comando (`light_apply`).
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::{LightPatch, Section, StudioApp};
 use crate::i18n::tr;
 use crate::icons;
@@ -60,18 +61,34 @@ fn rgb8(c: [f32; 3]) -> Color32 {
 
 impl StudioApp {
     pub(crate) fn light_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.label(RichText::new(format!("{}  {}", icons::SUN, tr("light.title"))).strong().size(14.0));
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let focus = self.light_ui.focus.take();
-            section(ui, icons::LIGHTBULB, "light.section.rigs", true, focus == Some(Section::Rigs), |ui| self.light_rigs_body(ui));
-            section(ui, icons::SUN, "light.section.sun", true, focus == Some(Section::Sun), |ui| self.light_sun_body(ui));
-            section(ui, icons::CIRCLE_HALF, "light.section.shadows", true, focus == Some(Section::Shadows), |ui| self.light_shadows_body(ui));
-            section(ui, icons::CLOUD_SUN, "light.section.ambient", true, focus == Some(Section::Ambient), |ui| self.light_ambient_body(ui));
-            section(ui, icons::SPARKLE, "light.section.rim", false, false, |ui| self.light_rim_body(ui));
-            section(ui, icons::FLASHLIGHT, "light.section.extra", false, focus == Some(Section::Extra), |ui| Self::light_extra_body(ui));
-            section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
+        // clicar numa parte do gizmo/overlay pede uma seção: abre a aba onde ela mora
+        let focus = self.light_ui.focus.take();
+        if let Some(f) = focus {
+            let want = match f {
+                Section::Rigs => PropTab::Rigs,
+                Section::Sun | Section::Ambient => PropTab::Sun,
+                Section::Shadows => PropTab::Shadows,
+                Section::Extra => PropTab::Advanced,
+            };
+            self.set_prop_tab(TabSet::Iluminacao, want);
+        }
+        let (tab, mut content) = self.tabbed(ui, TabSet::Iluminacao);
+        let ui = &mut content;
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
+            PropTab::Rigs => section(ui, icons::LIGHTBULB, "light.section.rigs", true, focus == Some(Section::Rigs), |ui| self.light_rigs_body(ui)),
+            PropTab::Sun => {
+                section(ui, icons::SUN, "light.section.sun", true, focus == Some(Section::Sun), |ui| self.light_sun_body(ui));
+                section(ui, icons::CLOUD_SUN, "light.section.ambient", true, focus == Some(Section::Ambient), |ui| self.light_ambient_body(ui));
+            }
+            PropTab::Shadows => {
+                section(ui, icons::CIRCLE_HALF, "light.section.shadows", true, focus == Some(Section::Shadows), |ui| self.light_shadows_body(ui));
+                section(ui, icons::SPARKLE, "light.section.rim", true, false, |ui| self.light_rim_body(ui));
+            }
+            _ => {
+                section(ui, icons::FLASHLIGHT, "light.section.extra", true, focus == Some(Section::Extra), |ui| Self::light_extra_body(ui));
+                section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
+            }
         });
     }
 

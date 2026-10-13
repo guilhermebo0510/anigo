@@ -99,6 +99,9 @@ struct DockBehavior<'a> {
     /// Painéis que o usuário fechou neste quadro (X do cabeçalho ou da aba).
     closed: Vec<PaneId>,
     edited: bool,
+    /// Painel lateral (direita) que está fechado neste quadro: calculado ANTES de `tree.ui`, porque durante o desenho
+    /// a árvore está fora de `app.dock.trees` e `dock_panel_open` não enxerga o estado real.
+    closed_side: Option<&'static PanelSpec>,
 }
 
 impl DockBehavior<'_> {
@@ -138,6 +141,22 @@ impl DockBehavior<'_> {
     }
 }
 
+impl DockBehavior<'_> {
+    /// Aba na borda direita da viewport quando o painel lateral foi fechado: um clique o traz de volta
+    /// (o mesmo comando de Janela > Painéis), para ninguém precisar caçar o menu.
+    fn show_closed_side_panel(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let Some(spec) = self.closed_side else { return };
+        let tab = Rect::from_center_size(egui::pos2(rect.right() - 9.0, rect.center().y), egui::vec2(18.0, 72.0));
+        let resp = ui.interact(tab, ui.id().with(("dock_show_side", spec.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{}: {}", tr("dock.show_panel"), tr(spec.title_key)));
+        let fill = if resp.hovered() { theme::BG_HOVER } else { theme::BG_WIDGET };
+        ui.painter().rect(tab, 4.0, fill, Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
+        ui.painter().text(tab.center(), egui::Align2::CENTER_CENTER, icons::CARET_LEFT, egui::FontId::proportional(14.0), if resp.hovered() { theme::ACCENT } else { theme::TEXT_DIM });
+        if resp.clicked() {
+            self.app.dock.cmds.push(DockCmd::Toggle(spec.id));
+        }
+    }
+}
+
 impl Behavior<PaneId> for DockBehavior<'_> {
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane: &mut PaneId) -> UiResponse {
         let Some(spec) = registry::find(pane) else { return UiResponse::None };
@@ -149,6 +168,7 @@ impl Behavior<PaneId> for DockBehavior<'_> {
         // o viewport 3D desenha o próprio fundo; a Biblioteca (grade) usa o quadro padrão de painel central
         if central && spec.id != "biblioteca.browser" {
             self.app.dock_draw(ui, self.frame, spec.id);
+            self.show_closed_side_panel(ui, rect);
             return UiResponse::None;
         }
         ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
@@ -161,6 +181,12 @@ impl Behavior<PaneId> for DockBehavior<'_> {
         let margin = if central { egui::vec2(8.0, 8.0) } else { egui::vec2(8.0, 2.0) };
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body.shrink2(margin)));
         child.set_clip_rect(body);
+        // o rótulo do slider vem à direita e o campo numérico logo depois: reserva espaço para os dois, senão o texto
+        // estoura a largura do painel e é cortado (o slider encolhe com o painel em vez de empurrar o rótulo para fora)
+        if !central {
+            let w = child.available_width();
+            child.spacing_mut().slider_width = (w - 185.0).clamp(60.0, 220.0);
+        }
         self.app.dock_draw(&mut child, self.frame, spec.id);
         resp
     }
@@ -197,7 +223,8 @@ impl Behavior<PaneId> for DockBehavior<'_> {
     }
 
     fn min_size(&self) -> f32 {
-        110.0
+        // abaixo disso os controles dos painéis (sliders, rótulos + campos) ficam cortados e o painel "some" na prática
+        190.0
     }
 
     fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
@@ -506,7 +533,10 @@ impl StudioApp {
         self.dock_sync_flags(ws, area);
         let Some(mut tree) = self.dock.trees.remove(&ws) else { return };
         let in_tabs = tiles::panes_in_tabs(&tree);
-        let mut behavior = DockBehavior { app: self, frame, in_tabs, closed: Vec::new(), edited: false };
+        let closed_side = registry::panels(ws)
+            .iter()
+            .find(|p| p.kind == PanelKind::Panel && p.home == crate::layout::model::Home::Right && tiles::find_pane(&tree, p.id).is_none() && self.dock_flag(p.id).is_none());
+        let mut behavior = DockBehavior { app: self, frame, in_tabs, closed: Vec::new(), edited: false, closed_side };
         tree.ui(&mut behavior, ui);
         let DockBehavior { closed, edited, .. } = behavior;
         self.dock.trees.insert(ws, tree);

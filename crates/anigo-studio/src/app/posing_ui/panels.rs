@@ -1,6 +1,7 @@
 //! Painéis do Posing (direita): árvore de ossos + osso ativo + ações (ferramenta "Estrutura óssea"),
 //! IK/olhar/pés/equilíbrio (ferramenta "Cinemática inversa") e presets/mãos/Biblioteca de poses.
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::viewport::PoseTool;
 use super::{describe_pose, HandSide, StudioApp};
 use crate::i18n::tr;
@@ -22,25 +23,27 @@ impl StudioApp {
     }
 
     pub(crate) fn pose_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
+        let (tab, mut content) = self.tabbed(ui, TabSet::Posing);
+        let ui = &mut content;
+        ui.add_space(4.0);
         let tool = self.posing_tool();
-        let (title, icon) = match tool {
-            PoseTool::Rig => ("tool.rig", icons::BONE),
-            PoseTool::Ik => ("tool.ik", icons::TARGET),
-            PoseTool::Presets => ("tool.poses_preset", icons::PERSON_SIMPLE_RUN),
-        };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{icon}  {}", tr(title))).strong().size(14.0));
-        });
-        ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if tab == PropTab::History {
+                self.pose_history_section(ui);
+                return;
+            }
+            let (title, icon) = match tool {
+                PoseTool::Rig => ("tool.rig", icons::BONE),
+                PoseTool::Ik => ("tool.ik", icons::TARGET),
+                PoseTool::Presets => ("tool.poses_preset", icons::PERSON_SIMPLE_RUN),
+            };
+            ui.label(RichText::new(format!("{icon}  {}", tr(title))).strong().size(14.0));
+            ui.separator();
             match tool {
                 PoseTool::Rig => self.rig_panel(ui),
                 PoseTool::Ik => self.ik_panel(ui),
                 PoseTool::Presets => self.presets_panel(ui),
             }
-            ui.add_space(8.0);
-            self.pose_history_section(ui);
         });
     }
 

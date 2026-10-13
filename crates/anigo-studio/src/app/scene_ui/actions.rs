@@ -494,6 +494,26 @@ impl StudioApp {
         }
     }
 
+    /// Aplica um tipo de vista (perspectiva/ortogonal/alinhadas) à câmera de edição atual. As alinhadas enquadram a cena
+    /// mantendo a direção, como `scene_set_view`.
+    pub(crate) fn scene_apply_view_kind(&mut self, kind: crate::app::multiview::ViewKind) {
+        use crate::app::multiview::ViewKind as K;
+        kind.apply(&mut self.scene_ui.camera);
+        self.scene_ui.camera_view = false;
+        self.scene_ui.view_kind = match kind {
+            K::Front => crate::scene::camview::SceneViewKind::Front,
+            K::Back => crate::scene::camview::SceneViewKind::Back,
+            K::Right => crate::scene::camview::SceneViewKind::Right,
+            K::Left => crate::scene::camview::SceneViewKind::Left,
+            K::Top => crate::scene::camview::SceneViewKind::Top,
+            K::Bottom => crate::scene::camview::SceneViewKind::Bottom,
+            K::Perspective | K::Ortho => crate::scene::camview::SceneViewKind::Perspective,
+        };
+        if !matches!(kind, K::Perspective | K::Ortho) {
+            self.scene_focus_keep_direction();
+        }
+    }
+
     fn scene_focus_keep_direction(&mut self) {
         if let Some(b) = self.scene_ui.runtime.bounds {
             frame_box(&mut self.scene_ui.camera, b.min, b.max);

@@ -1,6 +1,7 @@
 //! Viewport do Iluminação: navegação (órbita, pan, zoom, enquadrar), gizmo de direção da luz (esfera de
 //! direção + disco do sol arrastável), render (o cel canônico do Cenário) e overlays.
 
+use crate::app::multiview::ViewLayout;
 use super::{DragKind, LightDrag, LightPatch, StudioApp};
 use crate::i18n::tr;
 use crate::icons;
@@ -16,6 +17,9 @@ const SPHERE_PX: f32 = 100.0;
 /// Raio (px) de captura do disco do sol.
 const DISK_HIT_PX: f32 = 15.0;
 
+/// Altura reservada à barra de ferramentas do viewport quando há várias vistas (elas começam abaixo dela).
+const HEADER_RESERVE: f32 = 44.0;
+
 fn e2g(v: egui::Vec2) -> Vec2 {
     Vec2::new(v.x, v.y)
 }
@@ -28,10 +32,8 @@ fn rgb8(c: [f32; 3]) -> Color32 {
 impl StudioApp {
     pub(crate) fn light_viewport_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            let avail = ui.available_size();
-            let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
+            let full = ui.available_rect_before_wrap();
             let ppp = ui.ctx().pixels_per_point();
-            self.light_ui.view_size = Vec2::new(rect.width(), rect.height());
             if !self.light_ui.entered {
                 self.light_enter();
             }
@@ -39,40 +41,85 @@ impl StudioApp {
             if !self.light_ui.framed {
                 self.light_frame_character();
             }
-            self.light_input(ui, &resp, rect);
-
-            // luz presa à câmera: a direção só existe no preview (o projeto não muda)
-            self.scene_ui.light_dir_override = self
-                .light_ui
-                .follow_camera
-                .then(|| lighting::camera_relative_dir(&self.light_ui.camera, self.light_ui.rel_az, self.light_ui.rel_el).to_array());
-            let cam = self.light_ui.camera;
-            let saved = self.scene_ui.shading;
-            self.scene_ui.shading = super::super::scene_ui::SceneShading::Cel;
-            self.scene_render(frame, rect, ppp, &cam);
-            self.scene_ui.shading = saved;
-
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, theme::BG_DEEP);
-            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            if let Some(g) = self.gpu.as_ref() {
-                if let Some(t) = g.cel_tex {
-                    painter.image(t, rect, uv, Color32::WHITE);
+            {
+                let lu = &mut self.light_ui;
+                lu.mview.seed(&lu.camera);
+                // o arrasto do disco do sol mantém a vista em que começou
+                let busy = lu.drag.is_some();
+                lu.mview.follow_pointer(&mut lu.camera, ui.ctx(), busy);
+            }
+            // com várias vistas a barra de ferramentas ganha uma faixa própria em vez de cobrir o topo das vistas
+            let multi = self.light_ui.mview.layout != ViewLayout::Single;
+            let area = if multi { Rect::from_min_max(full.min + egui::vec2(0.0, HEADER_RESERVE), full.max) } else { full };
+            let slots = self.light_ui.mview.visible();
+            let rects = self.light_ui.mview.pane_rects(area);
+            for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                self.light_ui.mview.rects[slot] = rect;
+            }
+            let active = self.light_ui.mview.active;
+            for (&slot, &rect) in slots.iter().zip(rects.iter()) {
+                if slot != active {
+                    std::mem::swap(&mut self.light_ui.camera, &mut self.light_ui.mview.cams[slot]);
                 }
-                if let Some(t) = g.tex {
-                    painter.image(t, rect, uv, Color32::WHITE);
-                }
-                if g.cel.is_none() {
-                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr("char.no_preview"), egui::FontId::proportional(14.0), theme::TEXT_DIM);
+                self.light_pane(ui, frame, slot, rect, slot == active, ppp);
+                if slot != active {
+                    std::mem::swap(&mut self.light_ui.camera, &mut self.light_ui.mview.cams[slot]);
                 }
             }
-            let view = CamView::from_orbit(&cam, Vec2::new(rect.width(), rect.height()));
-            self.light_overlays(&painter, rect, &view, ppp);
-            self.light_toolbar(ui, rect);
-            self.light_hud(&painter, rect);
+            if slots.len() > 1 {
+                ui.painter().rect_stroke(self.light_ui.mview.rects[active].shrink(0.5), 0.0, Stroke::new(1.5, theme::ACCENT_DIM), egui::StrokeKind::Inside);
+                self.light_ui.mview.dividers_ui(ui, area);
+            }
+            let painter = ui.painter_at(full);
+            self.light_toolbar(ui, full);
+            self.light_hud(&painter, full);
             self.light_finish_gesture(ui.ctx());
-            self.light_trace(ui.ctx(), rect, &view);
         });
+    }
+
+    /// Uma vista da Iluminação: entrada (só a ativa), render Cel no alvo do seu slot e overlays (disco do sol).
+    fn light_pane(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, slot: usize, rect: Rect, is_active: bool, ppp: f32) {
+        let resp = ui.interact(rect, ui.id().with(("light_pane", slot)), Sense::click_and_drag());
+        if is_active {
+            self.light_ui.view_size = Vec2::new(rect.width(), rect.height());
+            self.light_input(ui, &resp, rect);
+        }
+        // luz presa à câmera: a direção só existe no preview (o projeto não muda) e é relativa à câmera DESTA vista
+        self.scene_ui.light_dir_override = self
+            .light_ui
+            .follow_camera
+            .then(|| lighting::camera_relative_dir(&self.light_ui.camera, self.light_ui.rel_az, self.light_ui.rel_el).to_array());
+        let cam = self.light_ui.camera;
+        let saved = self.scene_ui.shading;
+        self.scene_ui.shading = super::super::scene_ui::SceneShading::Cel;
+        self.scene_render(frame, rect, ppp, &cam, slot);
+        self.scene_ui.shading = saved;
+
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, theme::BG_DEEP);
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        if let Some(g) = self.gpu.as_ref() {
+            if let Some(t) = g.cel_tex_of(slot) {
+                painter.image(t, rect, uv, Color32::WHITE);
+            }
+            if let Some(t) = if slot == 0 { g.tex } else { g.view_tex[slot - 1] } {
+                painter.image(t, rect, uv, Color32::WHITE);
+            }
+            if !g.has_cel(slot) {
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, tr("char.no_preview"), egui::FontId::proportional(14.0), theme::TEXT_DIM);
+            }
+        }
+        let view = CamView::from_orbit(&cam, Vec2::new(rect.width(), rect.height()));
+        self.light_overlays(&painter, rect, &view, ppp);
+        if is_active {
+            self.light_trace(ui.ctx(), rect, &view);
+        }
+        if self.light_ui.mview.layout != ViewLayout::Single {
+            let area = Rect::from_min_size(rect.min + egui::vec2(8.0, 6.0), egui::vec2((rect.width() - 16.0).clamp(60.0, 330.0), 22.0));
+            if let Some(k) = crate::app::multiview::view_kind_menu(ui, area, &self.light_ui.camera, "") {
+                k.apply(&mut self.light_ui.camera);
+            }
+        }
     }
 
     // ===================================================================== entrada
@@ -108,6 +155,17 @@ impl StudioApp {
         }
         if resp.hovered() && !ctx.egui_wants_keyboard_input() && self.hk(&ctx, "iluminacao.frame") {
             self.light_frame_character();
+        }
+        if resp.hovered() && !ctx.egui_wants_keyboard_input() {
+            if self.hk(&ctx, "iluminacao.view_quad") {
+                let lu = &mut self.light_ui;
+                let to = if lu.mview.layout == ViewLayout::Quad { ViewLayout::Single } else { ViewLayout::Quad };
+                lu.mview.set_layout(&mut lu.camera, to);
+            }
+            if self.hk(&ctx, "iluminacao.view_maximize") {
+                let lu = &mut self.light_ui;
+                lu.mview.toggle_maximize(&mut lu.camera);
+            }
         }
 
         // ---- gizmo: disco do sol
@@ -296,6 +354,11 @@ impl StudioApp {
                     }
                     if ui.button(RichText::new(icons::USER).size(16.0)).on_hover_text(tr("light.view_front")).clicked() {
                         front = true;
+                    }
+                    ui.separator();
+                    {
+                        let lu = &mut self.light_ui;
+                        crate::app::multiview::layout_buttons(ui, &mut lu.mview, &mut lu.camera, false);
                     }
                 });
             });

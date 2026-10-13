@@ -9,6 +9,7 @@
 //! `[` `]` raio do pente · `Esc` cancela o traço · `Ctrl+clique` na mecha insere ponto ·
 //! `Ctrl+Z` / `Ctrl+Shift+Z` desfaz / refaz · `Alt+arrastar` ou botão do meio orbita.
 
+use super::props_tabs::PropTab;
 use super::StudioApp;
 use crate::i18n::tr;
 use crate::icons;
@@ -292,7 +293,7 @@ impl StudioApp {
 
     // ======================================================================= painel
 
-    pub(crate) fn inspector_hair(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn inspector_hair(&mut self, ui: &mut egui::Ui, tab: PropTab) {
         if !ui.input(|i| i.pointer.any_down()) {
             self.hair.end_gesture();
         }
@@ -303,72 +304,71 @@ impl StudioApp {
             ui.add_space(4.0);
         }
 
-        // ---- ferramentas
-        section(ui, tr("hairtool.tools"), true, |ui| {
-            ui.horizontal(|ui| {
-                for (t, icon) in [(HairTool::Draw, icons::PEN_NIB), (HairTool::Edit, icons::CURSOR), (HairTool::Comb, icons::WIND)] {
-                    let btn = egui::Button::new(RichText::new(icon).size(20.0))
-                        .min_size(egui::vec2(40.0, 34.0))
-                        .selected(self.hair.tool == t);
-                    if ui.add(btn).on_hover_text(tr(t.tool_id())).clicked() {
-                        self.hair_set_tool(t);
-                    }
-                }
-            });
+        if tab == PropTab::Hair {
+            // ---- ferramenta ativa (a escolha fica na barra da esquerda; aqui só a dica)
             let hint = match self.hair.tool {
                 HairTool::Draw => "hairtool.hint.draw",
                 HairTool::Edit => "hairtool.hint.edit",
                 HairTool::Comb => "hairtool.hint.comb",
             };
             ui.label(RichText::new(tr(hint)).size(11.0).color(theme::TEXT_DIM));
-        });
+            ui.add_space(4.0);
 
-        // ---- cabeça-alvo
-        section(ui, tr("hairtool.target"), true, |ui| {
-            let name = self.modeling.hair_target().map(|o| o.name.clone());
-            match &name {
-                Some(n) => ui.label(format!("{}  {n}", icons::USER)),
-                None => ui.label(RichText::new(tr("hairtool.no_target")).color(theme::TEXT_DIM)),
-            };
-            let active_is_hair = self
-                .modeling
-                .active_object()
-                .is_some_and(|a| self.modeling.doc.hair.groups.iter().any(|g| g.object_id == Some(a.id)));
-            let can = self.modeling.active_object().is_some() && !active_is_hair;
-            if ui.add_enabled(can, egui::Button::new(format!("{}  {}", icons::TARGET, tr("hairtool.use_active")))).clicked() {
-                self.modeling.checkpoint("Definir cabeça do cabelo");
-                self.modeling.hair_set_target_from_active();
-                let r = self.modeling.hair_regenerate(None);
-                self.hair_report(r);
-            }
-        });
+            // ---- cabeça-alvo
+            section(ui, tr("hairtool.target"), true, |ui| {
+                let name = self.modeling.hair_target().map(|o| o.name.clone());
+                match &name {
+                    Some(n) => ui.label(format!("{}  {n}", icons::USER)),
+                    None => ui.label(RichText::new(tr("hairtool.no_target")).color(theme::TEXT_DIM)),
+                };
+                let active_is_hair = self
+                    .modeling
+                    .active_object()
+                    .is_some_and(|a| self.modeling.doc.hair.groups.iter().any(|g| g.object_id == Some(a.id)));
+                let can = self.modeling.active_object().is_some() && !active_is_hair;
+                if ui.add_enabled(can, egui::Button::new(format!("{}  {}", icons::TARGET, tr("hairtool.use_active")))).clicked() {
+                    self.modeling.checkpoint("Definir cabeça do cabelo");
+                    self.modeling.hair_set_target_from_active();
+                    let r = self.modeling.hair_regenerate(None);
+                    self.hair_report(r);
+                }
+            });
 
-        self.hair_groups_panel(ui);
-        self.hair_strand_panel(ui);
-        self.hair_drawing_panel(ui);
-        self.hair_bounce_panel(ui);
+            self.hair_groups_panel(ui);
+            self.hair_strand_panel(ui);
+        }
+        if tab == PropTab::Drawing {
+            self.hair_drawing_panel(ui);
+        }
+        if tab == PropTab::Physics {
+            self.hair_bounce_panel(ui);
+        }
 
-        section(ui, tr("hairtool.output"), false, |ui| {
-            if ui.button(format!("{}  {}", icons::EXPORT, tr("hairtool.export_glb"))).clicked() {
-                self.export_hair_to_library();
-            }
-            if ui.button(format!("{}  {}", icons::ARROWS_CLOCKWISE, tr("hairtool.regenerate"))).clicked() {
-                let r = self.modeling.hair_regenerate(None);
-                self.hair_report(r);
-            }
-            ui.label(RichText::new(tr("hairtool.output_note")).size(11.0).color(theme::TEXT_DIM));
-        });
-        section(ui, tr("hairtool.shortcuts"), false, |ui| {
-            for l in [
-                "hairtool.keys.1",
-                "hairtool.keys.2",
-                "hairtool.keys.3",
-                "hairtool.keys.4",
-                "hairtool.keys.5",
-            ] {
-                ui.label(RichText::new(tr(l)).size(11.0).color(theme::TEXT_DIM));
-            }
-        });
+        if tab == PropTab::Output {
+            section(ui, tr("hairtool.output"), false, |ui| {
+                if ui.button(format!("{}  {}", icons::EXPORT, tr("hairtool.export_glb"))).clicked() {
+                    self.export_hair_to_library();
+                }
+                if ui.button(format!("{}  {}", icons::ARROWS_CLOCKWISE, tr("hairtool.regenerate"))).clicked() {
+                    let r = self.modeling.hair_regenerate(None);
+                    self.hair_report(r);
+                }
+                ui.label(RichText::new(tr("hairtool.output_note")).size(11.0).color(theme::TEXT_DIM));
+            });
+        }
+        if tab == PropTab::Help {
+            section(ui, tr("hairtool.shortcuts"), false, |ui| {
+                for l in [
+                    "hairtool.keys.1",
+                    "hairtool.keys.2",
+                    "hairtool.keys.3",
+                    "hairtool.keys.4",
+                    "hairtool.keys.5",
+                ] {
+                    ui.label(RichText::new(tr(l)).size(11.0).color(theme::TEXT_DIM));
+                }
+            });
+        }
     }
 
     fn hair_groups_panel(&mut self, ui: &mut egui::Ui) {
