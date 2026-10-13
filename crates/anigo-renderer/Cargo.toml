@@ -16,3 +16,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Mesma série do naga que o wgpu 30 embute: valida os .wgsl sem precisar de GPU.
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }

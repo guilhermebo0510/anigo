@@ -1,0 +1,14 @@
+[package]
+name = "anigo-session"
+version = "0.1.0"
+edition = "2021"
+description = "Sessão canônica do núcleo ANIGO (ProjectState + histórico + geometria em cache), compartilhada pelo app Tauri legado e pelo app nativo"
+
+[dependencies]
+anigo-core = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+glam = { workspace = true }

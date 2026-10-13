@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::hierarchy::{self, HierarchyError, NodeKind};
 use crate::math::{Camera, Transform};
 use crate::mesh::Mesh;
+use crate::npr::NprParams;
 use crate::snapshot::SkinPayload;
 use glam::Mat4;
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,86 @@ fn default_ambient_ground() -> [f32; 3] { [0.25, 0.20, 0.18] }
 fn default_spec_size() -> f32 { 0.45 }
 /// P2-05: intensidade do AO (antes mistura fixa de 0.85). Espelha `aoIntensity`.
 fn default_ao_intensity() -> f32 { 0.85 }
+/// Sombra projetada da luz principal (shadow map de 1 luz, estilizado). ADITIVO e
+/// DESLIGADO por padrão: com `enabled == false` o renderer não cria o passe de
+/// profundidade da luz e o quadro é byte a byte o do motor anterior (golden
+/// frames); o campo é omitido do JSON enquanto estiver todo no padrão.
+///
+/// Matemática pura (matriz da luz, offset de normal, degrau) em [`crate::shadow`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightShadow {
+    /// Liga o passe de profundidade da luz e a sombra projetada no cel.
+    pub enabled: bool,
+    /// Quanto a sombra projetada escurece (0..1; 1 = até a cor de sombra do terminador).
+    pub strength: f32,
+    /// Dureza do degrau da sombra (0 = suave/gradiente largo, 1 = degrau duro de anime).
+    pub hardness: f32,
+    /// Bias de profundidade em METROS (contra acne). 0..0,25.
+    pub bias: f32,
+    /// Offset do receptor ao longo da normal, em TEXELS do mapa (contra acne em
+    /// superfícies rasantes). 0..6.
+    pub normal_bias: f32,
+    /// Lado do mapa em texels: 512, 1024, 2048 ou 4096.
+    pub resolution: u32,
+    /// Raio de cobertura (m) em torno do alvo da câmera. 0 = automático (ajusta
+    /// ao conteúdo visível da cena inteira).
+    pub distance: f32,
+}
+
+impl Default for LightShadow {
+    fn default() -> Self {
+        Self { enabled: false, strength: 1.0, hardness: 0.85, bias: 0.02, normal_bias: 1.5, resolution: 2048, distance: 0.0 }
+    }
+}
+
+impl LightShadow {
+    /// `true` com tudo no padrão (`skip_serializing_if`).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Resoluções suportadas do mapa.
+    pub const RESOLUTIONS: [u32; 4] = [512, 1024, 2048, 4096];
+
+    /// Valores seguros para a GPU (faixas documentadas; NaN volta ao padrão).
+    pub fn sanitized(&self) -> Self {
+        let d = Self::default();
+        let c = |v: f32, lo: f32, hi: f32, fallback: f32| if v.is_finite() { v.clamp(lo, hi) } else { fallback };
+        let resolution = Self::RESOLUTIONS.iter().copied().min_by_key(|r| r.abs_diff(self.resolution)).unwrap_or(d.resolution);
+        Self {
+            enabled: self.enabled,
+            strength: c(self.strength, 0.0, 1.0, d.strength),
+            hardness: c(self.hardness, 0.0, 1.0, d.hardness),
+            bias: c(self.bias, 0.0, 0.25, d.bias),
+            normal_bias: c(self.normal_bias, 0.0, 6.0, d.normal_bias),
+            resolution,
+            distance: c(self.distance, 0.0, 500.0, d.distance),
+        }
+    }
+
+    /// `Err(motivo)` quando algum campo é inválido (NaN/infinito ou fora da faixa):
+    /// usado pela validação de `SetLight` (o núcleo recusa em vez de "consertar" em silêncio).
+    pub fn validate(&self) -> Result<(), String> {
+        let check = |name: &str, v: f32, lo: f32, hi: f32| {
+            if v.is_finite() && (lo..=hi).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("shadow.{name} deve estar em [{lo}, {hi}], encontrado {v}"))
+            }
+        };
+        check("strength", self.strength, 0.0, 1.0)?;
+        check("hardness", self.hardness, 0.0, 1.0)?;
+        check("bias", self.bias, 0.0, 0.25)?;
+        check("normal_bias", self.normal_bias, 0.0, 6.0)?;
+        check("distance", self.distance, 0.0, 500.0)?;
+        if !Self::RESOLUTIONS.contains(&self.resolution) {
+            return Err(format!("shadow.resolution deve ser 512, 1024, 2048 ou 4096, encontrado {}", self.resolution));
+        }
+        Ok(())
+    }
+}
+
 /// Stylized Anime Directional Light with Hue-Shifting parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StylizedLight {
@@ -34,6 +115,9 @@ pub struct StylizedLight {
     pub ambient_sky: [f32; 3],
     #[serde(default = "default_ambient_ground")]
     pub ambient_ground: [f32; 3],
+    /// Sombra projetada (shadow map de 1 luz). Omitida do JSON no padrão (desligada).
+    #[serde(default, skip_serializing_if = "LightShadow::is_default")]
+    pub shadow: LightShadow,
 }
 
 impl Default for StylizedLight {
@@ -47,6 +131,7 @@ impl Default for StylizedLight {
             shadow_saturation: default_shadow_saturation(),
             ambient_sky: default_ambient_sky(),
             ambient_ground: default_ambient_ground(),
+            shadow: LightShadow::default(),
         }
     }
 }
@@ -169,6 +254,11 @@ pub struct StylizedMaterial {
     /// Damping do tracking (exponencial, 1/s) — quanto maior, mais rígido.
     #[serde(default = "default_gaze_damping")]
     pub gaze_damping: f32,
+    /// Motor cel NPR (rampa 2D, contorno de alta qualidade, espelhamento do
+    /// SDF facial). Tudo no padrão = comportamento anterior; omitido da
+    /// serialização enquanto estiver no padrão (ver [`NprParams`]).
+    #[serde(default, skip_serializing_if = "NprParams::is_default")]
+    pub npr: NprParams,
 }
 
 impl Default for StylizedMaterial {
@@ -217,6 +307,7 @@ impl Default for StylizedMaterial {
             gaze_tracking_enabled: false,
             gaze_saccade_amplitude: default_gaze_saccade_amplitude(),
             gaze_damping: default_gaze_damping(),
+            npr: NprParams::default(),
         }
     }
 }

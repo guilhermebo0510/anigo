@@ -18,8 +18,8 @@
 
 import { GLB_CHUNK_BIN, GLB_CHUNK_JSON, GLB_MAGIC, GLB_VERSION, GLTF_COMPONENT_TYPES, GLTF_PRIMITIVE_MODES } from "./gltf2";
 import type { Gltf } from "./gltf2";
-import type { Vrm1Meta, Vrm1SpringBone } from "./vrm1";
-import { VRM1_EXPRESSION_PRESETS } from "./vrm1";
+import type { Vrm1Collider, Vrm1Meta, Vrm1SpringBone } from "./vrm1";
+import { SPRING_BONE_SPEC_VERSION, VRM1_EXPRESSION_PRESETS, isExtendedColliderShape } from "./vrm1";
 
 // ---------------------------------------------------------------------------
 // Modelo de exportação (input do ANIGO: cena normalizada)
@@ -126,6 +126,73 @@ export interface VrmExportData {
   expressionPresets: Record<string, number>;
   expressionCustom?: Record<string, number>;
   springBone?: Vrm1SpringBone;
+}
+
+// ---------------------------------------------------------------------------
+// VRMC_springBone (schema oficial 1.0)
+// ---------------------------------------------------------------------------
+
+function colliderToJson(collider: Vrm1Collider): Record<string, unknown> {
+  const shape = collider.shape;
+  if ("sphere" in shape && !shape.sphere.inside) {
+    return { node: collider.node, shape: { sphere: { offset: [...shape.sphere.offset], radius: shape.sphere.radius } } };
+  }
+  if ("capsule" in shape && !shape.capsule.inside) {
+    const c = shape.capsule;
+    return { node: collider.node, shape: { capsule: { offset: [...c.offset], radius: c.radius, tail: [...c.tail] } } };
+  }
+  // `VRMC_springBone_extended_collider` + collider de fallback na spec base:
+  //  - inside: esfera de raio 0 muito longe (não afeta players sem a extensão);
+  //  - plano: esfera enorme que aproxima o semi-espaço (offset - normal * R).
+  let fallback: Record<string, unknown> = { sphere: { offset: [0, -10000, 0], radius: 0 } };
+  let extShape: Record<string, unknown>;
+  if ("sphere" in shape) {
+    extShape = { sphere: { offset: [...shape.sphere.offset], radius: shape.sphere.radius, inside: true } };
+  } else if ("capsule" in shape) {
+    const c = shape.capsule;
+    extShape = { capsule: { offset: [...c.offset], radius: c.radius, tail: [...c.tail], inside: true } };
+  } else {
+    const R = 1000;
+    const { offset, normal } = shape.plane;
+    fallback = {
+      sphere: {
+        offset: [offset[0] - normal[0] * R, offset[1] - normal[1] * R, offset[2] - normal[2] * R],
+        radius: R,
+      },
+    };
+    extShape = { plane: { offset: [...offset], normal: [...normal] } };
+  }
+  return {
+    node: collider.node,
+    shape: fallback,
+    extensions: { VRMC_springBone_extended_collider: { specVersion: SPRING_BONE_SPEC_VERSION, shape: extShape } },
+  };
+}
+
+/** Serializa `VRMC_springBone` no schema oficial 1.0. */
+export function springBoneToJson(spring: Vrm1SpringBone): Record<string, unknown> {
+  const root: Record<string, unknown> = { specVersion: SPRING_BONE_SPEC_VERSION };
+  if (spring.colliders.length > 0) root["colliders"] = spring.colliders.map(colliderToJson);
+  if (spring.colliderGroups.length > 0) {
+    root["colliderGroups"] = spring.colliderGroups.map((group) => ({
+      ...(group.name !== undefined ? { name: group.name } : {}),
+      colliders: [...group.colliders],
+    }));
+  }
+  root["springs"] = spring.springs.map((chain) => ({
+    ...(chain.name !== undefined ? { name: chain.name } : {}),
+    joints: chain.joints.map((joint) => ({
+      node: joint.node,
+      hitRadius: joint.hitRadius,
+      stiffness: joint.stiffness,
+      gravityPower: joint.gravityPower,
+      gravityDir: [...joint.gravityDir],
+      dragForce: joint.dragForce,
+    })),
+    ...(chain.colliderGroups.length > 0 ? { colliderGroups: [...chain.colliderGroups] } : {}),
+    ...(chain.center !== undefined ? { center: chain.center } : {}),
+  }));
+  return root;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,47 +522,12 @@ export function exportGltf(scene: ExportScene, vrm?: Vrm1ExportData, options: Ex
       expression: { preset, custom },
     };
     if (vrm.springBone) {
+      // A spec não exige que o leitor conheça springBone: vai só em `extensionsUsed`.
       extensionsUsed.push("VRMC_springBone");
-      extensionsRequired.push("VRMC_springBone");
-      const springColliders: Array<Record<string, unknown>> = [];
-      for (const sphere of vrm.springBone.colliders.spheres) {
-        springColliders.push({
-          spheres: [{ group: sphere.group, node: sphere.node, radius: sphere.radius, offset: sphere.offset ?? [0, 0, 0] }],
-        });
+      if (vrm.springBone.colliders.some((collider: Vrm1Collider) => isExtendedColliderShape(collider.shape))) {
+        extensionsUsed.push("VRMC_springBone_extended_collider");
       }
-      for (const capsule of vrm.springBone.colliders.capsules) {
-        springColliders.push({
-          capsules: [{ group: capsule.group, node: capsule.node, from: capsule.from, to: capsule.to, radius: capsule.radius }],
-        });
-      }
-      const springJoint = (joint: {
-        node: number;
-        distance: number;
-        hitRadius?: number;
-        gravityPower?: number;
-        gravityDir?: [number, number, number];
-        springStiffness?: number;
-        springDamping?: number;
-      }): Record<string, unknown> => {
-        const out: Record<string, unknown> = { node: joint.node, distance: joint.distance };
-        if (joint.hitRadius !== undefined) out["hitRadius"] = joint.hitRadius;
-        if (joint.gravityPower !== undefined) out["gravityPower"] = joint.gravityPower;
-        if (joint.gravityDir) out["gravityDir"] = [...joint.gravityDir];
-        if (joint.springStiffness !== undefined) out["springStiffness"] = joint.springStiffness;
-        if (joint.springDamping !== undefined) out["springDamping"] = joint.springDamping;
-        return out;
-      };
-      gltfExtensions["VRMC_springBone"] = {
-        secondaryRig: {
-          groups: vrm.springBone.groups.map((group) => ({
-            name: group.name,
-            center: springJoint(group.center),
-            joints: group.joints.map((joint) => springJoint(joint)),
-            colliderGroups: group.colliderGroups,
-          })),
-          colliders: springColliders,
-        },
-      };
+      gltfExtensions["VRMC_springBone"] = springBoneToJson(vrm.springBone);
     }
   }
 
@@ -504,9 +536,9 @@ export function exportGltf(scene: ExportScene, vrm?: Vrm1ExportData, options: Ex
     asset: {
       version: "2.0",
       generator: "anigo-studio/0.1.0 (fase2-exporter)",
-      ...(extensionsUsed.length > 0 ? { extensionsUsed } : {}),
-      ...(extensionsRequired.length > 0 ? { extensionsRequired } : {}),
     },
+    ...(extensionsUsed.length > 0 ? { extensionsUsed } : {}),
+    ...(extensionsRequired.length > 0 ? { extensionsRequired } : {}),
     scene: 0,
     scenes: [{ name: scene.name ?? "ANIGO Scene", nodes: scene.rootNodes }],
     nodes: nodeJson,
@@ -605,7 +637,7 @@ export function summarizeImport(gltf: Gltf): ImportSummary {
       morphTargetCount += (prim.targets ?? []).length;
     }
   }
-  const used = gltf.asset.extensionsUsed ?? [];
+  const used = gltf.extensionsUsed ?? gltf.asset.extensionsUsed ?? [];
   const isVrm = used.includes("VRMC_vrm");
   let title = "";
   if (isVrm && gltf.extensions?.["VRMC_vrm"]) {

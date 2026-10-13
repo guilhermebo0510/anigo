@@ -16,6 +16,8 @@ import {
   Vrm1Error,
   VRM1_EXPRESSION_PRESETS,
   buildGlb,
+  parseSpringBone,
+  springBoneToJson,
   exportGltf,
   exportModel,
   mapMToonToAnimeMaterial,
@@ -34,6 +36,7 @@ import type {
   ExportScene,
   ExportVertex,
   Gltf,
+  Vrm1SpringBone,
   VrmExportData,
 } from "../../src/services/vrm/index.ts";
 import { loadGlbMesh } from "../../src/services/gltf_loader.ts";
@@ -149,21 +152,24 @@ function vrmData(): VrmExportData {
     expressionPresets: presets,
     expressionCustom: { wink: 16 },
     springBone: {
-      groups: [
+      specVersion: "1.0",
+      colliders: [
+        { node: 0, shape: { sphere: { offset: [0, 0.01, 0], radius: 0.08, inside: false } } },
+        { node: 1, shape: { capsule: { offset: [0, 0.5, 0], radius: 0.06, tail: [0, 0.8, 0], inside: false } } },
+      ],
+      colliderGroups: [{ name: "body", colliders: [0, 1] }],
+      springs: [
         {
           name: "HairFront",
-          center: { node: 10, distance: 0.1 },
           joints: [
-            { node: 11, distance: 0.1, springStiffness: 0.8, springDamping: 0.3 },
-            { node: 12, distance: 0.12, springStiffness: 0.6, springDamping: 0.4 },
+            { node: 1, hitRadius: 0.02, stiffness: 0.8, gravityPower: 0.5, gravityDir: [0, -1, 0], dragForce: 0.3 },
+            { node: 2, hitRadius: 0.02, stiffness: 0.6, gravityPower: 0.5, gravityDir: [0, -1, 0], dragForce: 0.4 },
+            { node: 3, hitRadius: 0, stiffness: 1, gravityPower: 0, gravityDir: [0, -1, 0], dragForce: 0.5 },
           ],
           colliderGroups: [0],
+          center: 0,
         },
       ],
-      colliders: {
-        spheres: [{ group: 0, node: 20, radius: 0.08, offset: [0, 0.01, 0] }],
-        capsules: [{ group: 0, node: 21, from: [0, 0.5, 0], to: [0, 0.8, 0], radius: 0.06 }],
-      },
     },
   };
 }
@@ -285,17 +291,23 @@ test("roundtrip VRM 1.0: meta, humanoid, expressões, MToon e spring bones", () 
   }
   assert.equal(vrm.expression.custom["wink"]?.blendShape, 16);
 
-  // Spring bones
+  // Spring bones (schema oficial VRMC_springBone-1.0)
   assert.ok(vrm.springBone);
-  assert.equal(vrm.springBone.groups.length, 1);
-  assert.equal(vrm.springBone.groups[0].name, "HairFront");
-  assert.equal(vrm.springBone.groups[0].center.node, 10);
-  assert.equal(vrm.springBone.groups[0].joints.length, 2);
-  assert.equal(vrm.springBone.groups[0].joints[0].springStiffness, 0.8);
-  assert.equal(vrm.springBone.colliders.spheres.length, 1);
-  assert.equal(vrm.springBone.colliders.spheres[0].radius, 0.08);
-  assert.equal(vrm.springBone.colliders.capsules.length, 1);
-  assert.deepEqual(vrm.springBone.colliders.capsules[0].from, [0, 0.5, 0]);
+  assert.equal(vrm.springBone.specVersion, "1.0");
+  assert.equal(vrm.springBone.springs.length, 1);
+  assert.equal(vrm.springBone.springs[0].name, "HairFront");
+  assert.equal(vrm.springBone.springs[0].center, 0);
+  assert.equal(vrm.springBone.springs[0].joints.length, 3);
+  closeTo(vrm.springBone.springs[0].joints[0].stiffness, 0.8, "joint stiffness");
+  closeTo(vrm.springBone.springs[0].joints[0].dragForce, 0.3, "joint dragForce");
+  assert.deepEqual(vrm.springBone.springs[0].colliderGroups, [0]);
+  assert.equal(vrm.springBone.colliders.length, 2);
+  assert.deepEqual(vrm.springBone.colliders[0].shape, { sphere: { offset: [0, 0.01, 0], radius: 0.08, inside: false } });
+  assert.deepEqual(vrm.springBone.colliders[1].shape, {
+    capsule: { offset: [0, 0.5, 0], radius: 0.06, tail: [0, 0.8, 0], inside: false },
+  });
+  assert.deepEqual(vrm.springBone.colliderGroups, [{ name: "body", colliders: [0, 1] }]);
+  assert.deepEqual(vrm.warnings.filter((w) => w.includes("springBone") || w.includes("legado")), []);
 
   // MToon nos materiais
   assert.equal(vrm.materials.size, 1); // só o material 0 tem mtoon no export
@@ -345,7 +357,7 @@ test("parse GLB hostil: interleaved + quantizado + uint32 + sparse + constraint"
   // COLOR_0 u8 normalized: [255,128,0,255], [0,255,0,255], [0,0,255,255]
   const binStartColor = binParts.length;
   binParts.push(255, 128, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255);
-  // Índices uint32 (5123 = UNSIGNED_INT na spec): 0,1,2
+  // Índices uint32 (5125 = UNSIGNED_INT na spec): 0,1,2
   const binStartIdx = binParts.length;
   for (const index of [0, 1, 2]) {
     binParts.push(index & 0xff, (index >> 8) & 0xff, (index >> 16) & 0xff, (index >> 24) & 0xff);
@@ -377,7 +389,7 @@ test("parse GLB hostil: interleaved + quantizado + uint32 + sparse + constraint"
       { bufferView: 0, byteOffset: 0, componentType: 5126, count: 3, type: "VEC3" },
       { bufferView: 0, byteOffset: 12, componentType: 5126, count: 3, type: "VEC3" },
       { bufferView: 1, componentType: 5121, normalized: true, count: 3, type: "VEC4" },
-      { bufferView: 2, componentType: 5123, count: 3, type: "SCALAR" },
+      { bufferView: 2, componentType: 5125, count: 3, type: "SCALAR" },
     ],
     meshes: [
       {
@@ -625,3 +637,173 @@ test("summarizeImport conta vértices, triângulos, morphs e extensões", () => 
 });
 
 
+
+// ---------------------------------------------------------------------------
+// 8. VRMC_springBone — schema oficial 1.0, extended_collider e leitura do formato legado
+// ---------------------------------------------------------------------------
+
+const NODES_CHAIN = [{ children: [1] }, { children: [2] }, { children: [3] }, {}];
+
+function allowedKeys(obj: unknown, keys: string[], where: string): void {
+  assert.ok(obj !== null && typeof obj === "object" && !Array.isArray(obj), `${where}: objeto`);
+  for (const key of Object.keys(obj as Record<string, unknown>)) {
+    assert.ok(keys.includes(key), `${where}: chave fora do schema oficial: ${key}`);
+  }
+}
+
+/** Validador mínimo do JSON-schema oficial `VRMC_springBone-1.0` (chaves, tipos, obrigatórios). */
+function assertSpringBoneSchema(spring: Record<string, any>): void {
+  allowedKeys(spring, ["specVersion", "colliders", "colliderGroups", "springs", "extensions", "extras"], "VRMC_springBone");
+  assert.equal(spring.specVersion, "1.0");
+  for (const c of spring.colliders ?? []) {
+    allowedKeys(c, ["node", "shape", "extensions", "extras"], "collider");
+    assert.ok(Number.isInteger(c.node));
+    allowedKeys(c.shape, ["sphere", "capsule"], "shape");
+    assert.equal(Object.keys(c.shape).length, 1, "shape exclusivo sphere|capsule");
+    if (c.shape.sphere) allowedKeys(c.shape.sphere, ["offset", "radius"], "sphere");
+    if (c.shape.capsule) allowedKeys(c.shape.capsule, ["offset", "radius", "tail"], "capsule");
+  }
+  for (const g of spring.colliderGroups ?? []) {
+    allowedKeys(g, ["name", "colliders", "extras"], "colliderGroup");
+    assert.ok(g.colliders.every(Number.isInteger));
+  }
+  for (const s of spring.springs ?? []) {
+    allowedKeys(s, ["name", "joints", "colliderGroups", "center", "extras"], "spring");
+    assert.ok(s.joints.length >= 2, "joints minItems 2");
+    for (const j of s.joints) {
+      allowedKeys(j, ["node", "hitRadius", "stiffness", "gravityPower", "gravityDir", "dragForce", "extras"], "joint");
+      assert.ok(Number.isInteger(j.node));
+      assert.ok(j.dragForce >= 0 && j.dragForce <= 1);
+      assert.ok(j.stiffness >= 0);
+      assert.equal(j.gravityDir.length, 3);
+    }
+  }
+}
+
+test("springBone exportado segue o schema oficial: sem secondaryRig, só em extensionsUsed", () => {
+  const { json } = exportGltf(sampleScene(), vrmData());
+  const spring = (json.extensions as Record<string, any>)["VRMC_springBone"];
+  assert.ok(spring, "VRMC_springBone presente");
+  assert.equal(spring.secondaryRig, undefined, "formato legado não pode ser emitido");
+  assertSpringBoneSchema(spring);
+  assert.ok(json.extensionsUsed!.includes("VRMC_springBone"));
+  assert.ok(!(json.extensionsRequired ?? []).some((e: string) => e.includes("springBone")), "springBone fora de extensionsRequired");
+  assert.ok(!json.extensionsUsed!.includes("VRMC_springBone_extended_collider"));
+});
+
+test("springBone com colliders inside/plane: fallback na spec base + extended_collider em extensionsUsed", () => {
+  const data = vrmData();
+  const base = data.springBone as Vrm1SpringBone;
+  data.springBone = {
+    ...base,
+    colliders: [
+      ...base.colliders,
+      { node: 0, shape: { sphere: { offset: [0, 0, 0], radius: 0.5, inside: true } } },
+      { node: 0, shape: { plane: { offset: [0, 0, 0], normal: [0, 1, 0] } } },
+    ],
+  };
+  const { json } = exportGltf(sampleScene(), data);
+  const spring = (json.extensions as Record<string, any>)["VRMC_springBone"];
+  assert.ok(json.extensionsUsed!.includes("VRMC_springBone_extended_collider"));
+  assert.equal(spring.colliders[2].shape.sphere.radius, 0, "fallback do inside: esfera de raio 0");
+  assert.equal(spring.colliders[3].shape.sphere.radius, 1000, "fallback do plano: esfera grande");
+  assert.equal(spring.colliders[2].extensions.VRMC_springBone_extended_collider.shape.sphere.inside, true);
+  assert.deepEqual(spring.colliders[3].extensions.VRMC_springBone_extended_collider.shape.plane.normal, [0, 1, 0]);
+  const parsed = parseVrm(exportModel(sampleScene(), { vrm: data })).vrm.springBone!;
+  assert.deepEqual(parsed.colliders[2].shape, { sphere: { offset: [0, 0, 0], radius: 0.5, inside: true } });
+  assert.deepEqual(parsed.colliders[3].shape, { plane: { offset: [0, 0, 0], normal: [0, 1, 0] } });
+});
+
+const LEGACY_SPRING = {
+  secondaryRig: {
+    groups: [
+      {
+        name: "HairFront",
+        center: { node: 0, distance: 0.1 },
+        joints: [
+          { node: 1, distance: 0.1, springStiffness: 0.8, springDamping: 0.3, hitRadius: 0.02 },
+          { node: 2, distance: 0.12, springStiffness: 0.6, springDamping: 0.4 },
+        ],
+        colliderGroups: [7],
+      },
+    ],
+    colliders: [
+      { spheres: [{ group: 7, node: 0, radius: 0.08, offset: [0, 0.01, 0] }] },
+      { capsules: [{ group: 7, node: 1, from: [0, 0.5, 0], to: [0, 0.8, 0], radius: 0.06 }] },
+      { spheres: [{ group: 3, node: 2, radius: 0.1 }] },
+    ],
+  },
+};
+
+test("springBone legado (secondaryRig) ainda é lido e convertido para o modelo oficial", () => {
+  const warnings: string[] = [];
+  const sb = parseSpringBone(LEGACY_SPRING, NODES_CHAIN, warnings);
+  assert.ok(warnings.some((w) => w.includes("legado")));
+  assert.equal(sb.springs.length, 1);
+  assert.equal(sb.springs[0].name, "HairFront");
+  assert.equal(sb.springs[0].center, 0);
+  closeTo(sb.springs[0].joints[0].stiffness, 0.8, "springStiffness -> stiffness");
+  closeTo(sb.springs[0].joints[0].dragForce, 0.3, "springDamping -> dragForce");
+  assert.deepEqual(sb.colliders[1].shape, { capsule: { offset: [0, 0.5, 0], radius: 0.06, tail: [0, 0.8, 0], inside: false } });
+  // ids legados 3 e 7 viram índices densos 0 e 1
+  assert.deepEqual(sb.colliderGroups.map((g) => g.colliders), [[2], [0, 1]]);
+  assert.deepEqual(sb.springs[0].colliderGroups, [1]);
+});
+
+test("arquivo .vrm com springBone legado abre, converte e reexporta no formato novo", () => {
+  const { json, bin } = exportGltf(sampleScene(), { ...vrmData(), springBone: undefined });
+  (json.extensions as Record<string, unknown>)["VRMC_springBone"] = LEGACY_SPRING;
+  const glb = buildGlb(json, bin);
+  const { vrm } = parseVrm(glb);
+  assert.ok(vrm.springBone);
+  assert.ok(vrm.warnings.some((w) => w.includes("legado")));
+  const again = springBoneToJson(vrm.springBone!);
+  assert.equal((again as Record<string, unknown>)["secondaryRig"], undefined);
+  assertSpringBoneSchema(again as Record<string, any>);
+});
+
+test("springBone malformado vira BAD_SPRINGBONE (nunca valor silenciosamente errado)", () => {
+  const cases: unknown[] = [
+    42,
+    { specVersion: "1.0", springs: [{ joints: [{ stiffness: 1 }] }] },
+    { specVersion: "1.0", springs: [{ joints: [{ node: 0, stiffness: -1 }, { node: 1 }] }] },
+    { specVersion: "1.0", springs: [{ joints: [{ node: 0, dragForce: 2 }, { node: 1 }] }] },
+    { specVersion: "1.0", springs: [{ joints: [{ node: 0, gravityDir: [0, 1] }, { node: 1 }] }] },
+    { specVersion: "1.0", springs: [{ joints: [{ node: 0, hitRadius: "x" }, { node: 1 }] }] },
+    { specVersion: "1.0", springs: [{ joints: "nope" }] },
+    { specVersion: "1.0", colliders: [{ node: 0 }] },
+    { specVersion: "1.0", colliders: [{ node: 0, shape: {} }] },
+    { specVersion: "1.0", colliders: [{ node: 0, shape: { sphere: { radius: -1 } } }] },
+    { specVersion: "1.0", colliders: [{ node: -3, shape: { sphere: {} } }] },
+    { specVersion: "1.0", colliderGroups: [{ colliders: ["a"] }] },
+    { secondaryRig: 5 },
+  ];
+  cases.forEach((raw, i) => {
+    assert.throws(
+      () => parseSpringBone(raw, NODES_CHAIN, []),
+      (error: unknown) => error instanceof Vrm1Error && error.code === "BAD_SPRINGBONE",
+      `caso ${i}`,
+    );
+  });
+});
+
+test("springBone: referências inválidas viram aviso e defaults seguem a spec", () => {
+  const warnings: string[] = [];
+  const sb = parseSpringBone(
+    {
+      colliders: [{ node: 99, shape: { sphere: { radius: 0.1 } } }],
+      colliderGroups: [{ colliders: [0, 5] }],
+      springs: [{ joints: [{ node: 0 }, { node: 2 }], colliderGroups: [0, 9] }, { joints: [{ node: 1 }] }],
+    },
+    NODES_CHAIN,
+    warnings,
+  );
+  assert.deepEqual(sb.colliderGroups[0].colliders, [0]);
+  assert.deepEqual(sb.springs[0].colliderGroups, [0]);
+  const all = warnings.join(" | ");
+  for (const needle of ["specVersion ausente", "fora da faixa", "colliders referencia collider inexistente", "grupo inexistente", ">= 2"]) {
+    assert.ok(all.includes(needle), `${needle} :: ${all}`);
+  }
+  const j = sb.springs[0].joints[0];
+  assert.deepEqual([j.hitRadius, j.stiffness, j.gravityPower, j.dragForce, j.gravityDir], [0, 1, 0, 0.5, [0, -1, 0]]);
+});

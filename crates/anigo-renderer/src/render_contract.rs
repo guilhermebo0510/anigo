@@ -276,6 +276,34 @@ pub fn vertex_stride() -> u64 {
     contract()["vertex_layout"]["stride"].as_u64().unwrap_or(0)
 }
 
+/// Motor cel (Fase 1): stride (bytes) do SEGUNDO stream de vértices do pipeline
+/// de contorno (normal de extrusão suavizada). 0 se o contrato não declarar.
+pub fn outline_stream_stride() -> u64 {
+    contract()["vertex_layout"]["outline_stream"]["stride"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// `(shader_location, offset, formato)` dos atributos do segundo stream do
+/// contorno (`vertex_layout.outline_stream`).
+pub fn outline_stream_attributes() -> Vec<(u32, u64, wgpu::VertexFormat)> {
+    contract()["vertex_layout"]["outline_stream"]["attributes"]
+        .as_array()
+        .map(|attributes| {
+            attributes
+                .iter()
+                .map(|attribute| {
+                    (
+                        attribute["shader_location"].as_u64().unwrap_or(0) as u32,
+                        attribute["offset"].as_u64().unwrap_or(0),
+                        vertex_format(attribute["format"].as_str().unwrap_or("")),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `(shader_location, offset, formato)` de cada atributo, na ordem declarada.
 pub fn vertex_attributes() -> Vec<(u32, u64, wgpu::VertexFormat)> {
     let attributes = match contract()["vertex_layout"]["attributes"].as_array() {
@@ -928,6 +956,48 @@ mod tests {
     }
 
     #[test]
+    fn shadow_uniform_and_section_match_the_core_math() {
+        use crate::uniforms::ShadowUniform;
+        use glam::{Mat4, Vec3};
+        // layout congelado: matriz da luz @0, params @64, params2 @80 (96 B)
+        assert_eq!(uniform_size("shadow") as usize, std::mem::size_of::<ShadowUniform>());
+        assert_eq!(uniform_size("shadow"), 96);
+        assert_eq!(uniform_offset("shadow", "light_view_proj"), 0);
+        assert_eq!(uniform_offset("shadow", "params"), 64);
+        assert_eq!(uniform_offset("shadow", "params2"), 80);
+        // desligado (padrão): `enabled = 0` e matriz identidade — o shader nem amostra o mapa
+        let neutral = ShadowUniform::default();
+        assert_eq!(neutral.params[0], 0.0);
+        assert_eq!(neutral.light_view_proj, Mat4::IDENTITY.to_cols_array());
+        // seção `shadow_map`: aditiva, desligada por padrão, e os números dourados são os do núcleo
+        let section = &contract()["shadow_map"];
+        assert!(section["enabled_by"].as_str().unwrap_or("").contains("padrão false"));
+        assert_eq!(section["pass"]["only_when"], "shadow_enabled");
+        let golden = section["golden"].as_array().expect("golden");
+        assert!(!golden.is_empty());
+        let v3 = |x: &Value| Vec3::new(x[0].as_f64().unwrap() as f32, x[1].as_f64().unwrap() as f32, x[2].as_f64().unwrap() as f32);
+        for g in golden {
+            match g["fn"].as_str().unwrap_or("") {
+                "shadow_step" => {
+                    let got = anigo_core::shadow::shadow_step(g["occlusion"].as_f64().unwrap() as f32, g["half_width"].as_f64().unwrap() as f32);
+                    assert!((got - g["value"].as_f64().unwrap() as f32).abs() < 1e-6, "{g}");
+                }
+                "shadow_receiver_pos" => {
+                    let off = anigo_core::shadow::receiver_position(Vec3::ZERO, v3(&g["normal"]), v3(&g["light"]), g["normal_bias"].as_f64().unwrap() as f32);
+                    assert!((off - v3(&g["offset"])).length() < 1e-6, "{g}");
+                }
+                "shadow_project" => {
+                    let uvz = anigo_core::shadow::project(&Mat4::IDENTITY, v3(&g["point"]));
+                    assert!((uvz - v3(&g["uvz"])).length() < 1e-6, "{g}");
+                }
+                other => panic!("golden desconhecido: {other}"),
+            }
+        }
+        // `passes` e o grafo canônico NÃO mudam (a sombra é um passe só-profundidade fora da ordem canônica)
+        assert!(render_pass_order().iter().all(|n| *n != "shadow_depth"));
+    }
+
+    #[test]
     fn uniform_field_bytes_land_on_the_contract_offsets() {
         let camera = CameraUniform {
             view_proj: [
@@ -957,6 +1027,7 @@ mod tests {
             color: [1.0, 2.0, 3.0, 4.0],
             params: [5.0, 6.0, 7.0, 8.0],
             params2: [9.0, 10.0, 11.0, 12.0],
+            params3: [13.0, 14.0, 15.0, 16.0],
         };
         let bytes = bytemuck::bytes_of(&outline);
         let read = |offset: usize| {
@@ -970,6 +1041,19 @@ mod tests {
         assert_eq!(read(uniform_offset("outline", "color") as usize + 12), 4.0);
         assert_eq!(read(uniform_offset("outline", "params") as usize), 5.0);
         assert_eq!(read(uniform_offset("outline", "params2") as usize + 12), 12.0);
+        assert_eq!(read(uniform_offset("outline", "params3") as usize), 13.0);
+        assert_eq!(read(uniform_offset("outline", "params3") as usize + 12), 16.0);
+    }
+
+    #[test]
+    fn outline_stream_is_a_separate_12_byte_normal_stream() {
+        // O 2º stream só existe no pipeline de contorno; o vértice de 72 B não muda.
+        assert_eq!(vertex_stride(), 72);
+        assert_eq!(outline_stream_stride(), 12);
+        assert_eq!(
+            outline_stream_attributes(),
+            vec![(6, 0, wgpu::VertexFormat::Float32x3)]
+        );
     }
 
     #[test]
@@ -1047,6 +1131,10 @@ mod tests {
                 (15, "sampler"),
                 (16, "texture_2d<f32>"),
                 (17, "sampler"),
+                // sombra projetada (aditivo): uniform, mapa de profundidade, comparação
+                (18, "uniform"),
+                (19, "texture_depth_2d"),
+                (20, "sampler_comparison"),
             ]
         );
         // Fase 2 (#18): o mapa de espessura do contorno (MToon outlineWidth) é

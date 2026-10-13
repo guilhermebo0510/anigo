@@ -39,12 +39,19 @@ pub struct ExportPrimitive {
     pub indices: Vec<u32>,
     pub material_index: i64,
     pub morph_targets: Vec<Vec<ExportMorphDelta>>,
+    /// Escreve os alvos de morph como accessors esparsos (glTF `sparse`) e acrescenta `min`/`max`
+    /// ao POSITION. Padrão `false`: a saída dos chamadores existentes não muda um byte.
+    #[serde(default)]
+    pub sparse_morphs: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExportMesh {
     pub name: Option<String>,
     pub primitives: Vec<ExportPrimitive>,
+    /// Nomes dos morph targets, gravados em `mesh.extras.targetNames` (recomendação da spec VRM/glTF).
+    #[serde(default)]
+    pub target_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -188,6 +195,154 @@ impl BinWriter {
 }
 
 // ---------------------------------------------------------------------------
+// VRMC_springBone (schema oficial 1.0)
+// ---------------------------------------------------------------------------
+
+/// Número JSON "curto": `0.8f32` vira `0.8` (e não `0.800000011920929`).
+fn json_num(v: f32) -> Value {
+    let short: f64 = format!("{v}").parse().unwrap_or(v as f64);
+    serde_json::Number::from_f64(short).map(Value::Number).unwrap_or(Value::Null)
+}
+
+fn json_vec3(v: [f32; 3]) -> Value {
+    Value::Array(v.iter().map(|c| json_num(*c)).collect())
+}
+
+fn sphere_json(offset: [f32; 3], radius: f32, inside: Option<bool>) -> Value {
+    let mut sphere = Map::new();
+    sphere.insert("offset".into(), json_vec3(offset));
+    sphere.insert("radius".into(), json_num(radius));
+    if let Some(inside) = inside {
+        sphere.insert("inside".into(), Value::from(inside));
+    }
+    let mut shape = Map::new();
+    shape.insert("sphere".into(), Value::Object(sphere));
+    Value::Object(shape)
+}
+
+fn collider_to_json(collider: &crate::vrm1::Vrm1Collider) -> Value {
+    use crate::vrm1::Vrm1ColliderShape as Shape;
+    let mut entry = Map::new();
+    entry.insert("node".into(), Value::from(collider.node));
+    match collider.shape {
+        Shape::Sphere { offset, radius, inside: false } => {
+            entry.insert("shape".into(), sphere_json(offset, radius, None));
+        }
+        Shape::Capsule { offset, radius, tail, inside: false } => {
+            let mut capsule = Map::new();
+            capsule.insert("offset".into(), json_vec3(offset));
+            capsule.insert("radius".into(), json_num(radius));
+            capsule.insert("tail".into(), json_vec3(tail));
+            let mut shape = Map::new();
+            shape.insert("capsule".into(), Value::Object(capsule));
+            entry.insert("shape".into(), Value::Object(shape));
+        }
+        extended => {
+            // `VRMC_springBone_extended_collider` + collider de fallback na spec base:
+            //  - inside: esfera de raio 0 muito longe (não afeta players sem a extensão);
+            //  - plano: esfera enorme que aproxima o semi-espaço (offset - normal * R).
+            let (fallback, ext_shape) = match extended {
+                Shape::Sphere { offset, radius, .. } => (
+                    sphere_json([0.0, -10000.0, 0.0], 0.0, None),
+                    sphere_json(offset, radius, Some(true)),
+                ),
+                Shape::Capsule { offset, radius, tail, .. } => {
+                    let mut capsule = Map::new();
+                    capsule.insert("offset".into(), json_vec3(offset));
+                    capsule.insert("radius".into(), json_num(radius));
+                    capsule.insert("tail".into(), json_vec3(tail));
+                    capsule.insert("inside".into(), Value::from(true));
+                    let mut shape = Map::new();
+                    shape.insert("capsule".into(), Value::Object(capsule));
+                    (sphere_json([0.0, -10000.0, 0.0], 0.0, None), Value::Object(shape))
+                }
+                Shape::Plane { offset, normal } => {
+                    const R: f32 = 1000.0;
+                    let center = [offset[0] - normal[0] * R, offset[1] - normal[1] * R, offset[2] - normal[2] * R];
+                    let mut plane = Map::new();
+                    plane.insert("offset".into(), json_vec3(offset));
+                    plane.insert("normal".into(), json_vec3(normal));
+                    let mut shape = Map::new();
+                    shape.insert("plane".into(), Value::Object(plane));
+                    (sphere_json(center, R, None), Value::Object(shape))
+                }
+            };
+            entry.insert("shape".into(), fallback);
+            let mut ext = Map::new();
+            ext.insert("specVersion".into(), Value::from(crate::vrm1::SPRING_BONE_SPEC_VERSION));
+            ext.insert("shape".into(), ext_shape);
+            let mut extensions = Map::new();
+            extensions.insert("VRMC_springBone_extended_collider".into(), Value::Object(ext));
+            entry.insert("extensions".into(), Value::Object(extensions));
+        }
+    }
+    Value::Object(entry)
+}
+
+/// Serializa `VRMC_springBone` no schema oficial 1.0. O segundo valor indica se algum collider
+/// precisa de `VRMC_springBone_extended_collider` (que deve entrar em `extensionsUsed`).
+pub fn spring_bone_to_json(spring: &crate::vrm1::Vrm1SpringBone) -> (Value, bool) {
+    let uses_extended = spring.colliders.iter().any(|c| c.shape.is_extended());
+    let mut root = Map::new();
+    root.insert("specVersion".into(), Value::from(crate::vrm1::SPRING_BONE_SPEC_VERSION));
+    if !spring.colliders.is_empty() {
+        root.insert("colliders".into(), Value::Array(spring.colliders.iter().map(collider_to_json).collect()));
+    }
+    if !spring.collider_groups.is_empty() {
+        let groups: Vec<Value> = spring
+            .collider_groups
+            .iter()
+            .map(|group| {
+                let mut entry = Map::new();
+                if let Some(name) = &group.name {
+                    entry.insert("name".into(), Value::from(name.clone()));
+                }
+                entry.insert("colliders".into(), Value::Array(group.colliders.iter().map(|c| Value::from(*c)).collect()));
+                Value::Object(entry)
+            })
+            .collect();
+        root.insert("colliderGroups".into(), Value::Array(groups));
+    }
+    let springs: Vec<Value> = spring
+        .springs
+        .iter()
+        .map(|chain| {
+            let mut entry = Map::new();
+            if let Some(name) = &chain.name {
+                entry.insert("name".into(), Value::from(name.clone()));
+            }
+            let joints: Vec<Value> = chain
+                .joints
+                .iter()
+                .map(|j| {
+                    let mut joint = Map::new();
+                    joint.insert("node".into(), Value::from(j.node));
+                    joint.insert("hitRadius".into(), json_num(j.hit_radius));
+                    joint.insert("stiffness".into(), json_num(j.stiffness));
+                    joint.insert("gravityPower".into(), json_num(j.gravity_power));
+                    joint.insert("gravityDir".into(), json_vec3(j.gravity_dir));
+                    joint.insert("dragForce".into(), json_num(j.drag_force));
+                    Value::Object(joint)
+                })
+                .collect();
+            entry.insert("joints".into(), Value::Array(joints));
+            if !chain.collider_groups.is_empty() {
+                entry.insert(
+                    "colliderGroups".into(),
+                    Value::Array(chain.collider_groups.iter().map(|g| Value::from(*g)).collect()),
+                );
+            }
+            if let Some(center) = chain.center {
+                entry.insert("center".into(), Value::from(center));
+            }
+            Value::Object(entry)
+        })
+        .collect();
+    root.insert("springs".into(), Value::Array(springs));
+    (Value::Object(root), uses_extended)
+}
+
+// ---------------------------------------------------------------------------
 // Exportador
 // ---------------------------------------------------------------------------
 
@@ -220,6 +375,15 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         (accessors.len() - 1) as u64
     };
 
+    let push_accessor_nobuf = |accessors: &mut Vec<Value>, component_type: u64, count: u64, tpe: &str| -> u64 {
+        let mut entry = Map::new();
+        entry.insert("componentType".into(), Value::from(component_type));
+        entry.insert("count".into(), Value::from(count));
+        entry.insert("type".into(), Value::from(tpe));
+        accessors.push(Value::Object(entry));
+        (accessors.len() - 1) as u64
+    };
+
     let mut max_index = 0u32;
     for mesh in &scene.meshes {
         for prim in &mesh.primitives {
@@ -240,7 +404,23 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             let position_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.position).collect();
             let __offset_1 = bin.write_f32(&position_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_1, position_values.len() * 4, Some(34962));
-            attributes.insert("POSITION".into(), Value::from(push_accessor(&mut accessors, view, 5126, count, "VEC3")));
+            let pos_acc = push_accessor(&mut accessors, view, 5126, count, "VEC3");
+            if prim.sparse_morphs && !prim.vertices.is_empty() {
+                // glTF exige min/max no POSITION do primitivo
+                let mut mn = [f32::MAX; 3];
+                let mut mx = [f32::MIN; 3];
+                for v in &prim.vertices {
+                    for k in 0..3 {
+                        mn[k] = mn[k].min(v.position[k]);
+                        mx[k] = mx[k].max(v.position[k]);
+                    }
+                }
+                if let Value::Object(o) = &mut accessors[pos_acc as usize] {
+                    o.insert("min".into(), Value::Array(mn.iter().map(|x| json_num(*x)).collect()));
+                    o.insert("max".into(), Value::Array(mx.iter().map(|x| json_num(*x)).collect()));
+                }
+            }
+            attributes.insert("POSITION".into(), Value::from(pos_acc));
 
             let normal_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.normal).collect();
             let __offset_2 = bin.write_f32(&normal_values);
@@ -260,7 +440,7 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
             let joints_values: Vec<u16> = prim.vertices.iter().flat_map(|v| v.joints).collect();
             let __offset_5 = bin.write_u16(&joints_values);
             let view = push_view(&mut bin, &mut buffer_views, __offset_5, joints_values.len() * 2, Some(34962));
-            attributes.insert("JOINTS_0".into(), Value::from(push_accessor(&mut accessors, view, 5122, count, "VEC4")));
+            attributes.insert("JOINTS_0".into(), Value::from(push_accessor(&mut accessors, view, 5123, count, "VEC4"))); // UNSIGNED_SHORT
 
             let weights_values: Vec<f32> = prim.vertices.iter().flat_map(|v| v.weights).collect();
             let __offset_6 = bin.write_f32(&weights_values);
@@ -272,13 +452,13 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
                 let offset = bin.write_u16(&indices_u16);
                 (
                     push_view(&mut bin, &mut buffer_views, offset, indices_u16.len() * 2, Some(34963)),
-                    5122,
+                    5123, // UNSIGNED_SHORT
                 )
             } else {
                 let offset = bin.write_u32(&prim.indices);
                 (
                     push_view(&mut bin, &mut buffer_views, offset, prim.indices.len() * 4, Some(34963)),
-                    5123,
+                    5125, // UNSIGNED_INT
                 )
             };
             let indices_accessor = push_accessor(&mut accessors, indices_view, indices_component, prim.indices.len() as u64, "SCALAR");
@@ -291,18 +471,62 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
                 primitive_json.insert("material".into(), Value::from(prim.material_index as u64));
             }
             if !prim.morph_targets.is_empty() {
+                let sparse = prim.sparse_morphs;
+                let n_verts = prim.vertices.len();
+                let use_u16_sparse = n_verts <= 65535;
                 let targets: Vec<Value> = prim
                     .morph_targets
                     .iter()
                     .map(|target| {
-                        let position_values: Vec<f32> = target.iter().flat_map(|d| d.position).collect();
-                        let normal_values: Vec<f32> = target.iter().flat_map(|d| d.normal).collect();
-                        let __offset_7 = bin.write_f32(&position_values);
-                        let pos_view = push_view(&mut bin, &mut buffer_views, __offset_7, position_values.len() * 4, Some(34962));
-                        let pos_accessor = push_accessor(&mut accessors, pos_view, 5126, target.len() as u64, "VEC3");
-                        let __offset_8 = bin.write_f32(&normal_values);
-                        let norm_view = push_view(&mut bin, &mut buffer_views, __offset_8, normal_values.len() * 4, Some(34962));
-                        let norm_accessor = push_accessor(&mut accessors, norm_view, 5126, target.len() as u64, "VEC3");
+                        let write_vec3 = |values: Vec<[f32; 3]>, bin: &mut BinWriter, buffer_views: &mut Vec<Value>, accessors: &mut Vec<Value>| -> u64 {
+                            if !sparse {
+                                let flat: Vec<f32> = values.iter().flat_map(|d| *d).collect();
+                                let off = bin.write_f32(&flat);
+                                let view = push_view(bin, buffer_views, off, flat.len() * 4, Some(34962));
+                                return push_accessor(accessors, view, 5126, values.len() as u64, "VEC3");
+                            }
+                            // esparso: só os deltas não nulos; alvo sem deltas = accessor zerado (sem bufferView)
+                            let mut nz: Vec<usize> = (0..values.len()).filter(|&i| values[i].iter().any(|c| c.abs() > 1e-9)).collect();
+                            if nz.is_empty() {
+                                // alvo sem deltas: um único valor nulo (sparse.count >= 1; leitores exigem bufferView ou sparse)
+                                if values.is_empty() {
+                                    return push_accessor_nobuf(accessors, 5126, 0, "VEC3");
+                                }
+                                nz.push(0);
+                            }
+                            let flat: Vec<f32> = nz.iter().flat_map(|&i| values[i]).collect();
+                            let off_v = bin.write_f32(&flat);
+                            let view_v = push_view(bin, buffer_views, off_v, flat.len() * 4, None);
+                            let (view_i, comp_i) = if use_u16_sparse {
+                                let idx: Vec<u16> = nz.iter().map(|&i| i as u16).collect();
+                                let off = bin.write_u16(&idx);
+                                (push_view(bin, buffer_views, off, idx.len() * 2, None), 5123u64)
+                            } else {
+                                let idx: Vec<u32> = nz.iter().map(|&i| i as u32).collect();
+                                let off = bin.write_u32(&idx);
+                                (push_view(bin, buffer_views, off, idx.len() * 4, None), 5125u64)
+                            };
+                            let mut entry = Map::new();
+                            entry.insert("componentType".into(), Value::from(5126));
+                            entry.insert("count".into(), Value::from(values.len() as u64));
+                            entry.insert("type".into(), Value::from("VEC3"));
+                            let mut sp = Map::new();
+                            sp.insert("count".into(), Value::from(nz.len() as u64));
+                            let mut ix = Map::new();
+                            ix.insert("bufferView".into(), Value::from(view_i));
+                            ix.insert("componentType".into(), Value::from(comp_i));
+                            let mut vl = Map::new();
+                            vl.insert("bufferView".into(), Value::from(view_v));
+                            sp.insert("indices".into(), Value::Object(ix));
+                            sp.insert("values".into(), Value::Object(vl));
+                            entry.insert("sparse".into(), Value::Object(sp));
+                            accessors.push(Value::Object(entry));
+                            (accessors.len() - 1) as u64
+                        };
+                        let pos_vals: Vec<[f32; 3]> = target.iter().map(|d| d.position).collect();
+                        let nrm_vals: Vec<[f32; 3]> = target.iter().map(|d| d.normal).collect();
+                        let pos_accessor = write_vec3(pos_vals, &mut bin, &mut buffer_views, &mut accessors);
+                        let norm_accessor = write_vec3(nrm_vals, &mut bin, &mut buffer_views, &mut accessors);
                         let mut entry = Map::new();
                         entry.insert("POSITION".into(), Value::from(pos_accessor));
                         entry.insert("NORMAL".into(), Value::from(norm_accessor));
@@ -316,6 +540,11 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         let mut mesh_json = Map::new();
         mesh_json.insert("name".into(), Value::from(mesh.name.clone().unwrap_or_else(|| format!("mesh_{mesh_index}"))));
         mesh_json.insert("primitives".into(), Value::Array(primitives_json));
+        if !mesh.target_names.is_empty() {
+            let mut extras = Map::new();
+            extras.insert("targetNames".into(), Value::Array(mesh.target_names.iter().map(|n| Value::from(n.clone())).collect()));
+            mesh_json.insert("extras".into(), Value::Object(extras));
+        }
         meshes_json.push(Value::Object(mesh_json));
     }
 
@@ -550,65 +779,13 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
         gltf_extensions.insert("VRMC_vrm".into(), Value::Object(vrm_json));
 
         if let Some(spring) = &vrm.spring_bone {
+            // A spec não exige que o leitor conheça springBone: vai só em `extensionsUsed`.
             extensions_used.push("VRMC_springBone");
-            extensions_required.push("VRMC_springBone");
-            let spring_joint = |j: &crate::vrm1::Vrm1SpringJoint| -> Value {
-                let mut entry = Map::new();
-                entry.insert("node".into(), Value::from(j.node));
-                entry.insert("distance".into(), Value::from(j.distance as f64));
-                entry.insert("hitRadius".into(), Value::from(j.hit_radius as f64));
-                entry.insert("gravityPower".into(), Value::from(j.gravity_power as f64));
-                entry.insert("gravityDir".into(), Value::Array(j.gravity_dir.iter().map(|v| Value::from(*v as f64)).collect()));
-                entry.insert("springStiffness".into(), Value::from(j.spring_stiffness as f64));
-                entry.insert("springDamping".into(), Value::from(j.spring_damping as f64));
-                Value::Object(entry)
-            };
-            let groups: Vec<Value> = spring
-                .groups
-                .iter()
-                .map(|group| {
-                    let mut entry = Map::new();
-                    entry.insert("name".into(), Value::from(group.name.clone()));
-                    entry.insert("center".into(), spring_joint(&group.center));
-                    entry.insert(
-                        "joints".into(),
-                        Value::Array(group.joints.iter().map(spring_joint).collect()),
-                    );
-                    entry.insert(
-                        "colliderGroups".into(),
-                        Value::Array(group.collider_groups.iter().map(|v| Value::from(*v)).collect()),
-                    );
-                    Value::Object(entry)
-                })
-                .collect();
-            let mut colliders: Vec<Value> = Vec::new();
-            for sphere in &spring.colliders.spheres {
-                let mut sphere_entry = Map::new();
-                sphere_entry.insert("group".into(), Value::from(sphere.group));
-                sphere_entry.insert("node".into(), Value::from(sphere.node));
-                sphere_entry.insert("radius".into(), Value::from(sphere.radius as f64));
-                sphere_entry.insert("offset".into(), Value::Array(sphere.offset.iter().map(|v| Value::from(*v as f64)).collect()));
-                let mut entry = Map::new();
-                entry.insert("spheres".into(), Value::Array(vec![Value::Object(sphere_entry)]));
-                colliders.push(Value::Object(entry));
+            let (spring_json, uses_extended) = spring_bone_to_json(spring);
+            if uses_extended {
+                extensions_used.push("VRMC_springBone_extended_collider");
             }
-            for capsule in &spring.colliders.capsules {
-                let mut capsule_entry = Map::new();
-                capsule_entry.insert("group".into(), Value::from(capsule.group));
-                capsule_entry.insert("node".into(), Value::from(capsule.node));
-                capsule_entry.insert("from".into(), Value::Array(capsule.from.iter().map(|v| Value::from(*v as f64)).collect()));
-                capsule_entry.insert("to".into(), Value::Array(capsule.to.iter().map(|v| Value::from(*v as f64)).collect()));
-                capsule_entry.insert("radius".into(), Value::from(capsule.radius as f64));
-                let mut entry = Map::new();
-                entry.insert("capsules".into(), Value::Array(vec![Value::Object(capsule_entry)]));
-                colliders.push(Value::Object(entry));
-            }
-            let mut rig = Map::new();
-            rig.insert("groups".into(), Value::Array(groups));
-            rig.insert("colliders".into(), Value::Array(colliders));
-            let mut spring_json = Map::new();
-            spring_json.insert("secondaryRig".into(), Value::Object(rig));
-            gltf_extensions.insert("VRMC_springBone".into(), Value::Object(spring_json));
+            gltf_extensions.insert("VRMC_springBone".into(), spring_json);
         }
     }
 
@@ -617,13 +794,14 @@ pub fn export_gltf(scene: &ExportScene, vrm: Option<&VrmExportData>) -> (Value, 
     let mut asset = Map::new();
     asset.insert("version".into(), Value::from("2.0"));
     asset.insert("generator".into(), Value::from("anigo-core/vrm (fase2-exporter)"));
+    json.insert("asset".into(), Value::Object(asset));
+    // glTF 2.0: `extensionsUsed`/`extensionsRequired` ficam na raiz do documento, não em `asset`.
     if !extensions_used.is_empty() {
-        asset.insert("extensionsUsed".into(), Value::Array(extensions_used.iter().map(|e| Value::from(*e)).collect()));
+        json.insert("extensionsUsed".into(), Value::Array(extensions_used.iter().map(|e| Value::from(*e)).collect()));
     }
     if !extensions_required.is_empty() {
-        asset.insert("extensionsRequired".into(), Value::Array(extensions_required.iter().map(|e| Value::from(*e)).collect()));
+        json.insert("extensionsRequired".into(), Value::Array(extensions_required.iter().map(|e| Value::from(*e)).collect()));
     }
-    json.insert("asset".into(), Value::Object(asset));
     json.insert("scene".into(), Value::from(0));
     let mut scene_json = Map::new();
     scene_json.insert("name".into(), Value::from(scene.name.clone().unwrap_or_else(|| "ANIGO Scene".to_string())));

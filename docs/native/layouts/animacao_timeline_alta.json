@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "workspaces": {
+    "animacao": {
+      "kind": "split",
+      "vertical": false,
+      "children": [
+        {
+          "share": 877.0,
+          "node": {
+            "kind": "split",
+            "vertical": true,
+            "children": [
+              { "share": 300.0, "node": { "kind": "pane", "id": "animacao.viewport" } },
+              { "share": 400.0, "node": { "kind": "pane", "id": "animacao.timeline" } }
+            ]
+          }
+        },
+        { "share": 357.0, "node": { "kind": "pane", "id": "animacao.inspector" } }
+      ]
+    }
+  },
+  "presets": [
+    {
+      "name": "viewport grande",
+      "workspace": "animacao",
+      "layout": {
+        "kind": "split",
+        "vertical": false,
+        "children": [
+          {
+            "share": 1000.0,
+            "node": {
+              "kind": "split",
+              "vertical": true,
+              "children": [
+                { "share": 520.0, "node": { "kind": "pane", "id": "animacao.viewport" } },
+                { "share": 180.0, "node": { "kind": "pane", "id": "animacao.timeline" } }
+              ]
+            }
+          },
+          { "share": 234.0, "node": { "kind": "pane", "id": "animacao.inspector" } }
+        ]
+      }
+    }
+  ]
+}

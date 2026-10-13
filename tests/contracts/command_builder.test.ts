@@ -51,7 +51,7 @@ function rejected(intent: CommandIntent, code: string): void {
 }
 
 describe("Intent → Command — toda alteração da UI vira um comando do contrato", () => {
-  it("cobre os 23 tipos de comando do contrato v1", () => {
+  it("cobre os 29 tipos de comando do contrato v1", () => {
     const intents: CommandIntent[] = [
       { kind: "morph", slider_id: UNIT_SLIDER.id, value: 1.05 },
       { kind: "reset_morphs", override_count: 3 },
@@ -86,6 +86,27 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
       { kind: "background_color", color: [0.1, 0.2, 0.3, 1] },
       { kind: "render_settings", msaa_samples: 8 },
       { kind: "rename_project", name: "Estudo" },
+      {
+        kind: "nodes_transform",
+        entries: [{ node_id: "nod_jacket", translation: [1, 0, 0] }],
+      },
+      {
+        kind: "duplicate_nodes",
+        copies: [{ source: "nod_jacket", copy: "nod_jacket_2", name: "Jaqueta 2" }],
+        offset: [1, 0, 0],
+      },
+      { kind: "node_props", node_id: "nod_jacket", patch: { locked: true, tags: ["cenario"] } },
+      {
+        kind: "replace_nodes_asset",
+        entries: [{ node_id: "nod_jacket", mesh_uri: "anigo://library/0190a1b2-0000-7000-8000-000000000001" }],
+      },
+      {
+        kind: "patch_assets",
+        put: [{ uri: "anigo://library/0190a1b2-0000-7000-8000-000000000001", byte_len: 10 }],
+      },
+      { kind: "render_output", patch: { width: 2480, height: 3508, dpi: 300, supersample: 2, transparent: true } },
+      { kind: "pose", bones: [{ bone: "Head", rotation: [0, 0.2588, 0, 0.9659] }], op: "edit" },
+      { kind: "animation", edit: { op: "set_fps", fps: 30, retime: true } },
       { kind: "batch", intents: [{ kind: "zoom", factor: 1.1 }, { kind: "render_settings", tonemap: "neutral" }] },
     ];
 
@@ -99,6 +120,33 @@ describe("Intent → Command — toda alteração da UI vira um comando do contr
     for (const intent of intents) {
       assert.ok(isCommandWire(built(intent)), "o comando construído precisa passar no guard do contrato");
     }
+  });
+
+  it("animation: valida quadros inteiros, fps, alças Bézier e valores finitos", () => {
+    const target = { kind: "bone", bone: "Head" } as const;
+    rejected({ kind: "animation", edit: { op: "set_fps", fps: 0 } }, "invalid_value");
+    rejected({ kind: "animation", edit: { op: "set_fps", fps: NaN } }, "non_finite");
+    rejected({ kind: "animation", edit: { op: "insert_keys", clip_id: "ani_a", keys: [] } }, "no_op");
+    rejected({ kind: "animation", edit: { op: "insert_keys", clip_id: "ani_a", keys: [{ target, key: { frame: 1.5, value: { t: "quat", v: [0, 0, 0, 1] } } }] } }, "invalid_value");
+    rejected({ kind: "animation", edit: { op: "insert_keys", clip_id: "ani_a", keys: [{ target, key: { frame: 1, value: { t: "quat", v: [0, NaN, 0, 1] } } }] } }, "non_finite");
+    rejected({ kind: "animation", edit: { op: "set_interpolation", clip_id: "ani_a", keys: [{ target, frame: 0 }], interp: { kind: "bezier", c: [2, 0, 0.5, 1] } } }, "invalid_value");
+    rejected({ kind: "animation", edit: { op: "set_clip_playback", clip_id: "ani_a", hold_step: 0 } }, "invalid_value");
+    assert.deepEqual(
+      built({ kind: "animation", edit: { op: "move_keys", clip_id: "ani_a", moves: [{ target, frame: 2, to_frame: 5 }] } }),
+      { kind: "edit_animation", edit: { op: "move_keys", clip_id: "ani_a", moves: [{ target, frame: 2, to_frame: 5 }] } }
+    );
+  });
+
+  it("pose: recusa osso desconhecido, quaternion inválido e valores fora de faixa", () => {
+    rejected({ kind: "pose" }, "no_op");
+    rejected({ kind: "pose", bones: [{ bone: "Tail", rotation: [0, 0, 0, 1] }] }, "unknown_target");
+    rejected({ kind: "pose", bones: [{ bone: "Head", rotation: [0, 0, 0, 0] }] }, "invalid_value");
+    rejected({ kind: "pose", bones: [{ bone: "Head", rotation: [NaN, 0, 0, 1] }] }, "non_finite");
+    rejected({ kind: "pose", hips_translation: [0, 999, 0] }, "invalid_value");
+    rejected({ kind: "pose", hands: { left: [2, 0, 0, 0, 0] } }, "invalid_value");
+    const twice = { bone: "Head", rotation: [0, 0, 0, 1] as [number, number, number, number] };
+    rejected({ kind: "pose", bones: [twice, twice] }, "invalid_value");
+    assert.deepEqual(built({ kind: "pose", hips_translation: [0, -0.1, 0] }), { kind: "set_pose", hips_translation: [0, -0.1, 0] });
   });
 
   it("morph: usa o id estável do slider e recusa alvo/valor/finito inválidos", () => {

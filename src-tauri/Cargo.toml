@@ -15,6 +15,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anigo-core = { workspace = true }
+anigo-session = { path = "../crates/anigo-session" }
 anigo-renderer = { workspace = true }
 anigo-vrm = { workspace = true }
 pollster = { workspace = true }

@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
-mod core_session;
+use anigo_session::core_session;
 
 use std::io::Write;
 use std::sync::Arc;
@@ -394,6 +394,7 @@ async fn set_light_params(
         shadow_saturation,
         ambient_sky: None,
         ambient_ground: None,
+        shadow: None,
     };
     apply_session_command(&mut state, command)?;
     Ok(())
@@ -512,6 +513,7 @@ async fn set_material_toon_params(
             shadow_saturation: Some(value),
             ambient_sky: None,
             ambient_ground: None,
+            shadow: None,
         });
     }
     if commands.is_empty() {
@@ -1105,7 +1107,7 @@ async fn vrm_import_model(path: String) -> Result<VrmImportInfo, String> {
             expression_presets,
             expression_custom,
             mtoon_material_count: parsed.materials.iter().filter(|m| m.is_some()).count(),
-            spring_bone_groups: parsed.spring_bone.as_ref().map(|s| s.groups.len()).unwrap_or(0),
+            spring_bone_groups: parsed.spring_bone.as_ref().map(|s| s.springs.len()).unwrap_or(0),
             node_constraint_count: parsed.node_constraints.iter().filter(|c| c.is_some()).count(),
             warnings: parsed.warnings,
         }

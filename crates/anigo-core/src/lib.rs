@@ -1,15 +1,24 @@
+pub mod animation;
 pub mod bone_sync;
+pub mod bvh;
+pub mod clip_asset;
 pub mod command;
 pub mod deformation;
 pub mod export;
 pub mod hierarchy;
 pub mod ids;
+pub mod level;
 pub mod math;
 pub mod mesh;
 pub mod morph;
 pub mod morph_catalog;
+pub mod npr;
+pub mod pose;
 pub mod project;
+pub mod render_output;
+pub mod retarget;
 pub mod scene;
+pub mod shadow;
 pub mod skinning;
 pub mod snapshot;
 pub mod somatotype;
@@ -43,7 +52,13 @@ pub use math::{
     Aabb, BoundingSphere, Camera, Frustum, FrustumPlane, OrthographicBounds, ProjectionError,
     ProjectionMode, Transform,
 };
+pub use level::{
+    library_uri, library_uuid, LightShape, NodeAssetEntry, NodeAttrs, NodeCopy, NodeOverrides, NodePatch,
+    NodeSource, NodeTransformEntry, PlanError, PrimitiveShape, LIBRARY_URI_PREFIX,
+};
 pub use mesh::{BaseGender, Mesh, Vertex};
+pub use npr::{NprParams, RampCustom};
+pub use pose::{PoseAsset, PoseBoneEntry, PoseOp, PoseRig, PoseState};
 pub use morph::{MorphChannel, MorphTarget, SparseMorphDelta, SparseMorphHeader, SparseMorphSet};
 pub use morph_catalog::{
     ALL_MORPH_SLIDERS, AnatomicalZone, GenderDimorphism, MeshIntegrityReport, MorphCatalog,
@@ -58,7 +73,8 @@ pub use project::{
     TonemapOperator, TransformKeyframe, DEFAULT_AUTOSAVE_INTERVAL_MINUTES, DEFAULT_HISTORY_LIMIT,
     PROJECT_SCHEMA_VERSION, URI_BASE_FEMALE, URI_BASE_MALE, URI_PRESET_CUBE, URI_PRESET_SPHERE,
 };
-pub use scene::{Scene, SceneNode, StylizedLight, StylizedMaterial};
+pub use render_output::{AovSelection, OutputFormat, RenderOutput, RenderOutputPatch, OUTPUT_MAX_SIDE, OUTPUT_MIN_SIDE};
+pub use scene::{LightShadow, Scene, SceneNode, StylizedLight, StylizedMaterial};
 pub use snapshot::{
     build_dynamic_payload, build_snapshot, build_snapshot_for_project, build_static_payload,
     catalog_fingerprint, coverage_of, sliders_without_geometry,

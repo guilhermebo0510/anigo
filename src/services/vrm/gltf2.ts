@@ -31,16 +31,16 @@ export const GLB_CHUNK_JSON = 0x4e4f534a; // "JSON"
 export const GLB_CHUNK_BIN = 0x004e4942; // "BIN\0"
 
 /**
- * Component types da spec glTF 2.0 (3.14.1) — GL constants:
- * 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 UNSIGNED_SHORT, 5123 UNSIGNED_INT,
- * 5125 DOUBLE, 5126 FLOAT.
+ * Component types da spec glTF 2.0 (3.6.2.2) — constantes GL:
+ * 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 SHORT, 5123 UNSIGNED_SHORT,
+ * 5125 UNSIGNED_INT, 5126 FLOAT. `normalized` é flag do accessor; glTF não tem 64 bits.
  */
 export const GLTF_COMPONENT_TYPES = {
-  U8: 5120,
-  U8N: 5121,
-  U16: 5122,
-  U32: 5123,
-  F64: 5125,
+  I8: 5120,
+  U8: 5121,
+  I16: 5122,
+  U16: 5123,
+  U32: 5125,
   F32: 5126,
 } as const;
 
@@ -78,11 +78,9 @@ export function accessorByteSize(type: string, componentType: number): number {
   const byte =
     componentType === GLTF_COMPONENT_TYPES.F32 || componentType === GLTF_COMPONENT_TYPES.U32
       ? 4
-      : componentType === GLTF_COMPONENT_TYPES.F64
-        ? 8
-        : componentType === GLTF_COMPONENT_TYPES.U16
-          ? 2
-          : 1;
+      : componentType === GLTF_COMPONENT_TYPES.U16 || componentType === GLTF_COMPONENT_TYPES.I16
+        ? 2
+        : 1;
   return comps * byte;
 }
 
@@ -269,6 +267,9 @@ export interface Gltf {
   lights?: unknown[];
   extensions?: Record<string, unknown>;
   extras?: unknown;
+  /** Posição correta pela spec glTF 2.0 (raiz). `asset.*` é lido só por compatibilidade com arquivos antigos do ANIGO. */
+  extensionsUsed?: string[];
+  extensionsRequired?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -420,13 +421,13 @@ export function parseGltfDocument(gltf: Gltf, source: ExternalBufferSource | nul
   const major = Number(asset.version.split(".")[0]);
   if (major !== 2) fail("UNSUPPORTED_VERSION", `asset.version ${asset.version} (esperado major 2)`);
 
-  const required = asset.extensionsRequired ?? [];
+  const required = gltf.extensionsRequired ?? asset.extensionsRequired ?? [];
   for (const ext of required) {
     if (UNSUPPORTED_EXTENSIONS.has(ext)) {
       fail("BAD_ASSET", `extensão obrigatória não suportada pelo ANIGO: ${ext}`);
     }
   }
-  const used = asset.extensionsUsed ?? [];
+  const used = gltf.extensionsUsed ?? asset.extensionsUsed ?? [];
   for (const ext of used) {
     if (UNSUPPORTED_EXTENSIONS.has(ext)) {
       warnings.push(`extensão usada não suportada (mantida crua): ${ext}`);
@@ -457,11 +458,11 @@ export function parseGltfDocument(gltf: Gltf, source: ExternalBufferSource | nul
       fail("BAD_ACCESSOR_TYPE", `accessors[${i}].type='${accessor.type}' inválido`);
     }
     if (
+      accessor.componentType !== GLTF_COMPONENT_TYPES.I8 &&
       accessor.componentType !== GLTF_COMPONENT_TYPES.U8 &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.U8N &&
+      accessor.componentType !== GLTF_COMPONENT_TYPES.I16 &&
       accessor.componentType !== GLTF_COMPONENT_TYPES.U16 &&
       accessor.componentType !== GLTF_COMPONENT_TYPES.U32 &&
-      accessor.componentType !== GLTF_COMPONENT_TYPES.F64 &&
       accessor.componentType !== GLTF_COMPONENT_TYPES.F32
     ) {
       fail("BAD_ACCESSOR_COMPONENT", `accessors[${i}].componentType=${accessor.componentType} inválido`);
@@ -611,13 +612,19 @@ function decodeScalar(
 ): number {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   switch (componentType) {
-    case GLTF_COMPONENT_TYPES.U8: return dv.getUint8(byteOffset);
-    case GLTF_COMPONENT_TYPES.U8N: return normalized ? dv.getUint8(byteOffset) / 255 : dv.getUint8(byteOffset);
+    case GLTF_COMPONENT_TYPES.U8: return normalized ? dv.getUint8(byteOffset) / 255 : dv.getUint8(byteOffset);
+    case GLTF_COMPONENT_TYPES.I8: {
+      const v = dv.getInt8(byteOffset);
+      return normalized ? Math.max(v / 127, -1) : v;
+    }
     case GLTF_COMPONENT_TYPES.U16:
-      // Na spec, 5122 é unsigned; `normalized` divide por 65535.
+      // `normalized` divide por 65535.
       return normalized ? dv.getUint16(byteOffset, true) / 65535 : dv.getUint16(byteOffset, true);
+    case GLTF_COMPONENT_TYPES.I16: {
+      const v = dv.getInt16(byteOffset, true);
+      return normalized ? Math.max(v / 32767, -1) : v;
+    }
     case GLTF_COMPONENT_TYPES.U32: return dv.getUint32(byteOffset, true);
-    case GLTF_COMPONENT_TYPES.F64: return dv.getFloat64(byteOffset, true);
     case GLTF_COMPONENT_TYPES.F32: return dv.getFloat32(byteOffset, true);
     default: fail("BAD_ACCESSOR_COMPONENT", `componentType ${componentType} não decodificável`);
   }

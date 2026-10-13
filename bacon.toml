@@ -1,0 +1,22 @@
+# Fluxo de desenvolvimento do app nativo (docs/native/ARQUITETURA_NATIVA.md §4).
+#   bacon studio      → recompila e reinicia o anigo-studio ao salvar (a sessão é restaurada: câmera, workspace, documento)
+#   bacon test-model  → testes do motor de modelagem
+# Shaders WGSL do Workbench NÃO precisam de rebuild: o app observa o arquivo (hot reload em < 1 s).
+default_job = "studio"
+
+[jobs.studio]
+command = ["cargo", "run", "-p", "anigo-studio", "--", "--session-file", "target/dev_session.json"]
+need_stdout = true
+allow_warnings = true
+background = false
+kill = ["pkill", "-f", "anigo-studio"]
+watch = ["crates/anigo-studio", "crates/anigo-modeling", "crates/anigo-core", "crates/anigo-renderer", "crates/anigo-session"]
+
+[jobs.test-model]
+command = ["cargo", "test", "-p", "anigo-modeling"]
+need_stdout = true
+watch = ["crates/anigo-modeling"]
+
+[jobs.check]
+command = ["cargo", "check", "--workspace", "--all-targets"]
+need_stdout = false

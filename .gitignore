@@ -31,3 +31,6 @@ script.py
 
 # Agents scratchpad
 .agents/
+
+# Worktrees de agentes
+.claude/

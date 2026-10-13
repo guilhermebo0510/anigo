@@ -105,6 +105,7 @@ export function renderContractFixture() {
       theta: "face_sdf_theta",
       threshold: "face_sdf_threshold",
       factor: "face_sdf_factor",
+      mirror: "face_sdf_mirror_uv",
     }),
     shader("anime_eye", "crates/anigo-renderer/shaders/anime_eye.wgsl", "wgsl", "library", {
       parallax: "eye_parallax_uv",
@@ -131,6 +132,21 @@ export function renderContractFixture() {
         { shader_location: 4, offset: 48, format: "uint16x4", name: "joints" },
         { shader_location: 5, offset: 56, format: "float32x4", name: "weights" },
       ],
+      // Motor cel (Fase 1): SEGUNDO stream de vértices, só do pipeline `outline`.
+      // Carrega a normal de extrusão do contorno (suavizada: soldada por posição
+      // e ponderada por ângulo — sem frestas em arestas duras). O vertex de 72 B
+      // e o do cel NÃO mudam. O renderer nativo sobe um buffer dedicado de
+      // 12 B/vértice; o viewport TS pode reaproveitar o VBO principal lendo a
+      // própria normal (stride 72, offset 12) — mesmo shader, contorno sem
+      // suavização.
+      outline_stream: {
+        stride: 12,
+        step_mode: "vertex",
+        attributes: [
+          { shader_location: 6, offset: 0, format: "float32x3", name: "outline_normal" },
+        ],
+        viewport_fallback: { stride: 72, offset: 12, source: "main_vbo.normal" },
+      },
     },
     uniforms: {
       camera: {
@@ -156,6 +172,17 @@ export function renderContractFixture() {
           { name: "ambient_ground", kind: "vec4", offset: 64, size: 16 },
         ],
       },
+      // Sombra projetada da luz principal (aditivo; desligada por padrão).
+      shadow: {
+        struct: "ShadowUniform",
+        address_space: "uniform",
+        size: 96,
+        fields: [
+          { name: "light_view_proj", kind: "mat4x4", offset: 0, size: 64, meaning: "mundo → clip da luz (ortográfica, z em 0..1); identidade quando desligada" },
+          { name: "params", kind: "vec4", offset: 64, size: 16, meaning: "enabled (0/1; 0 = o shader nem amostra o mapa), strength (0..1), bias de profundidade (NDC), normal bias (m)" },
+          { name: "params2", kind: "vec4", offset: 80, size: 16, meaning: "1/resolução do mapa, raio do PCF (texels), meia-largura do degrau, reservado" },
+        ],
+      },
       material: {
         struct: "MaterialUniform",
         address_space: "uniform",
@@ -172,21 +199,23 @@ export function renderContractFixture() {
           { name: "emission_color", kind: "vec4", offset: 112, size: 16, meaning: "MToon subEmission (rgb sRGB, w alpha)" },
           { name: "params4", kind: "vec4", offset: 128, size: 16, meaning: "emission_intensity, second_shade_shift, second_shade_softness, matcap_intensity" },
           { name: "params5", kind: "vec4", offset: 144, size: 16, meaning: "main_tex_enabled, shade_tex_enabled, second_shade_enabled, emission_enabled" },
-          { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, reserved" },
+          { name: "params6", kind: "vec4", offset: 160, size: 16, meaning: "matcap_enabled, matcap_mode (0 normal/1 additive), shade_toony, ramp_blend (motor cel: 0 = rampa 2D desligada, 0..1 mistura o fator analítico com a rampa)" },
           // Fase 2 (#17): sombra facial SDF
-          { name: "params7", kind: "vec4", offset: 176, size: 16, meaning: "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, reserved" },
+          { name: "params7", kind: "vec4", offset: 176, size: 16, meaning: "face_shadow_offset, face_shadow_smoothness, face_sdf_enabled, ramp_row (motor cel: linha da rampa 2D, 0..3; só vale com ramp_blend > 0)" },
           // Fase 2 (#43): olho anime (parallax + highlights desacoplados)
-          { name: "params8", kind: "vec4", offset: 192, size: 16, meaning: "eye_depth_scale, eye_highlight_intensity, eye_enabled, reserved" },
+          { name: "params8", kind: "vec4", offset: 192, size: 16, meaning: "eye_depth_scale, eye_highlight_intensity, eye_enabled, face_sdf_mirror_center (motor cel: 0 = sem espelhamento; > 0 = u do eixo de simetria do rosto no mapa SDF)" },
         ],
       },
       outline: {
         struct: "OutlineUniform",
         address_space: "uniform",
-        size: 48,
+        size: 64,
         fields: [
           { name: "color", kind: "vec4", offset: 0, size: 16 },
           { name: "params", kind: "vec4", offset: 16, size: 16, meaning: "width, aspect, depth_bias, opacity" },
-          { name: "params2", kind: "vec4", offset: 32, size: 16, meaning: "smoothness, width_tex_enabled (Fase 2 #18)" },
+          { name: "params2", kind: "vec4", offset: 32, size: 16, meaning: "smoothness, width_tex_enabled (Fase 2 #18), distance_falloff (motor cel: 0 = espessura constante em px), ref_distance_effective (m, já com a compensação de FOV)" },
+          // Motor cel (Fase 1): taper e piso da largura por distância.
+          { name: "params3", kind: "vec4", offset: 48, size: 16, meaning: "taper (0..1), min_width_scale (piso do falloff), reserved, reserved" },
         ],
       },
       sparse_morph_header: {
@@ -292,6 +321,12 @@ export function renderContractFixture() {
           // Fase 2 (#17): mapa SDF da sombra facial (neutro 1x1 quando off)
           { binding: 16, kind: "texture_2d<f32>", stages: ["fragment"], declaration: "var face_sdf_tex: texture_2d<f32>" },
           { binding: 17, kind: "sampler", stages: ["fragment"], declaration: "var face_sdf_sampler: sampler" },
+          // Sombra projetada (aditivo): uniform da luz, mapa de profundidade 1× e
+          // sampler de comparação. Desligada, o renderer ancora o uniform neutro
+          // (enabled = 0) e uma profundidade 1x1 — o shader não amostra.
+          { binding: 18, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> shadow_u: ShadowUniform" },
+          { binding: 19, kind: "texture_depth_2d", stages: ["fragment"], declaration: "var shadow_map: texture_depth_2d" },
+          { binding: 20, kind: "sampler_comparison", stages: ["fragment"], declaration: "var shadow_cmp_sampler: sampler_comparison" },
         ],
       },
       {
@@ -560,10 +595,23 @@ export function renderContractFixture() {
       sdf_channel: "r",
       sdf_semantics: "0 = centro da região de sombra (nasal/olhos/queixo), 1 = fora da região",
       neutral_when_disabled: "neutro 1x1 branco (R=1) → fator 0 → imagem inalterada",
-      darkening: 0.72,
+      // Motor cel (Fase 1): a sombra facial usa a COR DE SOMBRA do material (a
+      // mesma do terminador): mix(base_cel, min(base_cel, shadow_color), fator).
+      // Antes era um escurecimento fixo base_cel * 0.72 (campo `darkening`, removido).
+      shadow_tone: "mix(base_cel, min(base_cel, shadow_color), factor)",
+      // Espelhamento: o mapa é autorado para luz em +X local (theta >= 0) e é
+      // sampleado com u' = 2*center - u quando theta < 0 (center = material
+      // `face_sdf_mirror_center`, 0 = desligado, o comportamento anterior).
+      mirror: "u' = 2 * face_sdf_mirror_center - u quando theta < 0 e face_sdf_mirror_center > 0",
+      // Frame do rosto: eixos X/Z da junta 7 (Head) da paleta de skinning levados
+      // ao mundo pelo vertex shader do cel (flat). Paleta identidade = colunas 0 e
+      // 2 da matriz de modelo (como antes). Limitação: a junta é a do esqueleto
+      // canônico de 24 ossos; um rig com outra numeração precisa remapear.
+      frame: "face_right = model * (palette[7] * (1,0,0,0)); face_forward = model * (palette[7] * (0,0,1,0))",
+      head_joint: 7,
       block_markers: ["// ANIGO-FACE-SDF-BEGIN", "// ANIGO-FACE-SDF-END"],
       shared_by: ["face_sdf", "cel_shading"],
-      entry_functions: ["face_sdf_theta", "face_sdf_threshold", "face_sdf_factor"],
+      entry_functions: ["face_sdf_theta", "face_sdf_threshold", "face_sdf_factor", "face_sdf_mirror_uv"],
       golden: [
         { azimuth_degrees: 0, theta: 0.0, light_front: 1.0, threshold: 0.5, factor_sdf_half: 0.5 },
         { azimuth_degrees: 45, theta: 0.78539819, light_front: 0.8535534, threshold: 0.53661167, factor_sdf_half: 0.9510253 },
@@ -805,6 +853,115 @@ export function renderContractFixture() {
         { name: "three_step", kind: "steps", steps: [{ threshold: 0.25, value: 0.35 }, { threshold: 0.5, value: 0.7 }, { threshold: 0.75, value: 1.0 }], base: 0.0 },
       ],
     },
+    // -----------------------------------------------------------------------
+    // Motor cel NPR (Fase 0/1) — parâmetros OPCIONAIS por material. Cada um
+    // tem padrão que reproduz o motor anterior byte a byte (o frame congelado
+    // abaixo e os goldens do headless não mudam). Fonte Rust:
+    // `anigo-core::npr::NprParams` (matemática pura espelhada no WGSL).
+    // -----------------------------------------------------------------------
+    npr: {
+      version: 1,
+      params: [
+        {
+          name: "ramp_blend", range: [0, 1], default: 0,
+          uniform: "material.params6.w", shader: "cel_shading",
+          effect: "0 = rampa 2D desligada (fator de luz 100% analítico, nem amostra a textura). 1 = a rampa 2D (binding 3) decide o fator de luz; fração mistura linear.",
+        },
+        {
+          name: "ramp_row", range: [0, 3], default: 1,
+          uniform: "material.params7.w", shader: "cel_shading",
+          effect: "Linha da rampa 2D (0 contínua, 1 um degrau, 2 dois, 3 três; fração interpola). Só vale com ramp_blend > 0. Coluna = half-lambert deslocado pelo limiar de sombra; coordenadas: v = (row + 0.5) / 4, u = clamp(half_lambert - shadow_threshold + 0.5, 0.002, 0.998).",
+        },
+        {
+          name: "outline_smooth_normals", range: [0, 1], default: 0,
+          uniform: "(segundo stream de vértices, location 6, só do pipeline outline)", shader: "inverted_hull",
+          effect: "0 = o hull extruda pela normal da malha (frestas em arestas duras). 1 = normal SUAVIZADA de contorno: vértices soldados por posição, média das normais de face ponderada pelo ângulo interno. Fração mistura e renormaliza. Calculada no lado Rust (anigo-core::npr::smooth_outline_normals).",
+        },
+        {
+          name: "outline_distance_falloff", range: [0, 1], default: 0,
+          uniform: "outline.params2.z", shader: "inverted_hull",
+          effect: "0 = espessura constante em pixels (motor anterior). 1 = proporcional ao tamanho projetado: escala = clamp((ref_eff / profundidade)^falloff, piso, 4). Fração = expoente. Forçado a 0 em câmera ortográfica.",
+        },
+        {
+          name: "outline_ref_distance", range: [0.05, 1000], default: 4.0,
+          uniform: "outline.params2.w (efetiva: ref · tan(22.5°) / tan(fov/2))", shader: "inverted_hull",
+          effect: "Distância (m) em que a largura é a nominal outline_width, com o FOV de referência de 45°. A compensação de FOV é feita no host (a linha acompanha o zoom da lente).",
+        },
+        {
+          name: "outline_min_width_scale", range: [0, 1], default: 0,
+          uniform: "outline.params3.y", shader: "inverted_hull",
+          effect: "Piso do fator de escala por distância (a linha nunca fica mais fina que piso × largura nominal). 0 = sem piso.",
+        },
+        {
+          name: "outline_taper", range: [0, 1], default: 0,
+          uniform: "outline.params3.x", shader: "inverted_hull",
+          effect: "Peso de traço por orientação: largura × (1 − taper · 0.75 · |N·V|). 0 = uniforme; 1 = a linha afina até 25% onde a superfície encara a câmera e fica cheia na silhueta rasante.",
+        },
+        {
+          name: "outline_ink_blend", range: [0, 1], default: 0,
+          uniform: "outline.color (calculado no host)", shader: "inverted_hull",
+          effect: "0 = cor outline_color do material. 1 = tinta derivada da cor base (HSV: satura e escurece). Fração mistura no RGB; alfa é o de outline_color.",
+        },
+        {
+          name: "outline_ink_darken", range: [0, 1], default: 0.7,
+          uniform: "outline.color (host)", shader: "inverted_hull",
+          effect: "Quanto a tinta escurece a base: V × (1 − darken) em HSV (sRGB). Só vale com outline_ink_blend > 0.",
+        },
+        {
+          name: "outline_ink_saturation", range: [0, 3], default: 2.5,
+          uniform: "outline.color (host)", shader: "inverted_hull",
+          effect: "Multiplicador de saturação (HSV) da tinta (1 = igual à base; ~2.5 transforma pele clara em marrom-avermelhado). Só vale com outline_ink_blend > 0.",
+        },
+        {
+          name: "face_sdf_mirror_center", range: [0, 1], default: 0,
+          uniform: "material.params8.w", shader: "cel_shading",
+          effect: "0 = sem espelhamento (sombra facial simétrica, o comportamento anterior). > 0 = u do eixo de simetria do rosto no mapa SDF (0.5 para mapas centrados; 0.25 na esfera UV/cabeça canônica): com a luz do lado oposto ao autorado (theta < 0) o mapa é amostrado espelhado. Só vale com face_sdf_enabled e um mapa ancorado.",
+        },
+      ],
+    },
+    // -----------------------------------------------------------------------
+    // Sombra projetada da luz principal (workspace Iluminação): shadow map de 1
+    // luz, estilizado. ADITIVO e DESLIGADO por padrão (`StylizedLight.shadow`):
+    // com `enabled = false` o passe de profundidade da luz não existe e o quadro
+    // é byte a byte o do motor anterior (hashes de golden_frames.rs). Não entra em
+    // `passes`/`render_graph` (a ordem canônica não muda): é um passe só-
+    // profundidade que reusa o vertex shader do cel. Fonte Rust:
+    // `anigo-core::shadow` (matemática pura espelhada no WGSL com teste de paridade).
+    // -----------------------------------------------------------------------
+    shadow_map: {
+      version: 1,
+      enabled_by: "scene.light.shadow.enabled (padrão false)",
+      neutral_when_disabled: "uniform neutro (matriz identidade, params.x = 0) + profundidade 1x1: o fragmento não amostra → imagem inalterada",
+      pass: {
+        name: "shadow_depth",
+        kind: "render",
+        shader: "cel_shading",
+        vertex_entry: "vs_main",
+        fragment_entry: null,
+        bind_group: "cel",
+        camera: "a câmera do bind group é a da LUZ (view_proj = light_view_proj); o mapa não é vinculado como textura neste passe (profundidade neutra no binding 19)",
+        target: { format: "depth24plus (targets.depth_format)", samples: 1, clear: 1.0 },
+        cull_mode: "none",
+        depth_compare: "less",
+        depth_bias: { constant: 2, slope_scale: 2.0, clamp: 0 },
+        only_when: "shadow_enabled",
+        backends: "não criado no backend GL (sem leitura de profundidade com comparação)",
+      },
+      light_fit: "projeção ORTOGRÁFICA ajustada a uma esfera envolvente dos cantos de todos os nós visíveis (raio × 1.04 + 0.02), centro com snap de texel no plano da luz; o olho recua até o projetor mais próximo da luz; distance > 0 limita a esfera a esse raio ao redor do alvo da câmera; distance = 0 (automático) limita a 7 m ao redor do alvo (cenas menores usam o conteúdo inteiro)",
+      receiver: "p' = p + N · normal_bias_m · saturate(1 − N·L); uv = (x/2 + 0.5, 0.5 − y/2); ref = z − bias_ndc; fora de [0,1]² ou z fora de [0,1] → sem sombra",
+      filter: "PCF 5×5 de textureSampleCompareLevel (sampler linear de comparação), espaçamento = raio_texels/2 texels; oclusão = 1 − média",
+      stylize: "sombra = smoothstep(0.5 − w, 0.5 + w, oclusão); toon_factor *= 1 − sombra · strength (herda a cor de sombra do terminador)",
+      hardness_mapping: "raio_texels = 4.5 − 3·dureza; w = 0.5 − 0.45·dureza",
+      entry_functions: ["shadow_project", "shadow_receiver_pos", "shadow_step", "shadow_occlusion"],
+      golden: [
+        { fn: "shadow_step", occlusion: 0.5, half_width: 0.1, value: 0.5 },
+        { fn: "shadow_step", occlusion: 0.0, half_width: 0.1, value: 0.0 },
+        { fn: "shadow_step", occlusion: 1.0, half_width: 0.1, value: 1.0 },
+        { fn: "shadow_receiver_pos", normal: [0, 1, 0], light: [1, 0, 0], normal_bias: 0.1, offset: [0, 0.1, 0] },
+        { fn: "shadow_receiver_pos", normal: [0, 1, 0], light: [0, 1, 0], normal_bias: 0.1, offset: [0, 0, 0] },
+        { fn: "shadow_project", matrix: "identity", point: [1, -1, 0.25], uvz: [1, 1, 0.25] },
+      ],
+    },
     reference_frame: {
       description:
         "Frozen frame: the uniform blocks both renderers must produce byte for byte " +
@@ -932,6 +1089,8 @@ export function renderContractFixture() {
         outline_uniform: [
           0.25, 0.150000006, 0.200000003, 1.0, 0.004, 1.777777791, 0.02, 0.899999976,
           0.01, 0.0, 0.0, 0.0,
+          // params3 (motor cel): taper 0, piso 0 — frame congelado com o motor no padrão.
+          0.0, 0.0, 0.0, 0.0,
         ],
       },
     },
