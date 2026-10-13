@@ -117,13 +117,16 @@ fn inside_allowed(p: &Path, allowed: &[PathBuf]) -> bool {
     allowed.iter().any(|a| cand.starts_with(canonical_lenient(a)) || p.starts_with(a))
 }
 
+/// `ANIGO_MCP_ALLOW_FS_WRITE=0|false` desliga toda gravação (separado do `env` para ser testável sem corrida).
+fn writes_disabled(val: Option<&str>) -> bool {
+    matches!(val, Some(v) if v == "0" || v.eq_ignore_ascii_case("false"))
+}
+
 /// Validate that a path does NOT escape via ".." and is within allowlist for write.
 pub fn sanitize_save_path(input: &str) -> Result<PathBuf> {
     // Env kill-switch
-    if let Ok(val) = std::env::var("ANIGO_MCP_ALLOW_FS_WRITE") {
-        if val == "0" || val.eq_ignore_ascii_case("false") {
-            bail!("Filesystem writes are disabled by ANIGO_MCP_ALLOW_FS_WRITE=0 (attempted: {})", input);
-        }
+    if writes_disabled(std::env::var("ANIGO_MCP_ALLOW_FS_WRITE").ok().as_deref()) {
+        bail!("Filesystem writes are disabled by ANIGO_MCP_ALLOW_FS_WRITE=0 (attempted: {})", input);
     }
 
     if input.trim().is_empty() {
@@ -388,10 +391,10 @@ mod tests {
 
     #[test]
     fn write_killswitch() {
-        // Ensure that when ANIGO_MCP_ALLOW_FS_WRITE=0, writes are rejected.
-        // We set the var, call, then unset it.
-        unsafe { std::env::set_var("ANIGO_MCP_ALLOW_FS_WRITE", "0"); }
-        assert!(sanitize_save_path("tmp/out.png").is_err());
-        unsafe { std::env::remove_var("ANIGO_MCP_ALLOW_FS_WRITE"); }
+        // função pura: mexer em variável de ambiente aqui derrubava, em paralelo, os testes que gravam
+        assert!(writes_disabled(Some("0")));
+        assert!(writes_disabled(Some("FALSE")));
+        assert!(!writes_disabled(Some("1")));
+        assert!(!writes_disabled(None));
     }
 }

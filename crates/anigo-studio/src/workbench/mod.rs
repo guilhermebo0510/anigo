@@ -735,7 +735,7 @@ mod tests {
     /// Cria device via lavapipe/qualquer adaptador; `None` pula o teste (sem GPU).
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })).ok()?;
         pollster_block(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
@@ -839,7 +839,7 @@ mod overlay_tests {
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })).ok()?;
         pollster_block(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
