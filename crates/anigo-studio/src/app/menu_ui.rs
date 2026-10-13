@@ -395,7 +395,15 @@ impl StudioApp {
             let mut open = true;
             egui::Window::new(tr("about.title")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).open(&mut open).show(ctx, |ui| {
                 ui.set_width(460.0);
-                ui.label(RichText::new("ANIGO Studio").strong().size(18.0).color(theme::ACCENT));
+                let ctx = ui.ctx().clone();
+                let v = crate::brand::Variant::of(&ctx);
+                if let Some(tex) = self.brand.lockup(&ctx, v, 56.0 * ctx.pixels_per_point()) {
+                    let h = 44.0;
+                    ui.add(egui::Image::new(&tex).fit_to_exact_size(egui::vec2(h * crate::brand::lockup_aspect(&tex), h)));
+                } else {
+                    ui.label(RichText::new("ANIGO Studio").strong().size(18.0).color(theme::ACCENT));
+                }
+                ui.label(RichText::new(tr("about.tagline")).size(12.5).color(theme::TEXT_DIM));
                 ui.label(format!("{}: {}", tr("about.version"), env!("CARGO_PKG_VERSION")));
                 if let Some(g) = &self.gpu {
                     ui.label(format!("{}: {} ({})", tr("about.gpu"), g.adapter_name, g.backend));

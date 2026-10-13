@@ -148,6 +148,8 @@ pub const DOCK_TABLE: &[(&str, &str, &str)] = &[
     ("about.warnings", "Avisos de carregamento", "Load warnings"),
     ("about.none", "nenhum", "none"),
     ("about.no_persist", "não persiste (--no-session)", "not persisted (--no-session)"),
+    ("splash.loading", "Preparando o estúdio…", "Preparing the studio…"),
+    ("about.tagline", "Estúdio de personagens anime", "Anime character studio"),
     // ---------------------------------------------------------------- painel de atalhos
     ("kb.title", "Atalhos de teclado", "Keyboard shortcuts"),
     ("kb.search", "Buscar por nome, id ou atalho", "Search by name, id or shortcut"),

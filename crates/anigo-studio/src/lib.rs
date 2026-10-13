@@ -11,6 +11,7 @@
 
 pub mod anim;
 pub mod app;
+pub mod brand;
 pub mod celview;
 pub mod character;
 pub mod cli;

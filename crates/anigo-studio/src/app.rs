@@ -168,6 +168,9 @@ pub struct StudioApp {
     /// Biblioteca temporária do cenário `biblioteca-*` (mantida viva até o fim).
     pub(crate) lib_scenario_dir: Option<std::path::PathBuf>,
     pub(crate) frame_count: u64,
+    /// Identidade visual (texturas da marca) e tela de abertura.
+    pub(crate) brand: crate::brand::Brand,
+    pub(crate) splash: crate::brand::Splash,
     pub(crate) screenshot_requested: bool,
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) overlay_wire: bool,
@@ -454,6 +457,8 @@ impl StudioApp {
             }
         }
 
+        // splash só no uso normal: captura, cenário e bridge (automação) começam direto na interface
+        let cli_automated = cli.screenshot.is_some() || cli.scenario.is_some() || cli.bridge;
         let mut app = Self {
             cli,
             ws,
@@ -468,6 +473,8 @@ impl StudioApp {
             lib_ws,
             lib_scenario_dir,
             frame_count: 0,
+            brand: crate::brand::Brand::default(),
+            splash: crate::brand::Splash::new(crate::brand::splash_mode(cli_automated)),
             screenshot_requested: false,
             session_path,
             overlay_wire: false,
@@ -643,7 +650,7 @@ impl StudioApp {
         egui::Panel::top("topbar").exact_size(38.0).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
-                ui.label(RichText::new("ANIGO").strong().size(15.0).color(theme::ACCENT));
+                self.top_bar_logo(ui);
                 ui.add_space(14.0);
                 for w in WorkspaceId::ALL {
                     let label = format!("{}  {}", w.icon(), tr(&format!("workspace.{}", w.key())));
@@ -682,6 +689,19 @@ impl StudioApp {
                 });
             });
         });
+    }
+
+    /// Marca + nome no canto da barra superior (o lockup na resolução certa para o DPI).
+    fn top_bar_logo(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let h = 20.0;
+        let v = crate::brand::Variant::of(&ctx);
+        if let Some(tex) = self.brand.lockup(&ctx, v, h * ctx.pixels_per_point()) {
+            let w = h * crate::brand::lockup_aspect(&tex);
+            ui.add(egui::Image::new(&tex).fit_to_exact_size(egui::vec2(w, h)));
+        } else {
+            ui.label(RichText::new("ANIGO").strong().size(15.0).color(theme::ACCENT));
+        }
     }
 
     pub(crate) fn switch_workspace(&mut self, w: WorkspaceId) {
@@ -988,6 +1008,7 @@ impl eframe::App for StudioApp {
         self.workspace_ui(ui, frame);
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
+        self.splash.show(&ctx, &mut self.brand, tr("splash.loading"), &format!("v{}", env!("CARGO_PKG_VERSION")));
         if self.shader_watcher.is_some() {
             // hot reload precisa de polling mesmo sem interação
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
