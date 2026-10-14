@@ -7,7 +7,6 @@ use crate::icons;
 use crate::modeling::{Mode, PrimitiveKind};
 use crate::theme;
 use crate::workspace::{ToolDef, MODELAGEM_OBJECT};
-use anigo_modeling::SelectMode;
 use egui::RichText;
 use glam::{EulerRot, Quat};
 
@@ -253,37 +252,26 @@ impl StudioApp {
     fn inspector_edit(&mut self, ui: &mut egui::Ui, tab: PropTab) {
         if tab == PropTab::Tool {
             section(ui, "Seleção", |ui| {
+                // O modo (vértice/aresta/face) já está na barra do viewport; aqui ficam só as ações, como ícones com dica.
                 ui.horizontal_wrapped(|ui| {
-                    for (m, key, icon) in [
-                        (SelectMode::Vertex, "select.vertex", icons::DOT_OUTLINE),
-                        (SelectMode::Edge, "select.edge", icons::LINE_SEGMENT),
-                        (SelectMode::Face, "select.face", icons::POLYGON),
-                    ] {
-                        if ui
-                            .selectable_label(self.modeling.select_mode == m, format!("{icon} {}", tr(key)))
-                            .clicked()
-                        {
-                            self.modeling.set_select_mode(m);
-                        }
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Tudo (A)").clicked() {
+                    let btn = |ui: &mut egui::Ui, icon: &str, tip: &str| ui.add(egui::Button::new(egui::RichText::new(icon).size(16.0)).min_size(egui::vec2(32.0, 28.0))).on_hover_text(tip).clicked();
+                    if btn(ui, icons::SELECTION_ALL, "Selecionar tudo (A)") {
                         self.modeling.select_all();
                     }
-                    if ui.button("Nada").clicked() {
+                    if btn(ui, icons::SELECTION_SLASH, "Limpar a seleção (Alt+A)") {
                         self.modeling.select_none();
                     }
-                    if ui.button("Inverter").clicked() {
+                    if btn(ui, icons::SELECTION_INVERSE, "Inverter a seleção (Ctrl+I)") {
                         self.modeling.select_invert();
                     }
-                    if ui.button("Mais").clicked() {
+                    ui.separator();
+                    if btn(ui, icons::ARROWS_OUT, "Selecionar mais (cresce a seleção)") {
                         self.modeling.select_more();
                     }
-                    if ui.button("Menos").clicked() {
+                    if btn(ui, icons::ARROWS_IN, "Selecionar menos (encolhe a seleção)") {
                         self.modeling.select_less();
                     }
-                    if ui.button("Ligados").clicked() {
+                    if btn(ui, icons::LINK, "Selecionar ligados (a ilha inteira)") {
                         self.modeling.select_linked();
                     }
                 });
