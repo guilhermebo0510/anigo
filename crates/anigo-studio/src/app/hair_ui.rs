@@ -25,7 +25,7 @@ fn gv(p: egui::Vec2) -> Vec2 {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).strong())
+    crate::app::props_tabs::header(ui, RichText::new(title).strong())
         .id_salt(("hair_section", title))
         .default_open(open)
         .show(ui, add);
@@ -377,7 +377,7 @@ impl StudioApp {
             let mut pick = None;
             let mut toggle_vis = None;
             for g in &self.modeling.doc.hair.groups {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let eye = if g.visible { icons::EYE } else { icons::EYE_SLASH };
                     if ui.small_button(eye).clicked() {
                         toggle_vis = Some(g.id);
@@ -481,7 +481,7 @@ impl StudioApp {
                     .collect();
                 if !others.is_empty() {
                     let mut dest = None;
-                    egui::ComboBox::from_id_salt("hair_move_to")
+                    crate::app::props_tabs::combo(ui, "hair_move_to")
                         .selected_text(tr("hairtool.move_to"))
                         .show_ui(ui, |ui| {
                             for (id, n) in &others {
@@ -515,7 +515,7 @@ impl StudioApp {
             let layout_before = layout;
             ui.separator();
             ui.label(RichText::new(tr("hairtool.material")).strong());
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (c, tip) in [
                     (&mut mat.base_color, "hairtool.color_base"),
                     (&mut mat.shade_color, "hairtool.color_shade"),
@@ -528,9 +528,9 @@ impl StudioApp {
                     }
                 }
             });
-            ui.add(egui::Slider::new(&mut mat.root_ao, 0.0..=1.0).text(tr("hairtool.root_ao")));
-            ui.add(egui::Slider::new(&mut mat.normal_bias, 0.0..=1.0).text(tr("hairtool.normal_bias")));
-            egui::ComboBox::from_id_salt("hair_uv_layout")
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.root_ao"), egui::Slider::new(&mut mat.root_ao, 0.0..=1.0)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.normal_bias"), egui::Slider::new(&mut mat.normal_bias, 0.0..=1.0)));
+            crate::app::props_tabs::combo(ui, "hair_uv_layout")
                 .selected_text(match layout {
                     UvLayout::LengthV => tr("hairtool.uv_length_v"),
                     UvLayout::LengthU => tr("hairtool.uv_length_u"),
@@ -560,40 +560,40 @@ impl StudioApp {
                 None => self.hair.template,
             };
             let before = p;
-            egui::ComboBox::from_id_salt("hair_section_kind")
+            crate::app::props_tabs::combo(ui, "hair_section_kind")
                 .selected_text(tr(p.section.kind.key()))
                 .show_ui(ui, |ui| {
                     for k in SectionKind::ALL {
                         ui.selectable_value(&mut p.section.kind, k, tr(k.key()));
                     }
                 });
-            ui.add(egui::Slider::new(&mut p.section.width, 0.005..=0.4).logarithmic(true).text(tr("hairtool.width")));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.width"), egui::Slider::new(&mut p.section.width, 0.005..=0.4).logarithmic(true)));
             if p.section.kind.is_solid() {
-                ui.add(egui::Slider::new(&mut p.section.thickness, 0.003..=0.3).logarithmic(true).text(tr("hairtool.thickness")));
+                ui.add(crate::app::props_tabs::lab(tr("hairtool.thickness"), egui::Slider::new(&mut p.section.thickness, 0.003..=0.3).logarithmic(true)));
             }
             let mut twist_deg = p.section.twist.to_degrees();
-            if ui.add(egui::Slider::new(&mut twist_deg, -720.0..=720.0).text(tr("hairtool.twist")).suffix("°")).changed() {
+            if ui.add(crate::app::props_tabs::lab(tr("hairtool.twist"), egui::Slider::new(&mut twist_deg, -720.0..=720.0).suffix("°"))).changed() {
                 p.section.twist = twist_deg.to_radians();
             }
             if p.section.kind == SectionKind::Arc {
                 let mut curl_deg = p.section.curl.to_degrees();
-                if ui.add(egui::Slider::new(&mut curl_deg, -300.0..=300.0).text(tr("hairtool.curl")).suffix("°")).changed() {
+                if ui.add(crate::app::props_tabs::lab(tr("hairtool.curl"), egui::Slider::new(&mut curl_deg, -300.0..=300.0).suffix("°"))).changed() {
                     p.section.curl = curl_deg.to_radians().clamp(-5.2, 5.2);
                 }
             }
-            ui.add(egui::Slider::new(&mut p.tip_taper, 0.0..=1.0).text(tr("hairtool.tip_taper")));
-            ui.add(egui::Slider::new(&mut p.taper_power, 0.3..=4.0).text(tr("hairtool.taper_power")));
-            ui.add(egui::Slider::new(&mut p.flare, -0.5..=1.0).text(tr("hairtool.flare")));
-            ui.add(egui::Slider::new(&mut p.resolution, 1..=32).text(tr("hairtool.resolution")));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.tip_taper"), egui::Slider::new(&mut p.tip_taper, 0.0..=1.0)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.taper_power"), egui::Slider::new(&mut p.taper_power, 0.3..=4.0)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.flare"), egui::Slider::new(&mut p.flare, -0.5..=1.0)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.resolution"), egui::Slider::new(&mut p.resolution, 1..=32)));
             let mut clump = p.clump.is_some();
             if ui.checkbox(&mut clump, tr("hairtool.clump")).changed() {
                 p.clump = clump.then(Default::default);
             }
             if let Some(c) = p.clump.as_mut() {
-                ui.add(egui::Slider::new(&mut c.count, 1..=24).text(tr("hairtool.clump_count")));
-                ui.add(egui::Slider::new(&mut c.spread, 0.0..=0.15).text(tr("hairtool.clump_spread")));
-                ui.add(egui::Slider::new(&mut c.noise, 0.0..=1.0).text(tr("hairtool.clump_noise")));
-                ui.add(egui::Slider::new(&mut c.strand_width, 0.004..=0.1).logarithmic(true).text(tr("hairtool.clump_width")));
+                ui.add(crate::app::props_tabs::lab(tr("hairtool.clump_count"), egui::Slider::new(&mut c.count, 1..=24)));
+                ui.add(crate::app::props_tabs::lab(tr("hairtool.clump_spread"), egui::Slider::new(&mut c.spread, 0.0..=0.15)));
+                ui.add(crate::app::props_tabs::lab(tr("hairtool.clump_noise"), egui::Slider::new(&mut c.noise, 0.0..=1.0)));
+                ui.add(crate::app::props_tabs::lab(tr("hairtool.clump_width"), egui::Slider::new(&mut c.strand_width, 0.004..=0.1).logarithmic(true)));
             }
             if p != before {
                 self.hair.gesture_checkpoint(&mut self.modeling, "strand_params", "Parâmetros da mecha");
@@ -658,14 +658,14 @@ impl StudioApp {
     fn hair_drawing_panel(&mut self, ui: &mut egui::Ui) {
         section(ui, tr("hairtool.drawing"), false, |ui| {
             let s = &mut self.hair.stroke;
-            ui.add(egui::Slider::new(&mut s.lift_root, 0.0..=0.1).text(tr("hairtool.lift_root")));
-            ui.add(egui::Slider::new(&mut s.lift_tip, 0.0..=0.4).text(tr("hairtool.lift_tip")));
-            ui.add(egui::Slider::new(&mut s.smooth_iters, 0..=10).text(tr("hairtool.smooth")));
-            ui.add(egui::Slider::new(&mut s.rdp_epsilon, 0.0005..=0.03).logarithmic(true).text(tr("hairtool.rdp")));
-            ui.add(egui::Slider::new(&mut s.resample_step, 0.005..=0.08).logarithmic(true).text(tr("hairtool.step")));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.lift_root"), egui::Slider::new(&mut s.lift_root, 0.0..=0.1)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.lift_tip"), egui::Slider::new(&mut s.lift_tip, 0.0..=0.4)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.smooth"), egui::Slider::new(&mut s.smooth_iters, 0..=10)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.rdp"), egui::Slider::new(&mut s.rdp_epsilon, 0.0005..=0.03).logarithmic(true)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.step"), egui::Slider::new(&mut s.resample_step, 0.005..=0.08).logarithmic(true)));
             ui.separator();
-            ui.add(egui::Slider::new(&mut self.hair.comb_radius_px, 10.0..=400.0).text(tr("hairtool.comb_radius")));
-            ui.add(egui::Slider::new(&mut self.hair.comb_strength, 0.02..=1.0).text(tr("hairtool.comb_strength")));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.comb_radius"), egui::Slider::new(&mut self.hair.comb_radius_px, 10.0..=400.0)));
+            ui.add(crate::app::props_tabs::lab(tr("hairtool.comb_strength"), egui::Slider::new(&mut self.hair.comb_strength, 0.02..=1.0)));
             ui.checkbox(&mut self.hair.comb_all_groups, tr("hairtool.comb_all"));
         });
     }
@@ -673,7 +673,7 @@ impl StudioApp {
     fn hair_bounce_panel(&mut self, ui: &mut egui::Ui) {
         section(ui, tr("hairtool.physics"), false, |ui| {
             ui.label(RichText::new(tr("hairtool.physics_note")).size(11.0).color(theme::TEXT_DIM));
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add(egui::DragValue::new(&mut self.hair.bounce_groups).range(1..=30).prefix(format!("{} ", tr("hairtool.bounce_groups"))));
                 ui.add(egui::DragValue::new(&mut self.hair.bounce_bones).range(1..=16).prefix(format!("{} ", tr("hairtool.bones"))));
             });
@@ -690,15 +690,15 @@ impl StudioApp {
             let mut edit: Option<(usize, anigo_modeling::hair::chain::BounceGroup)> = None;
             for (i, b) in self.modeling.doc.hair.bounce.iter().enumerate() {
                 let mut nb = b.clone();
-                egui::CollapsingHeader::new(format!("{} ({})", nb.name, nb.strands.len()))
+                crate::app::props_tabs::header(ui, format!("{} ({})", nb.name, nb.strands.len()))
                     .id_salt(("bounce", nb.id))
                     .show(ui, |ui| {
-                        ui.add(egui::Slider::new(&mut nb.bones, 1..=16).text(tr("hairtool.bones")));
-                        ui.add(egui::Slider::new(&mut nb.fixed_point, 0.01..=0.99).text(tr("hairtool.fixed_point")));
-                        ui.add(egui::Slider::new(&mut nb.stiffness, 0.0..=1.0).text(tr("hairtool.stiffness")));
-                        ui.add(egui::Slider::new(&mut nb.drag, 0.0..=1.0).text(tr("hairtool.drag")));
-                        ui.add(egui::Slider::new(&mut nb.gravity, 0.0..=1.0).text(tr("hairtool.gravity")));
-                        ui.add(egui::Slider::new(&mut nb.hit_radius, 0.0..=0.1).text(tr("hairtool.hit_radius")));
+                        ui.add(crate::app::props_tabs::lab(tr("hairtool.bones"), egui::Slider::new(&mut nb.bones, 1..=16)));
+                        ui.add(crate::app::props_tabs::lab(tr("hairtool.fixed_point"), egui::Slider::new(&mut nb.fixed_point, 0.01..=0.99)));
+                        ui.add(crate::app::props_tabs::lab(tr("hairtool.stiffness"), egui::Slider::new(&mut nb.stiffness, 0.0..=1.0)));
+                        ui.add(crate::app::props_tabs::lab(tr("hairtool.drag"), egui::Slider::new(&mut nb.drag, 0.0..=1.0)));
+                        ui.add(crate::app::props_tabs::lab(tr("hairtool.gravity"), egui::Slider::new(&mut nb.gravity, 0.0..=1.0)));
+                        ui.add(crate::app::props_tabs::lab(tr("hairtool.hit_radius"), egui::Slider::new(&mut nb.hit_radius, 0.0..=0.1)));
                     });
                 if nb != *b {
                     edit = Some((i, nb));

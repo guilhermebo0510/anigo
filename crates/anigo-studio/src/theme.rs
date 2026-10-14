@@ -15,6 +15,8 @@ pub const TEXT_DIM: Color32 = Color32::from_rgb(0x8c, 0x8c, 0x99);
 pub const BG_FRAME: Color32 = Color32::from_rgb(0x0d, 0x0d, 0x10);
 /// Espaço entre os cartões (viewport e painéis) e raio dos cantos.
 pub const CARD_GAP: f32 = 6.0;
+/// Largura mínima de qualquer painel do dock (pontos). Abaixo disto rótulos, botões e campos são cortados.
+pub const PANEL_MIN_W: f32 = 260.0;
 pub const CARD_RADIUS: u8 = 6;
 
 /// Arredonda os cantos de um cartão desenhado por cima (imagem do viewport, texturas): pinta a moldura por fora da borda

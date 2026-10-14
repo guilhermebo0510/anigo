@@ -287,6 +287,119 @@ pub(crate) fn tab_strip(ui: &mut egui::Ui, tabs: &[PropTab], current: PropTab) -
     (chosen, child)
 }
 
+thread_local! {
+    /// Quanto o conteúdo do painel Propriedades passou da largura disponível no último quadro (pontos; 0 = coube).
+    static PROPS_OVERFLOW: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Estouro de largura do último painel Propriedades desenhado (a bridge o expõe em `GET_UI_STATE` para os testes).
+pub(crate) fn props_overflow() -> f32 {
+    PROPS_OVERFLOW.with(|c| c.get())
+}
+
+/// Rolagem vertical do conteúdo de uma aba de Propriedades. Além de rolar, mede se algum controle ficou mais largo que o
+/// painel (isso é o que aparece como texto/campo cortado) e guarda o excesso em [`props_overflow`].
+pub(crate) fn props_scroll<R>(ui: &mut egui::Ui, salt: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    if DEBUG_EXPAND.with(|c| c.get()) {
+        ui.style_mut().debug.show_expand_width = true;
+    }
+    let out = egui::ScrollArea::vertical().id_salt(salt).auto_shrink([false, false]).show(ui, add_contents);
+    PROPS_OVERFLOW.with(|c| c.set((out.content_size.x - out.inner_rect.width()).max(0.0)));
+    out.inner
+}
+
+/// Abaixo desta largura útil (pontos) os controles empilham: rótulo em cima, controle embaixo.
+pub(crate) const NARROW_W: f32 = 280.0;
+
+/// `true` quando o espaço restante é pequeno demais para "rótulo + controle" lado a lado.
+pub(crate) fn narrow(ui: &egui::Ui) -> bool {
+    ui.available_width() < NARROW_W
+}
+
+thread_local! {
+    /// Só para testes: abre todas as seções recolhíveis (assim a medição de largura enxerga o conteúdo escondido).
+    static FORCE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
+    /// Só para testes: o egui pinta de vermelho os widgets que alargam o painel (o culpado do texto cortado).
+    static DEBUG_EXPAND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn set_debug_expand(v: bool) {
+    DEBUG_EXPAND.with(|c| c.set(v));
+}
+
+pub(crate) fn set_force_open(v: bool) {
+    FORCE_OPEN.with(|c| c.set(v));
+}
+
+/// `CollapsingHeader` do painel: igual ao do egui, mas obedece `set_force_open` (usado pelos testes de largura).
+pub(crate) fn header(ui: &egui::Ui, text: impl Into<egui::WidgetText>) -> egui::CollapsingHeader {
+    // o egui mede o título sem limite de largura: um título longo passaria da borda do painel. Aqui ele já chega
+    // truncado (com "…") à largura disponível; o id continua o do texto original (o estado aberto/fechado não reseta
+    // quando o painel muda de tamanho).
+    let text: egui::WidgetText = text.into();
+    let id = egui::Id::new(text.text());
+    let max_w = (ui.available_width() - 30.0).max(48.0);
+    let galley = text.into_galley(ui, Some(egui::TextWrapMode::Truncate), max_w, egui::TextStyle::Button);
+    let h = egui::CollapsingHeader::new(egui::WidgetText::Galley(galley)).id_salt(id);
+    if FORCE_OPEN.with(|c| c.get()) {
+        h.open(Some(true))
+    } else {
+        h
+    }
+}
+
+/// Slider com rótulo. Painel largo: como sempre (slider, valor e rótulo à direita). Painel estreito: o rótulo vai para
+/// cima e o slider ocupa a largura toda — nada passa da borda.
+pub(crate) struct LabeledSlider<'a> {
+    label: egui::WidgetText,
+    slider: egui::Slider<'a>,
+}
+
+pub(crate) fn lab<'a>(label: impl Into<egui::WidgetText>, slider: egui::Slider<'a>) -> LabeledSlider<'a> {
+    LabeledSlider { label: label.into(), slider }
+}
+
+impl egui::Widget for LabeledSlider<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        if !narrow(ui) {
+            return ui.add(self.slider.text(self.label));
+        }
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(egui::RichText::new(self.label.text()).size(12.0).color(theme::TEXT_DIM)).wrap());
+            // o campo do valor ocupa ~56 pt à direita do trilho
+            ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(48.0);
+            ui.add(self.slider)
+        })
+        .inner
+    }
+}
+
+/// Linha "rótulo + controle": lado a lado quando cabe, empilhada (rótulo em cima) quando o painel é estreito.
+pub(crate) fn field_row<R>(ui: &mut egui::Ui, label: &str, label_w: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    if narrow(ui) {
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(egui::RichText::new(label).size(12.0).color(theme::TEXT_DIM)).wrap());
+            add(ui)
+        })
+        .inner
+    } else {
+        ui.horizontal(|ui| {
+            ui.add_sized([label_w, 20.0], egui::Label::new(egui::RichText::new(label).size(12.5).color(theme::TEXT_DIM)));
+            add(ui)
+        })
+        .inner
+    }
+}
+
+/// `ComboBox` dos painéis: ocupa o espaço disponível (até 240 pt) e trunca o texto escolhido em vez de passar da borda.
+/// Quem precisa de outra largura chama `.width(..)` em seguida.
+pub(crate) fn combo(ui: &egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug) -> egui::ComboBox {
+    egui::ComboBox::from_id_salt(salt).width(ui.available_width().clamp(60.0, 240.0)).truncate()
+}
+
 /// Um painel Propriedades com faixa de abas. Cada um guarda a aba atual em `StudioApp::prop_tabs` (estado de apresentação).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabSet {

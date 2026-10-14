@@ -227,7 +227,7 @@ impl Behavior<PaneId> for DockBehavior<'_> {
 
     fn min_size(&self) -> f32 {
         // abaixo disso os controles dos painéis (sliders, rótulos + campos) ficam cortados e o painel "some" na prática
-        190.0
+        theme::PANEL_MIN_W
     }
 
     fn tab_bar_height(&self, _style: &egui::Style) -> f32 {

@@ -622,7 +622,7 @@ impl LibraryWorkspace {
                 });
             }
             ui.add_space(6.0);
-            egui::CollapsingHeader::new(RichText::new(tr("lib.imp.options")).strong()).default_open(true).show(ui, |ui| {
+            crate::app::props_tabs::header(ui, RichText::new(tr("lib.imp.options")).strong()).default_open(true).show(ui, |ui| {
                 let f = &mut self.dlg.import_form;
                 ui.checkbox(&mut f.recursive, tr("lib.imp.recursive"));
                 ui.checkbox(&mut f.allow_dups, tr("lib.imp.allow_dups")).on_hover_text(tr("lib.imp.allow_dups.tip"));
@@ -852,7 +852,7 @@ impl LibraryWorkspace {
         egui::Window::new(format!("{}  {}", icons::GEAR, tr("lib.manage"))).id(egui::Id::new("lib_manage_win")).open(&mut open).collapsible(false).resizable(true).default_size([520.0, 560.0]).default_pos(win_pos(ctx, 520.0, 400.0)).show(ctx, |ui| {
             egui::ScrollArea::vertical().id_salt("lib_manage_scroll").auto_shrink([false, false]).show(ui, |ui| {
                 // ---- disco
-                egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::DATABASE, tr("lib.manage.disk"))).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::DATABASE, tr("lib.manage.disk"))).strong()).default_open(true).show(ui, |ui| {
                     if let Some(rt) = &self.rt {
                         ui.label(small_dim(format!("{}: {}", tr("lib.manage.home"), rt.lib.home().display())));
                         ui.label(small_dim(format!("{}: {}", tr("lib.manage.index"), rt.lib.index_path().display())));
@@ -875,7 +875,7 @@ impl LibraryWorkspace {
                     }
                 });
                 // ---- cache
-                egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::IMAGES, tr("lib.manage.cache"))).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::IMAGES, tr("lib.manage.cache"))).strong()).default_open(true).show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         if ui.button(format!("{}  {}", icons::BROOM, tr("lib.manage.clear_thumbs"))).on_hover_text(tr("lib.manage.clear_thumbs.tip")).clicked() {
                             clear_thumbs = true;
@@ -886,7 +886,7 @@ impl LibraryWorkspace {
                     });
                 });
                 // ---- integridade
-                egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::SHIELD_CHECK, tr("lib.manage.integrity"))).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::SHIELD_CHECK, tr("lib.manage.integrity"))).strong()).default_open(true).show(ui, |ui| {
                     ui.checkbox(&mut self.dlg.verify_rehash, tr("lib.manage.rehash")).on_hover_text(tr("lib.manage.rehash.tip"));
                     ui.checkbox(&mut self.dlg.verify_fix, tr("lib.manage.fix")).on_hover_text(tr("lib.manage.fix.tip"));
                     ui.horizontal(|ui| {
@@ -923,7 +923,7 @@ impl LibraryWorkspace {
                     }
                 });
                 // ---- lixeira, duplicados, ausentes
-                egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::TRASH, tr("lib.manage.cleanup"))).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::TRASH, tr("lib.manage.cleanup"))).strong()).default_open(true).show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         if ui.add_enabled(self.facets.n_trash > 0, egui::Button::new(format!("{}  {} ({})", icons::RECYCLE, tr("lib.trash.empty"), self.facets.n_trash))).clicked() {
                             empty_trash = true;
@@ -1028,7 +1028,7 @@ impl LibraryWorkspace {
                         for g in &groups[range] {
                             let first = g.assets.first().map(|a| a.name.clone()).unwrap_or_default();
                             let title = format!("{first}  \u{00b7}  {} {}  \u{00b7}  {}", g.assets.len(), tr("lib.dup.copies"), fmt_bytes(g.size));
-                            egui::CollapsingHeader::new(RichText::new(title).size(12.5)).id_salt(g.content_hash.to_hex()).show(ui, |ui| {
+                            crate::app::props_tabs::header(ui, RichText::new(title).size(12.5)).id_salt(g.content_hash.to_hex()).show(ui, |ui| {
                                 let keep = self.dlg.dup_keep.get(&g.content_hash).copied();
                                 for a in &g.assets {
                                     ui.horizontal(|ui| {

@@ -618,7 +618,7 @@ impl StudioApp {
                 ],
             ),
         ];
-        egui::CollapsingHeader::new(RichText::new("Operadores").strong())
+        crate::app::props_tabs::header(ui, RichText::new("Operadores").strong())
             .default_open(true)
             .show(ui, |ui| {
                 for (title, ops) in GROUPS {
@@ -654,11 +654,11 @@ impl StudioApp {
         }
         let mut p = last.params.clone();
         let mut changed = false;
-        egui::CollapsingHeader::new(RichText::new(format!("Ajustar: {}", kind.label())).strong().color(theme::ACCENT))
+        crate::app::props_tabs::header(ui, RichText::new(format!("Ajustar: {}", kind.label())).strong().color(theme::ACCENT))
             .default_open(true)
             .show(ui, |ui| {
                 let dv = |ui: &mut egui::Ui, label: &str, v: &mut f32, speed: f64| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(label);
                         ui.add(egui::DragValue::new(v).speed(speed).fixed_decimals(3)).changed()
                     })
@@ -677,41 +677,41 @@ impl StudioApp {
                     }
                     OpKind::Bevel => {
                         changed |= dv(ui, "Largura", &mut p.width, 0.005);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Segmentos");
                             changed |= ui.add(egui::DragValue::new(&mut p.segments).range(1..=32)).changed();
                         });
-                        changed |= ui.add(egui::Slider::new(&mut p.profile, 0.0..=1.0).text("Perfil")).changed();
+                        changed |= ui.add(crate::app::props_tabs::lab("Perfil", egui::Slider::new(&mut p.profile, 0.0..=1.0))).changed();
                     }
                     OpKind::LoopCut => {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Cortes");
                             changed |= ui.add(egui::DragValue::new(&mut p.cuts).range(1..=64)).changed();
                         });
-                        changed |= ui.add(egui::Slider::new(&mut p.slide, -1.0..=1.0).text("Deslizar")).changed();
+                        changed |= ui.add(crate::app::props_tabs::lab("Deslizar", egui::Slider::new(&mut p.slide, -1.0..=1.0))).changed();
                     }
                     OpKind::MergeByDistance => changed |= dv(ui, "Distância", &mut p.merge_distance, 0.0005),
                     OpKind::LimitedDissolve => changed |= dv(ui, "Ângulo (°)", &mut p.dissolve_angle_deg, 0.5),
                     OpKind::Smooth | OpKind::Relax => {
                         changed |= dv(ui, "Fator", &mut p.factor, 0.01);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Iterações");
                             changed |= ui.add(egui::DragValue::new(&mut p.iterations).range(1..=100)).changed();
                         });
                         changed |= ui.checkbox(&mut p.lock_boundary, "Travar fronteira").changed();
                     }
                     OpKind::Subdivide => {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Cortes");
                             changed |= ui.add(egui::DragValue::new(&mut p.subdiv_cuts).range(1..=16)).changed();
                         });
                         changed |= dv(ui, "Suavização", &mut p.subdiv_smooth, 0.01);
                     }
                     OpKind::Poke => changed |= dv(ui, "Deslocamento", &mut p.poke_offset, 0.01),
-                    OpKind::SetCrease => changed |= ui.add(egui::Slider::new(&mut p.crease, 0.0..=1.0).text("Vinco")).changed(),
+                    OpKind::SetCrease => changed |= ui.add(crate::app::props_tabs::lab("Vinco", egui::Slider::new(&mut p.crease, 0.0..=1.0))).changed(),
                     OpKind::Bridge | OpKind::GridFill => {}
                     OpKind::Bisect => {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
                                 changed |= ui.selectable_value(&mut p.plane_axis, i, *n).changed();
                             }

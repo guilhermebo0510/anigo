@@ -78,7 +78,7 @@ impl StudioApp {
     /// Painel Outliner: abrir/salvar a cena + busca + árvore.
     pub(crate) fn scene_outliner_body(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(icons::FOLDER_OPEN).on_hover_text(tr("char.open")).clicked() {
                     self.scene_ui.dialog = Some(SceneDialog { save: false, path: self.scene_ui.last_path.clone(), error: None });
@@ -111,7 +111,7 @@ impl StudioApp {
     // ============================================================ Outliner
 
     fn outliner_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(icons::MAGNIFYING_GLASS).color(theme::TEXT_DIM));
             let resp = ui.add(egui::TextEdit::singleline(&mut self.scene_ui.query).hint_text(tr("scene.outliner.search")).desired_width(ui.available_width() - 84.0));
             resp.on_hover_text(tr("scene.outliner.search_help"));
@@ -452,7 +452,7 @@ impl StudioApp {
     // ============================================================ Content Drawer
 
     fn drawer_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{}  {}", icons::SQUARES_FOUR, tr("scene.drawer"))).strong());
             ui.label(RichText::new(tr("scene.drawer.hint")).size(11.5).color(theme::TEXT_DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -512,7 +512,7 @@ impl StudioApp {
         let (tab, mut content) = self.tabbed_with(ui, TabSet::Cenario, &tabs);
         let ui = &mut content;
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().id_salt("scene_details").auto_shrink([false, false]).show(ui, |ui| self.details_tab(ui, tab, &project, &slots));
+        crate::app::props_tabs::props_scroll(ui, "scene_details", |ui| self.details_tab(ui, tab, &project, &slots));
     }
 
     fn details_tab(&mut self, ui: &mut egui::Ui, tab: PropTab, project: &anigo_core::ProjectState, slots: &[&anigo_core::NodeSlot]) {
@@ -524,7 +524,7 @@ impl StudioApp {
         let editable: Vec<NodeId> = slots.iter().filter(|s| !s.locked).map(|s| s.node_id.clone()).collect();
         let first = slots[0];
         // ---- nome + visível/bloqueado
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if slots.len() == 1 {
                 let mut name = first.name.clone();
                 let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width() - 96.0));
@@ -564,14 +564,14 @@ impl StudioApp {
 
         // ---- ativo / origem
         if let (PropTab::Asset, Some(NodeSource::LibraryAsset { uri, revision })) = (tab, &first.source) {
-            egui::CollapsingHeader::new(RichText::new(tr("scene.details.asset")).strong()).default_open(true).show(ui, |ui| {
+            crate::app::props_tabs::header(ui, RichText::new(tr("scene.details.asset")).strong()).default_open(true).show(ui, |ui| {
                 let resolved = self.scene_ui.cache.resolved(uri).cloned();
                 match resolved {
                     Some(Ok(r)) => {
                         ui.label(format!("{}", r.name));
                         ui.label(RichText::new(format!("{} {}  \u{b7}  {}  \u{b7}  {}", tr("scene.details.revision"), revision, r.format.to_uppercase(), format!("{:.1} MB", r.size as f64 / 1_048_576.0))).size(11.5).color(theme::TEXT_DIM));
                         if r.revision != *revision {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(format!("{} {} {}", icons::WARNING, tr("scene.details.stale"), r.revision)).color(Color32::from_rgb(0xff, 0xb0, 0x50)));
                                 if ui.button(tr("scene.details.update")).clicked() {
                                     let ids: Vec<NodeId> = slots.iter().map(|s| s.node_id.clone()).collect();
@@ -608,7 +608,7 @@ impl StudioApp {
         // ---- câmera de cena: lente
         if let (PropTab::Lens, Some(NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm })) = (tab, first.source.clone()) {
             if slots.len() == 1 {
-                egui::CollapsingHeader::new(RichText::new(tr("scene.details.lens")).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(tr("scene.details.lens")).strong()).default_open(true).show(ui, |ui| {
                     self.lens_section(ui, first.node_id.clone(), focal_mm, sensor_width_mm, sensor_height_mm);
                 });
             }
@@ -617,7 +617,7 @@ impl StudioApp {
         // ---- luz de cena
         if let (PropTab::Light, Some(src @ NodeSource::Light { .. })) = (tab, first.source.clone()) {
             if slots.len() == 1 {
-                egui::CollapsingHeader::new(RichText::new(tr("scene.details.light")).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(tr("scene.details.light")).strong()).default_open(true).show(ui, |ui| {
                     self.light_section(ui, first.node_id.clone(), src);
                 });
             }
@@ -649,7 +649,7 @@ impl StudioApp {
         ui.add_enabled_ui(!disabled, |ui| {
             // linhas: rótulo, três campos, reset
             let mut row = |ui: &mut egui::Ui, label: String, vals: &[[f32; 3]], scale: f32, speed: f64, suffix: &str, default: [f32; 3], channel: u8| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_sized([62.0, 18.0], egui::Label::new(label));
                     let mut changed: Option<(usize, f32)> = None;
                     for c in 0..3 {
@@ -680,7 +680,7 @@ impl StudioApp {
             row(ui, tr("scene.details.rotation").to_string(), &rvals, 1.0, 0.5, "\u{b0}", [0.0; 3], 1);
             row(ui, tr("scene.details.scale").to_string(), &svals, 1.0, 0.01, "", [1.0; 3], 2);
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.scene_ui.scale_lock, tr("scene.details.scale_lock")).on_hover_text(tr("scene.details.scale_lock_tip"));
             ui.label(RichText::new(tr("scene.details.relative")).size(11.0).color(theme::TEXT_DIM));
         });
@@ -767,7 +767,7 @@ impl StudioApp {
                 }
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.light.color"));
             changed |= ui.color_edit_button_rgb(&mut color).changed();
         });
@@ -800,7 +800,7 @@ impl StudioApp {
         let mut f = focal;
         let mut cmd: Option<Command> = None;
         let mk = |focal_mm: f32, w: f32, h: f32| Command::SetNodeProps { node_id: id.clone(), patch: NodePatch { source: Some(NodeSource::Camera { focal_mm, sensor_width_mm: w, sensor_height_mm: h }), ..Default::default() } };
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.lens.focal"));
             if ui.add(egui::Slider::new(&mut f, 8.0..=300.0).logarithmic(true).suffix(" mm").max_decimals(1)).changed() {
                 cmd = Some(mk(f, sw, sh));
@@ -814,7 +814,7 @@ impl StudioApp {
             }
         });
         let current = SENSORS.iter().find(|s| (s.1 - sw).abs() < 0.01 && (s.2 - sh).abs() < 0.01).map(|s| s.0).unwrap_or("custom");
-        egui::ComboBox::from_id_salt("scene_sensor").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+        crate::app::props_tabs::combo(ui, "scene_sensor").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
             for (name, w, h) in SENSORS {
                 if ui.selectable_label((sw - w).abs() < 0.01 && (sh - h).abs() < 0.01, name).clicked() {
                     cmd = Some(mk(focal, w, h));
@@ -855,7 +855,7 @@ impl StudioApp {
         let mut clear = false;
         let base_default = [0.80, 0.81, 0.86, 1.0];
         let shade_default = [0.50, 0.52, 0.66, 1.0];
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.material.base"));
             let mut c = ov.base_color.unwrap_or(base_default);
             if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
@@ -869,7 +869,7 @@ impl StudioApp {
                 changed = true;
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.material.outline"));
             let mut w = ov.outline_width.unwrap_or(StylizedWidth::DEFAULT);
             if ui.add(egui::DragValue::new(&mut w).speed(0.0002).range(0.0..=0.05).max_decimals(4)).changed() {
@@ -937,7 +937,7 @@ impl StudioApp {
             }
         }
         // pasta
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("scene.details.folder")).size(11.5).color(theme::TEXT_DIM));
             let mut folder = first.folder.clone().unwrap_or_default();
             let r = ui.add(egui::TextEdit::singleline(&mut folder).desired_width(ui.available_width() - 8.0).hint_text("Props/Mesas"));
@@ -961,20 +961,20 @@ impl StudioApp {
         let mut ambient = light.ambient_intensity;
         let mut color = light.color;
         let mut changed = false;
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::SUN, tr("scene.light.main"))).strong()).default_open(true).show(ui, |ui| {
-            ui.horizontal(|ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::SUN, tr("scene.light.main"))).strong()).default_open(true).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.azimuth"));
                 changed |= ui.add(egui::DragValue::new(&mut az).speed(0.5).suffix("\u{b0}").range(-180.0..=180.0)).changed();
                 ui.label(tr("scene.light.elevation"));
                 changed |= ui.add(egui::DragValue::new(&mut el).speed(0.5).suffix("\u{b0}").range(-89.0..=89.0)).changed();
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.color"));
                 changed |= ui.color_edit_button_rgb(&mut color).changed();
                 ui.label(tr("scene.light.intensity"));
                 changed |= ui.add(egui::DragValue::new(&mut intensity).speed(0.01).range(0.0..=8.0).max_decimals(2)).changed();
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.ambient"));
                 changed |= ui.add(egui::DragValue::new(&mut ambient).speed(0.01).range(0.0..=2.0).max_decimals(2)).changed();
             });
@@ -996,7 +996,7 @@ impl StudioApp {
             });
         }
         let c = &project.scene.camera.camera;
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::VIDEO_CAMERA, tr("scene.camera.render"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::VIDEO_CAMERA, tr("scene.camera.render"))).strong()).default_open(true).show(ui, |ui| {
             ui.label(RichText::new(format!("FOV {:.1}\u{b0}   {:.2}:1", c.fov_y.to_degrees(), c.aspect)).size(12.0));
             ui.label(RichText::new(format!("eye {}  \u{2192}  {}", super::fmt_vec3(c.eye), super::fmt_vec3(c.target))).size(11.0).color(theme::TEXT_DIM));
             if ui.button(format!("{}  {}", icons::VIDEO_CAMERA, tr("scene.view.through_camera"))).clicked() {
@@ -1035,7 +1035,7 @@ impl StudioApp {
                 if let Some(e) = &dlg.error {
                     ui.label(RichText::new(e).color(Color32::from_rgb(0xff, 0x70, 0x70)));
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button(if dlg.save { tr("char.save") } else { tr("char.open") }).clicked() {
                         confirm = true;
                     }

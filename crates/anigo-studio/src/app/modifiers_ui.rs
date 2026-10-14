@@ -40,7 +40,7 @@ impl StudioApp {
         if self.modeling.active_object().is_none() {
             return;
         }
-        egui::CollapsingHeader::new(RichText::new(crate::i18n::tr("panel.modifiers")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(crate::i18n::tr("panel.modifiers")).strong())
             .default_open(true)
             .show(ui, |ui| {
                 let mut add: Option<Modifier> = None;
@@ -67,7 +67,7 @@ impl StudioApp {
                 let mut entries = self.modeling.active_object().map(|o| o.modifiers.modifiers.clone()).unwrap_or_default();
                 for (i, entry) in entries.iter_mut().enumerate() {
                     egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(&entry.name).strong()).on_hover_text(&entry.name);
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.small_button(icons::TRASH).on_hover_text("Remover").clicked() {
@@ -117,7 +117,7 @@ impl StudioApp {
                     None => {}
                 }
                 if count > 0 {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button("Aplicar tudo").on_hover_text("Funde o resultado na malha base (com undo)").clicked() {
                             match self.modeling.apply_modifier_stack() {
                                 Ok(()) => self.modeling.status = "Modificadores aplicados".into(),
@@ -134,7 +134,7 @@ impl StudioApp {
 }
 
 fn dv(ui: &mut egui::Ui, label: &str, v: &mut f32, speed: f64) -> (bool, bool) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(label);
         let r = ui.add(egui::DragValue::new(v).speed(speed).fixed_decimals(3));
         (r.changed(), r.drag_started() || r.gained_focus())
@@ -143,7 +143,7 @@ fn dv(ui: &mut egui::Ui, label: &str, v: &mut f32, speed: f64) -> (bool, bool) {
 }
 
 fn du(ui: &mut egui::Ui, label: &str, v: &mut u32, range: std::ops::RangeInclusive<u32>) -> (bool, bool) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(label);
         let r = ui.add(egui::DragValue::new(v).range(range));
         (r.changed(), r.drag_started() || r.gained_focus())
@@ -171,7 +171,7 @@ fn modifier_params(ui: &mut egui::Ui, m: &mut Modifier) -> (bool, bool) {
             acc(cb(ui, &mut s.params.use_creases, "Vincos"));
         }
         Modifier::Mirror(p) => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
                     acc(cb(ui, &mut p.axes[i], n));
                 }
@@ -179,7 +179,7 @@ fn modifier_params(ui: &mut egui::Ui, m: &mut Modifier) -> (bool, bool) {
             acc(cb(ui, &mut p.merge, "Soldar no plano"));
             acc(dv(ui, "Distância de solda", &mut p.merge_distance, 0.001));
             acc(cb(ui, &mut p.clip, "Clipping"));
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Bisect");
                 for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
                     acc(cb(ui, &mut p.bisect[i], n));
@@ -198,7 +198,7 @@ fn modifier_params(ui: &mut egui::Ui, m: &mut Modifier) -> (bool, bool) {
         }
         Modifier::Array(p) => {
             acc(du(ui, "Quantidade", &mut p.count, 1..=256));
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Offset relativo");
                 for v in [&mut p.relative_offset.x, &mut p.relative_offset.y, &mut p.relative_offset.z] {
                     let r = ui.add(egui::DragValue::new(v).speed(0.01).fixed_decimals(2));

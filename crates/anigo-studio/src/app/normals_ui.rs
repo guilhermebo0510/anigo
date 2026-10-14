@@ -529,14 +529,14 @@ impl StudioApp {
         let mut acts: Vec<Act> = Vec::new();
         let frame = self.frame_count;
 
-        egui::CollapsingHeader::new(RichText::new(tr("panel.normals")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(tr("panel.normals")).strong())
             .default_open(true)
             .open(st.force_open_normals.take())
             .show(ui, |ui| {
                 st.panel_frame = frame;
                 self.normals_panel_body(ui, &mut st, &mut acts);
             });
-        egui::CollapsingHeader::new(RichText::new(l("Pintura NPR", "NPR paint")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(l("Pintura NPR", "NPR paint")).strong())
             .default_open(false)
             .open(st.force_open_paint.take())
             .show(ui, |ui| {
@@ -559,9 +559,8 @@ impl StudioApp {
         ui.checkbox(&mut st.show_normals, l("Mostrar normais por corner", "Show normals per corner"));
         if st.show_normals {
             ui.add(
-                egui::Slider::new(&mut st.normal_length, 0.02..=1.0)
-                    .logarithmic(true)
-                    .text(l("Comprimento", "Length")),
+                crate::app::props_tabs::lab(l("Comprimento", "Length"), egui::Slider::new(&mut st.normal_length, 0.02..=1.0)
+                    .logarithmic(true)),
             );
             ui.checkbox(&mut st.selected_only, l("Só vértices selecionados", "Selected vertices only"));
         }
@@ -586,7 +585,7 @@ impl StudioApp {
         );
 
         // ------------------------------------------------ sharp e sombreamento
-        egui::CollapsingHeader::new(l("Sharp e sombreamento", "Sharp & shading"))
+        crate::app::props_tabs::header(ui, l("Sharp e sombreamento", "Sharp & shading"))
             .default_open(true)
             .open(st.force_open_sharp.take())
             .show(ui, |ui| {
@@ -613,7 +612,7 @@ impl StudioApp {
                         acts.push(Act::SetSmooth(false));
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(l("Sharp por ângulo", "Sharp by angle"));
                     ui.add(egui::DragValue::new(&mut st.sharp_angle_deg).range(0.0..=180.0).speed(0.5).suffix("°"));
                 });
@@ -628,7 +627,7 @@ impl StudioApp {
                 if let Some(o) = self.modeling.active_object() {
                     let mut deg = o.auto_smooth_angle.to_degrees();
                     let resp = ui
-                        .add(egui::Slider::new(&mut deg, 0.0..=180.0).suffix("°").text(l("Auto-smooth", "Auto-smooth")))
+                        .add(crate::app::props_tabs::lab(l("Auto-smooth", "Auto-smooth"), egui::Slider::new(&mut deg, 0.0..=180.0).suffix("°")))
                         .on_hover_text(l(
                             "Ângulo máximo entre faces para suavizar (Workbench, preview Cel e export). 180° = sem corte.",
                             "Max angle between faces to smooth (Workbench, Cel preview and export). 180° = no cut.",
@@ -645,10 +644,10 @@ impl StudioApp {
             });
 
         // --------------------------------------------------- editar normais
-        egui::CollapsingHeader::new(l("Editar / transferir normais", "Edit / transfer normals"))
+        crate::app::props_tabs::header(ui, l("Editar / transferir normais", "Edit / transfer normals"))
             .default_open(true)
             .show(ui, |ui| {
-                egui::ComboBox::from_id_salt("normal_tool")
+                crate::app::props_tabs::combo(ui, "normal_tool")
                     .selected_text(st.tool.label())
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
@@ -658,10 +657,10 @@ impl StudioApp {
                     });
                 self.normal_tool_params(ui, st);
                 if st.tool != NormalTool::Average && st.tool != NormalTool::Smooth {
-                    ui.add(egui::Slider::new(&mut st.mix, 0.0..=1.0).text(l("Mistura", "Mix")));
+                    ui.add(crate::app::props_tabs::lab(l("Mistura", "Mix"), egui::Slider::new(&mut st.mix, 0.0..=1.0)));
                 }
                 if !matches!(st.tool, NormalTool::Smooth) {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.checkbox(&mut st.use_proportional, l("Peso proporcional", "Proportional weight"));
                         ui.label(
                             RichText::new(format!("{:.2}", self.modeling.proportional.radius))
@@ -682,7 +681,7 @@ impl StudioApp {
             });
 
         // -------------------------------------------------------- assar
-        egui::CollapsingHeader::new(l("Assar / limpar", "Bake / clear"))
+        crate::app::props_tabs::header(ui, l("Assar / limpar", "Bake / clear"))
             .default_open(true)
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -703,7 +702,7 @@ impl StudioApp {
             });
 
         // ------------------------------------------------------ relatório
-        egui::CollapsingHeader::new(l("Relatório de suavidade", "Smoothness report"))
+        crate::app::props_tabs::header(ui, l("Relatório de suavidade", "Smoothness report"))
             .default_open(false)
             .show(ui, |ui| {
                 let rev = self.modeling.revision;
@@ -759,7 +758,7 @@ impl StudioApp {
                 let auto = self.auto_pivot_world();
                 let shown = st.pivot.unwrap_or(auto);
                 let mut p = shown;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(l("Pivô", "Pivot"));
                     for v in [&mut p.x, &mut p.y, &mut p.z] {
                         ui.add(egui::DragValue::new(v).speed(0.02).fixed_decimals(2));
@@ -768,7 +767,7 @@ impl StudioApp {
                 if p != shown {
                     st.pivot = Some(p);
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut st.invert, l("Inverter", "Invert"));
                     let label = if st.pivot.is_some() { l("Centro da seleção", "Selection center") } else { l("(centro da seleção)", "(selection center)") };
                     if ui.add_enabled(st.pivot.is_some(), egui::Button::new(label)).clicked() {
@@ -778,7 +777,7 @@ impl StudioApp {
             }
             NormalTool::Direction => {
                 let mut d = st.direction;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(l("Direção", "Direction"));
                     for v in [&mut d.x, &mut d.y, &mut d.z] {
                         ui.add(egui::DragValue::new(v).speed(0.02).fixed_decimals(2));
@@ -814,7 +813,7 @@ impl StudioApp {
                 if others.is_empty() {
                     ui.label(RichText::new(l("Adicione outro objeto à cena para usar como proxy.", "Add another object to the scene to use as proxy.")).color(theme::TEXT_DIM));
                 }
-                egui::ComboBox::from_id_salt("normal_proxy")
+                crate::app::props_tabs::combo(ui, "normal_proxy")
                     .selected_text(current)
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
@@ -822,7 +821,7 @@ impl StudioApp {
                             ui.selectable_value(&mut st.proxy, Some(*id), name);
                         }
                     });
-                egui::ComboBox::from_id_salt("normal_mapping")
+                crate::app::props_tabs::combo(ui, "normal_mapping")
                     .selected_text(mapping_label(st.mapping))
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
@@ -830,13 +829,13 @@ impl StudioApp {
                             ui.selectable_value(&mut st.mapping, m, mapping_label(m));
                         }
                     });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut st.limit_distance, l("Distância máx.", "Max distance"));
                     ui.add_enabled(st.limit_distance, egui::DragValue::new(&mut st.max_distance).speed(0.01).range(0.0..=100.0).fixed_decimals(2));
                 });
             }
             NormalTool::Average => {
-                egui::ComboBox::from_id_salt("normal_avg")
+                crate::app::props_tabs::combo(ui, "normal_avg")
                     .selected_text(average_label(st.average))
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
@@ -846,7 +845,7 @@ impl StudioApp {
                     });
             }
             NormalTool::Rotate => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
                         ui.selectable_value(&mut st.rotate_axis, i, *name);
                     }
@@ -854,8 +853,8 @@ impl StudioApp {
                 });
             }
             NormalTool::Smooth => {
-                ui.add(egui::Slider::new(&mut st.smooth_iterations, 1..=30).text(l("Iterações", "Iterations")));
-                ui.add(egui::Slider::new(&mut st.smooth_factor, 0.0..=1.0).text(l("Fator", "Factor")));
+                ui.add(crate::app::props_tabs::lab(l("Iterações", "Iterations"), egui::Slider::new(&mut st.smooth_iterations, 1..=30)));
+                ui.add(crate::app::props_tabs::lab(l("Fator", "Factor"), egui::Slider::new(&mut st.smooth_factor, 0.0..=1.0)));
             }
         }
     }
@@ -877,7 +876,7 @@ impl StudioApp {
         if self.paint_attr_active && !was {
             st.view_channel = true;
         }
-        egui::ComboBox::from_id_salt("paint_channel")
+        crate::app::props_tabs::combo(ui, "paint_channel")
             .selected_text(channel_label(st.channel))
             .width(ui.available_width() - 8.0)
             .show_ui(ui, |ui| {
@@ -885,11 +884,11 @@ impl StudioApp {
                     ui.selectable_value(&mut st.channel, c, channel_label(c));
                 }
             });
-        ui.add(egui::Slider::new(&mut st.paint_value, 0.0..=1.0).text(l("Valor", "Value")));
-        ui.add(egui::Slider::new(&mut st.paint_radius, 0.02..=3.0).logarithmic(true).text(l("Raio", "Radius")));
-        ui.add(egui::Slider::new(&mut st.paint_strength, 0.0..=1.0).text(l("Força", "Strength")));
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("paint_falloff")
+        ui.add(crate::app::props_tabs::lab(l("Valor", "Value"), egui::Slider::new(&mut st.paint_value, 0.0..=1.0)));
+        ui.add(crate::app::props_tabs::lab(l("Raio", "Radius"), egui::Slider::new(&mut st.paint_radius, 0.02..=3.0).logarithmic(true)));
+        ui.add(crate::app::props_tabs::lab(l("Força", "Strength"), egui::Slider::new(&mut st.paint_strength, 0.0..=1.0)));
+        ui.horizontal_wrapped(|ui| {
+            crate::app::props_tabs::combo(ui, "paint_falloff")
                 .selected_text(falloff_label(st.falloff))
                 .width(100.0)
                 .show_ui(ui, |ui| {
@@ -897,7 +896,7 @@ impl StudioApp {
                         ui.selectable_value(&mut st.falloff, f, falloff_label(f));
                     }
                 });
-            egui::ComboBox::from_id_salt("paint_blend")
+            crate::app::props_tabs::combo(ui, "paint_blend")
                 .selected_text(blend_label(st.blend))
                 .width(100.0)
                 .show_ui(ui, |ui| {
@@ -1210,7 +1209,7 @@ fn heat_legend(ui: &mut egui::Ui) {
         let x1 = rect.left() + rect.width() * (i + 1) as f32 / steps as f32;
         ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1 + 0.5, rect.bottom())), 0.0, col);
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("0").size(10.5).color(theme::TEXT_DIM));
         ui.add_space((w - 24.0).max(0.0));
         ui.label(RichText::new("1").size(10.5).color(theme::TEXT_DIM));

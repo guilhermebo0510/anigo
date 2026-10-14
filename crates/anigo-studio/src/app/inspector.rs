@@ -70,8 +70,25 @@ pub fn modeling_tools(mode: Mode) -> &'static [ToolDef] {
     }
 }
 
+/// Linha "rótulo + X Y Z": os três campos dividem a largura; com o painel estreito o rótulo vai para cima.
+fn xyz_row(ui: &mut egui::Ui, label: &str, vals: [&mut f32; 3], speed: f64, suffix: &str, decimals: usize, tag: &'static str, responses: &mut Vec<(&'static str, egui::Response)>) -> bool {
+    let mut changed = false;
+    super::props_tabs::field_row(ui, label, 64.0, |ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let w = ((ui.available_width() - 2.0 * gap) / 3.0).clamp(36.0, 120.0);
+        ui.horizontal(|ui| {
+            for v in vals {
+                let r = ui.add_sized([w, 20.0], egui::DragValue::new(v).speed(speed).suffix(suffix).fixed_decimals(decimals));
+                changed |= r.changed();
+                responses.push((tag, r));
+            }
+        });
+    });
+    changed
+}
+
 fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).strong())
+    crate::app::props_tabs::header(ui, RichText::new(title).strong())
         .default_open(true)
         .show(ui, add);
 }
@@ -87,7 +104,7 @@ impl StudioApp {
         }
         let ui = &mut content;
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        super::props_tabs::props_scroll(ui, "props", |ui| {
             match mode {
                 Mode::Object => self.inspector_object(ui, tab),
                 Mode::Edit => self.inspector_edit(ui, tab),
@@ -168,30 +185,10 @@ impl StudioApp {
                         let mut euler = glam::Vec3::new(clean(ex.to_degrees()), clean(ey.to_degrees()), clean(ez.to_degrees()));
                         let mut s = obj.transform.scale;
                         let (mut ct, mut cr, mut cs) = (false, false, false);
-                        let mut responses: Vec<(&str, egui::Response)> = Vec::new();
-                        egui::Grid::new("xform").num_columns(4).spacing([4.0, 4.0]).show(ui, |ui| {
-                            ui.label("Posição");
-                            for v in [&mut t.x, &mut t.y, &mut t.z] {
-                                let r = ui.add(egui::DragValue::new(v).speed(0.02).fixed_decimals(3));
-                                ct |= r.changed();
-                                responses.push(("Mover", r));
-                            }
-                            ui.end_row();
-                            ui.label("Rotação");
-                            for v in [&mut euler.x, &mut euler.y, &mut euler.z] {
-                                let r = ui.add(egui::DragValue::new(v).speed(0.5).suffix("°").fixed_decimals(1));
-                                cr |= r.changed();
-                                responses.push(("Rotacionar", r));
-                            }
-                            ui.end_row();
-                            ui.label("Escala");
-                            for v in [&mut s.x, &mut s.y, &mut s.z] {
-                                let r = ui.add(egui::DragValue::new(v).speed(0.01).fixed_decimals(3));
-                                cs |= r.changed();
-                                responses.push(("Escalar", r));
-                            }
-                            ui.end_row();
-                        });
+                        let mut responses: Vec<(&'static str, egui::Response)> = Vec::new();
+                        ct |= xyz_row(ui, "Posição", [&mut t.x, &mut t.y, &mut t.z], 0.02, "", 3, "Mover", &mut responses);
+                        cr |= xyz_row(ui, "Rotação", [&mut euler.x, &mut euler.y, &mut euler.z], 0.5, "°", 1, "Rotacionar", &mut responses);
+                        cs |= xyz_row(ui, "Escala", [&mut s.x, &mut s.y, &mut s.z], 0.01, "", 3, "Escalar", &mut responses);
                         for (label, r) in &responses {
                             start(&mut self.modeling, r, label);
                         }
@@ -215,7 +212,7 @@ impl StudioApp {
                             self.modeling.revision += 1;
                         }
                     }
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button(format!("{}  Duplicar", icons::SQUARES_FOUR)).clicked() {
                             want_duplicate = true;
                         }
@@ -256,7 +253,7 @@ impl StudioApp {
     fn inspector_edit(&mut self, ui: &mut egui::Ui, tab: PropTab) {
         if tab == PropTab::Tool {
             section(ui, "Seleção", |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (m, key, icon) in [
                         (SelectMode::Vertex, "select.vertex", icons::DOT_OUTLINE),
                         (SelectMode::Edge, "select.edge", icons::LINE_SEGMENT),
@@ -297,9 +294,8 @@ impl StudioApp {
                 ui.checkbox(&mut self.modeling.proportional.enabled, "Ativar");
                 ui.add_enabled(
                     self.modeling.proportional.enabled,
-                    egui::Slider::new(&mut self.modeling.proportional.radius, 0.05..=10.0)
-                        .logarithmic(true)
-                        .text("Raio"),
+                    crate::app::props_tabs::lab("Raio", egui::Slider::new(&mut self.modeling.proportional.radius, 0.05..=10.0)
+                        .logarithmic(true)),
                 );
                 use anigo_modeling::ops::transform::ProportionalFalloff as F;
                 let label = |f: F| match f {
@@ -313,7 +309,7 @@ impl StudioApp {
                     F::Random => "Aleatório",
                 };
                 ui.add_enabled_ui(self.modeling.proportional.enabled, |ui| {
-                    egui::ComboBox::from_id_salt("pfalloff")
+                    crate::app::props_tabs::combo(ui, "pfalloff")
                         .selected_text(label(self.modeling.proportional.falloff))
                         .show_ui(ui, |ui| {
                             for f in [F::Smooth, F::Sphere, F::Root, F::InverseSquare, F::Sharp, F::Linear, F::Constant, F::Random] {

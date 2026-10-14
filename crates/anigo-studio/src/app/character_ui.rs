@@ -167,7 +167,7 @@ impl StudioApp {
         let (tab, mut content) = self.tabbed(ui, TabSet::Personagem);
         let ui = &mut content;
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
+        super::props_tabs::props_scroll(ui, "props", |ui| match tab {
             PropTab::Project => self.char_project_section(ui),
             PropTab::History => self.char_history_section(ui),
             _ => {
@@ -280,7 +280,7 @@ impl StudioApp {
 
     fn char_macro_sections(&mut self, ui: &mut egui::Ui, st: &ProjectState) {
         // ---- gênero
-        egui::CollapsingHeader::new(RichText::new(tr("char.gender")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(tr("char.gender")).strong())
             .default_open(true)
             .show(ui, |ui| {
                 use anigo_core::mesh::BaseGender;
@@ -304,12 +304,12 @@ impl StudioApp {
             });
 
         // ---- somatótipo
-        egui::CollapsingHeader::new(RichText::new(tr("char.somatotype")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(tr("char.somatotype")).strong())
             .default_open(true)
             .show(ui, |ui| self.char_somatotype_pad(ui, st));
 
         // ---- proporções
-        egui::CollapsingHeader::new(RichText::new(tr("char.proportions")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(tr("char.proportions")).strong())
             .default_open(true)
             .show(ui, |ui| {
                 for p in Proportion::ALL {
@@ -332,17 +332,15 @@ impl StudioApp {
             });
 
         // ---- presets
-        egui::CollapsingHeader::new(RichText::new(tr("char.presets")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(tr("char.presets")).strong())
             .default_open(false)
             .show(ui, |ui| {
                 for p in presets::PRESETS {
-                    ui.horizontal(|ui| {
-                        if ui.button(tr(&p.name_key())).on_hover_text(tr(&p.description_key())).clicked() {
-                            let r = presets::apply_preset(self.core.project(), p);
-                            self.char_apply_composed(r);
-                        }
-                        ui.label(RichText::new(tr(&p.description_key())).size(11.0).color(theme::TEXT_DIM));
-                    });
+                    if ui.button(tr(&p.name_key())).on_hover_text(tr(&p.description_key())).clicked() {
+                        let r = presets::apply_preset(self.core.project(), p);
+                        self.char_apply_composed(r);
+                    }
+                    ui.add(egui::Label::new(RichText::new(tr(&p.description_key())).size(11.0).color(theme::TEXT_DIM)).wrap());
                 }
             });
         ui.add_space(4.0);
@@ -437,7 +435,7 @@ impl StudioApp {
             if modified > 0 {
                 title.push_str(&format!("  ·  {modified} {}", tr("char.modified")));
             }
-            let mut header = egui::CollapsingHeader::new(RichText::new(title).strong())
+            let mut header = crate::app::props_tabs::header(ui, RichText::new(title).strong())
                 .id_salt(sliders::zone_key(zone))
                 .default_open(i == 0);
             if !query.trim().is_empty() {
@@ -463,13 +461,19 @@ impl StudioApp {
             } else if modified {
                 text = text.color(theme::ACCENT);
             }
-            let resp = ui.add(egui::Label::new(text).truncate());
             use anigo_core::morph_catalog::GenderDimorphism as G;
             let hint = match def.dimorphism {
                 G::FemaleOnly => Some((icons::GENDER_FEMALE, tr("char.female_only"))),
                 G::MaleOnly => Some((icons::GENDER_MALE, tr("char.male_only"))),
                 G::Both => None,
             };
+            // o rótulo trunca antes do botão de reset e do ícone de gênero: reserva o lugar deles (senão, com o painel
+            // estreito, o rótulo ocupa tudo e o reset passa da borda)
+            let right_w = 30.0 + if hint.is_some() { 20.0 } else { 0.0 };
+            let label_w = (ui.available_width() - right_w - ui.spacing().item_spacing.x).max(40.0);
+            let resp = ui
+                .allocate_ui_with_layout(egui::vec2(label_w, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(egui::Label::new(text).truncate()))
+                .inner;
             if let Some((_, tip)) = hint {
                 resp.on_hover_text(tip);
             }
@@ -492,7 +496,7 @@ impl StudioApp {
 
     fn char_history_section(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        egui::CollapsingHeader::new(RichText::new(tr("char.history")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(tr("char.history")).strong())
             .default_open(false)
             .show(ui, |ui| {
                 let h = self.core.history();

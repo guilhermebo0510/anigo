@@ -22,7 +22,7 @@ fn gv(p: egui::Vec2) -> Vec2 {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).strong())
+    crate::app::props_tabs::header(ui, RichText::new(title).strong())
         .id_salt(("sculpt_section", title))
         .default_open(open)
         .show(ui, add);
@@ -155,10 +155,10 @@ impl StudioApp {
                 let default_strength = anigo_modeling::sculpt::brush::Brush::new(kind).strength;
                 let smax = if default_strength <= 0.1 { 0.5 } else { STRENGTH_MAX };
                 let slot = self.sculpt.slot_mut(kind);
-                ui.add(egui::Slider::new(&mut slot.radius_px, RADIUS_MIN_PX..=RADIUS_MAX_PX).text("Raio (px)").logarithmic(true));
-                ui.add(egui::Slider::new(&mut slot.brush.strength, 0.0..=smax).text("Força"));
+                ui.add(crate::app::props_tabs::lab("Raio (px)", egui::Slider::new(&mut slot.radius_px, RADIUS_MIN_PX..=RADIUS_MAX_PX).logarithmic(true)));
+                ui.add(crate::app::props_tabs::lab("Força", egui::Slider::new(&mut slot.brush.strength, 0.0..=smax)));
                 let mut spacing_pct = slot.brush.spacing * 100.0;
-                if ui.add(egui::Slider::new(&mut spacing_pct, 1.0..=100.0).text("Espaçamento %")).changed() {
+                if ui.add(crate::app::props_tabs::lab("Espaçamento %", egui::Slider::new(&mut spacing_pct, 1.0..=100.0))).changed() {
                     slot.brush.spacing = (spacing_pct / 100.0).clamp(0.01, 10.0);
                 }
                 ui.checkbox(&mut slot.brush.direction_invert, "Inverter (Ctrl)");
@@ -170,24 +170,24 @@ impl StudioApp {
                         ui.checkbox(&mut slot.brush.accumulate, "Acumular entre dabs");
                     }
                     BrushKind::ClayStrips => {
-                        ui.add(egui::Slider::new(&mut slot.brush.strip_width, 0.1..=2.0).text("Largura da tira"));
+                        ui.add(crate::app::props_tabs::lab("Largura da tira", egui::Slider::new(&mut slot.brush.strip_width, 0.1..=2.0)));
                     }
                     BrushKind::Layer => {
-                        ui.add(egui::Slider::new(&mut slot.brush.layer_height, 0.0..=0.5).text("Altura da camada"));
+                        ui.add(crate::app::props_tabs::lab("Altura da camada", egui::Slider::new(&mut slot.brush.layer_height, 0.0..=0.5)));
                     }
                     BrushKind::Crease => {
-                        ui.add(egui::Slider::new(&mut slot.brush.pinch_factor, 0.0..=1.0).text("Pinçar"));
+                        ui.add(crate::app::props_tabs::lab("Pinçar", egui::Slider::new(&mut slot.brush.pinch_factor, 0.0..=1.0)));
                     }
                     BrushKind::Elastic => {
-                        ui.add(egui::Slider::new(&mut slot.brush.poisson_ratio, -0.9..=0.49).text("Poisson"));
+                        ui.add(crate::app::props_tabs::lab("Poisson", egui::Slider::new(&mut slot.brush.poisson_ratio, -0.9..=0.49)));
                     }
                     BrushKind::Clay | BrushKind::Flatten | BrushKind::Fill | BrushKind::Scrape => {
-                        ui.add(egui::Slider::new(&mut slot.brush.plane_offset, -1.0..=1.0).text("Deslocar plano"));
+                        ui.add(crate::app::props_tabs::lab("Deslocar plano", egui::Slider::new(&mut slot.brush.plane_offset, -1.0..=1.0)));
                     }
                     _ => {}
                 }
-                ui.add(egui::Slider::new(&mut slot.brush.stabilize_radius, 0.0..=3.0).text("Estabilizador"));
-                ui.add(egui::Slider::new(&mut slot.brush.stroke_smooth, 0.0..=0.95).text("Suavizar traço"));
+                ui.add(crate::app::props_tabs::lab("Estabilizador", egui::Slider::new(&mut slot.brush.stabilize_radius, 0.0..=3.0)));
+                ui.add(crate::app::props_tabs::lab("Suavizar traço", egui::Slider::new(&mut slot.brush.stroke_smooth, 0.0..=0.95)));
             });
         }
 
@@ -196,7 +196,7 @@ impl StudioApp {
                 let kind = self.sculpt.active;
                 let slot = self.sculpt.slot_mut(kind);
                 let mut chosen: Option<Falloff> = None;
-                egui::ComboBox::from_id_salt("sculpt_falloff")
+                crate::app::props_tabs::combo(ui, "sculpt_falloff")
                     .selected_text(falloff_label(&slot.brush.falloff))
                     .show_ui(ui, |ui| {
                         for f in Falloff::presets() {
@@ -227,13 +227,13 @@ impl StudioApp {
 
         if tab == PropTab::Symmetry {
             section(ui, "Simetria", true, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
                         ui.toggle_value(&mut self.sculpt.symmetry.mirror[i], RichText::new(*name).color(axis_color(i)).strong());
                     }
                     ui.label(RichText::new("Espelho").size(12.0).color(theme::TEXT_DIM));
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("Radial").size(12.0).color(theme::TEXT_DIM));
                     for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
                         ui.label(RichText::new(*name).color(axis_color(i)).strong());
@@ -259,7 +259,7 @@ impl StudioApp {
                 }
                 if let Some(l) = am.normal_limit.as_mut() {
                     let mut deg = l.to_degrees();
-                    if ui.add(egui::Slider::new(&mut deg, 1.0..=180.0).text("Ângulo °")).changed() {
+                    if ui.add(crate::app::props_tabs::lab("Ângulo °", egui::Slider::new(&mut deg, 1.0..=180.0))).changed() {
                         *l = deg.to_radians().clamp(0.01, std::f32::consts::PI);
                     }
                 }
@@ -269,7 +269,7 @@ impl StudioApp {
                     am.cavity = cav.then(Default::default);
                 }
                 if let Some(c) = am.cavity.as_mut() {
-                    ui.add(egui::Slider::new(&mut c.strength, 0.1..=4.0).text("Sensibilidade"));
+                    ui.add(crate::app::props_tabs::lab("Sensibilidade", egui::Slider::new(&mut c.strength, 0.1..=4.0)));
                     ui.checkbox(&mut c.invert, "Só saliências");
                 }
                 ui.checkbox(&mut am.topology_connected, "Topologia (conectado ao início)");
@@ -279,7 +279,7 @@ impl StudioApp {
                         am.topology_distance = d_on.then_some(1.0);
                     }
                     if let Some(d) = am.topology_distance.as_mut() {
-                        ui.add(egui::Slider::new(d, 0.05..=10.0).logarithmic(true).text("Distância"));
+                        ui.add(crate::app::props_tabs::lab("Distância", egui::Slider::new(d, 0.05..=10.0).logarithmic(true)));
                     }
                 }
                 ui.checkbox(&mut am.boundary, "Proteger bordas abertas");
@@ -305,7 +305,7 @@ impl StudioApp {
         if tab == PropTab::Mesh {
             section(ui, "Remalhar", true, |ui| {
                 let suggested = self.modeling.active_object().map(|o| crate::modeling::sculpt::suggest_voxel_size(&o.mesh)).unwrap_or(0.05);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Voxel");
                     ui.add(
                         egui::DragValue::new(&mut self.sculpt.voxel_size)
@@ -324,7 +324,7 @@ impl StudioApp {
                 ui.add_space(4.0);
                 ui.checkbox(&mut self.sculpt.dyntopo, "Dyntopo (topologia dinâmica)");
                 if self.sculpt.dyntopo {
-                    ui.add(egui::Slider::new(&mut self.sculpt.dyntopo_detail_px, 3.0..=80.0).text("Detalhe (px)"));
+                    ui.add(crate::app::props_tabs::lab("Detalhe (px)", egui::Slider::new(&mut self.sculpt.dyntopo_detail_px, 3.0..=80.0)));
                     ui.label(RichText::new("Subdivide/colapsa sob o pincel; melhor em malhas de poucos milhares de faces.").size(11.0).color(theme::TEXT_DIM));
                 }
             });
@@ -332,9 +332,9 @@ impl StudioApp {
 
         if tab == PropTab::Mesh {
             section(ui, "Malha", true, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Simetrizar");
-                    egui::ComboBox::from_id_salt("sym_axis")
+                    crate::app::props_tabs::combo(ui, "sym_axis")
                         .selected_text(["X", "Y", "Z"][self.sculpt.symmetrize_axis.min(2)])
                         .width(44.0)
                         .show_ui(ui, |ui| {
@@ -355,7 +355,7 @@ impl StudioApp {
                         self.report(r.err());
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add(egui::DragValue::new(&mut self.sculpt.smooth_all_iters).range(1..=20).suffix("×"));
                     if ui.button(format!("{}  Suavizar tudo", icons::DROP)).clicked() {
                         let iters = self.sculpt.smooth_all_iters;

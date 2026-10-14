@@ -234,8 +234,20 @@ impl StudioApp {
                 self.modeling.set_select_mode(sm);
                 Ok(self.bridge_ui_state())
             }
+            "debug_expand" => {
+                // teste de largura: o egui pinta de vermelho o widget que alarga o pai (o culpado do corte)
+                let on = m.get("value").and_then(|v| v.as_bool()).ok_or_else(|| BridgeError::invalid_params("debug_expand: value deve ser true|false"))?;
+                super::props_tabs::set_debug_expand(on);
+                Ok(self.bridge_ui_state())
+            }
+            "expand_sections" => {
+                // teste de largura: abre todas as seções recolhíveis dos painéis (fechadas escondem o conteúdo da medida)
+                let on = m.get("value").and_then(|v| v.as_bool()).ok_or_else(|| BridgeError::invalid_params("expand_sections: value deve ser true|false"))?;
+                super::props_tabs::set_force_open(on);
+                Ok(self.bridge_ui_state())
+            }
             other => Err(BridgeError::invalid_params(format!(
-                "UI_ACTION '{other}' desconhecida. Suportadas: select_tab, set_mode, select_tool, toggle_panel, select_props_tab, save_session, set_camera_view, set_shading, set_view_layout, set_view_kind, set_active_view, add_primitive, select_object, set_select_mode"
+                "UI_ACTION '{other}' desconhecida. Suportadas: select_tab, set_mode, select_tool, toggle_panel, select_props_tab, save_session, set_camera_view, set_shading, set_view_layout, set_view_kind, set_active_view, add_primitive, select_object, set_select_mode, expand_sections"
             ))),
         }
     }
@@ -250,13 +262,21 @@ impl StudioApp {
     pub(crate) fn bridge_ui_state(&self) -> Value {
         let tools = self.shelf_tools();
         let active = *self.tool_idx.get(&self.ws).unwrap_or(&0);
+        let tree = self.dock.trees.get(&self.ws);
         let panels: Vec<Value> = registry::panels(self.ws)
             .iter()
-            .map(|p| json!({
-                "id": p.id,
-                "central": p.kind == registry::PanelKind::Viewport,
-                "open": p.kind == registry::PanelKind::Viewport || self.dock_panel_open(self.ws, p.id),
-            }))
+            .map(|p| {
+                // retângulo em pontos lógicos [x, y, largura, altura] (some se o painel está fechado)
+                let rect = tree
+                    .and_then(|t| crate::layout::tiles::find_pane(t, p.id).and_then(|tid| t.tiles.rect(tid)))
+                    .map(|r| json!([r.min.x, r.min.y, r.width(), r.height()]));
+                json!({
+                    "id": p.id,
+                    "central": p.kind == registry::PanelKind::Viewport,
+                    "open": p.kind == registry::PanelKind::Viewport || self.dock_panel_open(self.ws, p.id),
+                    "rect": rect,
+                })
+            })
             .collect();
         let objects: Vec<Value> = self
             .modeling
@@ -301,6 +321,7 @@ impl StudioApp {
             "select_mode": format!("{:?}", self.modeling.select_mode).to_lowercase(),
             "tools": tools.iter().map(|t| t.id).collect::<Vec<_>>(),
             "active_tool": tools.get(active).map(|t| t.id),
+            "props_overflow": super::props_tabs::props_overflow(),
             "props_tab": self.current_tab_set().map(|s| { let shown = self.shown_tabs(s); let cur = self.prop_tab(s); (if shown.contains(&cur) { cur } else { shown[0] }).key() }),
             "props_tabs": self.current_tab_set().map(|s| self.shown_tabs(s).iter().map(|t| t.key()).collect::<Vec<_>>()).unwrap_or_default(),
             "views": views,

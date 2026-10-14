@@ -43,7 +43,7 @@ pub use multiview::MultiViewState;
 pub(crate) fn multiview_for_tests() -> MultiViewState {
     multiview::MultiView::default().to_state(&crate::viewport::OrbitCamera::default())
 }
-mod props_tabs;
+pub(crate) mod props_tabs;
 mod character_ui;
 mod dock_ui;
 mod gizmo;

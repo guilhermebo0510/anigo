@@ -51,7 +51,7 @@ fn param_row(ui: &mut egui::Ui, p: &Param, m: &StylizedMaterial, link: Option<Sh
     let modified = p.is_modified(m);
     let dim = !p.gate_on(m);
     let mut edit: Option<Edit> = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let mut text = RichText::new(tr(p.label)).size(12.5);
         if dim {
             text = text.color(theme::TEXT_DIM);
@@ -97,7 +97,7 @@ fn param_row(ui: &mut egui::Ui, p: &Param, m: &StylizedMaterial, link: Option<Sh
         Kind::Color => {
             let c = cur.c();
             let mut rgb = [c[0], c[1], c[2]];
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let resp = ui.color_edit_button_rgb(&mut rgb);
                 ui.label(RichText::new(palette::to_hex(rgb)).monospace().size(11.5).color(theme::TEXT_DIM));
                 if resp.changed() {
@@ -123,7 +123,7 @@ fn param_row(ui: &mut egui::Ui, p: &Param, m: &StylizedMaterial, link: Option<Sh
         }
         Kind::Choice(opts) => {
             let mut i = cur.i();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (k, key) in opts.iter().enumerate() {
                     if ui.selectable_value(&mut i, k as u8, tr(key)).changed() {
                         let mut nm = m.clone();
@@ -151,7 +151,7 @@ impl StudioApp {
 
     pub(crate) fn shading_targets_body(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for s in Source::ALL {
                 if ui.selectable_label(self.shading_ui.source == s, tr(s.key())).clicked() {
                     self.shading_set_source(s);
@@ -184,7 +184,7 @@ impl StudioApp {
         egui::ScrollArea::vertical().id_salt("shading_targets").max_height(height).auto_shrink([false, true]).show_rows(ui, 24.0, rows.len(), |ui, range| {
             for r in &rows[range] {
                 let selected = self.shading_ui.target.as_ref() == Some(&r.target);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_space(r.depth as f32 * 12.0);
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 16.0), Sense::hover());
                     ui.painter().rect_filled(egui::Rect::from_min_max(rect.min, egui::pos2(rect.center().x, rect.max.y)), 3.0, rgb8(r.swatch.0));
@@ -205,7 +205,7 @@ impl StudioApp {
 
     fn shading_presets_section(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("shading.presets")).strong().size(12.5));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.shading_ui.preset_tab, PresetTab::BuiltIn, tr("shading.presets.builtin"));
             ui.selectable_value(&mut self.shading_ui.preset_tab, PresetTab::Library, tr("shading.presets.library"));
         });
@@ -241,7 +241,7 @@ impl StudioApp {
             ctx.request_repaint();
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button(format!("{}  {}", icons::COPY, tr("shading.copy"))).on_hover_text("Ctrl+C").clicked() {
                 self.shading_copy();
             }
@@ -298,7 +298,7 @@ impl StudioApp {
             return;
         };
         // salvar o material atual como preset
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.shading_ui.preset_name).hint_text(tr("shading.preset_name")).desired_width(ui.available_width() - 80.0));
             let can = !self.shading_ui.preset_name.trim().is_empty() && self.shading_ui.target.is_some();
             if ui.add_enabled(can, egui::Button::new(format!("{}  {}", icons::FLOPPY_DISK, tr("shading.save")))).on_hover_text(tr("shading.save_preset_tip")).clicked() {
@@ -413,7 +413,7 @@ impl StudioApp {
         let Some(mat) = self.shading_read(&target) else { return };
         let mut trace_rects: Vec<(String, egui::Rect)> = Vec::new();
         let mut edit: Option<Edit> = None;
-        egui::ScrollArea::vertical().id_salt("shading_params").auto_shrink([false, false]).show(ui, |ui| {
+        crate::app::props_tabs::props_scroll(ui, "shading_params", |ui| {
             if self.shading_ui.palette_open {
                 if let Some(e) = self.shading_palette_section(ui, &mat) {
                     edit = Some(e);
@@ -445,7 +445,7 @@ impl StudioApp {
 
     fn shading_header(&mut self, ui: &mut egui::Ui) {
         let name = self.shading_ui.target.as_ref().map(|t| self.shading_name(t)).unwrap_or_default();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{}  {}", icons::PALETTE, name)).strong().size(14.0));
         });
         ui.horizontal_wrapped(|ui| {
@@ -528,7 +528,7 @@ impl StudioApp {
                 }
                 if g == Group::Ramp && p.id == "ramp_row" {
                     // atalhos: linha 0..3 exata
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for r in 0..4 {
                             let on = (mat.npr.ramp_row - r as f32).abs() < 1e-3;
                             if ui.selectable_label(on, format!("{r}")).clicked() && !on {
@@ -569,7 +569,7 @@ impl StudioApp {
     /// Linha "derivar sombra da base" (HSV) sob a cor de sombra.
     fn shading_shade_derive_row(&mut self, ui: &mut egui::Ui, mat: &StylizedMaterial) -> Option<Edit> {
         let mut edit = None;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button(format!("{}  {}", icons::MAGIC_WAND, tr("shading.derive_shade"))).on_hover_text(tr("shading.derive_shade_tip")).clicked() {
                 let s = derive_shade([mat.base_color[0], mat.base_color[1], mat.base_color[2]], self.shading_ui.recipe);
                 let mut nm = mat.clone();
@@ -640,7 +640,7 @@ impl StudioApp {
                     ("emission", "shading.tex.emission", false),
                     ("outline_width", "shading.tex.outline_width", false),
                 ] {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(tr(label));
                         ui.label(RichText::new(if live { tr("shading.tex.live") } else { tr("shading.tex.ref_only") }).size(11.0).color(if live { theme::ACCENT } else { theme::TEXT_DIM }));
                     });
@@ -657,7 +657,7 @@ impl StudioApp {
         let label = cur.clone().unwrap_or_else(|| tr("shading.tex.choose").to_string());
         let mut choose: Option<(anigo_assets::AssetId, String)> = None;
         let mut clear = false;
-        egui::ComboBox::from_id_salt(("shading_tex", slot)).selected_text(label).width(ui.available_width() - 40.0).show_ui(ui, |ui| {
+        crate::app::props_tabs::combo(ui, ("shading_tex", slot)).selected_text(label).width(ui.available_width() - 40.0).show_ui(ui, |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.shading_ui.tex_search).hint_text(tr("shading.search")).desired_width(180.0));
             let q = self.shading_ui.tex_search.trim().to_string();
             let Some(lib) = &lib else {
@@ -739,9 +739,9 @@ impl StudioApp {
                 ui.label(RichText::new(tr("shading.palette.derive")).strong().size(12.0));
                 let mut r = self.shading_ui.recipe;
                 let mut changed = false;
-                changed |= ui.add(egui::Slider::new(&mut r.hue_shift_deg, -90.0..=90.0).text(tr("shading.palette.hue")).integer()).changed();
-                changed |= ui.add(egui::Slider::new(&mut r.saturation, 0.3..=2.5).text(tr("shading.palette.sat")).max_decimals(2)).changed();
-                changed |= ui.add(egui::Slider::new(&mut r.value, 0.2..=1.2).text(tr("shading.palette.val")).max_decimals(2)).changed();
+                changed |= ui.add(crate::app::props_tabs::lab(tr("shading.palette.hue"), egui::Slider::new(&mut r.hue_shift_deg, -90.0..=90.0).integer())).changed();
+                changed |= ui.add(crate::app::props_tabs::lab(tr("shading.palette.sat"), egui::Slider::new(&mut r.saturation, 0.3..=2.5).max_decimals(2))).changed();
+                changed |= ui.add(crate::app::props_tabs::lab(tr("shading.palette.val"), egui::Slider::new(&mut r.value, 0.2..=1.2).max_decimals(2))).changed();
                 if changed {
                     self.shading_ui.recipe = r;
                     let s = derive_shade([mat.base_color[0], mat.base_color[1], mat.base_color[2]], r);
@@ -753,7 +753,7 @@ impl StudioApp {
                 // ---- girar o matiz da base e da sombra
                 ui.add_space(4.0);
                 let mut turn = self.shading_ui.hue_turn;
-                let tr_resp = ui.add(egui::Slider::new(&mut turn, -180.0..=180.0).text(tr("shading.palette.turn")).integer());
+                let tr_resp = ui.add(crate::app::props_tabs::lab(tr("shading.palette.turn"), egui::Slider::new(&mut turn, -180.0..=180.0).integer()));
                 if tr_resp.changed() {
                     let start = self.shading_ui.hue_start.get_or_insert_with(|| mat.clone()).clone();
                     let mut nm = start.clone();
@@ -808,7 +808,7 @@ impl StudioApp {
                         ui.label(RichText::new(tr("shading.palette.empty")).size(11.5).color(theme::TEXT_DIM));
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button(format!("{}  {}", icons::PLUS, tr("shading.palette.add_base"))).clicked() {
                         self.shading_ui.palette.add(base);
                         self.shading_save_project_palette();
@@ -824,7 +824,7 @@ impl StudioApp {
                         self.shading_save_project_palette();
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.shading_ui.palette_name).desired_width(120.0).hint_text(tr("shading.palette.name")));
                     if ui.button(format!("{}  {}", icons::FLOPPY_DISK, tr("shading.save"))).clicked() {
                         let mut p = self.shading_ui.palette.clone();

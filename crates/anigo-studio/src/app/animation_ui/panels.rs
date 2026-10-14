@@ -23,7 +23,12 @@ use egui::{Color32, RichText};
 use std::sync::Arc;
 
 /// Largura fixa dos campos do inspetor: larguras derivadas do espaço disponível realimentam o painel e o fazem crescer.
+/// Largura máxima dos campos de texto/combos do painel; encolhe com o painel (nunca passa da largura disponível).
 const FIELD_W: f32 = 300.0;
+
+fn field_w(ui: &egui::Ui) -> f32 {
+    ui.available_width().min(FIELD_W)
+}
 const FPS_PRESETS: [f32; 9] = [8.0, 12.0, 15.0, 24.0, 25.0, 30.0, 48.0, 50.0, 60.0];
 
 impl StudioApp {
@@ -46,7 +51,7 @@ impl StudioApp {
         self.anim_ui.side_tab = if tab == PropTab::Bone { SideTab::Bone } else { SideTab::Clip };
         let ui = &mut content;
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        crate::app::props_tabs::props_scroll(ui, "props", |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(6, 0)).show(ui, |ui| match self.anim_ui.side_tab {
                 SideTab::Clip => self.inspector_clip_tab(ui),
                 SideTab::Bone => self.rig_panel(ui),
@@ -108,7 +113,7 @@ impl StudioApp {
                     }
                 }
             }
-            egui::ComboBox::from_id_salt("anim_speed").width(64.0).selected_text(format!("{}x", self.anim_ui.transport.speed)).show_ui(ui, |ui| {
+            crate::app::props_tabs::combo(ui, "anim_speed").width(64.0).selected_text(format!("{}x", self.anim_ui.transport.speed)).show_ui(ui, |ui| {
                 for s in [-1.0f32, 0.25, 0.5, 1.0, 2.0] {
                     if ui.selectable_label((self.anim_ui.transport.speed - s).abs() < 1e-3, format!("{s}x")).clicked() {
                         self.anim_ui.transport.set_speed(s);
@@ -141,7 +146,7 @@ impl StudioApp {
             if ui.add(egui::Button::new(rec).selected(auto).min_size(egui::vec2(28.0, 24.0))).on_hover_text(tr("anim.autokey_tip")).clicked() {
                 self.anim_ui.autokey = !auto;
             }
-            egui::ComboBox::from_id_salt("anim_interp").width(88.0).selected_text(tr(self.anim_ui.interp.key())).show_ui(ui, |ui| {
+            crate::app::props_tabs::combo(ui, "anim_interp").width(88.0).selected_text(tr(self.anim_ui.interp.key())).show_ui(ui, |ui| {
                 for p in InterpPick::ALL {
                     ui.selectable_value(&mut self.anim_ui.interp, p, tr(p.key()));
                 }
@@ -175,11 +180,11 @@ impl StudioApp {
     /// Seção recolhível do inspetor (abre à força quando um cenário pede).
     fn anim_section(&mut self, ui: &mut egui::Ui, id: &'static str, title: String, default_open: bool, body: impl FnOnce(&mut Self, &mut egui::Ui)) {
         let force = (self.anim_ui.force_section == Some(id)).then_some(true);
-        egui::CollapsingHeader::new(RichText::new(title).strong()).id_salt(id).default_open(default_open).open(force).show(ui, |ui| body(self, ui));
+        crate::app::props_tabs::header(ui, RichText::new(title).strong()).id_salt(id).default_open(default_open).open(force).show(ui, |ui| body(self, ui));
     }
 
     fn section_clip(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{}  {}", icons::FILM_STRIP, tr("anim.clip.title"))).strong());
             if ui.button(icons::PLUS).on_hover_text(tr("anim.clip.new")).clicked() {
                 self.anim_new_clip();
@@ -189,7 +194,7 @@ impl StudioApp {
         let ids: Vec<(AnimationClipId, String)> = self.core.project().animation.clips.iter().map(|(i, c)| (i.clone(), c.name.clone())).collect();
         let active = self.anim_clip_id();
         let cur = active.as_ref().and_then(|a| ids.iter().find(|(i, _)| i == a)).map(|(_, n)| n.clone()).unwrap_or_else(|| tr("anim.no_clip").to_string());
-        egui::ComboBox::from_id_salt("anim_clip_pick").selected_text(cur).width(FIELD_W).show_ui(ui, |ui| {
+        crate::app::props_tabs::combo(ui, "anim_clip_pick").selected_text(cur).width(field_w(ui)).show_ui(ui, |ui| {
             for (id, name) in &ids {
                 if ui.selectable_label(active.as_ref() == Some(id), name).clicked() {
                     self.anim_select_clip(id);
@@ -202,12 +207,12 @@ impl StudioApp {
         };
         let fps = self.anim_fps();
         // nome
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if self.anim_ui.rename_for.as_ref() != Some(&id) {
                 self.anim_ui.rename_for = Some(id.clone());
                 self.anim_ui.rename_buf = clip.name.clone();
             }
-            let te = ui.add(egui::TextEdit::singleline(&mut self.anim_ui.rename_buf).desired_width(FIELD_W - 84.0));
+            let te = ui.add(egui::TextEdit::singleline(&mut self.anim_ui.rename_buf).desired_width((field_w(ui) - 84.0).max(60.0)));
             let commit = te.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
             if ui.button(tr("anim.clip.rename")).clicked() || commit {
                 let name = self.anim_ui.rename_buf.trim().to_string();
@@ -219,13 +224,13 @@ impl StudioApp {
         // faixa
         let (a, b) = clip.effective_range(fps);
         let auto = clip.range.is_none();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let mut auto_v = auto;
             if ui.checkbox(&mut auto_v, tr("anim.range.auto")).on_hover_text(tr("anim.range.auto_tip")).changed() {
                 self.anim_apply(AnimEdit::SetClipRange { clip_id: id.clone(), range: if auto_v { None } else { Some([a, b]) } });
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("anim.range")).color(theme::TEXT_DIM));
             let (mut s, mut e) = (a, b);
             let c1 = ui.add(egui::DragValue::new(&mut s).range(0..=1_000_000).speed(0.5).prefix(format!("{} ", tr("anim.range.start")))).changed();
@@ -241,9 +246,9 @@ impl StudioApp {
         });
         ui.label(RichText::new(format!("{:.2} s  ·  {} {}", (b - a) as f32 / fps, clip.key_count(), tr("anim.keys"))).color(theme::TEXT_DIM));
         // fps do projeto
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("anim.fps")).color(theme::TEXT_DIM));
-            egui::ComboBox::from_id_salt("anim_fps").width(70.0).selected_text(format!("{fps:.0}")).show_ui(ui, |ui| {
+            crate::app::props_tabs::combo(ui, "anim_fps").width(70.0).selected_text(format!("{fps:.0}")).show_ui(ui, |ui| {
                 for p in FPS_PRESETS {
                     if ui.selectable_label((p - fps).abs() < 1e-3, format!("{p:.0}")).clicked() && (p - fps).abs() > 1e-3 {
                         let retime = self.anim_ui.retime;
@@ -254,7 +259,7 @@ impl StudioApp {
             ui.checkbox(&mut self.anim_ui.retime, tr("anim.fps.retime")).on_hover_text(tr("anim.fps.retime_tip"));
         });
         // extrapolação e "em Ns"
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("anim.extrap")).color(theme::TEXT_DIM));
             for (e, key) in [(Extrapolation::Constant, "anim.extrap.constant"), (Extrapolation::Linear, "anim.extrap.linear")] {
                 if ui.selectable_label(clip.extrapolation == e, tr(key)).clicked() && clip.extrapolation != e {
@@ -262,7 +267,7 @@ impl StudioApp {
                 }
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("anim.twos")).color(theme::TEXT_DIM));
             let mut h = clip.hold_step as i32;
             if ui.add(egui::DragValue::new(&mut h).range(1..=12).speed(0.1).suffix("s")).changed() {
@@ -321,7 +326,7 @@ impl StudioApp {
                 self.anim_paste_keys(true);
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for (label, d) in [("\u{2212}10", -10), ("\u{2212}1", -1), ("+1", 1), ("+10", 10)] {
                 if ui.small_button(label).on_hover_text(tr("anim.sel.shift_tip")).clicked() {
                     let set: std::collections::BTreeSet<_> = sel.iter().cloned().collect();
@@ -342,7 +347,7 @@ impl StudioApp {
             ui.separator();
             ui.label(RichText::new(self.anim_channel_label(&target)).strong());
             let mut f = frame;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("anim.t.frame"));
                 if ui.add(egui::DragValue::new(&mut f).range(0..=1_000_000).speed(0.25)).changed() && f != frame {
                     self.anim_live(AnimEdit::MoveKeys { clip_id: id.clone(), moves: vec![KeyMove { target: target.clone(), frame, to_frame: f }] });
@@ -360,7 +365,7 @@ impl StudioApp {
                 }
                 KeyValue::Vec3(p) => {
                     let mut x = p;
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let mut ch = false;
                         for (i, l) in ["X", "Y", "Z"].iter().enumerate() {
                             ch |= ui.add(egui::DragValue::new(&mut x[i]).speed(0.01).prefix(format!("{l} "))).changed();
@@ -373,7 +378,7 @@ impl StudioApp {
                 KeyValue::Quat(q) => {
                     let e = quat_to_euler_deg(glam::Quat::from_xyzw(q[0], q[1], q[2], q[3])).map(|v| if v.abs() < 0.05 { 0.0 } else { v });
                     let mut x = e;
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let mut ch = false;
                         for (i, l) in ["X", "Y", "Z"].iter().enumerate() {
                             ch |= ui.add(egui::DragValue::new(&mut x[i]).speed(0.5).suffix("\u{b0}").prefix(format!("{l} "))).changed();
@@ -385,7 +390,7 @@ impl StudioApp {
                 }
                 KeyValue::Curl(c) => {
                     let mut x = c;
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let mut ch = false;
                         for (i, l) in ["T", "I", "M", "A", "P"].iter().enumerate() {
                             ch |= ui.add(egui::DragValue::new(&mut x[i]).speed(0.01).range(0.0..=1.0).prefix(format!("{l} "))).changed();
@@ -403,7 +408,7 @@ impl StudioApp {
             if let Interp::Bezier { c } = key.interp {
                 ui.label(RichText::new(tr("anim.handles")).color(theme::TEXT_DIM));
                 let mut x = c;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let mut ch = false;
                     for (i, l) in ["x1", "y1", "x2", "y2"].iter().enumerate() {
                         let r = if i % 2 == 0 { 0.0..=1.0 } else { -4.0..=5.0 };
@@ -436,7 +441,7 @@ impl StudioApp {
             self.anim_ui.scene_node = nodes.first().map(|(i, _)| i.clone());
         }
         let cur = self.anim_ui.scene_node.as_ref().and_then(|id| nodes.iter().find(|(n, _)| n == id)).map(|(_, name)| name.clone()).unwrap_or_default();
-        egui::ComboBox::from_id_salt("anim_scene_node").selected_text(cur).width(FIELD_W - 60.0).show_ui(ui, |ui| {
+        crate::app::props_tabs::combo(ui, "anim_scene_node").selected_text(cur).width((field_w(ui) - 60.0).max(60.0)).show_ui(ui, |ui| {
             for (id, name) in &nodes {
                 if ui.selectable_label(self.anim_ui.scene_node.as_ref() == Some(id), name).clicked() {
                     self.anim_ui.scene_node = Some(id.clone());
@@ -453,15 +458,15 @@ impl StudioApp {
     fn section_onion(&mut self, ui: &mut egui::Ui) {
         let o = &mut self.anim_ui.onion;
         ui.checkbox(&mut o.enabled, tr("anim.onion"));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("anim.onion.before"));
             ui.add(egui::Slider::new(&mut o.before, 0..=6));
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("anim.onion.after"));
             ui.add(egui::Slider::new(&mut o.after, 0..=6));
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("anim.onion.step"));
             ui.add(egui::Slider::new(&mut o.step, 1..=12));
         });
@@ -480,7 +485,7 @@ impl StudioApp {
         let markers = self.anim_clip().map(|c| c.markers.clone()).unwrap_or_default();
         let mut change: Option<Vec<anigo_core::animation::Marker>> = None;
         for (i, m) in markers.iter().enumerate() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.small_button(format!("{}", m.frame)).on_hover_text(tr("anim.marker.go")).clicked() {
                     self.scrub_to(m.frame as f32, false);
                 }
@@ -512,11 +517,11 @@ impl StudioApp {
         }
         let mut cfg = self.anim_ui.phys.cfg;
         let mut changed = false;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             changed |= ui.checkbox(&mut cfg.hair, tr("anim.phys.hair")).changed();
             changed |= ui.checkbox(&mut cfg.skirt, tr("anim.phys.skirt")).changed();
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("anim.phys.preroll"));
             changed |= ui.add(egui::Slider::new(&mut cfg.pre_roll_s, 0.0..=1.5).suffix(" s")).on_hover_text(tr("anim.phys.preroll_tip")).changed();
         });
@@ -540,7 +545,7 @@ impl StudioApp {
 
     fn section_files(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("anim.io.note")).color(theme::TEXT_DIM).size(11.5));
-        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.io_path).hint_text(tr("anim.io.path_hint")).desired_width(FIELD_W));
+        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.io_path).hint_text(tr("anim.io.path_hint")).desired_width(field_w(ui)));
         ui.horizontal_wrapped(|ui| {
             if ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, tr("anim.io.import"))).on_hover_text(tr("anim.io.import_tip")).clicked() {
                 self.anim_import_file();
@@ -735,7 +740,7 @@ impl StudioApp {
         ui.label(RichText::new(tr("anim.seq.note")).color(theme::TEXT_DIM).size(11.5));
         ui.checkbox(&mut self.anim_ui.seq_custom, tr("anim.seq.custom"));
         ui.add_enabled_ui(self.anim_ui.seq_custom, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add(egui::DragValue::new(&mut self.anim_ui.seq_start).range(0..=1_000_000).prefix(format!("{} ", tr("anim.range.start"))));
                 ui.add(egui::DragValue::new(&mut self.anim_ui.seq_end).range(0..=1_000_000).prefix(format!("{} ", tr("anim.range.end"))));
                 ui.add(egui::DragValue::new(&mut self.anim_ui.seq_step).range(1..=100).prefix(format!("{} ", tr("anim.seq.step"))));
@@ -745,13 +750,13 @@ impl StudioApp {
             self.anim_ui.seq_end = self.anim_ui.seq_start;
         }
         let frames = FrameRange { start: self.anim_ui.seq_start.max(0) as u32, end: self.anim_ui.seq_end.max(0) as u32, step: self.anim_ui.seq_step.max(1) }.frames().len();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("anim.seq.folder")).color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(&mut self.render_ui.prefs.dir).desired_width(FIELD_W - 60.0));
+            ui.add(egui::TextEdit::singleline(&mut self.render_ui.prefs.dir).desired_width((field_w(ui) - 60.0).max(60.0)));
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("anim.seq.template")).color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(&mut self.anim_ui.seq_template).desired_width(FIELD_W - 60.0)).on_hover_text(tr("anim.seq.template_tip"));
+            ui.add(egui::TextEdit::singleline(&mut self.anim_ui.seq_template).desired_width((field_w(ui) - 60.0).max(60.0))).on_hover_text(tr("anim.seq.template_tip"));
         });
         let ctx = ui.ctx().clone();
         let busy = self.anim_seq_job().is_some_and(|j| matches!(j.status, super::super::render_ui::JobStatus::Queued | super::super::render_ui::JobStatus::Running));
@@ -769,7 +774,7 @@ impl StudioApp {
                 JobStatus::Failed(e) => format!("{}: {e}", tr("anim.seq.st.failed")),
                 JobStatus::Cancelled => tr("anim.seq.st.cancelled").to_string(),
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(txt).color(theme::TEXT_DIM));
                 if busy && ui.button(tr("anim.seq.cancel")).clicked() {
                     self.render_cancel(id);
@@ -847,7 +852,7 @@ impl StudioApp {
                 self.anim_ui.lib_name = c.name.clone();
             }
         }
-        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.lib_name).hint_text(tr("anim.lib.name_hint")).desired_width(FIELD_W - 40.0));
+        ui.add(egui::TextEdit::singleline(&mut self.anim_ui.lib_name).hint_text(tr("anim.lib.name_hint")).desired_width((field_w(ui) - 40.0).max(60.0)));
         ui.horizontal_wrapped(|ui| {
             if ui.add_enabled(self.anim_clip().is_some(), egui::Button::new(format!("{}  {}", icons::FLOPPY_DISK, tr("anim.lib.save")))).on_hover_text(tr("anim.lib.save_tip")).clicked() {
                 self.anim_save_clip_to_library();
