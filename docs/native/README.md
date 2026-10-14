@@ -6,6 +6,8 @@
 | [RELATORIO_FINAL.md](RELATORIO_FINAL.md) | **Relatório final**: o que foi entregue, o que não foi feito e o que falta para o nível comercial (P0/P1/P2) |
 | [ROADMAP_TAREFAS.md](ROADMAP_TAREFAS.md) | Todas as tarefas por trilha, com estado e tipo de validação |
 | [MODELAGEM_FERRAMENTAS.md](MODELAGEM_FERRAMENTAS.md) | Mapa de ferramentas do workspace de Modelagem (Blender como referência) |
+| [MODELAGEM_AUDITORIA.md](MODELAGEM_AUDITORIA.md) | Auditoria de completude da Modelagem: o que existe, o que está só no motor e o que falta, em ordem de impacto (imagens de referência é a nº 1) |
+| [SHADING_ANIME_PLANO.md](SHADING_ANIME_PLANO.md) | Plano do sistema de shading anime "acima do mercado" (calibração por referência, sombra desenhada, on twos, camadas de cel, pilha de look com grafo) + ferramentas de calibração prontas (`scripts/look_calibration`) |
 | [FERRAMENTA_CABELO.md](FERRAMENTA_CABELO.md) | Modo Cabelo da Modelagem (estilo VRoid): uso, atalhos, modelo de dados, cadeias de física neutras, limites e o que não foi validado |
 | [VALIDACAO_LOCAL.md](VALIDACAO_LOCAL.md) | **O que o chat local precisa validar** (entrada nativa, GPU real, gosto, Windows/MSVC, hot reload) |
 | [CPP_FFI.md](CPP_FFI.md) | Política C/C++ (`anigo-native`: meshopt, ufbx, xatlas) e lista "C++ depois" |

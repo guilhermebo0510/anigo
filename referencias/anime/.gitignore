@@ -1,0 +1,11 @@
+# quadros de anime: direitos autorais, só locais
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.gif
+*.tif
+*.tiff
+_medidas/
+# versionados: README.md, *.manifest.json

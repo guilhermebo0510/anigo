@@ -24,7 +24,17 @@ propriedades) e a **Biblioteca** (barra lateral, navegador e detalhes).
 * Pedir foco numa seção abre a aba onde ela mora: no Shading, clicar no rim/contorno do preview ou os cenários que focam um grupo; na Iluminação, clicar nas
   partes do gizmo/overlay que apontam uma seção (sol, sombras, ambiente, extras).
 * O primeiro grupo de cada aba do Shading abre por padrão (Base, Especular, Rim, Rosto).
-* Largura: a faixa ocupa ~40 px do painel; os sliders se adaptam (`tab_strip` calcula a largura do slider) para o rótulo nunca ser cortado.
+* Largura: a faixa ocupa ~40 px do painel. **Nenhum painel do dock fica abaixo de 260 pt** (`theme::PANEL_MIN_W`) e, nessa largura, nada é cortado:
+  * `lab(rótulo, slider)`: painel largo = como sempre (slider, valor e rótulo à direita); estreito (< 280 pt de espaço útil) = rótulo em cima e slider na largura toda;
+  * `field_row` / `xyz_row`: rótulo + controle (ou X/Y/Z) lado a lado quando cabe, empilhados quando não;
+  * `header(ui, título)`: título de seção truncado com "…" à largura (o egui o mede sem limite); o estado aberto/fechado não reseta ao redimensionar;
+  * `combo(ui, id)`: largura limitada ao espaço, texto escolhido truncado;
+  * linhas de botões/campos dos painéis são `horizontal_wrapped` (o que não cabe vai para a linha de baixo);
+  * regra de ouro: um widget que estoura **também alarga o espaço das linhas seguintes** no mesmo bloco (o egui expande o `max_rect`), então o primeiro
+    estouro de um bloco faz os de baixo parecerem "sem quebra". Corrija o primeiro.
+* **Medição automática**: `props_scroll` mede quanto o conteúdo passa da largura e `GET_UI_STATE` devolve `props_overflow` (0 = coube) e `panels[].rect`;
+  `UI_ACTION expand_sections` abre todas as seções e `debug_expand` pinta de vermelho o widget que alarga o painel. A varredura (9 workspaces, todas as abas,
+  painel no mínimo, PT e EN) está em `docs/native/MCP_BRIDGE_NATIVA.md` (seção "Luzes extras e largura dos painéis") e termina com 0–1 abas acima de 5 pt.
 
 ## Código (`crates/anigo-studio/src/app/props_tabs.rs`)
 
@@ -38,6 +48,6 @@ possíveis. Workspace sem abas responde `-32602`.
 
 ## Não validado
 
-* Os smokes `xdotool` do Shading (`scripts/native_shading_smoke.sh`) procuram os sliders por posição (`shaderect`) e **não foram reexecutados**: com as abas,
-  os grupos de outras abas não estão desenhados até a aba ser aberta. As capturas de referência (`docs/native/img`) também não foram regeneradas.
+* Os scripts `xdotool` do Shading (`scripts/native_shading_smoke.sh`) só rodam em Linux; o equivalente multiplataforma, com entrada injetada pela bridge, é
+  `scripts/bridge_shading_smoke.py`. As capturas de referência (`docs/native/img`) não foram regeneradas.
 * Teclado: a faixa só responde a mouse (sem atalho para trocar de aba).
