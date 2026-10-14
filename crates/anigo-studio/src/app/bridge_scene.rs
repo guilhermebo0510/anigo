@@ -435,6 +435,11 @@ impl StudioApp {
         if self.core.project().scene.nodes.len() == n {
             return Err(BridgeError::failed(self.scene_ui.message.clone()));
         }
+        // o render usa até MAX_RENDER_LIGHTS luzes: a nova entra na cena, mas as que passam do limite são ignoradas
+        let lights = self.core.project().scene.nodes.iter().filter(|n| matches!(n.source, Some(anigo_core::NodeSource::Light { .. }))).count();
+        if matches!(kind, PlaceKind::Light(_)) && lights > anigo_core::scene::MAX_RENDER_LIGHTS {
+            self.scene_ui.message = crate::i18n::tr("scene.light.limit").to_string();
+        }
         Ok(())
     }
 

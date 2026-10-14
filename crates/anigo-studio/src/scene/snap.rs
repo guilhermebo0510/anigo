@@ -53,10 +53,11 @@ pub struct SnapSettings {
 impl Default for SnapSettings {
     fn default() -> Self {
         Self {
-            grid_on: true,
-            // 10 cm como no Unreal: com 0,5 m o objeto "pulava" de meio em meio metro ao arrastar (parecia travado)
+            // Arrastar começa CONTÍNUO (como no Blender): com a grade ligada o objeto andava em saltos e parecia travado.
+            // O botão da grade (ou Ctrl segurado, que inverte) liga o encaixe; o passo padrão é 10 cm.
+            grid_on: false,
             grid_m: 0.1,
-            rot_on: true,
+            rot_on: false,
             rot_deg: 15.0,
             scale_on: false,
             scale_step: 0.25,

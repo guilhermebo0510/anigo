@@ -960,13 +960,14 @@ impl StudioApp {
         let mut intensity = light.intensity;
         let mut ambient = light.ambient_intensity;
         let mut color = light.color;
+        let before = (az, el, intensity, ambient, color);
         let mut changed = false;
         crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::SUN, tr("scene.light.main"))).strong()).default_open(true).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.azimuth"));
                 changed |= ui.add(egui::DragValue::new(&mut az).speed(0.5).suffix("\u{b0}").range(-180.0..=180.0)).changed();
                 ui.label(tr("scene.light.elevation"));
-                changed |= ui.add(egui::DragValue::new(&mut el).speed(0.5).suffix("\u{b0}").range(-89.0..=89.0)).changed();
+                changed |= ui.add(egui::DragValue::new(&mut el).speed(0.5).suffix("\u{b0}").range(-90.0..=90.0)).changed();
             });
             ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.color"));
@@ -979,7 +980,11 @@ impl StudioApp {
                 changed |= ui.add(egui::DragValue::new(&mut ambient).speed(0.01).range(0.0..=2.0).max_decimals(2)).changed();
             });
         });
-        if changed {
+        // O campo do egui reporta `changed` ao ajustar o valor ao limite do intervalo; a direção da luz vira (az, el) e volta
+        // com ruído de ponto flutuante, então sem esta comparação o painel regravava a luz TODO quadro (um passo de desfazer
+        // por quadro com o sol quase na vertical). Só vale uma edição que mude o valor de verdade.
+        let moved = (az - before.0).abs() > 1e-3 || (el - before.1).abs() > 1e-3 || (intensity - before.2).abs() > 1e-6 || (ambient - before.3).abs() > 1e-6 || color != before.4;
+        if changed && moved {
             let (a, e) = (az.to_radians(), el.to_radians());
             let dir = [e.cos() * a.sin(), e.sin(), e.cos() * a.cos()];
             self.scene_edit(Command::SetLight {

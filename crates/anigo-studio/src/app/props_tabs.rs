@@ -132,7 +132,7 @@ impl PropTab {
             PropTab::Mesh => icons::GRID_FOUR,
             PropTab::Hair => icons::WAVES,
             PropTab::Drawing => icons::PEN_NIB,
-            PropTab::Physics => icons::BONE,
+            PropTab::Physics => icons::WIND,
             PropTab::Output => icons::EXPORT,
             PropTab::History => icons::CLOCK_COUNTER_CLOCKWISE,
             PropTab::Help => icons::KEYBOARD,
@@ -510,6 +510,31 @@ impl StudioApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_icons_are_unique_within_each_panel() {
+        // dois ícones iguais na mesma faixa vertical são o que deixava as abas "parecidas e sem identidade"
+        let sets = [
+            TabSet::Modeling(Mode::Object),
+            TabSet::Modeling(Mode::Edit),
+            TabSet::Modeling(Mode::Sculpt),
+            TabSet::Modeling(Mode::Hair),
+            TabSet::Personagem,
+            TabSet::Posing,
+            TabSet::Iluminacao,
+            TabSet::Animacao,
+            TabSet::Shading,
+            TabSet::Cenario,
+        ];
+        for set in sets {
+            let mut seen = std::collections::HashMap::new();
+            for t in set.tabs() {
+                if let Some(other) = seen.insert(t.icon(), t.key()) {
+                    panic!("{set:?}: as abas '{other}' e '{}' usam o mesmo ícone", t.key());
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_tab_set_has_unique_tabs_and_a_unique_slot() {
