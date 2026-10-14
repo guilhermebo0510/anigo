@@ -19,8 +19,8 @@ export const RENDER_CONTRACT_DATA = {
         "vertex": "vs_main",
         "fragment": "fs_main"
       },
-      "lines": 738,
-      "fnv1a64": "7057162b0eb372d5"
+      "lines": 745,
+      "fnv1a64": "d3fc1b44e7ff3a31"
     },
     {
       "name": "inverted_hull",

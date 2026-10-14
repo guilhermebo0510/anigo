@@ -185,7 +185,7 @@ Caminhos de arquivo passam pelo sandbox do `anigo-mcp` (absolutos, dentro de Doc
 | `anigo_native_material_view` | `SHADING view/compare` | preview (bola/objeto, luz, fundo, giro, foco de grupo, paleta), comparador A/B |
 | `anigo_native_material_tools` | `SHADING param/palette/ramp` | reset de parâmetro/grupo, "recursos anime", sombra derivada, giro de matiz, harmonias, paleta do projeto, editor de rampa 2D |
 | `anigo_native_material_library` | `SHADING presets/texture` | presets da Biblioteca (salvar/aplicar), slots de textura (incl. mapa SDF facial vivo) |
-| `anigo_native_scene_info` / `scene_select` / `scene_edit` / `scene_project` | `SCENE` | nós e seleção; gizmo, snap, vista/guias/ortogonais, enquadrar; visibilidade e trava; Outliner (renomear, apagar, duplicar, agrupar, reparentar, pastas, copiar/colar); colocar atores; transformar nós; câmeras de cena; salto no histórico; projeto `.anigo` (novo/abrir **exigem `discard_current=true`**) |
+| `anigo_native_scene_info` / `scene_select` / `scene_edit` / `scene_project` | `SCENE` | nós e seleção; gizmo, snap, vista/guias/ortogonais, enquadrar; visibilidade e trava; Outliner (renomear, apagar, duplicar, agrupar, reparentar, pastas, copiar/colar); colocar atores (inclui luzes ponto/holofote/painel/direcional); transformar nós; câmeras de cena; **`light`**: edita uma luz de cena (tipo, cor, intensidade, alcance, cone, tamanho do painel) em UM passo, com validação estrita; salto no histórico; projeto `.anigo` (novo/abrir **exigem `discard_current=true`**) |
 | `anigo_native_char_info` / `char_sliders` / `char_edit` | `CHAR` | os 157 sliders (lista/define/reseta), proporções, gênero/dimorfismo, somatótipo, presets, resetar tudo, câmera do preview |
 | `anigo_native_app_info` / `app_history` / `app_keymap` / `app_layout` / `app_control` | `APP` | idioma; desfazer/refazer do workspace ATIVO (núcleo, Modelagem ou Shading); atalhos (listar/trocar/restaurar/importar/exportar); layouts do dock (presets, importar/exportar; rodam no próximo quadro); enquadrar; exportar o objeto ativo para a Biblioteca |
 
@@ -225,3 +225,15 @@ Smoke de entrada do Shading **sem xdotool** (roda em qualquer SO): `python scrip
 * Um pedido atendido no instante exato do estouro de prazo pode ter sido aplicado mesmo com o cliente recebendo `-32002` (janela de microssegundos; `if_revision` ajuda a reconciliar).
 * `set_base_gender` pela bridge: a observação antiga de "viewport não muda" NÃO se reproduz hoje (`anigo_native_char_edit gender` muda ~50 mil pixels da viewport do Personagem; conferido por diferença de captura).
 * Sem unix socket/named pipe e sem TLS (loopback + token; um processo do MESMO usuário que leia o `bridge.json` tem o mesmo poder que o `anigo-mcp`).
+
+
+## Luzes extras e largura dos painéis (referência rápida)
+
+- **Luzes de cena** (até 8: ponto, holofote, painel retangular, direcional) usam um modelo **limitado** no shader do cel: cada luz
+  *revela* a cor iluminada tingida pelo matiz dela (mistura até a cor de base × matiz), em vez de somar brilho. Uma base clara
+  não estoura para branco e uma luz colorida sempre tinge. Intensidade até 1 = quanto revela; acima de 1 = reforço de até +75%.
+  Sem luzes extras o quadro é idêntico ao congelado. Editar: `anigo_native_scene_edit op=light`; ler: `scene_info` (campo `light`).
+- **Largura do painel de Propriedades**: `GET_UI_STATE` devolve `panels[].rect` (pontos), `props_overflow` (quanto o conteúdo da
+  aba atual passa da largura do painel; 0 = coube) e aceita `UI_ACTION expand_sections` (abre todas as seções) e `debug_expand`
+  (o egui pinta o widget que alarga o painel). Os testes de varredura arrastam o divisor pelo `INPUT` até o mínimo de 260 pt e
+  medem cada aba de cada workspace (em PT e EN).

@@ -110,12 +110,13 @@ impl StudioApp {
             "place" => self.scene_place_op(m)?,
             "transform" => self.scene_transform_op(m)?,
             "camera" => self.scene_camera_op(m)?,
+            "light" => self.scene_light_op(m)?,
             "history" => {
                 let d = m.get("depth").and_then(Value::as_u64).filter(|d| *d <= 100_000).ok_or_else(|| bad("'depth' é obrigatório (0 = início; veja info.history.undo_depth)"))? as usize;
                 self.core.jump_to_depth(d).map_err(BridgeError::failed)?;
             }
             "project" => self.scene_project_op(m)?,
-            other => return Err(bad(format!("SCENE op '{other}' desconhecida (info, select, tool, snap, view, visibility, outliner, place, transform, camera, history, project)"))),
+            other => return Err(bad(format!("SCENE op '{other}' desconhecida (info, select, tool, snap, view, visibility, outliner, place, transform, camera, light, history, project)"))),
         }
         self.scene_refresh();
         let mut out = self.scene_info(&Map::new());
@@ -141,6 +142,13 @@ impl StudioApp {
                     "visible": n.visible, "locked": n.locked, "folder": n.folder, "tags": n.tags, "selected": su.selection.contains(&n.node_id),
                     "translation": n.transform.translation.to_array(), "rotation_deg": [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()], "scale": n.transform.scale.to_array(),
                     "bounds": su.runtime.bounds_of(&n.node_id).map(|b| json!([b.min.to_array(), b.max.to_array()])),
+                    "light": match &n.source {
+                        Some(anigo_core::NodeSource::Light { kind, color, intensity, range, spot_angle_deg, spot_softness, size }) => Some(json!({
+                            "kind": format!("{kind:?}").to_lowercase(), "color": color, "intensity": intensity, "range": range,
+                            "spot_angle_deg": spot_angle_deg, "spot_softness": spot_softness, "size": size,
+                        })),
+                        _ => None,
+                    },
                 })
             })
             .collect();
@@ -460,6 +468,58 @@ impl StudioApp {
         if !self.scene_apply(Command::SetNodesTransform { entries: vec![NodeTransformEntry { node_id: id, translation, rotation, scale }] }) && !self.scene_ui.message.is_empty() && self.scene_ui.message.contains(&crate::i18n::tr("char.error").to_string()) {
             return Err(BridgeError::failed(self.scene_ui.message.clone()));
         }
+        Ok(())
+    }
+
+    /// Edita uma luz de cena (tipo, cor, intensidade, alcance, cone ou tamanho do painel) com UM passo do núcleo, como a aba
+    /// "Luz" dos Detalhes. Só os campos informados mudam; qualquer valor inválido recusa a edição inteira.
+    fn scene_light_op(&mut self, m: &Map<String, Value>) -> Result<(), BridgeError> {
+        use anigo_core::level::NodePatch;
+        use anigo_core::{LightShape, NodeSource};
+        const KEYS: [&str; 9] = ["op", "id", "kind", "color", "intensity", "range", "spot_angle_deg", "spot_softness", "size"];
+        if let Some(k) = m.keys().find(|k| !KEYS.contains(&k.as_str())) {
+            return Err(bad(format!("campo desconhecido '{k}'; disponíveis: kind, color, intensity, range, spot_angle_deg, spot_softness, size")));
+        }
+        if !KEYS[2..].iter().any(|k| m.contains_key(*k)) {
+            return Err(bad("informe ao menos um campo: kind, color, intensity, range, spot_angle_deg, spot_softness, size"));
+        }
+        let id = self.scene_node_id(m.get("id").ok_or_else(|| bad("'id' é obrigatório"))?)?;
+        let node = self.core.project().scene.node(&id).cloned().ok_or_else(|| bad("nó não existe"))?;
+        if node.locked {
+            return Err(BridgeError::failed("o nó está travado (use visibility unlock)"));
+        }
+        let Some(NodeSource::Light { kind, color, intensity, range, spot_angle_deg, spot_softness, size }) = node.source.clone() else {
+            return Err(bad("o nó não é uma luz de cena"));
+        };
+        let kind = match m.get("kind") {
+            None => kind,
+            Some(v) => match v.as_str() {
+                Some("point") => LightShape::Point,
+                Some("spot") => LightShape::Spot,
+                Some("rect") => LightShape::Rect,
+                Some("directional") => LightShape::Directional,
+                _ => return Err(bad("'kind' deve ser point|spot|rect|directional")),
+            },
+        };
+        let color = match m.get("color") {
+            None => color,
+            Some(v) => vec3(v, "color", 1.0).and_then(|c| if c.min_element() < 0.0 { Err(bad("'color' deve estar em 0..1")) } else { Ok(c.to_array()) })?,
+        };
+        let num = |k: &str, cur: f32, lo: f32, hi: f32| m.get(k).map(|v| num_in(v, k, lo, hi)).transpose().map(|o| o.unwrap_or(cur));
+        let intensity = num("intensity", intensity, 0.0, 32.0)?;
+        let range = num("range", range, 0.5, 1000.0)?;
+        let spot_angle_deg = num("spot_angle_deg", spot_angle_deg, 5.0, 150.0)?;
+        let spot_softness = num("spot_softness", spot_softness, 0.0, 1.0)?;
+        let size = match m.get("size") {
+            None => size,
+            Some(v) => {
+                let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad("'size' deve ter 2 números (largura, altura em metros)"))?;
+                [num_in(&a[0], "size", 0.1, 100.0)?, num_in(&a[1], "size", 0.1, 100.0)?]
+            }
+        };
+        let source = NodeSource::Light { kind, color, intensity, range, spot_angle_deg, spot_softness, size };
+        source.validate().map_err(bad)?;
+        self.scene_apply(Command::SetNodeProps { node_id: id, patch: NodePatch { source: Some(source), ..Default::default() } });
         Ok(())
     }
 

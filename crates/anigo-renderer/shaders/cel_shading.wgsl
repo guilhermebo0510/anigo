@@ -120,7 +120,7 @@ var shadow_map: texture_depth_2d;
 @group(0) @binding(20)
 var shadow_cmp_sampler: sampler_comparison;
 
-// Luzes de cena (ponto, holofote, painel retangular, direcional extra), ADITIVAS. Com `header.x == 0` (padrão) nenhum
+// Luzes de cena (ponto, holofote, painel retangular, direcional extra): mistura limitada (tingem, não estouram). Com `header.x == 0` (padrão) nenhum
 // trecho do shader as avalia e o quadro é byte a byte o do motor anterior. Empacotamento em uniforms.rs (ExtraLightsUniform).
 struct ExtraLight {
     position_range: vec4<f32>,   // xyz: posição (mundo), w: alcance (m)
@@ -678,25 +678,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 9. Final Color Composition — P2-05 AO already in base_cel, not here
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
 
-    // 9b. Luzes de cena (aditivas): cada uma pinta uma faixa de cel (o mesmo limiar e suavidade do material) com a cor e a
-    // intensidade dela, mais um realce especular do mesmo corte da luz principal. Com 0 luzes nada executa e
+    // 9b. Luzes de cena: cada uma revela, numa faixa de cel (o mesmo limiar e suavidade do material), a cor iluminada tingida
+    // pelo matiz dela, mais um realce especular do mesmo corte da luz principal. Com 0 luzes nada executa e
     // `lit_extra == lit_highlighted` exatamente (quadro congelado intacto).
-    var extra_diffuse = vec3<f32>(0.0);
+    var lit_mixed = lit_highlighted;
     var extra_spec = vec3<f32>(0.0);
     let extra_count = u32(extra_u.header.x + 0.5);
     for (var i = 0u; i < extra_count; i = i + 1u) {
         let e = ExtraLight(extra_u.position_range[i], extra_u.color_intensity[i], extra_u.direction_kind[i], extra_u.cone[i], extra_u.right[i]);
         let s = extra_light_sample(e, in.world_position);
         if (s.weight > 0.0) {
-            let tint = srgb_to_linear(e.color_intensity.rgb) * (e.color_intensity.w * s.weight);
+            // Modelo LIMITADO (anime): a luz não soma brilho, ela REVELA a cor iluminada tingida pelo matiz dela. Uma base
+            // clara não estoura para branco e uma luz colorida sempre tinge. A intensidade até 1 é "quanto revela"; acima
+            // de 1 só dá um reforço pequeno (no máximo +75%).
+            let c = srgb_to_linear(e.color_intensity.rgb);
+            let hue = c / max(max(c.r, max(c.g, c.b)), 1e-3);
+            let strength = e.color_intensity.w;
             let band = smoothstep(threshold - smoothness, threshold + smoothness, dot(N, s.dir) * 0.5 + 0.5);
-            extra_diffuse = extra_diffuse + tint * band;
+            let k = clamp(strength, 0.0, 1.0) * s.weight * band;
+            let boost = 1.0 + 0.25 * clamp(strength - 1.0, 0.0, 3.0);
+            lit_mixed = mix(lit_mixed, base_lin * hue * boost * mix(1.0, ao, 0.5), k);
             let h_e = normalize(s.dir + V);
             let spec_e = pow(max(dot(N, h_e), 0.0), spec_power);
-            extra_spec = extra_spec + tint * (smoothstep(spec_cutoff - spec_soft_clamped, spec_cutoff + spec_soft_clamped, spec_e) * band);
+            extra_spec = extra_spec + hue * (smoothstep(spec_cutoff - spec_soft_clamped, spec_cutoff + spec_soft_clamped, spec_e) * band * s.weight * clamp(strength, 0.0, 2.0));
         }
     }
-    let lit_extra = lit_highlighted + base_lin * extra_diffuse * mix(1.0, ao, 0.5) + spec_rgb * extra_spec * (spec_intensity * in.anime_attr.a);
+    let lit_extra = lit_mixed + spec_rgb * extra_spec * (spec_intensity * in.anime_attr.a);
     let rim_rgb = srgb_to_linear(material.rim_color.rgb);
     var with_rim = lit_extra + (rim_rgb * rim_term);
 
