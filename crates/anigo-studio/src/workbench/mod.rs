@@ -18,6 +18,8 @@ pub use mesh_data::{build_draw_data, build_draw_data_eval, heat_color, BuildOpti
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub const MSAA_SAMPLES: u32 = 4;
+/// Máximo de vistas simultâneas do viewport (layout 2×2).
+pub const MAX_VIEW_SLOTS: usize = 4;
 
 /// Fonte WGSL embutida (release). Em dev, `ANIGO_SHADER_DIR` aponta para o diretório
 /// de fontes e o hot reload relê do disco.
@@ -134,7 +136,9 @@ pub struct Workbench {
     globals_buffer: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
     pipelines: Pipelines,
-    targets: Option<Targets>,
+    /// Um alvo por vista (multi-vista): `slot` escolhe qual os métodos abaixo usam. Fora do multi-vista só existe o 0.
+    targets: [Option<Targets>; MAX_VIEW_SLOTS],
+    slot: usize,
     /// Objeto vazio: satisfaz o layout do grupo 1 quando não há itens (fundo + grid com a cena vazia).
     empty_object: Option<GpuMesh>,
     pub background_top: [f32; 4],
@@ -188,7 +192,8 @@ impl Workbench {
             globals_buffer,
             globals_bind,
             pipelines,
-            targets: None,
+            targets: Default::default(),
+            slot: 0,
             empty_object: None,
             background_top: [0.215, 0.220, 0.240, 1.0],
             background_bottom: [0.160, 0.163, 0.178, 1.0],
@@ -460,9 +465,14 @@ impl Workbench {
             .write_buffer(&mesh.object_buffer, 0, bytemuck::bytes_of(&ObjectUniform::new(model, tint)));
     }
 
+    /// Escolhe a vista (alvo) em que `render`, `output_view`, `output_size` e `read_rgba` passam a operar.
+    pub fn set_slot(&mut self, slot: usize) {
+        self.slot = slot.min(MAX_VIEW_SLOTS - 1);
+    }
+
     fn ensure_targets(&mut self, size: (u32, u32)) {
         let size = (size.0.max(1), size.1.max(1));
-        if self.targets.as_ref().is_some_and(|t| t.size == size) {
+        if self.targets[self.slot].as_ref().is_some_and(|t| t.size == size) {
             return;
         }
         let extent = wgpu::Extent3d {
@@ -492,7 +502,7 @@ impl Workbench {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
         );
-        self.targets = Some(Targets {
+        self.targets[self.slot] = Some(Targets {
             size,
             msaa_color: msaa.create_view(&Default::default()),
             depth: depth.create_view(&Default::default()),
@@ -503,11 +513,11 @@ impl Workbench {
 
     /// Alvo resolvido (1×) — registrar no egui como textura nativa.
     pub fn output_view(&self) -> Option<&wgpu::TextureView> {
-        self.targets.as_ref().map(|t| &t.resolve_view)
+        self.targets[self.slot].as_ref().map(|t| &t.resolve_view)
     }
 
     pub fn output_size(&self) -> Option<(u32, u32)> {
-        self.targets.as_ref().map(|t| t.size)
+        self.targets[self.slot].as_ref().map(|t| t.size)
     }
 
     /// `true` se o alvo foi recriado nesta chamada de `render` (a textura do egui precisa ser re-registrada).
@@ -518,9 +528,9 @@ impl Workbench {
         items: &[DrawItem],
         settings: &ViewSettings,
     ) -> bool {
-        let recreated = self.targets.as_ref().is_none_or(|t| t.size != (size_px.0.max(1), size_px.1.max(1)));
+        let recreated = self.targets[self.slot].as_ref().is_none_or(|t| t.size != (size_px.0.max(1), size_px.1.max(1)));
         self.ensure_targets(size_px);
-        let Some(targets) = self.targets.as_ref() else {
+        let Some(targets) = self.targets[self.slot].as_ref() else {
             return false;
         };
         let (w, h) = targets.size;
@@ -637,7 +647,7 @@ impl Workbench {
 
     /// Lê o alvo resolvido em RGBA8 (screenshots e testes).
     pub fn read_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
-        let t = self.targets.as_ref()?;
+        let t = self.targets[self.slot].as_ref()?;
         let (w, h) = t.size;
         let bytes_per_row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -725,7 +735,7 @@ mod tests {
     /// Cria device via lavapipe/qualquer adaptador; `None` pula o teste (sem GPU).
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })).ok()?;
         pollster_block(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
@@ -829,7 +839,7 @@ mod overlay_tests {
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let adapter = pollster_block(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })).ok()?;
         pollster_block(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 

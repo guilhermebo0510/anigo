@@ -54,7 +54,7 @@ fn resolve_default(
         if let Some(base) = non_empty(localappdata) {
             return base.join("ANIGO").join("bridge").join("bridge.json");
         }
-    } else if let Some(rt) = non_empty(xdg_runtime).filter(|p| p.is_absolute()) {
+    } else if let Some(rt) = non_empty(xdg_runtime).filter(|p| p.is_absolute() || p.has_root()) {
         return rt.join("anigo").join("bridge.json");
     }
     if let Some(home) = non_empty(home) {
@@ -79,6 +79,10 @@ pub fn write(path: &Path, d: &Discovery) -> io::Result<()> {
         f.write_all(&body)?;
         f.sync_all()?;
         drop(f);
+        // Windows: tira a ACL herdada (SYSTEM, Administradores, outras contas do perfil) e deixa só o usuário atual.
+        // Melhor esforço: se falhar, vale a ACL por usuário de %LOCALAPPDATA% (a que o arquivo já herdou).
+        #[cfg(windows)]
+        let _ = restrict_to_current_user(&tmp);
         std::fs::rename(&tmp, path)
     })();
     if result.is_err() {
@@ -118,6 +122,22 @@ pub fn remove_if_owner(path: &Path, pid: u32, token: &str) {
         if d.pid == pid && d.token == token {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// Windows: `icacls /inheritance:r` + concede controle total SÓ ao SID do usuário atual (o rename preserva a ACL).
+#[cfg(windows)]
+fn restrict_to_current_user(path: &Path) -> io::Result<()> {
+    use std::process::{Command, Stdio};
+    let who = Command::new("whoami").args(["/user", "/fo", "csv", "/nh"]).stderr(Stdio::null()).output()?;
+    let text = String::from_utf8_lossy(&who.stdout);
+    // "DOMINIO\usuario","S-1-5-21-..."
+    let sid = text.trim().rsplit(',').next().map(|s| s.trim().trim_matches('"')).filter(|s| s.starts_with("S-1-")).ok_or_else(|| io::Error::other("SID do usuário não encontrado"))?;
+    let status = Command::new("icacls").arg(path).args(["/inheritance:r", "/grant:r", &format!("*{sid}:F")]).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("icacls falhou"))
     }
 }
 
@@ -232,5 +252,18 @@ mod tests {
         }
         assert!(read(&path).is_err());
         assert!(read(&dir.path().join("inexistente.json")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_acl_is_restricted_to_the_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.json");
+        let d = Discovery { addr: "127.0.0.1:1".into(), token: "t".into(), pid: 1, ..sample() };
+        write(&path, &d).unwrap();
+        let out = std::process::Command::new("icacls").arg(&path).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let entries = text.lines().filter(|l| l.contains(":(")).count();
+        assert_eq!(entries, 1, "ACL deveria ter só o usuário atual: {text}");
     }
 }

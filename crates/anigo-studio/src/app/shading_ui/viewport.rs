@@ -227,8 +227,8 @@ impl StudioApp {
                     ui.horizontal(|ui| {
                         ui.toggle_value(&mut self.shading_ui.rig.follows_camera, format!("{}  {}", icons::SUN, tr("shading.light.follow"))).on_hover_text(tr("shading.light.follow_tip"));
                         ui.spacing_mut().slider_width = 110.0;
-                        ui.add(egui::Slider::new(&mut self.shading_ui.rig.azimuth_deg, -180.0..=180.0).text(tr("shading.light.az")).integer().clamping(egui::SliderClamping::Always)).on_hover_text(tr("shading.light.az_tip"));
-                        ui.add(egui::Slider::new(&mut self.shading_ui.rig.elevation_deg, -80.0..=89.0).text(tr("shading.light.el")).integer().clamping(egui::SliderClamping::Always));
+                        ui.add(crate::app::props_tabs::lab(tr("shading.light.az"), egui::Slider::new(&mut self.shading_ui.rig.azimuth_deg, -180.0..=180.0).integer().clamping(egui::SliderClamping::Always))).on_hover_text(tr("shading.light.az_tip"));
+                        ui.add(crate::app::props_tabs::lab(tr("shading.light.el"), egui::Slider::new(&mut self.shading_ui.rig.elevation_deg, -80.0..=89.0).integer().clamping(egui::SliderClamping::Always)));
                     });
                 });
             });

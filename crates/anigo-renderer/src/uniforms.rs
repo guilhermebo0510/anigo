@@ -74,6 +74,66 @@ impl ShadowUniform {
     }
 }
 
+/// Luzes de cena (binding 21 do cel; 656 B). Com `header.x == 0` (padrão) o shader não executa nada: o quadro é byte a byte
+/// o do motor sem luzes extras.
+///
+/// Em colunas (um array de `vec4` por campo, uma entrada por luz): o layout WGSL é só `array<vec4<f32>, 8>`. Tipo
+/// (`direction_kind[i].w`): 0 direcional extra, 1 ponto, 2 holofote, 3 painel retangular.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, Default)]
+pub struct ExtraLightsUniform {
+    /// x: quantidade de luzes válidas (0..=8).
+    pub header: [f32; 4],
+    /// xyz: posição (mundo); w: alcance (m).
+    pub position_range: [[f32; 4]; anigo_core::scene::MAX_RENDER_LIGHTS],
+    /// rgb: cor (sRGB, como a luz principal); w: intensidade.
+    pub color_intensity: [[f32; 4]; anigo_core::scene::MAX_RENDER_LIGHTS],
+    /// xyz: para onde a luz aponta (unitário); w: tipo.
+    pub direction_kind: [[f32; 4]; anigo_core::scene::MAX_RENDER_LIGHTS],
+    /// x: cos do cone externo; y: cos do cone interno; z/w: meia-largura/meia-altura do painel (m).
+    pub cone: [[f32; 4]; anigo_core::scene::MAX_RENDER_LIGHTS],
+    /// xyz: eixo "direita" do painel (unitário, ⟂ à direção).
+    pub right: [[f32; 4]; anigo_core::scene::MAX_RENDER_LIGHTS],
+}
+
+impl ExtraLightsUniform {
+    /// Empacota as luzes de cena (as que excedem o máximo, ou com valores não finitos, são ignoradas).
+    pub fn from_lights(lights: &[anigo_core::scene::RenderLight]) -> Self {
+        use anigo_core::LightShape;
+        let mut out = Self::default();
+        let mut n = 0usize;
+        for l in lights {
+            if n == out.position_range.len() {
+                break;
+            }
+            let finite = l.position.iter().chain(&l.direction).chain(&l.color).chain(&[l.intensity, l.range, l.spot_angle_deg, l.spot_softness]).chain(&l.size).all(|v| v.is_finite());
+            if !finite || l.intensity <= 0.0 {
+                continue;
+            }
+            let dir = glam::Vec3::from_array(l.direction).normalize_or_zero();
+            let dir = if dir == glam::Vec3::ZERO { glam::Vec3::NEG_Y } else { dir };
+            let reference = if dir.y.abs() > 0.99 { glam::Vec3::X } else { glam::Vec3::Y };
+            let right = reference.cross(dir).normalize_or_zero();
+            let kind = match l.kind {
+                LightShape::Directional => 0.0,
+                LightShape::Point => 1.0,
+                LightShape::Spot => 2.0,
+                LightShape::Rect => 3.0,
+            };
+            let half = (l.spot_angle_deg.clamp(1.0, 170.0) * 0.5).to_radians();
+            let inner = half * (1.0 - l.spot_softness.clamp(0.0, 1.0));
+            out.position_range[n] = [l.position[0], l.position[1], l.position[2], l.range.max(0.05)];
+            out.color_intensity[n] = [l.color[0], l.color[1], l.color[2], l.intensity];
+            out.direction_kind[n] = [dir.x, dir.y, dir.z, kind];
+            out.cone[n] = [half.cos(), inner.cos(), l.size[0] * 0.5, l.size[1] * 0.5];
+            out.right[n] = [right.x, right.y, right.z, 0.0];
+            n += 1;
+        }
+        out.header[0] = n as f32;
+        out
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct MaterialUniform {
@@ -341,6 +401,53 @@ impl BonePaletteUniform {
 impl Default for BonePaletteUniform {
     fn default() -> Self {
         Self::identity(MAX_PALETTE_JOINTS)
+    }
+}
+
+#[cfg(test)]
+mod extra_light_tests {
+    use super::*;
+    use anigo_core::scene::RenderLight;
+    use anigo_core::LightShape;
+
+    fn light(kind: LightShape) -> RenderLight {
+        RenderLight { kind, position: [0.0, 2.0, 0.0], direction: [0.0, -1.0, 0.0], color: [1.0, 0.9, 0.8], intensity: 2.0, range: 6.0, spot_angle_deg: 60.0, spot_softness: 0.5, size: [2.0, 1.0] }
+    }
+
+    #[test]
+    fn the_gpu_layout_is_16_byte_aligned_and_656_bytes() {
+        assert_eq!(std::mem::size_of::<ExtraLightsUniform>(), 656);
+    }
+
+    #[test]
+    fn no_lights_is_the_neutral_uniform() {
+        let u = ExtraLightsUniform::from_lights(&[]);
+        assert_eq!(u.header[0], 0.0);
+        assert_eq!(bytemuck::bytes_of(&u), bytemuck::bytes_of(&ExtraLightsUniform::default()));
+    }
+
+    #[test]
+    fn packing_encodes_kind_cone_and_panel_axes() {
+        let u = ExtraLightsUniform::from_lights(&[light(LightShape::Spot), light(LightShape::Rect)]);
+        assert_eq!(u.header[0], 2.0);
+        assert_eq!(u.direction_kind[0][3], 2.0);
+        assert_eq!(u.direction_kind[1][3], 3.0);
+        // cone externo 30° (metade de 60°), interno 15° (softness 0,5)
+        assert!((u.cone[0][0] - 30f32.to_radians().cos()).abs() < 1e-6);
+        assert!((u.cone[0][1] - 15f32.to_radians().cos()).abs() < 1e-6);
+        // painel: meia-largura/altura e eixo "direita" unitário e perpendicular à direção
+        assert_eq!((u.cone[1][2], u.cone[1][3]), (1.0, 0.5));
+        let r = glam::Vec3::new(u.right[1][0], u.right[1][1], u.right[1][2]);
+        assert!((r.length() - 1.0).abs() < 1e-5 && r.dot(glam::Vec3::NEG_Y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn extra_lights_beyond_the_maximum_and_invalid_values_are_ignored() {
+        let mut many: Vec<RenderLight> = (0..12).map(|_| light(LightShape::Point)).collect();
+        many.insert(0, RenderLight { intensity: f32::NAN, ..light(LightShape::Point) });
+        many.insert(1, RenderLight { intensity: 0.0, ..light(LightShape::Point) });
+        let u = ExtraLightsUniform::from_lights(&many);
+        assert_eq!(u.header[0], 8.0);
     }
 }
 

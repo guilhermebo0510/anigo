@@ -266,6 +266,12 @@ impl StudioApp {
                 let rot = if dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::NEG_Z, dir) };
                 level::plan_place_camera(&project, &tr("scene.actor.camera"), Transform { translation: eye, rotation: rot, scale: Vec3::ONE }, NodeSource::default_camera(), &BTreeSet::new())
             }
+            PlaceKind::Light(shape) => {
+                // 2,5 m acima do ponto de soltar; holofote, painel e direcional apontam para baixo (-Z local girado para -Y)
+                let at = Vec3::new(target.point.x, target.point.y.max(0.0) + 2.5, target.point.z);
+                let rot = if shape == anigo_core::LightShape::Point { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::NEG_Z, Vec3::NEG_Y) };
+                level::plan_place_light(&project, &tr(light_label_key(shape)), Transform { translation: at, rotation: rot, scale: Vec3::ONE }, NodeSource::default_light(shape), &BTreeSet::new())
+            }
             PlaceKind::Group => {
                 let t = Transform::from_translation(target.point);
                 let id = level::unique_node_id(&project, &tr("scene.actor.group"), &BTreeSet::new());
@@ -494,6 +500,26 @@ impl StudioApp {
         }
     }
 
+    /// Aplica um tipo de vista (perspectiva/ortogonal/alinhadas) à câmera de edição atual. As alinhadas enquadram a cena
+    /// mantendo a direção, como `scene_set_view`.
+    pub(crate) fn scene_apply_view_kind(&mut self, kind: crate::app::multiview::ViewKind) {
+        use crate::app::multiview::ViewKind as K;
+        kind.apply(&mut self.scene_ui.camera);
+        self.scene_ui.camera_view = false;
+        self.scene_ui.view_kind = match kind {
+            K::Front => crate::scene::camview::SceneViewKind::Front,
+            K::Back => crate::scene::camview::SceneViewKind::Back,
+            K::Right => crate::scene::camview::SceneViewKind::Right,
+            K::Left => crate::scene::camview::SceneViewKind::Left,
+            K::Top => crate::scene::camview::SceneViewKind::Top,
+            K::Bottom => crate::scene::camview::SceneViewKind::Bottom,
+            K::Perspective | K::Ortho => crate::scene::camview::SceneViewKind::Perspective,
+        };
+        if !matches!(kind, K::Perspective | K::Ortho) {
+            self.scene_focus_keep_direction();
+        }
+    }
+
     fn scene_focus_keep_direction(&mut self) {
         if let Some(b) = self.scene_ui.runtime.bounds {
             frame_box(&mut self.scene_ui.camera, b.min, b.max);
@@ -511,6 +537,15 @@ impl StudioApp {
     }
 
 
+}
+
+pub(crate) fn light_label_key(shape: anigo_core::LightShape) -> &'static str {
+    match shape {
+        anigo_core::LightShape::Point => "scene.light.point",
+        anigo_core::LightShape::Spot => "scene.light.spot",
+        anigo_core::LightShape::Rect => "scene.light.rect",
+        anigo_core::LightShape::Directional => "scene.light.directional",
+    }
 }
 
 pub(crate) fn prim_label_key(shape: PrimitiveShape) -> &'static str {

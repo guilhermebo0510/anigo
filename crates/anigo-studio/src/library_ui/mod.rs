@@ -16,6 +16,7 @@ pub mod scenario;
 pub mod synth;
 pub mod thumb_service;
 
+mod bridge;
 mod details;
 mod dialogs;
 mod grid;

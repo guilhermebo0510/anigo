@@ -1135,6 +1135,8 @@ mod tests {
                 (18, "uniform"),
                 (19, "texture_depth_2d"),
                 (20, "sampler_comparison"),
+                // luzes de cena (aditivo): uniform com até 8 luzes, 0 = neutro
+                (21, "uniform"),
             ]
         );
         // Fase 2 (#18): o mapa de espessura do contorno (MToon outlineWidth) é

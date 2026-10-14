@@ -200,7 +200,8 @@ fn managed_root_added_later_adopts_existing_assets() {
     let p = write(&src, "a.glb", &glb(1));
     let id = import_one(&env.lib, &p, ImportOptions { root: Some(root), ..Default::default() });
     assert_eq!(env.lib.require_row(&id).unwrap().root_id, root);
-    assert!(env.lib.resolve_files(&id).unwrap().primary.starts_with(&second));
+    // `add_root` guarda a forma canônica (no Windows `\?\C:\...`): compara canônico com canônico
+    assert!(env.lib.resolve_files(&id).unwrap().primary.starts_with(second.canonicalize().unwrap()));
     // esquecer a raiz sem apagar arquivos
     assert_eq!(env.lib.remove_root(root, false).unwrap(), 1);
     assert_eq!(env.lib.count(&Query::default()).unwrap(), 0);

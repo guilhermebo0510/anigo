@@ -245,7 +245,7 @@ fn render_to_texture_rejects_incompatible_textures() {
 fn from_device_shares_an_external_device() {
     // Device criado "por fora", como o eframe/egui faria.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
+    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() })) {
         Ok(adapter) => adapter,
         Err(error) => {
             eprintln!("[from_device] PULADO: sem adaptador GPU utilizável ({error})");

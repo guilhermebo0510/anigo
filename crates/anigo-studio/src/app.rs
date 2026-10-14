@@ -21,6 +21,29 @@ use std::path::PathBuf;
 mod animation_ui;
 mod automation;
 mod bridge_host;
+mod bridge_anim;
+mod bridge_app;
+mod bridge_char;
+mod bridge_scene;
+mod bridge_anim2;
+mod bridge_hair;
+mod bridge_input;
+mod bridge_meshdata;
+mod bridge_light;
+mod bridge_model;
+mod bridge_pose;
+mod bridge_render;
+mod bridge_shading;
+mod bridge_shading2;
+mod bridge_weights;
+mod bridge_ui;
+mod multiview;
+pub use multiview::MultiViewState;
+#[cfg(test)]
+pub(crate) fn multiview_for_tests() -> MultiViewState {
+    multiview::MultiView::default().to_state(&crate::viewport::OrbitCamera::default())
+}
+pub(crate) mod props_tabs;
 mod character_ui;
 mod dock_ui;
 mod gizmo;
@@ -61,9 +84,70 @@ pub(crate) struct Gpu {
     pub tex: Option<egui::TextureId>,
     pub cel: Option<CelPreview>,
     pub cel_tex: Option<egui::TextureId>,
+    /// Texturas das vistas 1..=3 do multi-vista (a vista 0 usa `tex`).
+    pub view_tex: [Option<egui::TextureId>; 3],
+    /// Previews cel das vistas 1..=3 (criados na primeira vez que a vista pede Cel) e as suas texturas no egui.
+    pub view_cel: [Option<CelPreview>; 3],
+    pub view_cel_tex: [Option<egui::TextureId>; 3],
     pub cache: Vec<CachedObject>,
     pub adapter_name: String,
     pub backend: String,
+    device: eframe::wgpu::Device,
+    queue: eframe::wgpu::Queue,
+    adapter: eframe::wgpu::AdapterInfo,
+}
+
+impl Gpu {
+    /// Cria o preview cel da vista `slot` se ainda não existe (a vista 0 usa `cel`, criado com a GPU).
+    pub(crate) fn ensure_cel(&mut self, slot: usize) {
+        if slot == 0 || self.view_cel[slot - 1].is_some() {
+            return;
+        }
+        match CelPreview::new(self.device.clone(), self.queue.clone(), &self.adapter) {
+            Ok(c) => self.view_cel[slot - 1] = Some(c),
+            Err(e) => tracing::warn!("preview cel da vista {slot} indisponível: {e}"),
+        }
+    }
+
+    /// Preview cel da vista `slot`.
+    pub(crate) fn cel_slot(&mut self, slot: usize) -> Option<&mut CelPreview> {
+        if slot == 0 {
+            self.cel.as_mut()
+        } else {
+            self.view_cel[slot - 1].as_mut()
+        }
+    }
+
+    pub(crate) fn cel_tex_of(&self, slot: usize) -> Option<egui::TextureId> {
+        if slot == 0 {
+            self.cel_tex
+        } else {
+            self.view_cel_tex[slot - 1]
+        }
+    }
+
+    pub(crate) fn has_cel(&self, slot: usize) -> bool {
+        if slot == 0 {
+            self.cel.is_some()
+        } else {
+            self.view_cel[slot - 1].is_some()
+        }
+    }
+
+    /// Registra (ou re-registra, se o alvo foi recriado) a textura do preview cel da vista no egui.
+    pub(crate) fn refresh_cel_tex(&mut self, slot: usize, recreated: bool, rs: &eframe::egui_wgpu::RenderState) {
+        let (cel, tex) = if slot == 0 { (&self.cel, &mut self.cel_tex) } else { (&self.view_cel[slot - 1], &mut self.view_cel_tex[slot - 1]) };
+        if !(recreated || tex.is_none()) {
+            return;
+        }
+        let mut renderer = rs.renderer.write();
+        if let Some(old) = tex.take() {
+            renderer.free_texture(&old);
+        }
+        if let Some(view) = cel.as_ref().and_then(|c| c.view()) {
+            *tex = Some(renderer.register_native_texture(&rs.device, view, eframe::wgpu::FilterMode::Linear));
+        }
+    }
 }
 
 pub struct StudioApp {
@@ -72,6 +156,8 @@ pub struct StudioApp {
     pub(crate) tool_idx: HashMap<WorkspaceId, usize>,
     pub(crate) modeling: ModelingSession,
     pub(crate) camera: OrbitCamera,
+    /// Multi-vista do viewport da Modelagem (layout, câmeras das vistas não ativas, vista ativa).
+    pub(crate) mview: multiview::MultiView,
     pub(crate) settings: ViewSettings,
     pub(crate) view_shading: ViewShading,
     pub(crate) gpu: Option<Gpu>,
@@ -82,6 +168,9 @@ pub struct StudioApp {
     /// Biblioteca temporária do cenário `biblioteca-*` (mantida viva até o fim).
     pub(crate) lib_scenario_dir: Option<std::path::PathBuf>,
     pub(crate) frame_count: u64,
+    /// Identidade visual (texturas da marca) e tela de abertura.
+    pub(crate) brand: crate::brand::Brand,
+    pub(crate) splash: crate::brand::Splash,
     pub(crate) screenshot_requested: bool,
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) overlay_wire: bool,
@@ -123,6 +212,12 @@ pub struct StudioApp {
     pub(crate) anim_ui: animation_ui::AnimUi,
     /// Layout dockável por workspace (árvores do `egui_tiles`, layouts salvos, presets).
     pub(crate) dock: dock_ui::DockState,
+    /// Aba atual do Propriedades da Modelagem, por modo (`Mode as u8`); estado de apresentação, não persiste.
+    pub(crate) prop_tabs: HashMap<u8, props_tabs::PropTab>,
+    /// Abas que cada painel mostrou no último quadro (a faixa do Cenário depende da seleção).
+    pub(crate) tabs_shown: HashMap<u8, Vec<props_tabs::PropTab>>,
+    /// Entrada sintética enfileirada pela bridge (`INPUT`); drenada em `raw_input_hook`, um passo por quadro.
+    pub(crate) input: bridge_input::InputQueue,
     /// Atalhos em vigor (padrão + delta do usuário); `Arc` para os handlers consultarem sem travar `self`.
     pub(crate) keymap: std::sync::Arc<crate::keymap::Keymap>,
     pub(crate) keymap_path: Option<PathBuf>,
@@ -142,6 +237,7 @@ impl StudioApp {
         let mut camera = OrbitCamera::default();
         let mut modeling = ModelingSession::with_default_cube();
         let mut restored = false;
+        let mut saved_views: HashMap<String, MultiViewState> = HashMap::new();
         let mut core = anigo_session::CoreSession::new();
         let mut char_ui = character_ui::CharacterUi::default();
         let mut scene_ui = scene_ui::SceneUi::default();
@@ -208,6 +304,7 @@ impl StudioApp {
                 if let Some(l) = s.layouts {
                     layouts.merge_over(l);
                 }
+                saved_views = s.multiviews;
                 restored = true;
             }
         }
@@ -360,7 +457,9 @@ impl StudioApp {
             }
         }
 
-        Self {
+        // splash só no uso normal: captura, cenário e bridge (automação) começam direto na interface
+        let cli_automated = cli.screenshot.is_some() || cli.scenario.is_some() || cli.bridge;
+        let mut app = Self {
             cli,
             ws,
             tool_idx: HashMap::new(),
@@ -374,6 +473,8 @@ impl StudioApp {
             lib_ws,
             lib_scenario_dir,
             frame_count: 0,
+            brand: crate::brand::Brand::default(),
+            splash: crate::brand::Splash::new(crate::brand::splash_mode(cli_automated)),
             screenshot_requested: false,
             session_path,
             overlay_wire: false,
@@ -400,17 +501,23 @@ impl StudioApp {
             bridge,
             anim_ui: animation_ui::AnimUi::default(),
             dock: dock_ui::DockState::new(layout_path, layouts, layout_warnings),
+            prop_tabs: HashMap::new(),
+            tabs_shown: HashMap::new(),
+            input: Default::default(),
+            mview: multiview::MultiView::default(),
             keymap: std::sync::Arc::new(keymap),
             keymap_path,
             menu: menu_ui::MenuState { keymap_warnings, ..Default::default() },
-        }
+        };
+        app.restore_multiviews(&saved_views);
+        app
     }
 
     pub(crate) fn lang(&self) -> Lang {
         i18n::lang()
     }
 
-    fn session_state(&self) -> SessionState {
+    pub(crate) fn session_state(&self) -> SessionState {
         SessionState {
             version: SESSION_VERSION,
             workspace: self.ws,
@@ -423,6 +530,7 @@ impl StudioApp {
             scene_prefs: Some(self.scene_ui.prefs()),
             render_prefs: Some(self.render_ui.prefs.clone()),
             layouts: Some(self.dock.snapshot()),
+            multiviews: self.multiview_states(),
         }
     }
 
@@ -500,9 +608,15 @@ impl StudioApp {
                     tex: None,
                     cel,
                     cel_tex: None,
+                    view_tex: [None; 3],
+                    view_cel: [None, None, None],
+                    view_cel_tex: [None; 3],
                     cache: Vec::new(),
-                    adapter_name: info.name,
+                    adapter_name: info.name.clone(),
                     backend: format!("{:?}", info.backend),
+                    device: rs.device.clone(),
+                    queue: rs.queue.clone(),
+                    adapter: info,
                 });
                 true
             }
@@ -536,7 +650,7 @@ impl StudioApp {
         egui::Panel::top("topbar").exact_size(38.0).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
-                ui.label(RichText::new("ANIGO").strong().size(15.0).color(theme::ACCENT));
+                self.top_bar_logo(ui);
                 ui.add_space(14.0);
                 for w in WorkspaceId::ALL {
                     let label = format!("{}  {}", w.icon(), tr(&format!("workspace.{}", w.key())));
@@ -575,6 +689,19 @@ impl StudioApp {
                 });
             });
         });
+    }
+
+    /// Marca + nome no canto da barra superior (o lockup na resolução certa para o DPI).
+    fn top_bar_logo(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let h = 20.0;
+        let v = crate::brand::Variant::of(&ctx);
+        if let Some(tex) = self.brand.lockup(&ctx, v, h * ctx.pixels_per_point()) {
+            let w = h * crate::brand::lockup_aspect(&tex);
+            ui.add(egui::Image::new(&tex).fit_to_exact_size(egui::vec2(w, h)));
+        } else {
+            ui.label(RichText::new("ANIGO").strong().size(15.0).color(theme::ACCENT));
+        }
     }
 
     pub(crate) fn switch_workspace(&mut self, w: WorkspaceId) {
@@ -637,19 +764,7 @@ impl StudioApp {
                 self.bridge_status_label(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
-                    if let Some(g) = &self.gpu {
-                        if let Some(m) = g.cel.as_ref().and_then(|c| c.metrics.as_ref()) {
-                            if self.view_shading == ViewShading::Cel {
-                                ui.label(
-                                    RichText::new(format!("cel: {} draws · {} descartados · {} tris", m.draw_calls, m.culled_draw_calls, m.triangle_count))
-                                        .color(theme::TEXT_DIM)
-                                        .size(11.5),
-                                );
-                                ui.separator();
-                            }
-                        }
-                        ui.label(RichText::new(format!("{} · {}", g.adapter_name, g.backend)).color(theme::TEXT_DIM).size(11.5));
-                    }
+                    // GPU/backend e métricas do cel são diagnóstico: ficam em Ajuda > Sobre, não na barra de status
                     if self.ws == WorkspaceId::Modelagem {
                         let s = self.modeling.stats();
                         ui.separator();
@@ -668,24 +783,29 @@ impl StudioApp {
     }
 
     fn tool_shelf(&mut self, ui: &mut egui::Ui) {
+        // faixa de ferramentas como um cartão, na mesma linguagem do viewport e dos painéis (moldura + cartão arredondado)
         egui::Panel::left("toolshelf")
-            .exact_size(46.0)
+            .exact_size(theme::CARD_GAP + 46.0)
             .resizable(false)
+            .frame(egui::Frame::NONE.fill(theme::BG_FRAME).inner_margin(egui::Margin { left: theme::CARD_GAP as i8, right: 0, top: theme::CARD_GAP as i8, bottom: theme::CARD_GAP as i8 }))
             .show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.vertical_centered(|ui| {
-                    let tools = self.shelf_tools();
-                    let cur = *self.tool_idx.get(&self.ws).unwrap_or(&0);
-                    for (i, t) in tools.iter().enumerate() {
-                        let selected = cur == i;
-                        let btn = egui::Button::new(RichText::new(t.icon).size(20.0))
-                            .min_size(EVec2::new(34.0, 34.0))
-                            .selected(selected);
-                        if ui.add(btn).on_hover_text(tr(t.label_key)).clicked() {
-                            self.tool_idx.insert(self.ws, i);
-                            self.on_tool_selected(t.id);
+                let card = egui::Frame::NONE.fill(theme::BG_PANEL).corner_radius(theme::CARD_RADIUS).inner_margin(egui::Margin::symmetric(4, 6));
+                card.show(ui, |ui| {
+                    ui.set_width(38.0);
+                    ui.vertical_centered(|ui| {
+                        let tools = self.shelf_tools();
+                        let cur = *self.tool_idx.get(&self.ws).unwrap_or(&0);
+                        for (i, t) in tools.iter().enumerate() {
+                            let selected = cur == i;
+                            let btn = egui::Button::new(RichText::new(t.icon).size(22.0))
+                                .min_size(EVec2::new(38.0, 38.0))
+                                .selected(selected);
+                            if ui.add(btn).on_hover_text(tr(t.label_key)).clicked() {
+                                self.tool_idx.insert(self.ws, i);
+                                self.on_tool_selected(t.id);
+                            }
                         }
-                    }
+                    });
                 });
             });
     }
@@ -698,7 +818,7 @@ impl StudioApp {
         self.ws.tools().to_vec()
     }
 
-    fn on_tool_selected(&mut self, id: &str) {
+    pub(crate) fn on_tool_selected(&mut self, id: &str) {
         if self.ws == WorkspaceId::Cenario {
             self.on_scene_tool_selected(id);
         }
@@ -873,6 +993,10 @@ impl StudioApp {
 }
 
 impl eframe::App for StudioApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.input.next_events(raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.frame_count += 1;
         self.ensure_gpu(frame);
@@ -889,6 +1013,7 @@ impl eframe::App for StudioApp {
         self.workspace_ui(ui, frame);
         let ctx = ui.ctx().clone();
         self.handle_screenshot(&ctx);
+        self.splash.show(&ctx, &mut self.brand, tr("splash.loading"), &format!("v{}", env!("CARGO_PKG_VERSION")));
         if self.shader_watcher.is_some() {
             // hot reload precisa de polling mesmo sem interação
             ctx.request_repaint_after(std::time::Duration::from_millis(250));

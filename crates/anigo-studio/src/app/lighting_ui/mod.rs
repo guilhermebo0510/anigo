@@ -63,6 +63,8 @@ pub(crate) struct Gesture {
 pub(crate) struct LightingUi {
     // ---- câmera e visão
     pub camera: OrbitCamera,
+    /// Multi-vista do viewport; a câmera ativa é `camera`.
+    pub mview: crate::app::multiview::MultiView,
     pub framed: bool,
     pub show_gizmo: bool,
     /// `light_enter` já rodou (entrada por `--workspace iluminacao` não passa por `switch_workspace`).
@@ -97,6 +99,7 @@ impl Default for LightingUi {
     fn default() -> Self {
         Self {
             camera: OrbitCamera { target: Vec3::new(0.0, 0.95, 0.0), yaw: 0.35, pitch: 0.14, distance: 5.6, far: 600.0, ..OrbitCamera::default() },
+            mview: Default::default(),
             framed: false,
             show_gizmo: true,
             entered: false,

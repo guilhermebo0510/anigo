@@ -1,0 +1,10 @@
+{
+  "id": "titulo_cena01",
+  "source": "Título / episódio / minuto (só para você lembrar de onde veio)",
+  "shot": "close | medio | geral",
+  "style": "tv-moderna | filme | anos-90 | ...",
+  "light": "dia, sol lateral esquerdo, sombra azulada",
+  "line": "constante | variavel (pincel)",
+  "mask": "titulo_cena01.mask.png",
+  "notes": "o que chama atenção neste quadro (sombra dura, realce em estrela no cabelo, rim azul...)"
+}

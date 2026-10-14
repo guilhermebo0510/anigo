@@ -1,12 +1,12 @@
 //! Painel direito (Inspector) do workspace Modelagem + tabelas de ferramentas por modo.
 
+use super::props_tabs::{modeling_tabs, tab_strip, PropTab};
 use super::StudioApp;
 use crate::i18n::tr;
 use crate::icons;
 use crate::modeling::{Mode, PrimitiveKind};
 use crate::theme;
 use crate::workspace::{ToolDef, MODELAGEM_OBJECT};
-use anigo_modeling::SelectMode;
 use egui::RichText;
 use glam::{EulerRot, Quat};
 
@@ -69,164 +69,178 @@ pub fn modeling_tools(mode: Mode) -> &'static [ToolDef] {
     }
 }
 
+/// Linha "rótulo + X Y Z": os três campos dividem a largura; com o painel estreito o rótulo vai para cima.
+fn xyz_row(ui: &mut egui::Ui, label: &str, vals: [&mut f32; 3], speed: f64, suffix: &str, decimals: usize, tag: &'static str, responses: &mut Vec<(&'static str, egui::Response)>) -> bool {
+    let mut changed = false;
+    super::props_tabs::field_row(ui, label, 64.0, |ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let w = ((ui.available_width() - 2.0 * gap) / 3.0).clamp(36.0, 120.0);
+        ui.horizontal(|ui| {
+            for v in vals {
+                let r = ui.add_sized([w, 20.0], egui::DragValue::new(v).speed(speed).suffix(suffix).fixed_decimals(decimals));
+                changed |= r.changed();
+                responses.push((tag, r));
+            }
+        });
+    });
+    changed
+}
+
 fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).strong())
+    crate::app::props_tabs::header(ui, RichText::new(title).strong())
         .default_open(true)
         .show(ui, add);
 }
 
 impl StudioApp {
-    /// Painel Inspetor da Modelagem (corpo): cena/edição/escultura/cabelo conforme o modo + histórico.
+    /// Painel Propriedades da Modelagem (corpo): faixa de abas à esquerda + o conteúdo da aba atual do modo.
     pub(crate) fn modeling_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.label(RichText::new(tr("panel.inspector")).strong().size(14.0));
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            match self.modeling.mode {
-                Mode::Object => self.inspector_object(ui),
-                Mode::Edit => self.inspector_edit(ui),
-                Mode::Sculpt => self.inspector_sculpt(ui),
-                Mode::Hair => self.inspector_hair(ui),
+        let mode = self.modeling.mode;
+        let current = self.modeling_prop_tab(mode);
+        let (tab, mut content) = tab_strip(ui, modeling_tabs(mode), current);
+        if tab != current {
+            self.set_modeling_prop_tab(mode, tab);
+        }
+        let ui = &mut content;
+        ui.add_space(4.0);
+        super::props_tabs::props_scroll(ui, "props", |ui| {
+            match mode {
+                Mode::Object => self.inspector_object(ui, tab),
+                Mode::Edit => self.inspector_edit(ui, tab),
+                Mode::Sculpt => self.inspector_sculpt_panel(ui, tab),
+                Mode::Hair => self.inspector_hair(ui, tab),
             }
-            section(ui, tr("panel.history"), |ui| {
-                let labels = self.modeling.history_labels();
-                if labels.is_empty() {
-                    ui.label(RichText::new("—").color(theme::TEXT_DIM));
-                }
-                for l in labels.iter().rev().take(8) {
-                    ui.label(RichText::new(*l).size(12.0).color(theme::TEXT_DIM));
-                }
-            });
+            if tab == PropTab::History {
+                self.inspector_history(ui);
+            }
         });
     }
 
-    fn inspector_object(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Cena", |ui| {
-            let mut pick = None;
-            for (i, o) in self.modeling.doc.objects.iter().enumerate() {
-                let active = self.modeling.doc.active == Some(i);
-                if ui
-                    .selectable_label(active, format!("{}  {}", icons::CUBE, o.name))
-                    .clicked()
-                {
-                    pick = Some(i);
-                }
+    fn inspector_history(&mut self, ui: &mut egui::Ui) {
+        section(ui, tr("panel.history"), |ui| {
+            let labels = self.modeling.history_labels();
+            if labels.is_empty() {
+                ui.label(RichText::new("—").color(theme::TEXT_DIM));
             }
-            if let Some(i) = pick {
-                self.modeling.set_active(i);
-            }
-            if self.modeling.doc.objects.is_empty() {
-                ui.label(RichText::new("Cena vazia — adicione uma primitiva").color(theme::TEXT_DIM));
+            for l in labels.iter().rev().take(24) {
+                ui.label(RichText::new(*l).size(12.0).color(theme::TEXT_DIM));
             }
         });
-        section(ui, tr("action.add"), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for kind in PrimitiveKind::ALL {
-                    if ui.button(kind.label()).clicked() {
-                        let at = glam::Vec3::new(self.camera.target.x, 0.0, self.camera.target.z);
-                        let at = glam::Vec3::new(at.x, 1.0, at.z);
-                        self.modeling.add_primitive(kind, at);
+    }
+
+    fn inspector_object(&mut self, ui: &mut egui::Ui, tab: PropTab) {
+        if tab == PropTab::Object {
+            section(ui, "Cena", |ui| {
+                let mut pick = None;
+                for (i, o) in self.modeling.doc.objects.iter().enumerate() {
+                    let active = self.modeling.doc.active == Some(i);
+                    if ui
+                        .selectable_label(active, format!("{}  {}", icons::CUBE, o.name))
+                        .clicked()
+                    {
+                        pick = Some(i);
                     }
+                }
+                if let Some(i) = pick {
+                    self.modeling.set_active(i);
+                }
+                if self.modeling.doc.objects.is_empty() {
+                    ui.label(RichText::new("Cena vazia — adicione uma primitiva").color(theme::TEXT_DIM));
                 }
             });
-        });
-        let mut want_delete = false;
-        let mut want_duplicate = false;
-        if self.modeling.active_object().is_some() {
-            section(ui, "Objeto ativo", |ui| {
-                // Nome
-                let mut name = self.modeling.active_object().map(|o| o.name.clone()).unwrap_or_default();
-                if ui.text_edit_singleline(&mut name).changed() {
-                    if let Some(o) = self.modeling.active_object_mut() {
-                        o.name = name;
-                    }
-                }
-                let mut checkpointed = false;
-                let mut start = |s: &mut crate::modeling::ModelingSession, resp: &egui::Response, label: &str| {
-                    if (resp.drag_started() || resp.gained_focus()) && !checkpointed {
-                        s.checkpoint(label);
-                        checkpointed = true;
-                    }
-                };
-                if let Some(obj) = self.modeling.active_object() {
-                    let mut t = obj.transform.translation;
-                    let (ex, ey, ez) = obj.transform.rotation.to_euler(EulerRot::XYZ);
-                    let clean = |v: f32| if v.abs() < 1e-4 { 0.0 } else { v };
-                    let mut euler = glam::Vec3::new(clean(ex.to_degrees()), clean(ey.to_degrees()), clean(ez.to_degrees()));
-                    let mut s = obj.transform.scale;
-                    let (mut ct, mut cr, mut cs) = (false, false, false);
-                    let mut responses: Vec<(&str, egui::Response)> = Vec::new();
-                    egui::Grid::new("xform").num_columns(4).spacing([4.0, 4.0]).show(ui, |ui| {
-                        ui.label("Posição");
-                        for v in [&mut t.x, &mut t.y, &mut t.z] {
-                            let r = ui.add(egui::DragValue::new(v).speed(0.02).fixed_decimals(3));
-                            ct |= r.changed();
-                            responses.push(("Mover", r));
+            section(ui, tr("action.add"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for kind in PrimitiveKind::ALL {
+                        if ui.button(kind.label()).clicked() {
+                            let at = glam::Vec3::new(self.camera.target.x, 0.0, self.camera.target.z);
+                            let at = glam::Vec3::new(at.x, 1.0, at.z);
+                            self.modeling.add_primitive(kind, at);
                         }
-                        ui.end_row();
-                        ui.label("Rotação");
-                        for v in [&mut euler.x, &mut euler.y, &mut euler.z] {
-                            let r = ui.add(egui::DragValue::new(v).speed(0.5).suffix("°").fixed_decimals(1));
-                            cr |= r.changed();
-                            responses.push(("Rotacionar", r));
-                        }
-                        ui.end_row();
-                        ui.label("Escala");
-                        for v in [&mut s.x, &mut s.y, &mut s.z] {
-                            let r = ui.add(egui::DragValue::new(v).speed(0.01).fixed_decimals(3));
-                            cs |= r.changed();
-                            responses.push(("Escalar", r));
-                        }
-                        ui.end_row();
-                    });
-                    for (label, r) in &responses {
-                        start(&mut self.modeling, r, label);
-                    }
-                    if ct || cr || cs {
-                        if let Some(o) = self.modeling.active_object_mut() {
-                            if ct {
-                                o.transform.translation = t;
-                            }
-                            if cr {
-                                o.transform.rotation = Quat::from_euler(
-                                    EulerRot::XYZ,
-                                    euler.x.to_radians(),
-                                    euler.y.to_radians(),
-                                    euler.z.to_radians(),
-                                );
-                            }
-                            if cs {
-                                o.transform.scale = s.max(glam::Vec3::splat(1e-3));
-                            }
-                        }
-                        self.modeling.revision += 1;
-                    }
-                }
-                ui.horizontal(|ui| {
-                    if ui.button(format!("{}  Duplicar", icons::SQUARES_FOUR)).clicked() {
-                        want_duplicate = true;
-                    }
-                    if ui.button(format!("{}  {}", icons::TRASH, tr("action.delete"))).clicked() {
-                        want_delete = true;
                     }
                 });
             });
+            let mut want_delete = false;
+            let mut want_duplicate = false;
+            if self.modeling.active_object().is_some() {
+                section(ui, "Objeto ativo", |ui| {
+                    // Nome
+                    let mut name = self.modeling.active_object().map(|o| o.name.clone()).unwrap_or_default();
+                    if ui.text_edit_singleline(&mut name).changed() {
+                        if let Some(o) = self.modeling.active_object_mut() {
+                            o.name = name;
+                        }
+                    }
+                    let mut checkpointed = false;
+                    let mut start = |s: &mut crate::modeling::ModelingSession, resp: &egui::Response, label: &str| {
+                        if (resp.drag_started() || resp.gained_focus()) && !checkpointed {
+                            s.checkpoint(label);
+                            checkpointed = true;
+                        }
+                    };
+                    if let Some(obj) = self.modeling.active_object() {
+                        let mut t = obj.transform.translation;
+                        let (ex, ey, ez) = obj.transform.rotation.to_euler(EulerRot::XYZ);
+                        let clean = |v: f32| if v.abs() < 1e-4 { 0.0 } else { v };
+                        let mut euler = glam::Vec3::new(clean(ex.to_degrees()), clean(ey.to_degrees()), clean(ez.to_degrees()));
+                        let mut s = obj.transform.scale;
+                        let (mut ct, mut cr, mut cs) = (false, false, false);
+                        let mut responses: Vec<(&'static str, egui::Response)> = Vec::new();
+                        ct |= xyz_row(ui, "Posição", [&mut t.x, &mut t.y, &mut t.z], 0.02, "", 3, "Mover", &mut responses);
+                        cr |= xyz_row(ui, "Rotação", [&mut euler.x, &mut euler.y, &mut euler.z], 0.5, "°", 1, "Rotacionar", &mut responses);
+                        cs |= xyz_row(ui, "Escala", [&mut s.x, &mut s.y, &mut s.z], 0.01, "", 3, "Escalar", &mut responses);
+                        for (label, r) in &responses {
+                            start(&mut self.modeling, r, label);
+                        }
+                        if ct || cr || cs {
+                            if let Some(o) = self.modeling.active_object_mut() {
+                                if ct {
+                                    o.transform.translation = t;
+                                }
+                                if cr {
+                                    o.transform.rotation = Quat::from_euler(
+                                        EulerRot::XYZ,
+                                        euler.x.to_radians(),
+                                        euler.y.to_radians(),
+                                        euler.z.to_radians(),
+                                    );
+                                }
+                                if cs {
+                                    o.transform.scale = s.max(glam::Vec3::splat(1e-3));
+                                }
+                            }
+                            self.modeling.revision += 1;
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(format!("{}  Duplicar", icons::SQUARES_FOUR)).clicked() {
+                            want_duplicate = true;
+                        }
+                        if ui.button(format!("{}  {}", icons::TRASH, tr("action.delete"))).clicked() {
+                            want_delete = true;
+                        }
+                    });
+                });
+            }
+            if want_duplicate {
+                self.modeling.duplicate_active_object();
+            }
+            if want_delete {
+                self.modeling.delete_active_object();
+            }
         }
-        if want_duplicate {
-            self.modeling.duplicate_active_object();
+        if tab == PropTab::Modifiers {
+            self.inspector_modifiers(ui);
         }
-        if want_delete {
-            self.modeling.delete_active_object();
-        }
-        self.inspector_modifiers(ui);
-        if self.modeling.active_object().is_some() {
+        if tab == PropTab::Object && self.modeling.active_object().is_some() {
             section(ui, "Biblioteca", |ui| {
                 if ui.button(format!("{}  Exportar para a Biblioteca (GLB)", icons::EXPORT)).clicked() {
                     self.export_active_to_library();
                 }
             });
         }
-        self.inspector_snap(ui);
+        if tab == PropTab::View {
+            self.inspector_snap(ui);
+        }
     }
 
     fn inspector_snap(&mut self, ui: &mut egui::Ui) {
@@ -235,85 +249,80 @@ impl StudioApp {
         });
     }
 
-    fn inspector_edit(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Seleção", |ui| {
-            ui.horizontal(|ui| {
-                for (m, key, icon) in [
-                    (SelectMode::Vertex, "select.vertex", icons::DOT_OUTLINE),
-                    (SelectMode::Edge, "select.edge", icons::LINE_SEGMENT),
-                    (SelectMode::Face, "select.face", icons::POLYGON),
-                ] {
-                    if ui
-                        .selectable_label(self.modeling.select_mode == m, format!("{icon} {}", tr(key)))
-                        .clicked()
-                    {
-                        self.modeling.set_select_mode(m);
+    fn inspector_edit(&mut self, ui: &mut egui::Ui, tab: PropTab) {
+        if tab == PropTab::Tool {
+            section(ui, "Seleção", |ui| {
+                // O modo (vértice/aresta/face) já está na barra do viewport; aqui ficam só as ações, como ícones com dica.
+                ui.horizontal_wrapped(|ui| {
+                    let btn = |ui: &mut egui::Ui, icon: &str, tip: &str| ui.add(egui::Button::new(egui::RichText::new(icon).size(16.0)).min_size(egui::vec2(32.0, 28.0))).on_hover_text(tip).clicked();
+                    if btn(ui, icons::SELECTION_ALL, "Selecionar tudo (A)") {
+                        self.modeling.select_all();
                     }
-                }
+                    if btn(ui, icons::SELECTION_SLASH, "Limpar a seleção (Alt+A)") {
+                        self.modeling.select_none();
+                    }
+                    if btn(ui, icons::SELECTION_INVERSE, "Inverter a seleção (Ctrl+I)") {
+                        self.modeling.select_invert();
+                    }
+                    ui.separator();
+                    if btn(ui, icons::ARROWS_OUT, "Selecionar mais (cresce a seleção)") {
+                        self.modeling.select_more();
+                    }
+                    if btn(ui, icons::ARROWS_IN, "Selecionar menos (encolhe a seleção)") {
+                        self.modeling.select_less();
+                    }
+                    if btn(ui, icons::LINK, "Selecionar ligados (a ilha inteira)") {
+                        self.modeling.select_linked();
+                    }
+                });
             });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Tudo (A)").clicked() {
-                    self.modeling.select_all();
-                }
-                if ui.button("Nada").clicked() {
-                    self.modeling.select_none();
-                }
-                if ui.button("Inverter").clicked() {
-                    self.modeling.select_invert();
-                }
-                if ui.button("Mais").clicked() {
-                    self.modeling.select_more();
-                }
-                if ui.button("Menos").clicked() {
-                    self.modeling.select_less();
-                }
-                if ui.button("Ligados").clicked() {
-                    self.modeling.select_linked();
-                }
+        }
+        if tab == PropTab::Tool {
+            section(ui, "Edição proporcional (O)", |ui| {
+                ui.checkbox(&mut self.modeling.proportional.enabled, "Ativar");
+                ui.add_enabled(
+                    self.modeling.proportional.enabled,
+                    crate::app::props_tabs::lab("Raio", egui::Slider::new(&mut self.modeling.proportional.radius, 0.05..=10.0)
+                        .logarithmic(true)),
+                );
+                use anigo_modeling::ops::transform::ProportionalFalloff as F;
+                let label = |f: F| match f {
+                    F::Smooth => "Suave",
+                    F::Sphere => "Esfera",
+                    F::Root => "Raiz",
+                    F::InverseSquare => "Inverso quadrado",
+                    F::Sharp => "Agudo",
+                    F::Linear => "Linear",
+                    F::Constant => "Constante",
+                    F::Random => "Aleatório",
+                };
+                ui.add_enabled_ui(self.modeling.proportional.enabled, |ui| {
+                    crate::app::props_tabs::combo(ui, "pfalloff")
+                        .selected_text(label(self.modeling.proportional.falloff))
+                        .show_ui(ui, |ui| {
+                            for f in [F::Smooth, F::Sphere, F::Root, F::InverseSquare, F::Sharp, F::Linear, F::Constant, F::Random] {
+                                ui.selectable_value(&mut self.modeling.proportional.falloff, f, label(f));
+                            }
+                        });
+                    ui.checkbox(&mut self.modeling.proportional.connected_only, "Somente conectados");
+                });
             });
-        });
-        section(ui, "Edição proporcional (O)", |ui| {
-            ui.checkbox(&mut self.modeling.proportional.enabled, "Ativar");
-            ui.add_enabled(
-                self.modeling.proportional.enabled,
-                egui::Slider::new(&mut self.modeling.proportional.radius, 0.05..=10.0)
-                    .logarithmic(true)
-                    .text("Raio"),
-            );
-            use anigo_modeling::ops::transform::ProportionalFalloff as F;
-            let label = |f: F| match f {
-                F::Smooth => "Suave",
-                F::Sphere => "Esfera",
-                F::Root => "Raiz",
-                F::InverseSquare => "Inverso quadrado",
-                F::Sharp => "Agudo",
-                F::Linear => "Linear",
-                F::Constant => "Constante",
-                F::Random => "Aleatório",
-            };
-            ui.add_enabled_ui(self.modeling.proportional.enabled, |ui| {
-                egui::ComboBox::from_id_salt("pfalloff")
-                    .selected_text(label(self.modeling.proportional.falloff))
-                    .show_ui(ui, |ui| {
-                        for f in [F::Smooth, F::Sphere, F::Root, F::InverseSquare, F::Sharp, F::Linear, F::Constant, F::Random] {
-                            ui.selectable_value(&mut self.modeling.proportional.falloff, f, label(f));
-                        }
-                    });
-                ui.checkbox(&mut self.modeling.proportional.connected_only, "Somente conectados");
-            });
-        });
-        self.inspector_edit_operators(ui);
-        self.inspector_modifiers(ui);
-        self.inspector_normals(ui);
-        self.inspector_uv(ui);
-        self.inspector_snap(ui);
-        section(ui, "Overlays", |ui| {
-            ui.checkbox(&mut self.settings.show_grid, "Grid");
-            ui.checkbox(&mut self.modeling.xray, "Raio-X (Alt+Z)");
-        });
-    }
-
-    fn inspector_sculpt(&mut self, ui: &mut egui::Ui) {
-        self.inspector_sculpt_panel(ui);
+        }
+        match tab {
+            PropTab::Tool => self.inspector_edit_operators(ui),
+            PropTab::Modifiers => self.inspector_modifiers(ui),
+            PropTab::Data => {
+                self.inspector_normals(ui);
+                self.inspector_uv(ui);
+            }
+            PropTab::View => {
+                self.inspector_snap(ui);
+                section(ui, "Overlays", |ui| {
+                    ui.checkbox(&mut self.settings.show_grid, "Grid");
+                    ui.checkbox(&mut self.modeling.xray, "Raio-X (Alt+Z)");
+                });
+            }
+            _ => {}
+        }
     }
 }

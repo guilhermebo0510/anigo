@@ -15,7 +15,7 @@ use crate::render_contract as contract;
 use crate::render_graph::{ExecutionPlan, GraphOverrides, RenderGraph};
 use crate::render_targets::{RenderTarget, RenderTargetCache, TargetViews};
 use crate::uniforms::{
-    BonePaletteUniform, CameraUniform, LightUniform, MaterialUniform, OutlineUniform, ShadowUniform,
+    BonePaletteUniform, CameraUniform, ExtraLightsUniform, LightUniform, MaterialUniform, OutlineUniform, ShadowUniform,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +101,8 @@ struct ShadowTarget {
 /// Sombra de UM quadro: o uniform (neutro quando desligada), a view do mapa e a
 /// matriz da luz (só quando o passe de profundidade da luz vai rodar).
 struct ShadowFrame {
+    /// Luzes de cena (binding 21 do cel): um buffer por quadro, neutro (0 luzes) quando a cena não tem nenhuma.
+    extra_lights: wgpu::Buffer,
     uniform: wgpu::Buffer,
     map_view: Option<wgpu::TextureView>,
     light_view_proj: Option<[f32; 16]>,
@@ -589,6 +591,17 @@ impl HeadlessRenderer {
                     binding: 20,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+                // Luzes de cena (ponto, holofote, painel, direcional extra): aditivo, 0 luzes = nada executa.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 21,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
         ];
@@ -1686,6 +1699,10 @@ impl HeadlessRenderer {
                     binding: 20,
                     resource: wgpu::BindingResource::Sampler(&self.shadow_cmp_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 21,
+                    resource: shadow.extra_lights.as_entire_binding(),
+                },
             ],
         });
         let cel_bind_group = make_cel_bind_group(
@@ -2366,7 +2383,13 @@ impl HeadlessRenderer {
         let shadow_uniform_floats = anigo_core::shadow::uniform_floats(&shadow_settings, shadow_fit.as_ref());
         let shadow_uniform = ShadowUniform::from_floats(&shadow_uniform_floats);
         let shadow_map_view = shadow_fit.as_ref().map(|_| self.ensure_shadow_target(shadow_settings.resolution));
+        let extra_lights_uniform = ExtraLightsUniform::from_lights(&scene.extra_lights);
         let shadow_frame = ShadowFrame {
+            extra_lights: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Extra Lights Uniform Buffer"),
+                contents: cast_slice(&[extra_lights_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
             uniform: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Shadow Uniform Buffer"),
                 contents: cast_slice(&[shadow_uniform]),

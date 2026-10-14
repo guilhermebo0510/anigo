@@ -31,6 +31,7 @@ use anigo_core::ids::AnimationClipId;
 use anigo_core::project::AnimationClip;
 use std::collections::BTreeSet;
 
+pub(crate) use panels::ExportKind;
 pub(crate) use script::is_animation_scenario;
 #[allow(unused_imports)]
 pub use script::ANIMATION_SCENARIOS;
@@ -216,6 +217,8 @@ pub(crate) struct AnimUi {
     // ---- arquivo
     pub io_path: String,
     pub io_status: String,
+    /// Pasta de exportação/bake trocada só durante uma chamada da bridge.
+    pub export_dir: Option<std::path::PathBuf>,
     // ---- física
     pub phys: PhysUi,
     // ---- sequência de render
@@ -276,6 +279,7 @@ impl Default for AnimUi {
             cards_loaded: false,
             io_path: String::new(),
             io_status: String::new(),
+            export_dir: None,
             phys: PhysUi::default(),
             seq_start: 0,
             seq_end: 0,

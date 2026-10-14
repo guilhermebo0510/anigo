@@ -89,6 +89,8 @@ pub(crate) enum HandSide {
 pub(crate) struct PosingUi {
     // ---- câmera e visão
     pub camera: OrbitCamera,
+    /// Multi-vista (também a do workspace Animação, que usa este viewport); a câmera ativa é `camera`.
+    pub mview: crate::app::multiview::MultiView,
     pub framed: bool,
     pub view_size: Vec2,
     pub show_mesh: bool,
@@ -142,6 +144,7 @@ impl Default for PosingUi {
     fn default() -> Self {
         Self {
             camera: OrbitCamera { target: Vec3::new(0.0, 0.9, 0.0), yaw: 0.5, pitch: 0.1, distance: 3.6, ..OrbitCamera::default() },
+            mview: Default::default(),
             framed: false,
             view_size: Vec2::new(900.0, 700.0),
             show_mesh: true,
@@ -353,6 +356,15 @@ impl StudioApp {
         if self.hk(ctx, "edit.undo") {
             self.undo_redo(true);
             return;
+        }
+        if self.hk(ctx, "posing.view_quad") {
+            let pu = &mut self.pose_ui;
+            let to = if pu.mview.layout == crate::app::multiview::ViewLayout::Quad { crate::app::multiview::ViewLayout::Single } else { crate::app::multiview::ViewLayout::Quad };
+            pu.mview.set_layout(&mut pu.camera, to);
+        }
+        if self.hk(ctx, "posing.view_maximize") {
+            let pu = &mut self.pose_ui;
+            pu.mview.toggle_maximize(&mut pu.camera);
         }
         // Ctrl+C / Ctrl+V chegam como eventos de área de transferência no egui; Shift junto = colar espelhado
         let (copy, paste, shift) = ctx.input(|i| {

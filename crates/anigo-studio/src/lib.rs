@@ -11,6 +11,7 @@
 
 pub mod anim;
 pub mod app;
+pub mod brand;
 pub mod celview;
 pub mod character;
 pub mod cli;
@@ -26,6 +27,7 @@ pub mod i18n_posing;
 pub mod i18n_scene;
 pub mod i18n_shading;
 pub mod icons;
+pub mod icons_anigo;
 pub mod keymap;
 pub mod layout;
 pub mod library;

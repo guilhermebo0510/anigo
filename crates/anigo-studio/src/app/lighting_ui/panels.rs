@@ -2,6 +2,7 @@
 //! explicação) e a cena de prova. Cada controle é ligado a um dado real do projeto: edições contínuas viram
 //! `preview` + UM comando ao soltar (`light_edit`), botões viram um comando (`light_apply`).
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::{LightPatch, Section, StudioApp};
 use crate::i18n::tr;
 use crate::icons;
@@ -14,20 +15,17 @@ use glam::Vec2;
 use std::ops::RangeInclusive;
 
 fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        ui.add_sized([112.0, 20.0], egui::Label::new(RichText::new(label).size(12.5).color(theme::TEXT_DIM)));
-        add(ui)
-    })
-    .inner
+    // lado a lado quando cabe; com o painel estreito o rótulo vai para cima (nada passa da borda)
+    super::super::props_tabs::field_row(ui, label, 112.0, add)
 }
 
 fn slider(ui: &mut egui::Ui, v: &mut f32, range: RangeInclusive<f32>, suffix: &str, decimals: usize) -> bool {
-    ui.spacing_mut().slider_width = (ui.available_width() - 104.0).max(60.0);
+    ui.spacing_mut().slider_width = (ui.available_width() - 92.0).max(48.0);
     ui.add(egui::Slider::new(v, range).suffix(suffix).max_decimals(decimals).clamping(egui::SliderClamping::Always)).changed()
 }
 
 fn section(ui: &mut egui::Ui, icon: &str, title_key: &str, default_open: bool, focus: bool, body: impl FnOnce(&mut egui::Ui)) {
-    let mut header = egui::CollapsingHeader::new(RichText::new(format!("{icon}  {}", tr(title_key))).strong()).default_open(default_open);
+    let mut header = crate::app::props_tabs::header(ui, RichText::new(format!("{icon}  {}", tr(title_key))).strong()).default_open(default_open);
     if focus {
         header = header.open(Some(true));
     }
@@ -60,18 +58,34 @@ fn rgb8(c: [f32; 3]) -> Color32 {
 
 impl StudioApp {
     pub(crate) fn light_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.label(RichText::new(format!("{}  {}", icons::SUN, tr("light.title"))).strong().size(14.0));
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let focus = self.light_ui.focus.take();
-            section(ui, icons::LIGHTBULB, "light.section.rigs", true, focus == Some(Section::Rigs), |ui| self.light_rigs_body(ui));
-            section(ui, icons::SUN, "light.section.sun", true, focus == Some(Section::Sun), |ui| self.light_sun_body(ui));
-            section(ui, icons::CIRCLE_HALF, "light.section.shadows", true, focus == Some(Section::Shadows), |ui| self.light_shadows_body(ui));
-            section(ui, icons::CLOUD_SUN, "light.section.ambient", true, focus == Some(Section::Ambient), |ui| self.light_ambient_body(ui));
-            section(ui, icons::SPARKLE, "light.section.rim", false, false, |ui| self.light_rim_body(ui));
-            section(ui, icons::FLASHLIGHT, "light.section.extra", false, focus == Some(Section::Extra), |ui| Self::light_extra_body(ui));
-            section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
+        // clicar numa parte do gizmo/overlay pede uma seção: abre a aba onde ela mora
+        let focus = self.light_ui.focus.take();
+        if let Some(f) = focus {
+            let want = match f {
+                Section::Rigs => PropTab::Rigs,
+                Section::Sun | Section::Ambient => PropTab::Sun,
+                Section::Shadows => PropTab::Shadows,
+                Section::Extra => PropTab::Advanced,
+            };
+            self.set_prop_tab(TabSet::Iluminacao, want);
+        }
+        let (tab, mut content) = self.tabbed(ui, TabSet::Iluminacao);
+        let ui = &mut content;
+        ui.add_space(4.0);
+        crate::app::props_tabs::props_scroll(ui, "props", |ui| match tab {
+            PropTab::Rigs => section(ui, icons::LIGHTBULB, "light.section.rigs", true, focus == Some(Section::Rigs), |ui| self.light_rigs_body(ui)),
+            PropTab::Sun => {
+                section(ui, icons::SUN, "light.section.sun", true, focus == Some(Section::Sun), |ui| self.light_sun_body(ui));
+                section(ui, icons::CLOUD_SUN, "light.section.ambient", true, focus == Some(Section::Ambient), |ui| self.light_ambient_body(ui));
+            }
+            PropTab::Shadows => {
+                section(ui, icons::CIRCLE_HALF, "light.section.shadows", true, focus == Some(Section::Shadows), |ui| self.light_shadows_body(ui));
+                section(ui, icons::SPARKLE, "light.section.rim", true, false, |ui| self.light_rim_body(ui));
+            }
+            _ => {
+                section(ui, icons::FLASHLIGHT, "light.section.extra", true, focus == Some(Section::Extra), |ui| self.light_extra_body(ui));
+                section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
+            }
         });
     }
 
@@ -82,12 +96,14 @@ impl StudioApp {
         let ppp = ui.ctx().pixels_per_point();
         let mut centers: Vec<(&'static str, Vec2)> = Vec::new();
         let mut clicked: Option<&'static str> = None;
-        let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-        for pair in RIGS.chunks(2) {
+        // duas colunas quando cabe; uma só com o painel estreito (o nome do rig não é cortado)
+        let cols = if ui.available_width() < 250.0 { 1 } else { 2 };
+        let w = (ui.available_width() - ui.spacing().item_spacing.x * (cols as f32 - 1.0)) / cols as f32;
+        for pair in RIGS.chunks(cols) {
             ui.horizontal(|ui| {
                 for rig in pair {
                     let selected = self.light_ui.last_rig == Some(rig.id);
-                    let btn = egui::Button::new(format!("{}  {}", rig.icon, tr(rig.label_key))).min_size(egui::vec2(w, 28.0)).selected(selected);
+                    let btn = egui::Button::new(format!("{}  {}", rig.icon, tr(rig.label_key))).truncate().min_size(egui::vec2(w, 28.0)).selected(selected);
                     let r = ui.add(btn).on_hover_text(tr(rig.tip_key));
                     centers.push((rig.id, Vec2::new(r.rect.center().x * ppp, r.rect.center().y * ppp)));
                     if r.clicked() {
@@ -181,7 +197,7 @@ impl StudioApp {
                 self.light_edit_material(MaterialPatch { shadow_threshold: Some(threshold), ..Default::default() });
             }
             if row(ui, tr("light.penumbra"), |ui| {
-                ui.spacing_mut().slider_width = (ui.available_width() - 104.0).max(60.0);
+                ui.spacing_mut().slider_width = (ui.available_width() - 92.0).max(48.0);
                 ui.add(egui::Slider::new(&mut smooth, 0.005..=0.4).logarithmic(true).max_decimals(3).clamping(egui::SliderClamping::Always)).changed()
             }) {
                 self.light_edit_material(MaterialPatch { shadow_smoothness: Some(smooth), ..Default::default() });
@@ -216,7 +232,7 @@ impl StudioApp {
                 changed |= row(ui, tr("light.cast_bias"), |ui| slider(ui, &mut sh.bias, 0.0..=0.25, " m", 3));
                 changed |= row(ui, tr("light.cast_normal_bias"), |ui| slider(ui, &mut sh.normal_bias, 0.0..=6.0, " tx", 1));
                 row(ui, tr("light.cast_res"), |ui| {
-                    egui::ComboBox::from_id_salt("light_shadow_res").selected_text(format!("{0}\u{d7}{0}", sh.resolution)).show_ui(ui, |ui| {
+                    crate::app::props_tabs::combo(ui, "light_shadow_res").selected_text(format!("{0}\u{d7}{0}", sh.resolution)).show_ui(ui, |ui| {
                         for r in LightShadow::RESOLUTIONS {
                             if ui.selectable_value(&mut sh.resolution, r, format!("{r}\u{d7}{r}")).changed() {
                                 changed = true;
@@ -227,7 +243,7 @@ impl StudioApp {
                 changed |= row(ui, tr("light.cast_distance"), |ui| {
                     let auto = sh.distance <= 0.0;
                     let mut d = if auto { 0.0 } else { sh.distance };
-                    ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(60.0);
+                    ui.spacing_mut().slider_width = (ui.available_width() - 108.0).max(40.0);
                     let r = ui.add(egui::Slider::new(&mut d, 0.0..=60.0).custom_formatter(|n, _| if n <= 0.05 { tr("light.auto").to_string() } else { format!("{n:.1} m") }).clamping(egui::SliderClamping::Always));
                     if r.changed() {
                         sh.distance = if d <= 0.05 { 0.0 } else { d };
@@ -293,13 +309,28 @@ impl StudioApp {
 
     // ================================================================= luzes extras (desabilitadas)
 
-    fn light_extra_body(ui: &mut egui::Ui) {
+    fn light_extra_body(&mut self, ui: &mut egui::Ui) {
+        use crate::app::scene_ui::PlaceKind;
+        use anigo_core::LightShape;
         hint(ui, tr("light.extra_hint"));
-        ui.horizontal(|ui| {
-            for (icon, key) in [(icons::LIGHTBULB, "light.extra.point"), (icons::FLASHLIGHT, "light.extra.spot"), (icons::SQUARE, "light.extra.rect")] {
-                ui.add_enabled(false, egui::Button::new(format!("{icon}  {}", tr(key)))).on_disabled_hover_text(tr("light.extra_tip"));
+        let used = self.core.project().render_lights().len();
+        let mut place: Option<LightShape> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (icon, key, shape) in [
+                (icons::LIGHTBULB, "light.extra.point", LightShape::Point),
+                (icons::FLASHLIGHT, "light.extra.spot", LightShape::Spot),
+                (icons::SQUARE, "light.extra.rect", LightShape::Rect),
+                (icons::SUN, "scene.light.directional", LightShape::Directional),
+            ] {
+                if ui.add_enabled(used < anigo_core::scene::MAX_RENDER_LIGHTS, egui::Button::new(format!("{icon}  {}", tr(key)))).clicked() {
+                    place = Some(shape);
+                }
             }
         });
+        hint(ui, &tr("light.extra_count").replace("{n}", &used.to_string()));
+        if let Some(shape) = place {
+            self.scene_place_actor(PlaceKind::Light(shape), None);
+        }
     }
 
     // ================================================================= cena de prova

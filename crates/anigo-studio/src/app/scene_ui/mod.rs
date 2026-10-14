@@ -86,6 +86,7 @@ pub(crate) enum PlaceKind {
     Primitive(anigo_core::PrimitiveShape),
     Camera,
     Group,
+    Light(anigo_core::LightShape),
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +109,8 @@ pub(crate) struct GizmoSession {
     pub start_sel: Vec<NodeId>,
     /// Caixa mundial da seleção no início (surface snapping: a base da caixa pousa na superfície).
     pub start_bounds: Option<crate::scene::bvh::Aabb>,
+    /// Deslocamento já aplicado à seleção (mundo): o gizmo SEGUE o objeto durante o arrasto em vez de ficar parado onde começou.
+    pub shift: Vec3,
 }
 
 /// Retângulo de seleção em andamento.
@@ -158,6 +161,8 @@ pub(crate) struct SceneUi {
     pub speed: f32,
     pub fly_active: bool,
     pub view_kind: SceneViewKind,
+    /// Multi-vista do viewport (layout, câmeras das vistas não ativas, vista ativa); a câmera ativa é `camera`.
+    pub mview: crate::app::multiview::MultiView,
     // ---- ferramenta e snap
     pub tool: GizmoMode,
     pub space: GizmoSpace,
@@ -216,6 +221,7 @@ impl Default for SceneUi {
             speed: 1.0,
             fly_active: false,
             view_kind: SceneViewKind::Perspective,
+            mview: Default::default(),
             tool: GizmoMode::Translate,
             space: GizmoSpace::World,
             snap: SnapSettings::default(),

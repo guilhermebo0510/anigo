@@ -50,7 +50,7 @@ const PERSONAGEM: &[PanelSpec] = &[
 ];
 const MODELAGEM: &[PanelSpec] = &[
     viewport("modelagem.viewport"),
-    panel("modelagem.inspector", "dock.panel.inspector", icons::SLIDERS, Home::Right, 300.0),
+    panel("modelagem.inspector", "dock.panel.inspector", icons::SLIDERS, Home::Right, 340.0),
     flagged("modelagem.uv", "dock.panel.uv", icons::GRID_FOUR, Home::BelowViewport, 360.0),
 ];
 const POSING: &[PanelSpec] = &[
@@ -132,7 +132,7 @@ pub fn default_spec(ws: WorkspaceId) -> Spec {
     match ws {
         WorkspaceId::Personagem => row(vec![fill(Pane("personagem.viewport")), sized(350.0, Pane("personagem.inspector"))]),
         // inspector à direita (alto) e o editor de UV só sob o viewport
-        WorkspaceId::Modelagem => row(vec![fill(column(vec![fill(Pane("modelagem.viewport")), sized(360.0, Pane("modelagem.uv"))])), sized(300.0, Pane("modelagem.inspector"))]),
+        WorkspaceId::Modelagem => row(vec![fill(column(vec![fill(Pane("modelagem.viewport")), sized(360.0, Pane("modelagem.uv"))])), sized(340.0, Pane("modelagem.inspector"))]),
         WorkspaceId::Posing => row(vec![fill(Pane("posing.viewport")), sized(360.0, Pane("posing.inspector"))]),
         WorkspaceId::Shading => row(vec![sized(250.0, Pane("shading.targets")), fill(Pane("shading.viewport")), sized(350.0, Pane("shading.params"))]),
         WorkspaceId::Iluminacao => row(vec![fill(Pane("iluminacao.viewport")), sized(350.0, Pane("iluminacao.inspector"))]),

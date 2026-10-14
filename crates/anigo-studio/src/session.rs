@@ -37,6 +37,25 @@ pub struct SessionState {
     /// Tolerante: um bloco de layouts ilegível/de esquema futuro vira `None` (layout padrão) e NUNCA derruba a sessão.
     #[serde(default, deserialize_with = "lenient_layouts")]
     pub layouts: Option<crate::layout::LayoutStore>,
+    /// Multi-vista (layout, divisórias, câmeras e vista ativa) por viewport: `modelagem`, `cenario`, `posing`, `iluminacao`.
+    /// Tolerante como os layouts: um bloco ilegível vira "sem vistas salvas" e NUNCA derruba a sessão.
+    #[serde(default, deserialize_with = "lenient_multiviews")]
+    pub multiviews: std::collections::HashMap<String, crate::app::MultiViewState>,
+}
+
+fn lenient_multiviews<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::collections::HashMap<String, crate::app::MultiViewState>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    let Some(map) = v.as_object() else { return Ok(Default::default()) };
+    let mut out = std::collections::HashMap::new();
+    for (k, val) in map {
+        match serde_json::from_value(val.clone()) {
+            Ok(st) => {
+                out.insert(k.clone(), st);
+            }
+            Err(e) => tracing::warn!("vistas de '{k}' ignoradas na sessão: {e}"),
+        }
+    }
+    Ok(out)
 }
 
 fn lenient_layouts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<crate::layout::LayoutStore>, D::Error> {
@@ -128,6 +147,7 @@ mod tests {
             scene_prefs: None,
             render_prefs: None,
             layouts: None,
+            multiviews: Default::default(),
         }
     }
 
@@ -140,6 +160,34 @@ mod tests {
         assert_eq!(back.camera, s.camera);
         assert_eq!(back.document.objects.len(), 2);
         assert_eq!(back.document.objects[1].mesh, s.document.objects[1].mesh);
+    }
+
+    #[test]
+    fn multiviews_roundtrip_and_a_broken_block_never_breaks_the_session() {
+        use crate::app::MultiViewState;
+        let mut s = sample();
+        let mut mv = crate::app::multiview_for_tests();
+        mv.ratio = [0.3, 0.7];
+        s.multiviews.insert("cenario".into(), mv);
+        let back = SessionState::from_json(&s.to_json().unwrap()).unwrap();
+        assert_eq!(back.multiviews["cenario"].ratio, [0.3, 0.7]);
+        // um workspace com bloco ilegível é ignorado; os outros e a sessão continuam
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["multiviews"]["posing"] = serde_json::json!({ "layout": "dodecaedro" });
+        v["multiviews"]["modelagem"] = serde_json::to_value::<MultiViewState>(s.multiviews["cenario"].clone()).unwrap();
+        let back = SessionState::from_json(&v.to_string()).unwrap();
+        assert!(back.multiviews.contains_key("modelagem") && back.multiviews.contains_key("cenario"));
+        assert!(!back.multiviews.contains_key("posing"));
+        // `multiviews` com tipo errado vira "sem vistas salvas"
+        v["multiviews"] = serde_json::json!("lixo");
+        assert!(SessionState::from_json(&v.to_string()).unwrap().multiviews.is_empty());
+    }
+
+    #[test]
+    fn sessions_without_multiviews_still_load() {
+        let mut v = serde_json::to_value(sample()).unwrap();
+        v.as_object_mut().unwrap().remove("multiviews");
+        assert!(SessionState::from_json(&v.to_string()).unwrap().multiviews.is_empty());
     }
 
     #[test]

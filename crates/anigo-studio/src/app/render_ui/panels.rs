@@ -25,7 +25,7 @@ fn dim(text: impl Into<String>) -> RichText {
 }
 
 fn section(ui: &mut egui::Ui, icon: &str, key: &str, open: bool, body: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(format!("{icon}  {}", tr(key))).strong()).default_open(open).show(ui, body);
+    crate::app::props_tabs::header(ui, RichText::new(format!("{icon}  {}", tr(key))).strong()).default_open(open).show(ui, body);
 }
 
 fn stage_key(s: Stage) -> &'static str {
@@ -67,7 +67,7 @@ impl StudioApp {
         })).strong().size(14.0));
         self.render_button(ui, &ctx);
         ui.separator();
-        egui::ScrollArea::vertical().id_salt("render_scroll").auto_shrink([false, false]).show(ui, |ui| match self.render_ui.tab {
+        crate::app::props_tabs::props_scroll(ui, "render_scroll", |ui| match self.render_ui.tab {
             RenderTab::Camera => self.camera_tab(ui),
             RenderTab::Passes => self.passes_tab(ui),
             RenderTab::Output => self.output_tab(ui),
@@ -127,7 +127,7 @@ impl StudioApp {
             let cams = self.render_scene_cameras();
             let current = self.render_camera_name();
             let mut pick: Option<Option<anigo_core::ids::NodeId>> = None;
-            egui::ComboBox::from_id_salt("render_cam_source").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+            crate::app::props_tabs::combo(ui, "render_cam_source").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
                 if ui.selectable_label(self.render_ui.linked.is_none(), tr("render.camera.project")).clicked() {
                     pick = Some(None);
                 }
@@ -171,9 +171,9 @@ impl StudioApp {
             let sensors = framing::SENSORS;
             let sidx = self.render_ui.prefs.sensor.min(sensors.len() - 1);
             let sensor_h = sensors[sidx].2;
-            ui.horizontal(|ui| {
-                ui.label(tr("render.lens.sensor"));
-                egui::ComboBox::from_id_salt("render_sensor").selected_text(sensors[sidx].0).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+            // rótulo em cima quando o painel é estreito; o combo nunca passa da largura disponível
+            crate::app::props_tabs::field_row(ui, tr("render.lens.sensor"), 64.0, |ui| {
+                crate::app::props_tabs::combo(ui, "render_sensor").selected_text(sensors[sidx].0).width((ui.available_width() - 30.0).max(80.0)).show_ui(ui, |ui| {
                     for (i, s) in sensors.iter().enumerate() {
                         if ui.selectable_label(i == sidx, s.0).clicked() {
                             self.render_ui.prefs.sensor = i;
@@ -184,7 +184,7 @@ impl StudioApp {
             let mut fov = cam.fov_y.to_degrees();
             let mut focal = framing::focal_from_fov(cam.fov_y, sensor_h);
             let mut changed_fov = None;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.lens.fov"));
                 if ui.add(egui::DragValue::new(&mut fov).speed(0.2).range(5.0..=120.0).suffix("\u{b0}").max_decimals(1)).changed() {
                     changed_fov = Some(fov);
@@ -198,7 +198,7 @@ impl StudioApp {
                 self.render_edit(Command::SetCamera { eye: None, target: None, up: None, fov_degrees: Some(f.clamp(5.0, 120.0)), projection: None });
             }
             ui.label(dim(tr("render.lens.focal_tip")));
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.lens.projection"));
                 let ortho = cam.orthographic.is_some();
                 if ui.selectable_label(!ortho, tr("render.lens.perspective")).clicked() && ortho {
@@ -209,7 +209,7 @@ impl StudioApp {
                 }
             });
             let (mut near, mut far) = (cam.z_near, cam.z_far);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.lens.near"));
                 if ui.add(egui::DragValue::new(&mut near).speed(0.01).range(0.001..=(cam.z_far - 0.01).max(0.002)).suffix(" m").max_decimals(3)).changed() {
                     self.render_edit_patch(RenderOutputPatch { camera_near: Some(near), ..Default::default() });
@@ -285,7 +285,7 @@ impl StudioApp {
             }
             if dof.enabled {
                 ui.indent("dof_params", |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(tr("render.dof.focus"));
                         dof_changed |= ui.add(egui::DragValue::new(&mut dof.focus_distance).speed(0.05).range(0.05..=1000.0).suffix(" m").max_decimals(2)).changed();
                         if ui.small_button(icons::TARGET).on_hover_text(tr("render.dof.focus_sel")).clicked() {
@@ -295,13 +295,13 @@ impl StudioApp {
                             }
                         }
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(tr("render.dof.fnumber"));
                         dof_changed |= ui.add(egui::DragValue::new(&mut dof.f_number).speed(0.05).range(0.5..=64.0).prefix("f/").max_decimals(1)).changed();
                         ui.label(tr("render.dof.focal"));
                         dof_changed |= ui.add(egui::DragValue::new(&mut dof.focal_mm).speed(0.5).range(8.0..=800.0).suffix(" mm").max_decimals(0)).changed();
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(tr("render.dof.bokeh"));
                         if ui.selectable_label(dof.bokeh_shape == 0, tr("render.dof.round")).clicked() && dof.bokeh_shape != 0 {
                             dof.bokeh_shape = 0;
@@ -393,7 +393,7 @@ impl StudioApp {
                 None => format!("{}  {}\u{d7}{}", tr("render.preset.custom"), out.width, out.height),
             };
             let mut picked = None;
-            egui::ComboBox::from_id_salt("render_presets").selected_text(label).width(ui.available_width() - 8.0).height(420.0).show_ui(ui, |ui| {
+            crate::app::props_tabs::combo(ui, "render_presets").selected_text(label).width(ui.available_width() - 8.0).height(420.0).show_ui(ui, |ui| {
                 for g in PresetGroup::ALL {
                     ui.label(RichText::new(tr(g.key())).strong().color(theme::ACCENT));
                     for p in PRESETS.iter().filter(|p| p.group == g) {
@@ -409,7 +409,7 @@ impl StudioApp {
                 self.render_ui.aspect_ref = p.w as f32 / p.h as f32;
                 self.render_apply_patch(RenderOutputPatch { width: Some(p.w), height: Some(p.h), dpi: Some(p.dpi), ..Default::default() });
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let (mut w, mut h) = (out.width, out.height);
                 let lock = self.render_ui.prefs.lock_aspect;
                 let mut edit: Option<(u32, u32)> = None;
@@ -434,7 +434,7 @@ impl StudioApp {
                     self.render_edit_patch(RenderOutputPatch { width: Some(w), height: Some(h), ..Default::default() });
                 }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.res.scale"));
                 let mut s = out.scale_percent;
                 if ui.add(egui::DragValue::new(&mut s).speed(1.0).range(10..=400).suffix(" %")).changed() {
@@ -456,7 +456,7 @@ impl StudioApp {
         });
 
         section(ui, icons::SPARKLE, "render.aa", true, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.aa.ss"));
                 for (s, label) in [(1u32, tr("render.aa.off")), (2, "2\u{d7}"), (3, "3\u{d7}"), (4, "4\u{d7}")] {
                     if ui.selectable_label(out.supersample == s, label).clicked() && out.supersample != s {
@@ -472,7 +472,7 @@ impl StudioApp {
             if ui.checkbox(&mut t, tr("render.bg.transparent")).on_hover_text(tr("render.bg.transparent_tip")).changed() {
                 self.render_apply_patch(RenderOutputPatch { transparent: Some(t), ..Default::default() });
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.bg.color"));
                 let mut c = [bg[0], bg[1], bg[2]];
                 if ui.color_edit_button_rgb(&mut c).changed() {
@@ -485,7 +485,7 @@ impl StudioApp {
         });
 
         section(ui, icons::SLIDERS, "render.color", true, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.color.space"));
                 for (s, label) in [(ColorSpace::Srgb, "sRGB"), (ColorSpace::DisplayP3, "Display P3")] {
                     if ui.selectable_label(space == s, label).clicked() && space != s {
@@ -497,7 +497,7 @@ impl StudioApp {
         });
 
         section(ui, icons::FILE_IMAGE, "render.format", true, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (f, label) in [(OutputFormat::Png8, "PNG 8"), (OutputFormat::Png16, "PNG 16"), (OutputFormat::Jpeg, "JPEG")] {
                     if ui.selectable_label(out.format == f, label).clicked() && out.format != f {
                         self.render_apply_patch(RenderOutputPatch { format: Some(f), ..Default::default() });
@@ -510,7 +510,7 @@ impl StudioApp {
                 }
                 OutputFormat::Jpeg => {
                     let mut q = out.jpeg_quality as u32;
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(tr("render.format.quality"));
                         if ui.add(egui::DragValue::new(&mut q).range(1..=100).speed(0.5)).changed() {
                             self.render_edit_patch(RenderOutputPatch { jpeg_quality: Some(q as u8), ..Default::default() });
@@ -522,7 +522,7 @@ impl StudioApp {
                 }
                 OutputFormat::Png8 => {}
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("render.format.dpi"));
                 let mut d = out.dpi;
                 if ui.add(egui::DragValue::new(&mut d).range(36..=1200).speed(1.0)).on_hover_text(tr("render.format.dpi_tip")).changed() {
@@ -537,7 +537,7 @@ impl StudioApp {
 
     fn files_section(&mut self, ui: &mut egui::Ui) {
         ui.label(tr("render.files.dir"));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.render_ui.prefs.dir).desired_width(ui.available_width() - 74.0).hint_text(settings::suggested_output_dir().display().to_string()));
             if ui.button(tr("render.files.suggest")).on_hover_text(settings::suggested_output_dir().display().to_string()).clicked() {
                 self.render_ui.prefs.dir = settings::suggested_output_dir().display().to_string();
@@ -554,7 +554,7 @@ impl StudioApp {
         ui.add_space(2.0);
         ui.label(tr("render.files.template"));
         ui.add(egui::TextEdit::singleline(&mut self.render_ui.prefs.template).desired_width(f32::INFINITY).hint_text(settings::DEFAULT_TEMPLATE)).on_hover_text(tr("render.files.template_tip"));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("render.files.counter"));
             ui.add(egui::DragValue::new(&mut self.render_ui.prefs.counter).range(1..=999_999).speed(0.2));
             ui.checkbox(&mut self.render_ui.prefs.overwrite, tr("render.files.overwrite")).on_hover_text(tr("render.files.overwrite_tip"));
@@ -581,7 +581,7 @@ impl StudioApp {
     fn sequence_section(&mut self, ui: &mut egui::Ui) {
         ui.label(dim(tr("render.sequence.hint")));
         ui.add_enabled_ui(false, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let (mut a, mut b, mut s) = (1u32, 24u32, 1u32);
                 ui.label(tr("render.sequence.range"));
                 ui.add(egui::DragValue::new(&mut a));
@@ -593,7 +593,7 @@ impl StudioApp {
         });
         ui.label(dim(tr("render.sequence.tokens")));
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("render.video")).strong());
             if ui.button(tr("render.video.detect")).clicked() {
                 self.render_ui.ffmpeg = Some(detect_ffmpeg());
@@ -618,7 +618,7 @@ impl StudioApp {
 
     fn queue_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{}  {}", icons::LIST_CHECKS, tr("render.queue"))).strong());
             ui.label(dim(format!("{}", self.render_ui.jobs.len())));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -639,7 +639,7 @@ impl StudioApp {
                 ui.label(dim(tr("render.queue.empty")));
             }
             for j in self.render_ui.jobs.iter().rev() {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let (icon, color) = match &j.status {
                         JobStatus::Queued => (icons::CLOCK, theme::TEXT_DIM),
                         JobStatus::Running => (icons::SPINNER_GAP, theme::ACCENT),
@@ -736,7 +736,7 @@ impl StudioApp {
                             if !aovs.is_empty() {
                                 ui.label(dim(format!("+ {}", aovs.join(", "))));
                             }
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 if ui.small_button(icons::PACKAGE).on_hover_text(tr("render.history.to_library")).clicked() {
                                     to_library = Some(e.clone());
                                 }

@@ -1,7 +1,8 @@
 //! Painéis do Cenário: Outliner, Histórico, Details, Colocar atores, Content Drawer (Biblioteca) e o
 //! diálogo de salvar/abrir cena.
 
-use super::actions::prim_label_key;
+use super::super::props_tabs::{PropTab, TabSet};
+use super::actions::{light_label_key, prim_label_key};
 use super::{describe_scene, OutlinerDragPayload, PlaceDragPayload, PlaceKind, SceneDialog, StudioApp};
 use crate::character::persist;
 use crate::i18n::tr;
@@ -77,7 +78,7 @@ impl StudioApp {
     /// Painel Outliner: abrir/salvar a cena + busca + árvore.
     pub(crate) fn scene_outliner_body(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(icons::FOLDER_OPEN).on_hover_text(tr("char.open")).clicked() {
                     self.scene_ui.dialog = Some(SceneDialog { save: false, path: self.scene_ui.last_path.clone(), error: None });
@@ -99,7 +100,7 @@ impl StudioApp {
 
     /// Painel Detalhes do nó selecionado.
     pub(crate) fn scene_details_body(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().id_salt("scene_details").auto_shrink([false, false]).show(ui, |ui| self.details_panel(ui));
+        self.details_panel(ui);
     }
 
     /// Content Drawer (a grade da Biblioteca dentro do Cenário).
@@ -110,7 +111,7 @@ impl StudioApp {
     // ============================================================ Outliner
 
     fn outliner_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(icons::MAGNIFYING_GLASS).color(theme::TEXT_DIM));
             let resp = ui.add(egui::TextEdit::singleline(&mut self.scene_ui.query).hint_text(tr("scene.outliner.search")).desired_width(ui.available_width() - 84.0));
             resp.on_hover_text(tr("scene.outliner.search_help"));
@@ -420,7 +421,15 @@ impl StudioApp {
         ui.label(RichText::new(tr("scene.place.other")).size(11.5).color(theme::TEXT_DIM));
         item(ui, icons::VIDEO_CAMERA, tr("scene.actor.camera").to_string(), PlaceKind::Camera, true);
         item(ui, icons::FOLDER_SIMPLE, tr("scene.actor.group").to_string(), PlaceKind::Group, true);
-        ui.add_enabled(false, egui::Button::new(format!("{}  {}", icons::LIGHTBULB, tr("scene.actor.light"))).min_size(egui::vec2(ui.available_width(), 26.0))).on_disabled_hover_text(tr("scene.actor.light_tip"));
+        for shape in anigo_core::LightShape::ALL {
+            let icon = match shape {
+                anigo_core::LightShape::Point => icons::LIGHTBULB,
+                anigo_core::LightShape::Spot => icons::FLASHLIGHT,
+                anigo_core::LightShape::Rect => icons::SQUARE,
+                anigo_core::LightShape::Directional => icons::SUN,
+            };
+            item(ui, icon, tr(light_label_key(shape)).to_string(), PlaceKind::Light(shape), true);
+        }
         if let Some(k) = chosen {
             self.scene_place_actor(k, None);
         }
@@ -433,6 +442,7 @@ impl StudioApp {
             PlaceKind::Primitive(s) => tr(prim_label_key(s)).to_string(),
             PlaceKind::Camera => tr("scene.actor.camera").to_string(),
             PlaceKind::Group => tr("scene.actor.group").to_string(),
+            PlaceKind::Light(s) => tr(light_label_key(s)).to_string(),
         };
         egui::Area::new(egui::Id::new("scene_place_ghost")).order(egui::Order::Tooltip).fixed_pos(pos + egui::vec2(14.0, 14.0)).interactable(false).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(label));
@@ -442,7 +452,7 @@ impl StudioApp {
     // ============================================================ Content Drawer
 
     fn drawer_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{}  {}", icons::SQUARES_FOUR, tr("scene.drawer"))).strong());
             ui.label(RichText::new(tr("scene.drawer.hint")).size(11.5).color(theme::TEXT_DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -477,20 +487,44 @@ impl StudioApp {
     }
 
     fn details_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
-        ui.label(RichText::new(format!("{}  {}", icons::SLIDERS, tr("scene.details"))).strong());
-        ui.separator();
         let sel = self.scene_ui.selection.ids().to_vec();
         let project = self.core.project().clone();
         let slots: Vec<&anigo_core::NodeSlot> = sel.iter().filter_map(|i| project.scene.node(i)).collect();
-        if slots.is_empty() {
-            self.scene_settings_panel(ui, &project);
+        // abas que valem para a seleção: Ativo só para ativos da Biblioteca, Lente só para uma câmera de cena
+        let mut tabs: Vec<PropTab> = Vec::new();
+        if let Some(first) = slots.first() {
+            tabs.push(PropTab::Transform);
+            if matches!(first.source, Some(NodeSource::LibraryAsset { .. })) {
+                tabs.push(PropTab::Asset);
+            }
+            if matches!(first.source, Some(NodeSource::Camera { .. })) && slots.len() == 1 {
+                tabs.push(PropTab::Lens);
+            }
+            if matches!(first.source, Some(NodeSource::Light { .. })) && slots.len() == 1 {
+                tabs.push(PropTab::Light);
+            }
+            if first.kind != NodeKind::Group && first.kind != NodeKind::Camera && first.kind != NodeKind::Light {
+                tabs.push(PropTab::Material);
+            }
+            tabs.push(PropTab::Organize);
+        }
+        tabs.push(PropTab::Scene);
+        let (tab, mut content) = self.tabbed_with(ui, TabSet::Cenario, &tabs);
+        let ui = &mut content;
+        ui.add_space(4.0);
+        crate::app::props_tabs::props_scroll(ui, "scene_details", |ui| self.details_tab(ui, tab, &project, &slots));
+    }
+
+    fn details_tab(&mut self, ui: &mut egui::Ui, tab: PropTab, project: &anigo_core::ProjectState, slots: &[&anigo_core::NodeSlot]) {
+        if slots.is_empty() || tab == PropTab::Scene {
+            self.scene_settings_panel(ui, project);
             return;
         }
+        let project = project.clone();
         let editable: Vec<NodeId> = slots.iter().filter(|s| !s.locked).map(|s| s.node_id.clone()).collect();
         let first = slots[0];
         // ---- nome + visível/bloqueado
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if slots.len() == 1 {
                 let mut name = first.name.clone();
                 let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width() - 96.0));
@@ -524,20 +558,20 @@ impl StudioApp {
         }
 
         // ---- transform
-        egui::CollapsingHeader::new(RichText::new(tr("scene.details.transform")).strong()).default_open(true).show(ui, |ui| {
-            self.transform_section(ui, &project, &editable, &slots);
-        });
+        if tab == PropTab::Transform {
+            self.transform_section(ui, &project, &editable, slots);
+        }
 
         // ---- ativo / origem
-        if let Some(NodeSource::LibraryAsset { uri, revision }) = &first.source {
-            egui::CollapsingHeader::new(RichText::new(tr("scene.details.asset")).strong()).default_open(true).show(ui, |ui| {
+        if let (PropTab::Asset, Some(NodeSource::LibraryAsset { uri, revision })) = (tab, &first.source) {
+            crate::app::props_tabs::header(ui, RichText::new(tr("scene.details.asset")).strong()).default_open(true).show(ui, |ui| {
                 let resolved = self.scene_ui.cache.resolved(uri).cloned();
                 match resolved {
                     Some(Ok(r)) => {
                         ui.label(format!("{}", r.name));
                         ui.label(RichText::new(format!("{} {}  \u{b7}  {}  \u{b7}  {}", tr("scene.details.revision"), revision, r.format.to_uppercase(), format!("{:.1} MB", r.size as f64 / 1_048_576.0))).size(11.5).color(theme::TEXT_DIM));
                         if r.revision != *revision {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(format!("{} {} {}", icons::WARNING, tr("scene.details.stale"), r.revision)).color(Color32::from_rgb(0xff, 0xb0, 0x50)));
                                 if ui.button(tr("scene.details.update")).clicked() {
                                     let ids: Vec<NodeId> = slots.iter().map(|s| s.node_id.clone()).collect();
@@ -572,25 +606,32 @@ impl StudioApp {
         }
 
         // ---- câmera de cena: lente
-        if let Some(NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm }) = first.source.clone() {
+        if let (PropTab::Lens, Some(NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm })) = (tab, first.source.clone()) {
             if slots.len() == 1 {
-                egui::CollapsingHeader::new(RichText::new(tr("scene.details.lens")).strong()).default_open(true).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, RichText::new(tr("scene.details.lens")).strong()).default_open(true).show(ui, |ui| {
                     self.lens_section(ui, first.node_id.clone(), focal_mm, sensor_width_mm, sensor_height_mm);
                 });
             }
         }
 
+        // ---- luz de cena
+        if let (PropTab::Light, Some(src @ NodeSource::Light { .. })) = (tab, first.source.clone()) {
+            if slots.len() == 1 {
+                crate::app::props_tabs::header(ui, RichText::new(tr("scene.details.light")).strong()).default_open(true).show(ui, |ui| {
+                    self.light_section(ui, first.node_id.clone(), src);
+                });
+            }
+        }
+
         // ---- material (overrides)
-        if first.kind != NodeKind::Group && first.kind != NodeKind::Camera {
-            egui::CollapsingHeader::new(RichText::new(tr("scene.details.material")).strong()).default_open(false).show(ui, |ui| {
-                self.material_section(ui, &editable, &slots);
-            });
+        if tab == PropTab::Material && first.kind != NodeKind::Group && first.kind != NodeKind::Camera && first.kind != NodeKind::Light {
+            self.material_section(ui, &editable, slots);
         }
 
         // ---- organização
-        egui::CollapsingHeader::new(RichText::new(tr("scene.details.organize")).strong()).default_open(true).show(ui, |ui| {
-            self.organize_section(ui, &editable, &slots);
-        });
+        if tab == PropTab::Organize {
+            self.organize_section(ui, &editable, slots);
+        }
     }
 
     fn transform_section(&mut self, ui: &mut egui::Ui, project: &anigo_core::ProjectState, editable: &[NodeId], slots: &[&anigo_core::NodeSlot]) {
@@ -608,7 +649,7 @@ impl StudioApp {
         ui.add_enabled_ui(!disabled, |ui| {
             // linhas: rótulo, três campos, reset
             let mut row = |ui: &mut egui::Ui, label: String, vals: &[[f32; 3]], scale: f32, speed: f64, suffix: &str, default: [f32; 3], channel: u8| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_sized([62.0, 18.0], egui::Label::new(label));
                     let mut changed: Option<(usize, f32)> = None;
                     for c in 0..3 {
@@ -639,7 +680,7 @@ impl StudioApp {
             row(ui, tr("scene.details.rotation").to_string(), &rvals, 1.0, 0.5, "\u{b0}", [0.0; 3], 1);
             row(ui, tr("scene.details.scale").to_string(), &svals, 1.0, 0.01, "", [1.0; 3], 2);
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.scene_ui.scale_lock, tr("scene.details.scale_lock")).on_hover_text(tr("scene.details.scale_lock_tip"));
             ui.label(RichText::new(tr("scene.details.relative")).size(11.0).color(theme::TEXT_DIM));
         });
@@ -709,11 +750,57 @@ impl StudioApp {
         Command::SetNodesTransform { entries }
     }
 
+    /// Editor da luz de cena: tipo, cor, intensidade, alcance e (conforme o tipo) cone ou tamanho do painel. Um campo por linha,
+    /// com o controle na largura toda: o painel pode ficar estreito sem cortar o texto.
+    fn light_section(&mut self, ui: &mut egui::Ui, id: NodeId, src: NodeSource) {
+        let NodeSource::Light { kind, color, intensity, range, spot_angle_deg, spot_softness, size } = src else { return };
+        let (mut kind, mut color, mut intensity, mut range, mut angle, mut soft, mut size) = (kind, color, intensity, range, spot_angle_deg, spot_softness, size);
+        let mut changed = false;
+        let wide = (ui.available_width() - 70.0).max(60.0);
+        ui.spacing_mut().slider_width = wide;
+        ui.label(RichText::new(tr("scene.light.kind")).size(11.5).color(theme::TEXT_DIM));
+        ui.horizontal_wrapped(|ui| {
+            for k in anigo_core::LightShape::ALL {
+                if ui.selectable_label(kind == k, tr(light_label_key(k))).clicked() && kind != k {
+                    kind = k;
+                    changed = true;
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(tr("scene.light.color"));
+            changed |= ui.color_edit_button_rgb(&mut color).changed();
+        });
+        ui.label(tr("scene.light.intensity"));
+        changed |= ui.add(egui::Slider::new(&mut intensity, 0.0..=8.0).max_decimals(2)).changed();
+        if kind != anigo_core::LightShape::Directional {
+            ui.label(tr("scene.light.range"));
+            changed |= ui.add(egui::Slider::new(&mut range, 0.5..=60.0).logarithmic(true).suffix(" m").max_decimals(1)).changed();
+        }
+        if kind == anigo_core::LightShape::Spot {
+            ui.label(tr("scene.light.angle"));
+            changed |= ui.add(egui::Slider::new(&mut angle, 5.0..=150.0).suffix("\u{b0}").max_decimals(0)).changed();
+            ui.label(tr("scene.light.softness"));
+            changed |= ui.add(egui::Slider::new(&mut soft, 0.0..=1.0).max_decimals(2)).changed();
+        }
+        if kind == anigo_core::LightShape::Rect {
+            ui.label(tr("scene.light.width"));
+            changed |= ui.add(egui::Slider::new(&mut size[0], 0.1..=10.0).suffix(" m").max_decimals(2)).changed();
+            ui.label(tr("scene.light.height"));
+            changed |= ui.add(egui::Slider::new(&mut size[1], 0.1..=10.0).suffix(" m").max_decimals(2)).changed();
+        }
+        ui.label(RichText::new(tr("scene.light.hint")).size(11.0).color(theme::TEXT_DIM));
+        if changed {
+            let source = NodeSource::Light { kind, color, intensity, range, spot_angle_deg: angle, spot_softness: soft, size };
+            self.scene_edit(Command::SetNodeProps { node_id: id, patch: NodePatch { source: Some(source), ..Default::default() } });
+        }
+    }
+
     fn lens_section(&mut self, ui: &mut egui::Ui, id: NodeId, focal: f32, sw: f32, sh: f32) {
         let mut f = focal;
         let mut cmd: Option<Command> = None;
         let mk = |focal_mm: f32, w: f32, h: f32| Command::SetNodeProps { node_id: id.clone(), patch: NodePatch { source: Some(NodeSource::Camera { focal_mm, sensor_width_mm: w, sensor_height_mm: h }), ..Default::default() } };
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.lens.focal"));
             if ui.add(egui::Slider::new(&mut f, 8.0..=300.0).logarithmic(true).suffix(" mm").max_decimals(1)).changed() {
                 cmd = Some(mk(f, sw, sh));
@@ -727,7 +814,7 @@ impl StudioApp {
             }
         });
         let current = SENSORS.iter().find(|s| (s.1 - sw).abs() < 0.01 && (s.2 - sh).abs() < 0.01).map(|s| s.0).unwrap_or("custom");
-        egui::ComboBox::from_id_salt("scene_sensor").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+        crate::app::props_tabs::combo(ui, "scene_sensor").selected_text(current).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
             for (name, w, h) in SENSORS {
                 if ui.selectable_label((sw - w).abs() < 0.01 && (sh - h).abs() < 0.01, name).clicked() {
                     cmd = Some(mk(focal, w, h));
@@ -768,7 +855,7 @@ impl StudioApp {
         let mut clear = false;
         let base_default = [0.80, 0.81, 0.86, 1.0];
         let shade_default = [0.50, 0.52, 0.66, 1.0];
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.material.base"));
             let mut c = ov.base_color.unwrap_or(base_default);
             if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
@@ -782,7 +869,7 @@ impl StudioApp {
                 changed = true;
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(tr("scene.material.outline"));
             let mut w = ov.outline_width.unwrap_or(StylizedWidth::DEFAULT);
             if ui.add(egui::DragValue::new(&mut w).speed(0.0002).range(0.0..=0.05).max_decimals(4)).changed() {
@@ -850,7 +937,7 @@ impl StudioApp {
             }
         }
         // pasta
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("scene.details.folder")).size(11.5).color(theme::TEXT_DIM));
             let mut folder = first.folder.clone().unwrap_or_default();
             let r = ui.add(egui::TextEdit::singleline(&mut folder).desired_width(ui.available_width() - 8.0).hint_text("Props/Mesas"));
@@ -873,26 +960,31 @@ impl StudioApp {
         let mut intensity = light.intensity;
         let mut ambient = light.ambient_intensity;
         let mut color = light.color;
+        let before = (az, el, intensity, ambient, color);
         let mut changed = false;
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::SUN, tr("scene.light.main"))).strong()).default_open(true).show(ui, |ui| {
-            ui.horizontal(|ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::SUN, tr("scene.light.main"))).strong()).default_open(true).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.azimuth"));
                 changed |= ui.add(egui::DragValue::new(&mut az).speed(0.5).suffix("\u{b0}").range(-180.0..=180.0)).changed();
                 ui.label(tr("scene.light.elevation"));
-                changed |= ui.add(egui::DragValue::new(&mut el).speed(0.5).suffix("\u{b0}").range(-89.0..=89.0)).changed();
+                changed |= ui.add(egui::DragValue::new(&mut el).speed(0.5).suffix("\u{b0}").range(-90.0..=90.0)).changed();
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.color"));
                 changed |= ui.color_edit_button_rgb(&mut color).changed();
                 ui.label(tr("scene.light.intensity"));
                 changed |= ui.add(egui::DragValue::new(&mut intensity).speed(0.01).range(0.0..=8.0).max_decimals(2)).changed();
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(tr("scene.light.ambient"));
                 changed |= ui.add(egui::DragValue::new(&mut ambient).speed(0.01).range(0.0..=2.0).max_decimals(2)).changed();
             });
         });
-        if changed {
+        // O campo do egui reporta `changed` ao ajustar o valor ao limite do intervalo; a direção da luz vira (az, el) e volta
+        // com ruído de ponto flutuante, então sem esta comparação o painel regravava a luz TODO quadro (um passo de desfazer
+        // por quadro com o sol quase na vertical). Só vale uma edição que mude o valor de verdade.
+        let moved = (az - before.0).abs() > 1e-3 || (el - before.1).abs() > 1e-3 || (intensity - before.2).abs() > 1e-6 || (ambient - before.3).abs() > 1e-6 || color != before.4;
+        if changed && moved {
             let (a, e) = (az.to_radians(), el.to_radians());
             let dir = [e.cos() * a.sin(), e.sin(), e.cos() * a.cos()];
             self.scene_edit(Command::SetLight {
@@ -909,7 +1001,7 @@ impl StudioApp {
             });
         }
         let c = &project.scene.camera.camera;
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::VIDEO_CAMERA, tr("scene.camera.render"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::VIDEO_CAMERA, tr("scene.camera.render"))).strong()).default_open(true).show(ui, |ui| {
             ui.label(RichText::new(format!("FOV {:.1}\u{b0}   {:.2}:1", c.fov_y.to_degrees(), c.aspect)).size(12.0));
             ui.label(RichText::new(format!("eye {}  \u{2192}  {}", super::fmt_vec3(c.eye), super::fmt_vec3(c.target))).size(11.0).color(theme::TEXT_DIM));
             if ui.button(format!("{}  {}", icons::VIDEO_CAMERA, tr("scene.view.through_camera"))).clicked() {
@@ -948,7 +1040,7 @@ impl StudioApp {
                 if let Some(e) = &dlg.error {
                     ui.label(RichText::new(e).color(Color32::from_rgb(0xff, 0x70, 0x70)));
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button(if dlg.save { tr("char.save") } else { tr("char.open") }).clicked() {
                         confirm = true;
                     }

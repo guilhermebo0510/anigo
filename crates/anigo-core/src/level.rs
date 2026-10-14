@@ -66,12 +66,45 @@ impl PrimitiveShape {
     }
 }
 
-/// Tipo de luz de um nó `Light` (dado reservado: o renderer congelado só tem a luz principal).
+/// Tipo de luz de um nó `Light`: o renderer cel desenha até [`crate::scene::MAX_RENDER_LIGHTS`] delas, somadas à luz
+/// principal. A luz aponta para -Z local do nó (como no Blender): girar o nó gira o feixe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LightShape {
+    /// Direcional extra (luz de preenchimento/recorte): só a direção importa, sem queda com a distância.
     Directional,
+    /// Ponto: irradia em todas as direções, com queda suave até o alcance.
     Point,
+    /// Holofote: cone com borda suave.
+    Spot,
+    /// Painel retangular de área (softbox): ilumina de um lado só, a partir do ponto mais próximo do retângulo.
+    Rect,
+}
+
+impl LightShape {
+    pub const ALL: [LightShape; 4] = [LightShape::Point, LightShape::Spot, LightShape::Rect, LightShape::Directional];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LightShape::Directional => "directional",
+            LightShape::Point => "point",
+            LightShape::Spot => "spot",
+            LightShape::Rect => "rect",
+        }
+    }
+}
+
+fn default_light_range() -> f32 {
+    8.0
+}
+fn default_spot_angle() -> f32 {
+    55.0
+}
+fn default_spot_softness() -> f32 {
+    0.35
+}
+fn default_light_size() -> [f32; 2] {
+    [1.0, 1.0]
 }
 
 /// Origem de um nó da cena: o que o gerou e, portanto, como a malha é obtida.
@@ -86,11 +119,24 @@ pub enum NodeSource {
     },
     /// Primitiva gerada (cubo, esfera…), 1 m de lado.
     Primitive { shape: PrimitiveShape },
-    /// Luz (dado reservado; sem efeito no render congelado).
+    /// Luz de cena (ponto, holofote, painel retangular ou direcional extra). Entra no render do cel como luz EXTRA, aditiva:
+    /// sem nenhuma luz de cena o quadro é exatamente o do motor anterior.
     Light {
         kind: LightShape,
         color: [f32; 3],
         intensity: f32,
+        /// Alcance em metros: a luz some suavemente até zero nessa distância (ponto, holofote e painel).
+        #[serde(default = "default_light_range")]
+        range: f32,
+        /// Abertura total do cone do holofote, em graus.
+        #[serde(default = "default_spot_angle")]
+        spot_angle_deg: f32,
+        /// Suavidade da borda do cone (0 = corte duro, 1 = degradê até o centro).
+        #[serde(default = "default_spot_softness")]
+        spot_softness: f32,
+        /// Largura × altura do painel retangular, em metros.
+        #[serde(default = "default_light_size")]
+        size: [f32; 2],
     },
     /// Câmera de cena com lente real: distância focal e sensor em milímetros.
     Camera {
@@ -114,6 +160,25 @@ impl NodeSource {
             focal_mm: 35.0,
             sensor_width_mm: 24.89,
             sensor_height_mm: 18.66,
+        }
+    }
+
+    /// Luz de cena com valores de partida sensatos para cada tipo.
+    pub fn default_light(kind: LightShape) -> Self {
+        let (intensity, range) = match kind {
+            LightShape::Directional => (0.6, default_light_range()),
+            LightShape::Point => (1.6, 8.0),
+            LightShape::Spot => (2.2, 12.0),
+            LightShape::Rect => (1.8, 6.0),
+        };
+        NodeSource::Light {
+            kind,
+            color: [1.0, 0.96, 0.88],
+            intensity,
+            range,
+            spot_angle_deg: default_spot_angle(),
+            spot_softness: default_spot_softness(),
+            size: default_light_size(),
         }
     }
 
@@ -141,13 +206,31 @@ impl NodeSource {
                 }
             }
             NodeSource::Primitive { .. } => {}
-            NodeSource::Light { color, intensity, .. } => {
+            NodeSource::Light { color, intensity, range, spot_angle_deg, spot_softness, size, .. } => {
                 for c in color {
                     finite("light.color", *c)?;
                 }
                 finite("light.intensity", *intensity)?;
                 if !(0.0..=32.0).contains(intensity) {
                     return Err("light.intensity must be within [0, 32]".into());
+                }
+                finite("light.range", *range)?;
+                if !(0.05..=500.0).contains(range) {
+                    return Err("light.range must be within [0.05, 500] m".into());
+                }
+                finite("light.spot_angle_deg", *spot_angle_deg)?;
+                if !(1.0..=170.0).contains(spot_angle_deg) {
+                    return Err("light.spot_angle_deg must be within [1, 170]".into());
+                }
+                finite("light.spot_softness", *spot_softness)?;
+                if !(0.0..=1.0).contains(spot_softness) {
+                    return Err("light.spot_softness must be within [0, 1]".into());
+                }
+                for v in size {
+                    finite("light.size", *v)?;
+                    if !(0.05..=50.0).contains(v) {
+                        return Err("light.size must be within [0.05, 50] m".into());
+                    }
                 }
             }
             NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm } => {
@@ -973,6 +1056,26 @@ pub fn plan_place_camera(state: &ProjectState, label: &str, transform: Transform
     )
 }
 
+/// Comando para criar uma luz de cena (ponto, holofote, painel retangular ou direcional extra) como nó `Light`: ela se move,
+/// gira, duplica e entra no Outliner como qualquer outro nó, e o renderer cel a desenha como luz extra.
+pub fn plan_place_light(state: &ProjectState, label: &str, transform: Transform, source: NodeSource, taken: &BTreeSet<NodeId>) -> (Command, NodeId) {
+    let node_id = unique_node_id(state, label, taken);
+    (
+        Command::AddNode {
+            node_id: node_id.clone(),
+            name: unique_name(state, label),
+            parent_id: None,
+            node_kind: NodeKind::Light,
+            transform,
+            mesh: None,
+            material_id: None,
+            index: (state.scene.nodes.len() + taken.len()) as u32,
+            attrs: Some(NodeAttrs { source: Some(source), ..Default::default() }),
+        },
+        node_id,
+    )
+}
+
 /// Comando `SetCamera` que faz a câmera de render do projeto olhar por um nó câmera de cena
 /// (posição/direção do nó + FOV da lente).
 pub fn camera_command_from_node(state: &ProjectState, node: &NodeId) -> Result<Command, PlanError> {
@@ -1002,6 +1105,7 @@ pub fn camera_command_from_node(state: &ProjectState, node: &NodeId) -> Result<C
 mod tests {
     use super::*;
     use crate::ids::MaterialId;
+    use glam::Quat;
 
     fn base() -> ProjectState {
         ProjectState::default()
@@ -1237,6 +1341,54 @@ mod tests {
         assert!((cam.fov_y.to_degrees() - vertical_fov(35.0, 18.66).to_degrees()).abs() < 1e-3);
         assert!(cam.target.z < cam.eye.z, "olha para -Z");
         let _ = MaterialId::canonical_default();
+    }
+
+    fn place_light(s: &mut ProjectState, kind: LightShape, t: Transform) -> NodeId {
+        let (cmd, id) = plan_place_light(s, "Luz", t, NodeSource::default_light(kind), &BTreeSet::new());
+        cmd.apply(s).expect("add light");
+        id
+    }
+
+    #[test]
+    fn scene_lights_resolve_to_world_position_and_aim_down_minus_z() {
+        let mut s = base();
+        assert!(s.render_lights().is_empty(), "sem nós Light não há luzes de cena");
+        // girar -90° em X faz o -Z local apontar para -Y... (0,-1,0): holofote olhando para o chão
+        let down = Quat::from_rotation_arc(Vec3::NEG_Z, Vec3::NEG_Y);
+        place_light(&mut s, LightShape::Spot, Transform { translation: Vec3::new(1.0, 3.0, -2.0), rotation: down, scale: Vec3::ONE });
+        let lights = s.render_lights();
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].kind, LightShape::Spot);
+        assert!((Vec3::from_array(lights[0].position) - Vec3::new(1.0, 3.0, -2.0)).length() < 1e-5);
+        assert!((Vec3::from_array(lights[0].direction) - Vec3::NEG_Y).length() < 1e-5);
+        assert_eq!(s.to_scene(&|_| None).extra_lights, lights, "to_scene leva as mesmas luzes ao renderer");
+    }
+
+    #[test]
+    fn hidden_dark_and_surplus_lights_are_not_sent_to_the_renderer() {
+        let mut s = base();
+        for i in 0..(crate::scene::MAX_RENDER_LIGHTS + 3) {
+            place_light(&mut s, LightShape::Point, Transform::from_translation(Vec3::new(i as f32, 1.0, 0.0)));
+        }
+        assert_eq!(s.render_lights().len(), crate::scene::MAX_RENDER_LIGHTS);
+        let first = s.scene.nodes.iter().find(|n| matches!(n.source, Some(NodeSource::Light { .. }))).unwrap().node_id.clone();
+        let slot = s.scene.nodes.iter_mut().find(|n| n.node_id == first).unwrap();
+        slot.visible = false;
+        assert!(s.render_lights().iter().all(|l| l.position[0] > 0.5), "a luz oculta sumiu da lista");
+    }
+
+    #[test]
+    fn light_parameters_are_validated_and_old_projects_load_with_defaults() {
+        let bad = NodeSource::Light { kind: LightShape::Spot, color: [1.0; 3], intensity: 1.0, range: 8.0, spot_angle_deg: 200.0, spot_softness: 0.3, size: [1.0, 1.0] };
+        assert!(bad.validate().is_err());
+        let nan = NodeSource::Light { kind: LightShape::Point, color: [1.0; 3], intensity: f32::NAN, range: 8.0, spot_angle_deg: 55.0, spot_softness: 0.3, size: [1.0, 1.0] };
+        assert!(nan.validate().is_err());
+        for k in LightShape::ALL {
+            assert!(NodeSource::default_light(k).validate().is_ok());
+        }
+        // projeto salvo antes dos campos novos: só tipo, cor e intensidade
+        let old: NodeSource = serde_json::from_str(r#"{"type":"light","kind":"point","color":[1,1,1],"intensity":0.5}"#).expect("formato antigo carrega");
+        assert!(matches!(old, NodeSource::Light { range, .. } if (range - 8.0).abs() < 1e-6));
     }
 
     // ---------------------------------------------------------------------------------------

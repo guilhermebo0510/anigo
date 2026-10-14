@@ -1,6 +1,7 @@
 //! Painéis do Posing (direita): árvore de ossos + osso ativo + ações (ferramenta "Estrutura óssea"),
 //! IK/olhar/pés/equilíbrio (ferramenta "Cinemática inversa") e presets/mãos/Biblioteca de poses.
 
+use super::super::props_tabs::{PropTab, TabSet};
 use super::viewport::PoseTool;
 use super::{describe_pose, HandSide, StudioApp};
 use crate::i18n::tr;
@@ -22,25 +23,27 @@ impl StudioApp {
     }
 
     pub(crate) fn pose_inspector_body(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
+        let (tab, mut content) = self.tabbed(ui, TabSet::Posing);
+        let ui = &mut content;
+        ui.add_space(4.0);
         let tool = self.posing_tool();
-        let (title, icon) = match tool {
-            PoseTool::Rig => ("tool.rig", icons::BONE),
-            PoseTool::Ik => ("tool.ik", icons::TARGET),
-            PoseTool::Presets => ("tool.poses_preset", icons::PERSON_SIMPLE_RUN),
-        };
-        ui.horizontal(|ui| {
+        crate::app::props_tabs::props_scroll(ui, "props", |ui| {
+            if tab == PropTab::History {
+                self.pose_history_section(ui);
+                return;
+            }
+            let (title, icon) = match tool {
+                PoseTool::Rig => ("tool.rig", icons::BONE),
+                PoseTool::Ik => ("tool.ik", icons::TARGET),
+                PoseTool::Presets => ("tool.poses_preset", icons::PERSON_SIMPLE_RUN),
+            };
             ui.label(RichText::new(format!("{icon}  {}", tr(title))).strong().size(14.0));
-        });
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.separator();
             match tool {
                 PoseTool::Rig => self.rig_panel(ui),
                 PoseTool::Ik => self.ik_panel(ui),
                 PoseTool::Presets => self.presets_panel(ui),
             }
-            ui.add_space(8.0);
-            self.pose_history_section(ui);
         });
     }
 
@@ -52,14 +55,14 @@ impl StudioApp {
         self.limits_row(ui);
         ui.add_space(6.0);
         if let Some(b) = self.pose_ui.active {
-            egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::SLIDERS, tr(&format!("pose.bone.{}", BONE_NAMES[b])))).strong()).default_open(true).show(ui, |ui| {
+            crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::SLIDERS, tr(&format!("pose.bone.{}", BONE_NAMES[b])))).strong()).default_open(true).show(ui, |ui| {
                 self.bone_panel(ui, b);
             });
         } else {
             ui.label(RichText::new(tr("pose.select_hint")).color(theme::TEXT_DIM));
         }
         ui.add_space(6.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::BONE, tr("pose.tree"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::BONE, tr("pose.tree"))).strong()).default_open(true).show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("pose_bone_tree").max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
                 self.bone_tree(ui);
             });
@@ -93,7 +96,7 @@ impl StudioApp {
     }
 
     fn limits_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("pose.limits")).color(theme::TEXT_DIM));
             for (p, key) in [(LimitProfile::Human, "pose.limits.human"), (LimitProfile::Anime, "pose.limits.anime"), (LimitProfile::Free, "pose.limits.free")] {
                 ui.selectable_value(&mut self.pose_ui.profile, p, tr(key));
@@ -121,7 +124,7 @@ impl StudioApp {
                 p = BONE_PARENTS[pi];
             }
             let depth = depth.saturating_sub(1);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(depth as f32 * 12.0);
                 let sel = self.pose_ui.selection.contains(&b);
                 let side_col = if anigo_core::pose::is_left_bone(b) {
@@ -157,7 +160,7 @@ impl StudioApp {
         let q = pose.rotation(b);
         let mut e = quat_to_euler_deg(q);
         let opts = self.pose_ui.edit_opts();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Euler XYZ").color(theme::TEXT_DIM));
             let mut changed = false;
             for (i, c) in ["X", "Y", "Z"].iter().enumerate() {
@@ -170,7 +173,7 @@ impl StudioApp {
                 self.pose_live(target, PoseOp::Edit);
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Quat").color(theme::TEXT_DIM));
             ui.label(RichText::new(format!("{:+.3} {:+.3} {:+.3} {:+.3}", q.x, q.y, q.z, q.w)).monospace().size(11.5));
         });
@@ -194,7 +197,7 @@ impl StudioApp {
                 ui.label(RichText::new(tr("pose.no_limit")).color(theme::TEXT_DIM).size(11.5));
             }
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button(format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, tr("pose.reset_bone"))).clicked() {
                 self.pose_reset_bone(b);
             }
@@ -207,7 +210,7 @@ impl StudioApp {
     /// Linha de 3 `DragValue` (metros). Devolve `true` quando algum valor mudou.
     fn translation_row(&mut self, ui: &mut egui::Ui, label: &str, t: &mut [f32; 3]) -> bool {
         let mut changed = false;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(label).color(theme::TEXT_DIM));
             for (i, c) in ["X", "Y", "Z"].iter().enumerate() {
                 ui.label(*c);
@@ -222,9 +225,9 @@ impl StudioApp {
     fn ik_panel(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("pose.ik.hint")).color(theme::TEXT_DIM).size(11.5));
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::LINK, tr("pose.ik.limbs"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::LINK, tr("pose.ik.limbs"))).strong()).default_open(true).show(ui, |ui| {
             for limb in Limb::ALL {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(format!("{:<14}", tr(&format!("pose.limb.{}", limb.key()))));
                     let i = super::limb_index(limb);
                     if ui.selectable_label(!self.pose_ui.limb_ik[i], "FK").clicked() {
@@ -235,7 +238,7 @@ impl StudioApp {
                     }
                 });
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button(tr("pose.ik.all")).clicked() {
                     self.pose_ui.limb_ik = [true; 4];
                 }
@@ -247,7 +250,7 @@ impl StudioApp {
             ui.label(RichText::new(tr("pose.ik.drag_hint")).color(theme::TEXT_DIM).size(11.0));
         });
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::FOOTPRINTS, tr("pose.feet"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::FOOTPRINTS, tr("pose.feet"))).strong()).default_open(true).show(ui, |ui| {
             ui.checkbox(&mut self.pose_ui.foot_lock, tr("pose.foot_lock")).on_hover_text(tr("pose.foot_lock_tip"));
             ui.checkbox(&mut self.pose_ui.auto_ground, tr("pose.auto_ground")).on_hover_text(tr("pose.auto_ground_tip"));
             if ui.button(format!("{}  {}", icons::ARROW_LINE_DOWN, tr("pose.ground_now"))).clicked() {
@@ -269,13 +272,13 @@ impl StudioApp {
             }
         });
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::EYE, tr("pose.gaze"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::EYE, tr("pose.gaze"))).strong()).default_open(true).show(ui, |ui| {
             ui.checkbox(&mut self.pose_ui.gaze.enabled, tr("pose.gaze.show")).on_hover_text(tr("pose.gaze.tip"));
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(tr("pose.gaze.weight")).color(theme::TEXT_DIM));
                 ui.add(egui::Slider::new(&mut self.pose_ui.gaze.weight, 0.0..=1.0).fixed_decimals(2));
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button(format!("{}  {}", icons::CROSSHAIR, tr("pose.gaze.apply"))).clicked() {
                     let rig = self.pose_rig();
                     let t = pose_ik::look_at_head(&rig, &self.pose_now(), self.pose_ui.gaze.target, self.pose_ui.gaze.weight, 0.35, self.pose_ui.profile).pose;
@@ -297,7 +300,7 @@ impl StudioApp {
             });
         });
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::SCALES, tr("pose.balance"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::SCALES, tr("pose.balance"))).strong()).default_open(true).show(ui, |ui| {
             ui.checkbox(&mut self.pose_ui.show_balance, tr("pose.balance.show"));
             let rig = self.pose_rig();
             let (com, _hull, inside) = anigo_core::pose::balance(&rig, &self.pose_now(), 0.03);
@@ -310,7 +313,7 @@ impl StudioApp {
     // ============================================================ ferramenta: presets e biblioteca
 
     fn presets_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::PERSON, tr("pose.presets.body"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::PERSON, tr("pose.presets.body"))).strong()).default_open(true).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for (key, icon) in [("t", icons::PERSON_ARMS_SPREAD), ("a", icons::PERSON), ("standing", icons::PERSON_SIMPLE), ("sitting", icons::CHAIR), ("walking", icons::PERSON_SIMPLE_WALK), ("action", icons::PERSON_SIMPLE_RUN)] {
                     if ui.button(format!("{icon}  {}", tr(&format!("pose.preset.{key}")))).clicked() {
@@ -320,8 +323,8 @@ impl StudioApp {
             });
         });
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::HAND, tr("pose.presets.hands"))).strong()).default_open(true).show(ui, |ui| {
-            ui.horizontal(|ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::HAND, tr("pose.presets.hands"))).strong()).default_open(true).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.pose_ui.hand_side, HandSide::Left, tr("pose.hand.left"));
                 ui.selectable_value(&mut self.pose_ui.hand_side, HandSide::Right, tr("pose.hand.right"));
                 ui.selectable_value(&mut self.pose_ui.hand_side, HandSide::Both, tr("pose.hand.both"));
@@ -338,7 +341,7 @@ impl StudioApp {
             let mut curls = if side == HandSide::Right { pose.hands.right } else { pose.hands.left };
             let mut changed = false;
             for (i, key) in ["pose.finger.thumb", "pose.finger.index", "pose.finger.middle", "pose.finger.ring", "pose.finger.little"].iter().enumerate() {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!("{:<9}", tr(key))).color(theme::TEXT_DIM));
                     changed |= ui.add(egui::Slider::new(&mut curls[i], 0.0..=1.0).fixed_decimals(2)).changed();
                 });
@@ -356,13 +359,13 @@ impl StudioApp {
             ui.label(RichText::new(tr("pose.hand.note")).color(theme::TEXT_DIM).size(11.0));
         });
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {}", icons::STACK, tr("pose.lib"))).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {}", icons::STACK, tr("pose.lib"))).strong()).default_open(true).show(ui, |ui| {
             self.library_section(ui);
         });
     }
 
     fn library_section(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.pose_ui.lib_name).hint_text(tr("pose.lib.name")).desired_width(170.0));
             if ui.button(format!("{}  {}", icons::FLOPPY_DISK, tr("pose.lib.save"))).on_hover_text(tr("pose.lib.save_tip")).clicked() {
                 self.pose_save_to_library();
@@ -373,13 +376,13 @@ impl StudioApp {
             ui.label(RichText::new(self.pose_ui.preset_status.clone()).color(theme::TEXT_DIM).size(11.5));
         }
         ui.separator();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} ({})", tr("pose.lib.assets"), self.pose_ui.poses.len())).strong());
             if ui.button(icons::ARROWS_CLOCKWISE).on_hover_text(tr("pose.lib.refresh")).clicked() || !self.pose_ui.poses_loaded {
                 self.pose_refresh_library();
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("pose.lib.blend")).color(theme::TEXT_DIM));
             ui.add(egui::Slider::new(&mut self.pose_ui.blend, 0.0..=1.5).fixed_decimals(2).suffix(""));
         });
@@ -389,13 +392,13 @@ impl StudioApp {
         }
         let cards = self.pose_ui.poses.clone();
         for (i, c) in cards.iter().enumerate() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(44.0, 56.0), Sense::hover());
                 stick_figure(ui.painter(), r, &c.asset.pose);
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&c.name).strong());
                     ui.label(RichText::new(format!("rev {} \u{b7} {} {}", c.revision, c.asset.mask().len(), tr("pose.lib.bones"))).color(theme::TEXT_DIM).size(11.0));
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.small_button(tr("pose.lib.apply")).clicked() {
                             self.pose_apply_asset(i, false);
                         }
@@ -413,7 +416,7 @@ impl StudioApp {
     fn pose_history_section(&mut self, ui: &mut egui::Ui) {
         let undo: Vec<String> = self.core.history().undo_descriptions().iter().map(|s| s.to_string()).collect();
         let redo: Vec<String> = self.core.history().redo_descriptions().iter().map(|s| s.to_string()).collect();
-        egui::CollapsingHeader::new(RichText::new(format!("{}  {} ({} / {})", icons::CLOCK_COUNTER_CLOCKWISE, tr("pose.history"), undo.len(), redo.len())).strong()).default_open(false).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{}  {} ({} / {})", icons::CLOCK_COUNTER_CLOCKWISE, tr("pose.history"), undo.len(), redo.len())).strong()).default_open(false).show(ui, |ui| {
             let mut jump: Option<usize> = None;
             let r0 = ui.selectable_label(undo.is_empty(), RichText::new(tr("pose.history.initial")));
             if r0.clicked() {
@@ -442,7 +445,7 @@ impl StudioApp {
 
 /// Barra de limite: faixa permitida em verde, marcador do valor atual (vermelho se fora).
 fn limit_bar(ui: &mut egui::Ui, label: &str, value: f32, range: [f32; 2]) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(format!("{label:<8}")).color(theme::TEXT_DIM).size(11.5));
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(210.0) - 54.0, 14.0), Sense::hover());
         let span = (range[1] - range[0]).max(1.0);

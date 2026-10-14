@@ -7,10 +7,11 @@ use super::StudioApp;
 use crate::i18n::tr;
 use crate::icons;
 use crate::modeling::sculpt::{
-    brush_for_tool_index, brush_tool_id, px_to_local_radius, ring_points_world, tool_index_for_brush, Resize, ScriptedStroke,
-    StrokeMods, ViewInfo, RADIUS_MAX_PX, RADIUS_MIN_PX, SCULPT_BRUSHES, STRENGTH_MAX,
+    brush_for_tool_index, brush_tool_id, px_to_local_radius, ring_points_world, Resize, ScriptedStroke,
+    StrokeMods, ViewInfo, RADIUS_MAX_PX, RADIUS_MIN_PX, STRENGTH_MAX,
 };
 use crate::theme;
+use super::props_tabs::PropTab;
 use anigo_modeling::sculpt::brush::{BrushKind, Dab};
 use anigo_modeling::sculpt::falloff::{CurveProfile, Falloff};
 use egui::{Color32, Key, Pos2, Rect, RichText, Stroke};
@@ -21,7 +22,7 @@ fn gv(p: egui::Vec2) -> Vec2 {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).strong())
+    crate::app::props_tabs::header(ui, RichText::new(title).strong())
         .id_salt(("sculpt_section", title))
         .default_open(open)
         .show(ui, add);
@@ -136,17 +137,10 @@ impl StudioApp {
         }
     }
 
-    fn select_brush(&mut self, kind: BrushKind) {
-        if let Some(i) = tool_index_for_brush(kind) {
-            self.tool_idx.insert(self.ws, i);
-        }
-        self.sculpt.active = kind;
-    }
-
     // ------------------------------------------------------------------ painel
 
     /// Painel do Inspector no modo Escultura (pincéis, raio/força, simetria, falloff, máscara…).
-    pub(crate) fn inspector_sculpt_panel(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn inspector_sculpt_panel(&mut self, ui: &mut egui::Ui, tab: PropTab) {
         self.sculpt_sync_tool();
         self.sculpt.sync(&self.modeling);
         if let Some(e) = self.sculpt.error.clone() {
@@ -154,245 +148,237 @@ impl StudioApp {
             ui.add_space(4.0);
         }
 
-        section(ui, "Pincéis", true, |ui| {
-            let mut pick = None;
-            egui::Grid::new("sculpt_brushes").spacing([4.0, 4.0]).show(ui, |ui| {
-                for (i, &k) in SCULPT_BRUSHES.iter().enumerate() {
-                    let icon = crate::app::inspector::MODELAGEM_SCULPT
-                        .iter()
-                        .find(|t| t.id == brush_tool_id(k))
-                        .map(|t| t.icon)
-                        .unwrap_or(icons::CIRCLE);
-                    let btn = egui::Button::new(RichText::new(icon).size(20.0))
-                        .min_size(egui::vec2(38.0, 34.0))
-                        .selected(self.sculpt.active == k);
-                    if ui.add(btn).on_hover_text(tr(brush_tool_id(k))).clicked() {
-                        pick = Some(k);
-                    }
-                    if (i + 1) % 5 == 0 {
-                        ui.end_row();
-                    }
-                }
-            });
-            if let Some(k) = pick {
-                self.select_brush(k);
-            }
-        });
-
         let kind = self.sculpt.active;
-        section(ui, tr(brush_tool_id(kind)), true, |ui| {
-            let is_mask = kind.is_mask();
-            let default_strength = anigo_modeling::sculpt::brush::Brush::new(kind).strength;
-            let smax = if default_strength <= 0.1 { 0.5 } else { STRENGTH_MAX };
-            let slot = self.sculpt.slot_mut(kind);
-            ui.add(egui::Slider::new(&mut slot.radius_px, RADIUS_MIN_PX..=RADIUS_MAX_PX).text("Raio (px)").logarithmic(true));
-            ui.add(egui::Slider::new(&mut slot.brush.strength, 0.0..=smax).text("Força"));
-            let mut spacing_pct = slot.brush.spacing * 100.0;
-            if ui.add(egui::Slider::new(&mut spacing_pct, 1.0..=100.0).text("Espaçamento %")).changed() {
-                slot.brush.spacing = (spacing_pct / 100.0).clamp(0.01, 10.0);
-            }
-            ui.checkbox(&mut slot.brush.direction_invert, "Inverter (Ctrl)");
-            if !is_mask {
-                ui.checkbox(&mut slot.brush.use_frontface, "Só vértices voltados para a câmera");
-            }
-            match kind {
-                BrushKind::Draw | BrushKind::Inflate => {
-                    ui.checkbox(&mut slot.brush.accumulate, "Acumular entre dabs");
+        if tab == PropTab::Brush {
+            section(ui, tr(brush_tool_id(kind)), true, |ui| {
+                let is_mask = kind.is_mask();
+                let default_strength = anigo_modeling::sculpt::brush::Brush::new(kind).strength;
+                let smax = if default_strength <= 0.1 { 0.5 } else { STRENGTH_MAX };
+                let slot = self.sculpt.slot_mut(kind);
+                ui.add(crate::app::props_tabs::lab("Raio (px)", egui::Slider::new(&mut slot.radius_px, RADIUS_MIN_PX..=RADIUS_MAX_PX).logarithmic(true)));
+                ui.add(crate::app::props_tabs::lab("Força", egui::Slider::new(&mut slot.brush.strength, 0.0..=smax)));
+                let mut spacing_pct = slot.brush.spacing * 100.0;
+                if ui.add(crate::app::props_tabs::lab("Espaçamento %", egui::Slider::new(&mut spacing_pct, 1.0..=100.0))).changed() {
+                    slot.brush.spacing = (spacing_pct / 100.0).clamp(0.01, 10.0);
                 }
-                BrushKind::ClayStrips => {
-                    ui.add(egui::Slider::new(&mut slot.brush.strip_width, 0.1..=2.0).text("Largura da tira"));
+                ui.checkbox(&mut slot.brush.direction_invert, "Inverter (Ctrl)");
+                if !is_mask {
+                    ui.checkbox(&mut slot.brush.use_frontface, "Só vértices voltados para a câmera");
                 }
-                BrushKind::Layer => {
-                    ui.add(egui::Slider::new(&mut slot.brush.layer_height, 0.0..=0.5).text("Altura da camada"));
-                }
-                BrushKind::Crease => {
-                    ui.add(egui::Slider::new(&mut slot.brush.pinch_factor, 0.0..=1.0).text("Pinçar"));
-                }
-                BrushKind::Elastic => {
-                    ui.add(egui::Slider::new(&mut slot.brush.poisson_ratio, -0.9..=0.49).text("Poisson"));
-                }
-                BrushKind::Clay | BrushKind::Flatten | BrushKind::Fill | BrushKind::Scrape => {
-                    ui.add(egui::Slider::new(&mut slot.brush.plane_offset, -1.0..=1.0).text("Deslocar plano"));
-                }
-                _ => {}
-            }
-            ui.add(egui::Slider::new(&mut slot.brush.stabilize_radius, 0.0..=3.0).text("Estabilizador"));
-            ui.add(egui::Slider::new(&mut slot.brush.stroke_smooth, 0.0..=0.95).text("Suavizar traço"));
-        });
-
-        section(ui, "Falloff", false, |ui| {
-            let kind = self.sculpt.active;
-            let slot = self.sculpt.slot_mut(kind);
-            let mut chosen: Option<Falloff> = None;
-            egui::ComboBox::from_id_salt("sculpt_falloff")
-                .selected_text(falloff_label(&slot.brush.falloff))
-                .show_ui(ui, |ui| {
-                    for f in Falloff::presets() {
-                        let sel = slot.brush.falloff == f;
-                        if ui.selectable_label(sel, falloff_label(&f)).clicked() {
-                            chosen = Some(f);
-                        }
+                match kind {
+                    BrushKind::Draw | BrushKind::Inflate => {
+                        ui.checkbox(&mut slot.brush.accumulate, "Acumular entre dabs");
                     }
-                    let is_custom = matches!(slot.brush.falloff, Falloff::Custom(_));
-                    if ui.selectable_label(is_custom, "Personalizada").clicked() {
-                        chosen = Some(slot.curve.to_falloff());
+                    BrushKind::ClayStrips => {
+                        ui.add(crate::app::props_tabs::lab("Largura da tira", egui::Slider::new(&mut slot.brush.strip_width, 0.1..=2.0)));
                     }
-                });
-            if let Some(f) = chosen {
-                slot.brush.falloff = f;
-            }
-            let custom = matches!(slot.brush.falloff, Falloff::Custom(_));
-            let falloff = slot.brush.falloff.clone();
-            let changed = falloff_plot(ui, &falloff, custom.then_some(&mut slot.curve));
-            if changed {
-                slot.brush.falloff = slot.curve.to_falloff();
-            }
-            if custom {
-                ui.label(RichText::new("Arraste os pontos; duplo clique cria, clique direito remove.").size(11.0).color(theme::TEXT_DIM));
-            }
-        });
-
-        section(ui, "Simetria", true, |ui| {
-            ui.horizontal(|ui| {
-                for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
-                    ui.toggle_value(&mut self.sculpt.symmetry.mirror[i], RichText::new(*name).color(axis_color(i)).strong());
-                }
-                ui.label(RichText::new("Espelho").size(12.0).color(theme::TEXT_DIM));
-            });
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Radial").size(12.0).color(theme::TEXT_DIM));
-                for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
-                    ui.label(RichText::new(*name).color(axis_color(i)).strong());
-                    let mut n = self.sculpt.symmetry.radial[i];
-                    if ui.add(egui::DragValue::new(&mut n).range(0..=anigo_modeling::sculpt::symmetry::MAX_RADIAL).speed(0.1)).changed() {
-                        self.sculpt.symmetry.radial[i] = n;
+                    BrushKind::Layer => {
+                        ui.add(crate::app::props_tabs::lab("Altura da camada", egui::Slider::new(&mut slot.brush.layer_height, 0.0..=0.5)));
                     }
+                    BrushKind::Crease => {
+                        ui.add(crate::app::props_tabs::lab("Pinçar", egui::Slider::new(&mut slot.brush.pinch_factor, 0.0..=1.0)));
+                    }
+                    BrushKind::Elastic => {
+                        ui.add(crate::app::props_tabs::lab("Poisson", egui::Slider::new(&mut slot.brush.poisson_ratio, -0.9..=0.49)));
+                    }
+                    BrushKind::Clay | BrushKind::Flatten | BrushKind::Fill | BrushKind::Scrape => {
+                        ui.add(crate::app::props_tabs::lab("Deslocar plano", egui::Slider::new(&mut slot.brush.plane_offset, -1.0..=1.0)));
+                    }
+                    _ => {}
                 }
+                ui.add(crate::app::props_tabs::lab("Estabilizador", egui::Slider::new(&mut slot.brush.stabilize_radius, 0.0..=3.0)));
+                ui.add(crate::app::props_tabs::lab("Suavizar traço", egui::Slider::new(&mut slot.brush.stroke_smooth, 0.0..=0.95)));
             });
-        });
+        }
 
-        section(ui, "Auto-máscara", false, |ui| {
-            let kind = self.sculpt.active;
-            let am = &mut self.sculpt.slot_mut(kind).brush.automask;
-            let mut limit_on = am.normal_limit.is_some();
-            if ui.checkbox(&mut limit_on, "Limite de normal").changed() {
-                am.normal_limit = limit_on.then_some(60f32.to_radians());
-                if limit_on && am.normal_falloff == 0.0 {
-                    am.normal_falloff = 10f32.to_radians();
-                }
-            }
-            if let Some(l) = am.normal_limit.as_mut() {
-                let mut deg = l.to_degrees();
-                if ui.add(egui::Slider::new(&mut deg, 1.0..=180.0).text("Ângulo °")).changed() {
-                    *l = deg.to_radians().clamp(0.01, std::f32::consts::PI);
-                }
-            }
-            ui.checkbox(&mut am.face_set_from_stroke, "Face set do início do traço");
-            let mut cav = am.cavity.is_some();
-            if ui.checkbox(&mut cav, "Cavidade").changed() {
-                am.cavity = cav.then(Default::default);
-            }
-            if let Some(c) = am.cavity.as_mut() {
-                ui.add(egui::Slider::new(&mut c.strength, 0.1..=4.0).text("Sensibilidade"));
-                ui.checkbox(&mut c.invert, "Só saliências");
-            }
-            ui.checkbox(&mut am.topology_connected, "Topologia (conectado ao início)");
-            if am.topology_connected {
-                let mut d_on = am.topology_distance.is_some();
-                if ui.checkbox(&mut d_on, "Limitar distância").changed() {
-                    am.topology_distance = d_on.then_some(1.0);
-                }
-                if let Some(d) = am.topology_distance.as_mut() {
-                    ui.add(egui::Slider::new(d, 0.05..=10.0).logarithmic(true).text("Distância"));
-                }
-            }
-            ui.checkbox(&mut am.boundary, "Proteger bordas abertas");
-        });
-
-        section(ui, "Máscara global", true, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(format!("{}  Inverter", icons::SELECTION_INVERSE)).clicked() {
-                    let r = self.sculpt.mask_invert(&mut self.modeling);
-                    self.report(r.err());
-                }
-                if ui.button(format!("{}  Limpar", icons::SELECTION_SLASH)).clicked() {
-                    let r = self.sculpt.mask_clear(&mut self.modeling);
-                    self.report(r.err());
-                }
-            });
-            ui.label(RichText::new("Vértices mascarados (escuros) ficam protegidos dos pincéis.").size(11.0).color(theme::TEXT_DIM));
-        });
-
-        section(ui, "Remalhar", true, |ui| {
-            let suggested = self.modeling.active_object().map(|o| crate::modeling::sculpt::suggest_voxel_size(&o.mesh)).unwrap_or(0.05);
-            ui.horizontal(|ui| {
-                ui.label("Voxel");
-                ui.add(
-                    egui::DragValue::new(&mut self.sculpt.voxel_size)
-                        .range(0.0..=5.0)
-                        .speed(0.002)
-                        .fixed_decimals(3)
-                        .custom_formatter(move |v, _| if v <= 0.0 { format!("auto ({suggested:.3})") } else { format!("{v:.3}") }),
-                );
-                ui.add(egui::DragValue::new(&mut self.sculpt.voxel_smooth).range(0..=10).prefix("suavizar ").speed(0.1));
-            });
-            if ui.button(format!("{}  Voxel Remesh", icons::GRID_NINE)).clicked() {
-                let r = self.sculpt.voxel_remesh(&mut self.modeling);
-                self.report(r.err());
-            }
-            ui.add_space(4.0);
-            ui.checkbox(&mut self.sculpt.dyntopo, "Dyntopo (topologia dinâmica)");
-            if self.sculpt.dyntopo {
-                ui.add(egui::Slider::new(&mut self.sculpt.dyntopo_detail_px, 3.0..=80.0).text("Detalhe (px)"));
-                ui.label(RichText::new("Subdivide/colapsa sob o pincel; melhor em malhas de poucos milhares de faces.").size(11.0).color(theme::TEXT_DIM));
-            }
-        });
-
-        section(ui, "Malha", true, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Simetrizar");
-                egui::ComboBox::from_id_salt("sym_axis")
-                    .selected_text(["X", "Y", "Z"][self.sculpt.symmetrize_axis.min(2)])
-                    .width(44.0)
+        if tab == PropTab::Brush {
+            section(ui, "Falloff", false, |ui| {
+                let kind = self.sculpt.active;
+                let slot = self.sculpt.slot_mut(kind);
+                let mut chosen: Option<Falloff> = None;
+                crate::app::props_tabs::combo(ui, "sculpt_falloff")
+                    .selected_text(falloff_label(&slot.brush.falloff))
                     .show_ui(ui, |ui| {
-                        for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
-                            ui.selectable_value(&mut self.sculpt.symmetrize_axis, i, *n);
+                        for f in Falloff::presets() {
+                            let sel = slot.brush.falloff == f;
+                            if ui.selectable_label(sel, falloff_label(&f)).clicked() {
+                                chosen = Some(f);
+                            }
+                        }
+                        let is_custom = matches!(slot.brush.falloff, Falloff::Custom(_));
+                        if ui.selectable_label(is_custom, "Personalizada").clicked() {
+                            chosen = Some(slot.curve.to_falloff());
                         }
                     });
-            });
-            ui.horizontal_wrapped(|ui| {
-                let axis = self.sculpt.symmetrize_axis;
-                let n = ["X", "Y", "Z"][axis.min(2)];
-                if ui.button(format!("+{n} {} -{n}", icons::ARROW_RIGHT)).clicked() {
-                    let r = self.sculpt.symmetrize(&mut self.modeling, axis, true);
-                    self.report(r.err());
+                if let Some(f) = chosen {
+                    slot.brush.falloff = f;
                 }
-                if ui.button(format!("-{n} {} +{n}", icons::ARROW_RIGHT)).clicked() {
-                    let r = self.sculpt.symmetrize(&mut self.modeling, axis, false);
-                    self.report(r.err());
+                let custom = matches!(slot.brush.falloff, Falloff::Custom(_));
+                let falloff = slot.brush.falloff.clone();
+                let changed = falloff_plot(ui, &falloff, custom.then_some(&mut slot.curve));
+                if changed {
+                    slot.brush.falloff = slot.curve.to_falloff();
                 }
-            });
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut self.sculpt.smooth_all_iters).range(1..=20).suffix("×"));
-                if ui.button(format!("{}  Suavizar tudo", icons::DROP)).clicked() {
-                    let iters = self.sculpt.smooth_all_iters;
-                    let r = self.sculpt.smooth_all(&mut self.modeling, iters, 0.5);
-                    self.report(r.err());
+                if custom {
+                    ui.label(RichText::new("Arraste os pontos; duplo clique cria, clique direito remove.").size(11.0).color(theme::TEXT_DIM));
                 }
             });
-        });
+        }
 
-        section(ui, "Atalhos", false, |ui| {
-            for l in [
-                "Arrastar: traço   ·   Ctrl: inverte   ·   Shift: Suavizar",
-                "F: raio (arrastar)   ·   Shift+F: força",
-                "[ ]: raio   ·   Esc: cancela o traço",
-                "MMB / Alt+arrastar: orbitar   ·   Ctrl+Z: desfazer",
-            ] {
-                ui.label(RichText::new(l).size(11.0).color(theme::TEXT_DIM));
-            }
-        });
-        if let Some(s) = self.sculpt.last_stroke {
+        if tab == PropTab::Symmetry {
+            section(ui, "Simetria", true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
+                        ui.toggle_value(&mut self.sculpt.symmetry.mirror[i], RichText::new(*name).color(axis_color(i)).strong());
+                    }
+                    ui.label(RichText::new("Espelho").size(12.0).color(theme::TEXT_DIM));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Radial").size(12.0).color(theme::TEXT_DIM));
+                    for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
+                        ui.label(RichText::new(*name).color(axis_color(i)).strong());
+                        let mut n = self.sculpt.symmetry.radial[i];
+                        if ui.add(egui::DragValue::new(&mut n).range(0..=anigo_modeling::sculpt::symmetry::MAX_RADIAL).speed(0.1)).changed() {
+                            self.sculpt.symmetry.radial[i] = n;
+                        }
+                    }
+                });
+            });
+        }
+
+        if tab == PropTab::Brush {
+            section(ui, "Auto-máscara", false, |ui| {
+                let kind = self.sculpt.active;
+                let am = &mut self.sculpt.slot_mut(kind).brush.automask;
+                let mut limit_on = am.normal_limit.is_some();
+                if ui.checkbox(&mut limit_on, "Limite de normal").changed() {
+                    am.normal_limit = limit_on.then_some(60f32.to_radians());
+                    if limit_on && am.normal_falloff == 0.0 {
+                        am.normal_falloff = 10f32.to_radians();
+                    }
+                }
+                if let Some(l) = am.normal_limit.as_mut() {
+                    let mut deg = l.to_degrees();
+                    if ui.add(crate::app::props_tabs::lab("Ângulo °", egui::Slider::new(&mut deg, 1.0..=180.0))).changed() {
+                        *l = deg.to_radians().clamp(0.01, std::f32::consts::PI);
+                    }
+                }
+                ui.checkbox(&mut am.face_set_from_stroke, "Face set do início do traço");
+                let mut cav = am.cavity.is_some();
+                if ui.checkbox(&mut cav, "Cavidade").changed() {
+                    am.cavity = cav.then(Default::default);
+                }
+                if let Some(c) = am.cavity.as_mut() {
+                    ui.add(crate::app::props_tabs::lab("Sensibilidade", egui::Slider::new(&mut c.strength, 0.1..=4.0)));
+                    ui.checkbox(&mut c.invert, "Só saliências");
+                }
+                ui.checkbox(&mut am.topology_connected, "Topologia (conectado ao início)");
+                if am.topology_connected {
+                    let mut d_on = am.topology_distance.is_some();
+                    if ui.checkbox(&mut d_on, "Limitar distância").changed() {
+                        am.topology_distance = d_on.then_some(1.0);
+                    }
+                    if let Some(d) = am.topology_distance.as_mut() {
+                        ui.add(crate::app::props_tabs::lab("Distância", egui::Slider::new(d, 0.05..=10.0).logarithmic(true)));
+                    }
+                }
+                ui.checkbox(&mut am.boundary, "Proteger bordas abertas");
+            });
+        }
+
+        if tab == PropTab::Symmetry {
+            section(ui, "Máscara global", true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(format!("{}  Inverter", icons::SELECTION_INVERSE)).clicked() {
+                        let r = self.sculpt.mask_invert(&mut self.modeling);
+                        self.report(r.err());
+                    }
+                    if ui.button(format!("{}  Limpar", icons::SELECTION_SLASH)).clicked() {
+                        let r = self.sculpt.mask_clear(&mut self.modeling);
+                        self.report(r.err());
+                    }
+                });
+                ui.label(RichText::new("Vértices mascarados (escuros) ficam protegidos dos pincéis.").size(11.0).color(theme::TEXT_DIM));
+            });
+        }
+
+        if tab == PropTab::Mesh {
+            section(ui, "Remalhar", true, |ui| {
+                let suggested = self.modeling.active_object().map(|o| crate::modeling::sculpt::suggest_voxel_size(&o.mesh)).unwrap_or(0.05);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Voxel");
+                    ui.add(
+                        egui::DragValue::new(&mut self.sculpt.voxel_size)
+                            .range(0.0..=5.0)
+                            .speed(0.002)
+                            .fixed_decimals(3)
+                            .custom_formatter(move |v, _| if v <= 0.0 { format!("auto ({suggested:.3})") } else { format!("{v:.3}") }),
+                    );
+                    ui.add(egui::DragValue::new(&mut self.sculpt.voxel_smooth).range(0..=10).prefix("suavizar ").speed(0.1));
+                });
+                ui.checkbox(&mut self.sculpt.voxel_shade_smooth, "Sombreamento suave").on_hover_text("O remalhar sai com sombreamento chapado (faixas na esfera). Ligado, as faces já saem suaves.");
+                if ui.button(format!("{}  Voxel Remesh", icons::GRID_NINE)).clicked() {
+                    let r = self.sculpt.voxel_remesh(&mut self.modeling);
+                    self.report(r.err());
+                }
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.sculpt.dyntopo, "Dyntopo (topologia dinâmica)");
+                if self.sculpt.dyntopo {
+                    ui.add(crate::app::props_tabs::lab("Detalhe (px)", egui::Slider::new(&mut self.sculpt.dyntopo_detail_px, 3.0..=80.0)));
+                    ui.label(RichText::new("Subdivide/colapsa sob o pincel; melhor em malhas de poucos milhares de faces.").size(11.0).color(theme::TEXT_DIM));
+                }
+            });
+        }
+
+        if tab == PropTab::Mesh {
+            section(ui, "Malha", true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Simetrizar");
+                    crate::app::props_tabs::combo(ui, "sym_axis")
+                        .selected_text(["X", "Y", "Z"][self.sculpt.symmetrize_axis.min(2)])
+                        .width(44.0)
+                        .show_ui(ui, |ui| {
+                            for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
+                                ui.selectable_value(&mut self.sculpt.symmetrize_axis, i, *n);
+                            }
+                        });
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let axis = self.sculpt.symmetrize_axis;
+                    let n = ["X", "Y", "Z"][axis.min(2)];
+                    if ui.button(format!("+{n} {} -{n}", icons::ARROW_RIGHT)).clicked() {
+                        let r = self.sculpt.symmetrize(&mut self.modeling, axis, true);
+                        self.report(r.err());
+                    }
+                    if ui.button(format!("-{n} {} +{n}", icons::ARROW_RIGHT)).clicked() {
+                        let r = self.sculpt.symmetrize(&mut self.modeling, axis, false);
+                        self.report(r.err());
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.sculpt.smooth_all_iters).range(1..=20).suffix("×"));
+                    if ui.button(format!("{}  Suavizar tudo", icons::DROP)).clicked() {
+                        let iters = self.sculpt.smooth_all_iters;
+                        let r = self.sculpt.smooth_all(&mut self.modeling, iters, 0.5);
+                        self.report(r.err());
+                    }
+                });
+            });
+        }
+
+        if tab == PropTab::Help {
+            section(ui, "Atalhos", false, |ui| {
+                for l in [
+                    "Arrastar: traço   ·   Ctrl: inverte   ·   Shift: Suavizar",
+                    "F: raio (arrastar)   ·   Shift+F: força",
+                    "[ ]: raio   ·   Esc: cancela o traço",
+                    "MMB / Alt+arrastar: orbitar   ·   Ctrl+Z: desfazer",
+                ] {
+                    ui.label(RichText::new(l).size(11.0).color(theme::TEXT_DIM));
+                }
+            });
+        }
+        if let (PropTab::Brush, Some(s)) = (tab, self.sculpt.last_stroke) {
             ui.label(RichText::new(format!("Último traço: {} dabs em {:.1} ms", s.dabs, s.millis)).size(11.0).color(theme::TEXT_DIM));
         }
     }

@@ -292,6 +292,8 @@ pub struct SculptState {
     /// 0 = automático (`suggest_voxel_size`).
     pub voxel_size: f32,
     pub voxel_smooth: u32,
+    /// Depois do Voxel Remesh marca as faces com sombreamento SUAVE (o remalhar sai chapado: a esfera aparece em faixas).
+    pub voxel_shade_smooth: bool,
     pub smooth_all_iters: u32,
     pub symmetrize_axis: usize,
     /// O botão primário foi apertado dentro do viewport em escultura (suprime caixa de seleção etc.).
@@ -340,6 +342,7 @@ impl SculptState {
             dyntopo_detail_px: 14.0,
             voxel_size: 0.0,
             voxel_smooth: 0,
+            voxel_shade_smooth: false,
             smooth_all_iters: 3,
             symmetrize_axis: 0,
             press_captured: false,
@@ -887,10 +890,16 @@ impl SculptState {
             smooth_iterations: self.voxel_smooth,
             ..VoxelParams::default()
         };
+        let shade_smooth = self.voxel_shade_smooth;
         let mut report_text = String::new();
         let res = session.edit_op("Voxel Remesh", |mesh, _sel| {
             let (mut new, rep) = voxel_remesh_report(mesh, size, &params)?;
             new.name = mesh.name.clone();
+            if shade_smooth {
+                for f in &mut new.faces {
+                    f.smooth = true;
+                }
+            }
             report_text = format!(
                 "Voxel Remesh: {} faces, voxel {:.4}{}",
                 rep.quads,

@@ -13,13 +13,13 @@ const WARN: Color32 = Color32::from_rgb(0xff, 0x6a, 0x5a);
 const OK: Color32 = Color32::from_rgb(0x6c, 0xd0, 0x8a);
 
 fn sub(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(RichText::new(title).color(theme::TEXT).size(13.0))
+    crate::app::props_tabs::header(ui, RichText::new(title).color(theme::TEXT).size(13.0))
         .default_open(open)
         .show(ui, add);
 }
 
 fn drag(ui: &mut egui::Ui, label: &str, v: &mut f32, speed: f64, range: std::ops::RangeInclusive<f32>, suffix: &str) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(label);
         ui.add(egui::DragValue::new(v).speed(speed).range(range).suffix(suffix).fixed_decimals(1));
     });
@@ -28,17 +28,17 @@ fn drag(ui: &mut egui::Ui, label: &str, v: &mut f32, speed: f64, range: std::ops
 impl StudioApp {
     pub(super) fn inspector_uv_impl(&mut self, ui: &mut egui::Ui) {
         self.uv_refresh_cache();
-        egui::CollapsingHeader::new(RichText::new(crate::i18n::tr("panel.uv")).strong())
+        crate::app::props_tabs::header(ui, RichText::new(crate::i18n::tr("panel.uv")).strong())
             .default_open(true)
             .show(ui, |ui| {
                 let mut act: Option<UvAction> = None;
                 let p: &mut UvParams = &mut self.uv.params;
 
+                ui.toggle_value(&mut self.show_uv_editor, format!("{} Editor de UV", icons::GRID_FOUR))
+                    .on_hover_text("Mostra/oculta o painel 2D de UV (botão UV do viewport)");
                 ui.horizontal_wrapped(|ui| {
-                    ui.toggle_value(&mut self.show_uv_editor, format!("{} Editor de UV", icons::GRID_FOUR))
-                        .on_hover_text("Mostra/oculta o painel 2D de UV (botão UV do viewport)");
                     ui.label("Textura");
-                    egui::ComboBox::from_id_salt("uv_tex_size")
+                    crate::app::props_tabs::combo(ui, "uv_tex_size")
                         .selected_text(format!("{} px", p.tex_size))
                         .width(80.0)
                         .show_ui(ui, |ui| {
@@ -82,12 +82,12 @@ impl StudioApp {
                 });
 
                 sub(ui, "Unwrap", true, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.selectable_value(&mut p.method, UnwrapMethod::Lscm, "LSCM");
                         ui.selectable_value(&mut p.method, UnwrapMethod::LscmArap, "LSCM + ARAP");
                     });
                     drag(ui, "Margem", &mut p.margin_px, 0.1, 0.0..=64.0, " px");
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.checkbox(&mut p.correct_aspect, "Corrigir proporção");
                         ui.add_enabled(
                             p.correct_aspect,
@@ -120,7 +120,7 @@ impl StudioApp {
                 });
 
                 sub(ui, "Projeções", false, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Planar em");
                         for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
                             ui.selectable_value(&mut p.planar_axis, i, *n);
@@ -129,7 +129,7 @@ impl StudioApp {
                             act = Some(UvAction::ProjectPlanar);
                         }
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.checkbox(&mut p.box_cross, "Cruz");
                         if ui.button("Caixa").clicked() {
                             act = Some(UvAction::ProjectBox);
@@ -201,7 +201,7 @@ pub(super) fn report_grid(ui: &mut egui::Ui, r: &UvReport) {
         ui.label("Ocupação");
         ui.label(format!("{:.0}%", r.uv_area * 100.0));
         ui.end_row();
-        if let Some(d) = r.texel_density {
+        if let Some(d) = r.texel_density.filter(|_| !crate::app::props_tabs::narrow(ui)) {
             ui.label("Densidade média");
             ui.label(format!("{:.0} px/u (±{:.0})", d.mean, d.std_dev));
             ui.end_row();
@@ -210,4 +210,12 @@ pub(super) fn report_grid(ui: &mut egui::Ui, r: &UvReport) {
             ui.end_row();
         }
     });
+    // painel estreito: a densidade não cabe em duas colunas; vai empilhada (rótulo em cima, valor embaixo)
+    if let Some(d) = r.texel_density.filter(|_| crate::app::props_tabs::narrow(ui)) {
+        ui.add_space(2.0);
+        ui.label(RichText::new("Densidade média").color(theme::TEXT_DIM));
+        ui.label(format!("{:.0} px/u (±{:.0})", d.mean, d.std_dev));
+        ui.label(RichText::new("Densidade mín–máx").color(theme::TEXT_DIM));
+        ui.label(format!("{:.0} – {:.0}", d.min, d.max));
+    }
 }

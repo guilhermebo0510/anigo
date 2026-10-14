@@ -243,6 +243,7 @@ test("uniformes: tamanho em floats, offsets e espaços de memória", () => {
     material: "uniform",
     outline: "uniform",
     shadow: "uniform", // sombra projetada da luz principal (96 B)
+    extra_lights: "uniform", // luzes de cena (ponto, holofote, painel, direcional): até 8, 656 B
     sparse_morph_header: "uniform",
     morph_channel: "storage_read",
     sparse_morph_delta: "storage_read",

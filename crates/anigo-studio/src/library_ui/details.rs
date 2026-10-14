@@ -201,7 +201,7 @@ impl LibraryWorkspace {
         ui.add_space(6.0);
 
         // ---- metadados
-        egui::CollapsingHeader::new(RichText::new(tr("lib.det.meta")).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(tr("lib.det.meta")).strong()).default_open(true).show(ui, |ui| {
             egui::Grid::new("lib_meta_grid").num_columns(2).spacing([10.0, 3.0]).show(ui, |ui| {
                 kv(ui, tr("lib.det.size"), fmt_bytes(row.size));
                 if m.stats.tris > 0 || m.stats.verts > 0 {
@@ -263,7 +263,7 @@ impl LibraryWorkspace {
             });
             if m.revisions.len() > 1 {
                 ui.add_space(4.0);
-                egui::CollapsingHeader::new(small_dim(tr("lib.det.revisions"))).show(ui, |ui| {
+                crate::app::props_tabs::header(ui, small_dim(tr("lib.det.revisions"))).show(ui, |ui| {
                     for r in m.revisions.iter().rev() {
                         let cur = r.rev == m.current_revision;
                         ui.label(RichText::new(format!("r{}{}  {}  {}  {}\u{2026}", r.rev, if cur { " \u{2022}" } else { "" }, fmt_time(r.created_at), fmt_bytes(r.size), &r.content_hash.to_hex()[..8])).monospace().size(10.5));
@@ -273,7 +273,7 @@ impl LibraryWorkspace {
         });
 
         // ---- informações editáveis
-        egui::CollapsingHeader::new(RichText::new(tr("lib.det.info")).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(tr("lib.det.info")).strong()).default_open(true).show(ui, |ui| {
             ui.add_enabled_ui(!trashed, |ui| {
                 ui.label(small_dim(tr("lib.det.description")));
                 let mut s = std::mem::take(&mut self.details_ui.description);
@@ -308,7 +308,7 @@ impl LibraryWorkspace {
         });
 
         // ---- tags
-        egui::CollapsingHeader::new(RichText::new(format!("{} ({})", tr("lib.det.tags"), m.tags.len())).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{} ({})", tr("lib.det.tags"), m.tags.len())).strong()).default_open(true).show(ui, |ui| {
             let mut remove: Option<String> = None;
             ui.horizontal_wrapped(|ui| {
                 for t in &m.tags {
@@ -352,7 +352,7 @@ impl LibraryWorkspace {
 
         // ---- materiais toon canônicos
         if !d.loaded_materials.is_empty() {
-            egui::CollapsingHeader::new(RichText::new(format!("{} ({})", tr("lib.det.toon"), d.materials.len())).strong()).default_open(true).show(ui, |ui| {
+            crate::app::props_tabs::header(ui, RichText::new(format!("{} ({})", tr("lib.det.toon"), d.materials.len())).strong()).default_open(true).show(ui, |ui| {
                 for (file, mat) in &d.loaded_materials {
                     material_view(ui, file, mat);
                 }
@@ -364,7 +364,7 @@ impl LibraryWorkspace {
 
         // ---- avisos do import
         if !m.warnings.is_empty() {
-            egui::CollapsingHeader::new(RichText::new(format!("{} ({})", tr("lib.det.warnings"), m.warnings.len())).strong().color(warn_color())).show(ui, |ui| {
+            crate::app::props_tabs::header(ui, RichText::new(format!("{} ({})", tr("lib.det.warnings"), m.warnings.len())).strong().color(warn_color())).show(ui, |ui| {
                 for w in &m.warnings {
                     ui.add(egui::Label::new(RichText::new(format!("\u{2022} {w}")).size(11.5)).wrap());
                 }
@@ -409,7 +409,7 @@ impl LibraryWorkspace {
         if d.deps.is_empty() && d.used_by.is_empty() {
             return;
         }
-        egui::CollapsingHeader::new(RichText::new(format!("{} ({} / {})", tr("lib.det.deps"), d.deps.len(), d.used_by.len())).strong()).default_open(true).show(ui, |ui| {
+        crate::app::props_tabs::header(ui, RichText::new(format!("{} ({} / {})", tr("lib.det.deps"), d.deps.len(), d.used_by.len())).strong()).default_open(true).show(ui, |ui| {
             if !d.deps.is_empty() {
                 ui.label(small_dim(tr("lib.det.uses")));
             }
@@ -661,7 +661,7 @@ impl LibraryWorkspace {
 /// Mostra o `ToonMaterial` canônico do ativo (campos reais do `.anigomat.json`).
 fn material_view(ui: &mut Ui, file: &str, m: &ToonMaterial) {
     let title = RichText::new(format!("{}", if m.name.is_empty() { file } else { &m.name })).size(12.5);
-    egui::CollapsingHeader::new(title).id_salt(("mat", file)).default_open(true).show(ui, |ui| {
+    crate::app::props_tabs::header(ui, title).id_salt(("mat", file)).default_open(true).show(ui, |ui| {
         if let Some(c) = &m.converted_from {
             ui.label(small_dim(format!("{} {c}", tr("lib.mat.converted_from"))));
         }
