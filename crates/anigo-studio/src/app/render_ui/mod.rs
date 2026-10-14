@@ -298,6 +298,7 @@ pub(crate) fn scene_from_project(project: &anigo_core::ProjectState, runtime: &c
     scene.rebuild_children();
     scene.camera = project.scene.camera.camera.clone();
     scene.light = project.scene.lights.first().map(|l| l.light.clone()).unwrap_or_default();
+    scene.extra_lights = project.render_lights();
     scene.background_color = project.render.background_color;
     scene.dof = project.render.output.dof;
     Ok((scene, notes))

@@ -38,3 +38,14 @@ anigo-core = { path = "crates/anigo-core" }
 anigo-renderer = { path = "crates/anigo-renderer" }
 anigo-vrm = { path = "crates/anigo-vrm" }
 anigo-physics = { path = "crates/anigo-physics" }
+
+# Perfil de desenvolvimento: o app é interativo (egui + wgpu), então as DEPENDÊNCIAS (egui, wgpu, naga, image, glam…) são
+# compiladas otimizadas mesmo no `cargo run` comum — sem isto a interface e o arrasto de objetos rodavam a ~6 FPS (tudo em
+# opt-level 0). O código do próprio ANIGO fica em opt-level 1 (compila rápido e já é bem mais rápido que 0).
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false

@@ -68,6 +68,8 @@ pub struct CelPreview {
     /// Cenário: geometria atual de cada nó (id → chave) e assinatura do último quadro desenhado.
     level_geom: std::collections::HashMap<String, String>,
     level_sig: u64,
+    /// Luzes de cena para o PRÓXIMO `sync_level` (consumidas por ele): quem não as pede recebe a cena sem luzes extras.
+    pending_lights: Vec<anigo_core::scene::RenderLight>,
     /// Workspace Render: assinatura da última câmera/DoF/passes aplicados por `apply_render_view`.
     render_view_sig: u64,
 }
@@ -95,6 +97,7 @@ impl CelPreview {
             character_bounds: None,
             level_geom: std::collections::HashMap::new(),
             level_sig: 0,
+            pending_lights: Vec::new(),
             render_view_sig: 0,
         })
     }
@@ -148,6 +151,11 @@ impl CelPreview {
     /// Sincroniza a cena do renderer com o workspace Cenário: um nó por `NodeSlot` (hierarquia
     /// respeitada pelo `parent_id`), malhas compartilhadas por chave, luz e câmera do projeto.
     /// Devolve `true` quando algo que muda a imagem mudou desde o último quadro desenhado.
+    /// Luzes de cena (ponto, holofote, painel, direcional extra) para o próximo [`Self::sync_level`].
+    pub fn set_extra_lights(&mut self, lights: Vec<anigo_core::scene::RenderLight>) {
+        self.pending_lights = lights;
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn sync_level(
         &mut self,
@@ -243,6 +251,15 @@ impl CelPreview {
         for b in self.scene.background_color {
             mix(b.to_bits());
         }
+        // luzes de cena: qualquer mudança (posição, cor, cone...) redesenha o quadro parado
+        self.scene.extra_lights = std::mem::take(&mut self.pending_lights);
+        mix(self.scene.extra_lights.len() as u32);
+        for l in &self.scene.extra_lights {
+            mix(l.kind as u32);
+            for v in l.position.iter().chain(&l.direction).chain(&l.color).chain(&l.size).chain([&l.intensity, &l.range, &l.spot_angle_deg, &l.spot_softness]) {
+                mix(v.to_bits());
+            }
+        }
         let changed = h != self.level_sig;
         self.level_sig = h;
         changed
@@ -264,6 +281,7 @@ impl CelPreview {
     /// da sessão mudam; câmera e luz são atualizadas a cada quadro.
     pub fn sync_character(&mut self, session: &mut CoreSession, camera: &OrbitCamera, aspect: f32, light_follows_camera: bool) {
         let key = (session.dynamic_revision(), session.static_revision(), session.history().revision());
+        self.scene.extra_lights.clear();
         if self.owner != SceneOwner::Character || self.char_key != Some(key) {
             match session.sync_scene(&mut self.scene) {
                 Ok(()) => {
@@ -294,6 +312,7 @@ impl CelPreview {
 
     /// Sincroniza a cena do renderer com o documento de modelagem.
     pub fn sync_scene(&mut self, doc: &Document, camera: &OrbitCamera, aspect: f32) {
+        self.scene.extra_lights.clear();
         if self.owner != SceneOwner::Modeling {
             // a cena veio de outro workspace: recomeça do zero
             self.scene.nodes.clear();

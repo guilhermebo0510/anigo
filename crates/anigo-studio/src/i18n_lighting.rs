@@ -84,7 +84,8 @@ pub const LIGHT_TABLE: &[(&str, &str, &str)] = &[
     ("light.extra.point", "Ponto", "Point"),
     ("light.extra.spot", "Spot", "Spot"),
     ("light.extra.rect", "Retangular", "Rect"),
-    ("light.extra_hint", "Luzes extras ainda não existem no render.", "Extra lights do not exist in the renderer yet."),
+    ("light.extra_hint", "Luzes de cena somam-se ao sol: ponto, holofote, painel e direcional. Edite cada uma em Cenário > Detalhes > Luz.", "Scene lights add to the sun: point, spot, rect and directional. Edit each in Scene > Details > Light."),
+    ("light.extra_count", "{n} de 8 luzes em uso", "{n} of 8 lights in use"),
     ("light.extra_tip", "Luzes ponto/spot/retangular exigem um contrato de render com várias luzes (o atual tem uma direcional principal + ambiente). Desabilitado de propósito; o desenho está em docs/native/ILUMINACAO_UI.md.", "Point/spot/rect lights need a multi-light render contract (the current one has one main directional + ambient). Disabled on purpose; the design is in docs/native/ILUMINACAO_UI.md."),
     // cena de prova
     ("light.test_hint", "Para ver sombra projetada o projeto precisa de algo onde ela caia.", "To see cast shadows the project needs something for them to fall on."),

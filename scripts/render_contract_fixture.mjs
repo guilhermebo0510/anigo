@@ -183,6 +183,20 @@ export function renderContractFixture() {
           { name: "params2", kind: "vec4", offset: 80, size: 16, meaning: "1/resolução do mapa, raio do PCF (texels), meia-largura do degrau, reservado" },
         ],
       },
+      // Luzes de cena (ponto, holofote, painel, direcional extra): aditivo, vazio por padrão.
+      extra_lights: {
+        struct: "ExtraLightsUniform",
+        address_space: "uniform",
+        size: 656,
+        fields: [
+          { name: "header", kind: "vec4", offset: 0, size: 16, meaning: "x: quantidade de luzes de cena válidas (0..8); 0 = o shader não executa nada (quadro idêntico ao de antes)" },
+          { name: "position_range", kind: "array<vec4<f32>, 8>", offset: 16, size: 128, meaning: "por luz: xyz posição (mundo), w alcance (m)" },
+          { name: "color_intensity", kind: "array<vec4<f32>, 8>", offset: 144, size: 128, meaning: "por luz: rgb cor (sRGB), w intensidade" },
+          { name: "direction_kind", kind: "array<vec4<f32>, 8>", offset: 272, size: 128, meaning: "por luz: xyz para onde aponta, w tipo (0 direcional, 1 ponto, 2 holofote, 3 painel)" },
+          { name: "cone", kind: "array<vec4<f32>, 8>", offset: 400, size: 128, meaning: "por luz: x cos do cone externo, y cos do cone interno, z/w meia-largura/altura do painel (m)" },
+          { name: "right", kind: "array<vec4<f32>, 8>", offset: 528, size: 128, meaning: "por luz: xyz eixo direita do painel (unitário)" },
+        ],
+      },
       material: {
         struct: "MaterialUniform",
         address_space: "uniform",
@@ -327,6 +341,7 @@ export function renderContractFixture() {
           { binding: 18, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> shadow_u: ShadowUniform" },
           { binding: 19, kind: "texture_depth_2d", stages: ["fragment"], declaration: "var shadow_map: texture_depth_2d" },
           { binding: 20, kind: "sampler_comparison", stages: ["fragment"], declaration: "var shadow_cmp_sampler: sampler_comparison" },
+          { binding: 21, kind: "uniform", stages: ["fragment"], declaration: "var<uniform> extra_u: ExtraLightsUniform" },
         ],
       },
       {
@@ -918,6 +933,24 @@ export function renderContractFixture() {
           effect: "0 = sem espelhamento (sombra facial simétrica, o comportamento anterior). > 0 = u do eixo de simetria do rosto no mapa SDF (0.5 para mapas centrados; 0.25 na esfera UV/cabeça canônica): com a luz do lado oposto ao autorado (theta < 0) o mapa é amostrado espelhado. Só vale com face_sdf_enabled e um mapa ancorado.",
         },
       ],
+    },
+    // -----------------------------------------------------------------------
+    // Luzes de cena (workspace Cenário/Iluminação): nós `Light` do projeto viram até 8 luzes
+    // ADITIVAS no cel. Vazio por padrão: com `header.x = 0` o laço do shader não executa e o
+    // quadro é byte a byte o do motor anterior (hashes de golden_frames.rs). Fonte Rust:
+    // `anigo-core::ProjectState::render_lights` → `Scene.extra_lights` → `ExtraLightsUniform`.
+    // -----------------------------------------------------------------------
+    extra_lights: {
+      version: 1,
+      enabled_by: "scene.extra_lights (nós Light do projeto; padrão vazio, no máximo 8)",
+      neutral_when_empty: "header.x = 0: o laço do shader não executa e lit_extra == lit_highlighted (quadro idêntico ao do motor sem luzes extras)",
+      kinds: ["directional", "point", "spot", "rect"],
+      point: "peso = (1 − d/alcance)² saturado; direção até a luz",
+      spot: "peso do ponto × smoothstep(cos externo, cos interno, ângulo ao eixo)",
+      rect: "fonte = ponto do retângulo mais próximo do fragmento; peso do ponto × saturate(cos da face da frente): a face de trás não ilumina",
+      directional: "sem queda; direção = −direção da luz",
+      stylize:
+        "banda = smoothstep(limiar − suavidade, limiar + suavidade, N·L/2 + 1/2) do MESMO material; difuso aditivo base × cor × intensidade × peso × banda × mix(1, ao, 0.5); realce com o corte do especular do material",
     },
     // -----------------------------------------------------------------------
     // Sombra projetada da luz principal (workspace Iluminação): shadow map de 1

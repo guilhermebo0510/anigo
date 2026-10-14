@@ -1,7 +1,7 @@
 //! Viewport do Cenário: navegação (órbita, voo RMB+WASD, foco, vistas ortográficas), seleção (clique,
 //! marquee), gizmo W/E/R com snap, soltar da Biblioteca com fantasma, render (Workbench + Cel) e overlays.
 
-use super::actions::prim_label_key;
+use super::actions::{light_label_key, prim_label_key};
 use super::{Ghost, GhostItem, GizmoSession, Marquee, PlaceDragPayload, PlaceKind, SceneShading, StudioApp};
 use crate::celview::LevelNodeIn;
 use crate::i18n::tr;
@@ -781,6 +781,7 @@ impl StudioApp {
                 PlaceKind::Primitive(shape) => (Some(self.scene_ui.cache.primitive(shape)), tr(prim_label_key(shape)).to_string()),
                 PlaceKind::Camera => (None, tr("scene.actor.camera").to_string()),
                 PlaceKind::Group => (None, tr("scene.actor.group").to_string()),
+                PlaceKind::Light(s) => (None, tr(light_label_key(s)).to_string()),
             };
             let local = geom.as_ref().map_or(snap::LocalBox { min: Vec3::splat(-0.2), max: Vec3::splat(0.2) }, |g| g.local);
             let transform = place_asset(&target, &local, 0.0, Vec3::ONE, &eff);
@@ -1072,6 +1073,7 @@ impl StudioApp {
                 if let Some(dir) = su.light_dir_override {
                     light.direction = dir;
                 }
+                cel.set_extra_lights(project.render_lights());
                 let dirty = cel.sync_level(&nodes, light, cam, aspect, [0.0, 0.0, 0.0, 0.0], 0);
                 cel_recreated = cel.render_if(size_px, dirty);
                 if let Some(e) = &cel.last_error {
@@ -1161,6 +1163,70 @@ impl StudioApp {
             let selected = su.selection.contains(&slot.node_id);
             let col = if selected { theme::SELECT } else { Color32::from_rgb(0xb8, 0xc0, 0xd8) };
             match (&slot.source, state) {
+                (Some(NodeSource::Light { kind, color: lc, range, spot_angle_deg, size, .. }), _) => {
+                    // lâmpada na cor da luz + o feixe: cone do holofote, retângulo do painel, seta da direcional
+                    let tint = Color32::from_rgb((lc[0].clamp(0.0, 1.0) * 255.0) as u8, (lc[1].clamp(0.0, 1.0) * 255.0) as u8, (lc[2].clamp(0.0, 1.0) * 255.0) as u8);
+                    let beam = if selected { theme::SELECT } else { tint.gamma_multiply(0.85) };
+                    let dir = world.transform_vector3(Vec3::NEG_Z).normalize_or_zero();
+                    let side = world.transform_vector3(Vec3::X).normalize_or_zero();
+                    let up = world.transform_vector3(Vec3::Y).normalize_or_zero();
+                    let reach = (*range).min(1.2);
+                    match kind {
+                        anigo_core::LightShape::Point => {
+                            // três anéis do alcance (até 0,6 m, só para ler o tamanho)
+                            let r = (*range).min(0.6);
+                            for (a, b) in [(Vec3::X, Vec3::Y), (Vec3::Y, Vec3::Z), (Vec3::Z, Vec3::X)] {
+                                let pts: Vec<Option<Pos2>> = (0..=24).map(|i| {
+                                    let t = i as f32 / 24.0 * std::f32::consts::TAU;
+                                    proj(origin + (a * t.cos() + b * t.sin()) * r)
+                                }).collect();
+                                for w in pts.windows(2) {
+                                    if let (Some(x), Some(y)) = (w[0], w[1]) {
+                                        painter.line_segment([x, y], Stroke::new(1.0, beam.gamma_multiply(0.55)));
+                                    }
+                                }
+                            }
+                        }
+                        anigo_core::LightShape::Spot => {
+                            let radius = (spot_angle_deg.to_radians() * 0.5).tan() * reach;
+                            let centre = origin + dir * reach;
+                            let ring: Vec<Option<Pos2>> = (0..=24).map(|i| {
+                                let t = i as f32 / 24.0 * std::f32::consts::TAU;
+                                proj(centre + (side * t.cos() + up * t.sin()) * radius)
+                            }).collect();
+                            for w in ring.windows(2) {
+                                if let (Some(x), Some(y)) = (w[0], w[1]) {
+                                    painter.line_segment([x, y], Stroke::new(1.2, beam));
+                                }
+                            }
+                            for i in [0, 6, 12, 18] {
+                                if let Some(x) = ring[i] {
+                                    painter.line_segment([p, x], Stroke::new(1.0, beam.gamma_multiply(0.7)));
+                                }
+                            }
+                        }
+                        anigo_core::LightShape::Rect => {
+                            let (hw, hh) = (size[0] * 0.5, size[1] * 0.5);
+                            let c = [side * -hw + up * -hh, side * hw + up * -hh, side * hw + up * hh, side * -hw + up * hh];
+                            let pts: Vec<Option<Pos2>> = c.iter().map(|d| proj(origin + *d)).collect();
+                            for i in 0..4 {
+                                if let (Some(x), Some(y)) = (pts[i], pts[(i + 1) % 4]) {
+                                    painter.line_segment([x, y], Stroke::new(1.4, beam));
+                                }
+                            }
+                            if let Some(t) = proj(origin + dir * reach) {
+                                painter.line_segment([p, t], Stroke::new(1.0, beam.gamma_multiply(0.7)));
+                            }
+                        }
+                        anigo_core::LightShape::Directional => {
+                            if let Some(t) = proj(origin + dir * 1.2) {
+                                painter.line_segment([p, t], Stroke::new(1.6, beam));
+                                painter.circle_filled(t, 3.0, beam);
+                            }
+                        }
+                    }
+                    painter.text(p, egui::Align2::CENTER_CENTER, icons::LIGHTBULB, egui::FontId::proportional(18.0), if selected { theme::SELECT } else { tint });
+                }
                 (Some(NodeSource::Camera { focal_mm, sensor_width_mm, sensor_height_mm }), _) => {
                     // pirâmide do campo de visão (0,6 m de profundidade)
                     let depth = 0.6;

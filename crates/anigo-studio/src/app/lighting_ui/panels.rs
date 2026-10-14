@@ -86,7 +86,7 @@ impl StudioApp {
                 section(ui, icons::SPARKLE, "light.section.rim", true, false, |ui| self.light_rim_body(ui));
             }
             _ => {
-                section(ui, icons::FLASHLIGHT, "light.section.extra", true, focus == Some(Section::Extra), |ui| Self::light_extra_body(ui));
+                section(ui, icons::FLASHLIGHT, "light.section.extra", true, focus == Some(Section::Extra), |ui| self.light_extra_body(ui));
                 section(ui, icons::STACK, "light.section.test", false, false, |ui| self.light_test_body(ui));
             }
         });
@@ -310,13 +310,28 @@ impl StudioApp {
 
     // ================================================================= luzes extras (desabilitadas)
 
-    fn light_extra_body(ui: &mut egui::Ui) {
+    fn light_extra_body(&mut self, ui: &mut egui::Ui) {
+        use crate::app::scene_ui::PlaceKind;
+        use anigo_core::LightShape;
         hint(ui, tr("light.extra_hint"));
-        ui.horizontal(|ui| {
-            for (icon, key) in [(icons::LIGHTBULB, "light.extra.point"), (icons::FLASHLIGHT, "light.extra.spot"), (icons::SQUARE, "light.extra.rect")] {
-                ui.add_enabled(false, egui::Button::new(format!("{icon}  {}", tr(key)))).on_disabled_hover_text(tr("light.extra_tip"));
+        let used = self.core.project().render_lights().len();
+        let mut place: Option<LightShape> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (icon, key, shape) in [
+                (icons::LIGHTBULB, "light.extra.point", LightShape::Point),
+                (icons::FLASHLIGHT, "light.extra.spot", LightShape::Spot),
+                (icons::SQUARE, "light.extra.rect", LightShape::Rect),
+                (icons::SUN, "scene.light.directional", LightShape::Directional),
+            ] {
+                if ui.add_enabled(used < anigo_core::scene::MAX_RENDER_LIGHTS, egui::Button::new(format!("{icon}  {}", tr(key)))).clicked() {
+                    place = Some(shape);
+                }
             }
         });
+        hint(ui, &tr("light.extra_count").replace("{n}", &used.to_string()));
+        if let Some(shape) = place {
+            self.scene_place_actor(PlaceKind::Light(shape), None);
+        }
     }
 
     // ================================================================= cena de prova

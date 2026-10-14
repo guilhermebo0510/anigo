@@ -53,6 +53,7 @@ pub const DOCK_TABLE: &[(&str, &str, &str)] = &[
     ("ptab.transform", "Transformação", "Transform"),
     ("ptab.asset", "Ativo", "Asset"),
     ("ptab.lens", "Lente", "Lens"),
+    ("ptab.light", "Luz", "Light"),
     ("ptab.material", "Material", "Material"),
     ("ptab.organize", "Organização", "Organization"),
     ("ptab.scene", "Cena", "Scene"),

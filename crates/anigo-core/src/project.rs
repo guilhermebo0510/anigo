@@ -1977,6 +1977,39 @@ impl ProjectState {
     /// the actual geometry (asset cache / procedural base). The returned scene
     /// is a **derived cache**: rebuilding it from `ProjectState` reproduces it
     /// exactly, and it is never written back.
+    /// Luzes de cena (nós `Light` visíveis) resolvidas para o render, em coordenadas de mundo. A luz aponta para o -Z local do
+    /// nó; os primeiros [`crate::scene::MAX_RENDER_LIGHTS`] nós, na ordem da cena, valem (o resto é ignorado).
+    pub fn render_lights(&self) -> Vec<crate::scene::RenderLight> {
+        let world = crate::hierarchy::resolve_world_transforms(&self.scene.nodes).unwrap_or_default();
+        let mut out = Vec::new();
+        for node in &self.scene.nodes {
+            let Some(NodeSource::Light { kind, color, intensity, range, spot_angle_deg, spot_softness, size }) = &node.source else {
+                continue;
+            };
+            if !node.visible || *intensity <= 0.0 {
+                continue;
+            }
+            let matrix = world.get(&node.node_id).copied().unwrap_or_else(|| node.transform.to_matrix());
+            let (_, rotation, position) = matrix.to_scale_rotation_translation();
+            let direction = (rotation * glam::Vec3::NEG_Z).normalize_or_zero();
+            out.push(crate::scene::RenderLight {
+                kind: *kind,
+                position: position.to_array(),
+                direction: if direction == glam::Vec3::ZERO { [0.0, -1.0, 0.0] } else { direction.to_array() },
+                color: *color,
+                intensity: *intensity,
+                range: *range,
+                spot_angle_deg: *spot_angle_deg,
+                spot_softness: *spot_softness,
+                size: *size,
+            });
+            if out.len() == crate::scene::MAX_RENDER_LIGHTS {
+                break;
+            }
+        }
+        out
+    }
+
     pub fn to_scene(&self, resolver: &dyn Fn(&MeshRef) -> Option<Mesh>) -> Scene {
         let mut scene = Scene::new_empty();
         scene.camera = self.scene.camera.camera.clone();
@@ -1985,6 +2018,7 @@ impl ProjectState {
             .light(&LightId::canonical_key())
             .cloned()
             .unwrap_or_default();
+        scene.extra_lights = self.render_lights();
 
         for node in &self.scene.nodes {
             let mesh = node.mesh.as_ref().and_then(|reference| resolver(reference));

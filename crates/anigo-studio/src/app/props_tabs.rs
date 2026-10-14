@@ -68,6 +68,8 @@ pub(crate) enum PropTab {
     Asset,
     /// Lente da câmera de cena.
     Lens,
+    /// Luz de cena (ponto, holofote, painel, direcional).
+    Light,
     Material,
     /// Pastas, tags e hierarquia.
     Organize,
@@ -107,6 +109,7 @@ impl PropTab {
             PropTab::Transform => "transform",
             PropTab::Asset => "asset",
             PropTab::Lens => "lens",
+            PropTab::Light => "light",
             PropTab::Material => "material",
             PropTab::Organize => "organize",
             PropTab::Scene => "scene",
@@ -148,6 +151,7 @@ impl PropTab {
             PropTab::Transform => icons::ARROWS_OUT_CARDINAL,
             PropTab::Asset => icons::CUBE,
             PropTab::Lens => icons::VIDEO_CAMERA,
+            PropTab::Light => icons::LIGHTBULB,
             PropTab::Material => icons::PALETTE,
             PropTab::Organize => icons::FOLDER_SIMPLE,
             PropTab::Scene => icons::GLOBE_SIMPLE,
@@ -185,6 +189,7 @@ impl PropTab {
             PropTab::Transform => "ptab.transform",
             PropTab::Asset => "ptab.asset",
             PropTab::Lens => "ptab.lens",
+            PropTab::Light => "ptab.light",
             PropTab::Material => "ptab.material",
             PropTab::Organize => "ptab.organize",
             PropTab::Scene => "ptab.scene",
@@ -192,7 +197,7 @@ impl PropTab {
     }
 }
 
-const ALL: [PropTab; 32] = [
+const ALL: [PropTab; 33] = [
     PropTab::Object,
     PropTab::Modifiers,
     PropTab::Tool,
@@ -222,6 +227,7 @@ const ALL: [PropTab; 32] = [
     PropTab::Transform,
     PropTab::Asset,
     PropTab::Lens,
+    PropTab::Light,
     PropTab::Material,
     PropTab::Organize,
     PropTab::Scene,
@@ -317,7 +323,7 @@ impl TabSet {
             TabSet::Animacao => &[PropTab::Clip, PropTab::Bone],
             TabSet::Shading => &[PropTab::Shade, PropTab::Highlight, PropTab::Edge, PropTab::Face, PropTab::Textures],
             // máximo possível; a faixa mostra só as que valem para a seleção (`tabbed_with`)
-            TabSet::Cenario => &[PropTab::Transform, PropTab::Asset, PropTab::Lens, PropTab::Material, PropTab::Organize, PropTab::Scene],
+            TabSet::Cenario => &[PropTab::Transform, PropTab::Asset, PropTab::Lens, PropTab::Light, PropTab::Material, PropTab::Organize, PropTab::Scene],
         }
     }
 }

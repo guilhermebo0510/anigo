@@ -2,7 +2,7 @@
 //! diálogo de salvar/abrir cena.
 
 use super::super::props_tabs::{PropTab, TabSet};
-use super::actions::prim_label_key;
+use super::actions::{light_label_key, prim_label_key};
 use super::{describe_scene, OutlinerDragPayload, PlaceDragPayload, PlaceKind, SceneDialog, StudioApp};
 use crate::character::persist;
 use crate::i18n::tr;
@@ -421,7 +421,15 @@ impl StudioApp {
         ui.label(RichText::new(tr("scene.place.other")).size(11.5).color(theme::TEXT_DIM));
         item(ui, icons::VIDEO_CAMERA, tr("scene.actor.camera").to_string(), PlaceKind::Camera, true);
         item(ui, icons::FOLDER_SIMPLE, tr("scene.actor.group").to_string(), PlaceKind::Group, true);
-        ui.add_enabled(false, egui::Button::new(format!("{}  {}", icons::LIGHTBULB, tr("scene.actor.light"))).min_size(egui::vec2(ui.available_width(), 26.0))).on_disabled_hover_text(tr("scene.actor.light_tip"));
+        for shape in anigo_core::LightShape::ALL {
+            let icon = match shape {
+                anigo_core::LightShape::Point => icons::LIGHTBULB,
+                anigo_core::LightShape::Spot => icons::FLASHLIGHT,
+                anigo_core::LightShape::Rect => icons::SQUARE,
+                anigo_core::LightShape::Directional => icons::SUN,
+            };
+            item(ui, icon, tr(light_label_key(shape)).to_string(), PlaceKind::Light(shape), true);
+        }
         if let Some(k) = chosen {
             self.scene_place_actor(k, None);
         }
@@ -434,6 +442,7 @@ impl StudioApp {
             PlaceKind::Primitive(s) => tr(prim_label_key(s)).to_string(),
             PlaceKind::Camera => tr("scene.actor.camera").to_string(),
             PlaceKind::Group => tr("scene.actor.group").to_string(),
+            PlaceKind::Light(s) => tr(light_label_key(s)).to_string(),
         };
         egui::Area::new(egui::Id::new("scene_place_ghost")).order(egui::Order::Tooltip).fixed_pos(pos + egui::vec2(14.0, 14.0)).interactable(false).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(label));
@@ -491,7 +500,10 @@ impl StudioApp {
             if matches!(first.source, Some(NodeSource::Camera { .. })) && slots.len() == 1 {
                 tabs.push(PropTab::Lens);
             }
-            if first.kind != NodeKind::Group && first.kind != NodeKind::Camera {
+            if matches!(first.source, Some(NodeSource::Light { .. })) && slots.len() == 1 {
+                tabs.push(PropTab::Light);
+            }
+            if first.kind != NodeKind::Group && first.kind != NodeKind::Camera && first.kind != NodeKind::Light {
                 tabs.push(PropTab::Material);
             }
             tabs.push(PropTab::Organize);
@@ -602,8 +614,17 @@ impl StudioApp {
             }
         }
 
+        // ---- luz de cena
+        if let (PropTab::Light, Some(src @ NodeSource::Light { .. })) = (tab, first.source.clone()) {
+            if slots.len() == 1 {
+                egui::CollapsingHeader::new(RichText::new(tr("scene.details.light")).strong()).default_open(true).show(ui, |ui| {
+                    self.light_section(ui, first.node_id.clone(), src);
+                });
+            }
+        }
+
         // ---- material (overrides)
-        if tab == PropTab::Material && first.kind != NodeKind::Group && first.kind != NodeKind::Camera {
+        if tab == PropTab::Material && first.kind != NodeKind::Group && first.kind != NodeKind::Camera && first.kind != NodeKind::Light {
             self.material_section(ui, &editable, slots);
         }
 
@@ -727,6 +748,52 @@ impl StudioApp {
             })
             .collect();
         Command::SetNodesTransform { entries }
+    }
+
+    /// Editor da luz de cena: tipo, cor, intensidade, alcance e (conforme o tipo) cone ou tamanho do painel. Um campo por linha,
+    /// com o controle na largura toda: o painel pode ficar estreito sem cortar o texto.
+    fn light_section(&mut self, ui: &mut egui::Ui, id: NodeId, src: NodeSource) {
+        let NodeSource::Light { kind, color, intensity, range, spot_angle_deg, spot_softness, size } = src else { return };
+        let (mut kind, mut color, mut intensity, mut range, mut angle, mut soft, mut size) = (kind, color, intensity, range, spot_angle_deg, spot_softness, size);
+        let mut changed = false;
+        let wide = (ui.available_width() - 70.0).max(60.0);
+        ui.spacing_mut().slider_width = wide;
+        ui.label(RichText::new(tr("scene.light.kind")).size(11.5).color(theme::TEXT_DIM));
+        ui.horizontal_wrapped(|ui| {
+            for k in anigo_core::LightShape::ALL {
+                if ui.selectable_label(kind == k, tr(light_label_key(k))).clicked() && kind != k {
+                    kind = k;
+                    changed = true;
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr("scene.light.color"));
+            changed |= ui.color_edit_button_rgb(&mut color).changed();
+        });
+        ui.label(tr("scene.light.intensity"));
+        changed |= ui.add(egui::Slider::new(&mut intensity, 0.0..=8.0).max_decimals(2)).changed();
+        if kind != anigo_core::LightShape::Directional {
+            ui.label(tr("scene.light.range"));
+            changed |= ui.add(egui::Slider::new(&mut range, 0.5..=60.0).logarithmic(true).suffix(" m").max_decimals(1)).changed();
+        }
+        if kind == anigo_core::LightShape::Spot {
+            ui.label(tr("scene.light.angle"));
+            changed |= ui.add(egui::Slider::new(&mut angle, 5.0..=150.0).suffix("\u{b0}").max_decimals(0)).changed();
+            ui.label(tr("scene.light.softness"));
+            changed |= ui.add(egui::Slider::new(&mut soft, 0.0..=1.0).max_decimals(2)).changed();
+        }
+        if kind == anigo_core::LightShape::Rect {
+            ui.label(tr("scene.light.width"));
+            changed |= ui.add(egui::Slider::new(&mut size[0], 0.1..=10.0).suffix(" m").max_decimals(2)).changed();
+            ui.label(tr("scene.light.height"));
+            changed |= ui.add(egui::Slider::new(&mut size[1], 0.1..=10.0).suffix(" m").max_decimals(2)).changed();
+        }
+        ui.label(RichText::new(tr("scene.light.hint")).size(11.0).color(theme::TEXT_DIM));
+        if changed {
+            let source = NodeSource::Light { kind, color, intensity, range, spot_angle_deg: angle, spot_softness: soft, size };
+            self.scene_edit(Command::SetNodeProps { node_id: id, patch: NodePatch { source: Some(source), ..Default::default() } });
+        }
     }
 
     fn lens_section(&mut self, ui: &mut egui::Ui, id: NodeId, focal: f32, sw: f32, sh: f32) {

@@ -120,6 +120,29 @@ var shadow_map: texture_depth_2d;
 @group(0) @binding(20)
 var shadow_cmp_sampler: sampler_comparison;
 
+// Luzes de cena (ponto, holofote, painel retangular, direcional extra), ADITIVAS. Com `header.x == 0` (padrão) nenhum
+// trecho do shader as avalia e o quadro é byte a byte o do motor anterior. Empacotamento em uniforms.rs (ExtraLightsUniform).
+struct ExtraLight {
+    position_range: vec4<f32>,   // xyz: posição (mundo), w: alcance (m)
+    color_intensity: vec4<f32>,  // rgb: cor (sRGB), w: intensidade
+    direction_kind: vec4<f32>,   // xyz: para onde aponta, w: tipo (0 direcional, 1 ponto, 2 holofote, 3 painel)
+    cone: vec4<f32>,             // x: cos(cone externo), y: cos(cone interno), z/w: meia-largura/altura do painel
+    right: vec4<f32>,            // xyz: eixo "direita" do painel
+};
+
+// Uniform em colunas (um array de vec4 por campo, 8 luzes): o layout é só `array<vec4<f32>, 8>`, sem struct aninhada.
+struct ExtraLightsUniform {
+    header: vec4<f32>,                          // x: quantidade (0..8)
+    position_range: array<vec4<f32>, 8>,
+    color_intensity: array<vec4<f32>, 8>,
+    direction_kind: array<vec4<f32>, 8>,
+    cone: array<vec4<f32>, 8>,
+    right: array<vec4<f32>, 8>,
+};
+
+@group(0) @binding(21)
+var<uniform> extra_u: ExtraLightsUniform;
+
 struct BonePalette {
     matrices: array<mat4x4<f32>, 24>,
 };
@@ -416,6 +439,44 @@ fn shadow_occlusion(world: vec3<f32>, n: vec3<f32>, l: vec3<f32>) -> f32 {
     return 1.0 - lit / 25.0;
 }
 
+// Direção até a luz e peso (0..1) de uma luz de cena no ponto `world`. Ponto: queda suave até o alcance; holofote: cone com
+// borda suave; painel: ilumina do ponto mais próximo do retângulo, só pela face da frente; direcional: sem queda.
+struct ExtraSample {
+    dir: vec3<f32>,
+    weight: f32,
+};
+
+fn extra_light_sample(l: ExtraLight, world: vec3<f32>) -> ExtraSample {
+    var out: ExtraSample;
+    let kind = l.direction_kind.w;
+    let fwd = normalize(l.direction_kind.xyz);
+    if (kind < 0.5) {
+        out.dir = -fwd;
+        out.weight = 1.0;
+        return out;
+    }
+    var source = l.position_range.xyz;
+    if (kind > 2.5) {
+        let rel = world - source;
+        let r = normalize(l.right.xyz);
+        let u = cross(fwd, r);
+        source = source + r * clamp(dot(rel, r), -l.cone.z, l.cone.z) + u * clamp(dot(rel, u), -l.cone.w, l.cone.w);
+    }
+    let to_light = source - world;
+    let d = max(length(to_light), 1e-4);
+    out.dir = to_light / d;
+    let window = clamp(1.0 - d / max(l.position_range.w, 0.05), 0.0, 1.0);
+    var weight = window * window;
+    let facing = dot(-out.dir, fwd);
+    if (kind > 1.5 && kind < 2.5) {
+        weight = weight * smoothstep(l.cone.x, max(l.cone.y, l.cone.x + 1e-3), facing);
+    } else if (kind > 2.5) {
+        weight = weight * clamp(facing, 0.0, 1.0);
+    }
+    out.weight = weight;
+    return out;
+}
+
 // Fragment Shader
 // ─────────────────────────────────────────────────────────────
 
@@ -616,8 +677,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 9. Final Color Composition — P2-05 AO already in base_cel, not here
     let lit_highlighted = mix(base_cel, spec_rgb, clamp(spec_step, 0.0, 1.0));
+
+    // 9b. Luzes de cena (aditivas): cada uma pinta uma faixa de cel (o mesmo limiar e suavidade do material) com a cor e a
+    // intensidade dela, mais um realce especular do mesmo corte da luz principal. Com 0 luzes nada executa e
+    // `lit_extra == lit_highlighted` exatamente (quadro congelado intacto).
+    var extra_diffuse = vec3<f32>(0.0);
+    var extra_spec = vec3<f32>(0.0);
+    let extra_count = u32(extra_u.header.x + 0.5);
+    for (var i = 0u; i < extra_count; i = i + 1u) {
+        let e = ExtraLight(extra_u.position_range[i], extra_u.color_intensity[i], extra_u.direction_kind[i], extra_u.cone[i], extra_u.right[i]);
+        let s = extra_light_sample(e, in.world_position);
+        if (s.weight > 0.0) {
+            let tint = srgb_to_linear(e.color_intensity.rgb) * (e.color_intensity.w * s.weight);
+            let band = smoothstep(threshold - smoothness, threshold + smoothness, dot(N, s.dir) * 0.5 + 0.5);
+            extra_diffuse = extra_diffuse + tint * band;
+            let h_e = normalize(s.dir + V);
+            let spec_e = pow(max(dot(N, h_e), 0.0), spec_power);
+            extra_spec = extra_spec + tint * (smoothstep(spec_cutoff - spec_soft_clamped, spec_cutoff + spec_soft_clamped, spec_e) * band);
+        }
+    }
+    let lit_extra = lit_highlighted + base_lin * extra_diffuse * mix(1.0, ao, 0.5) + spec_rgb * extra_spec * (spec_intensity * in.anime_attr.a);
     let rim_rgb = srgb_to_linear(material.rim_color.rgb);
-    var with_rim = lit_highlighted + (rim_rgb * rim_term);
+    var with_rim = lit_extra + (rim_rgb * rim_term);
 
     // Fase 2 (#18): matcap (MToon sphereAdd) — normal na base da câmera derivada
     // de V e up (o uniform só carrega view_proj, então reconstruímos a base):

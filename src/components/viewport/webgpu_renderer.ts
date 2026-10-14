@@ -250,6 +250,7 @@ export class WebGpuViewportRenderer {
   private shadowNeutralBuffer: GPUBuffer | null = null;
   private shadowNeutralTexture: GPUTexture | null = null;
   private shadowNeutralSampler: GPUSampler | null = null;
+  private extraLightsNeutralBuffer: GPUBuffer | null = null;
 
   // Fase 2 (#18): parâmetros MToon do material (default = tudo off)
   private mtoonEmissionColor: [number, number, number, number] = [0.0, 0.0, 0.0, 0.0];
@@ -2174,6 +2175,13 @@ export class WebGpuViewportRenderer {
     // destroy() é idempotente no WebGPU (sem try/catch silencioso)
     this.shadowNeutralBuffer?.destroy();
     this.shadowNeutralTexture?.destroy();
+    this.extraLightsNeutralBuffer?.destroy();
+    // Luzes de cena (cel 21): zeros = 0 luzes (o shader não executa nada); só o renderer nativo as desenha
+    this.extraLightsNeutralBuffer = this.device.createBuffer({
+      size: uniformSize("extra_lights"),
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.extraLightsNeutralBuffer, 0, new Float32Array(uniformSize("extra_lights") / 4));
     this.shadowNeutralBuffer = this.device.createBuffer({
       size: uniformSize("shadow"),
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -2229,6 +2237,7 @@ export class WebGpuViewportRenderer {
         { binding: 18, resource: { buffer: this.shadowNeutralBuffer } },
         { binding: 19, resource: this.shadowNeutralTexture.createView() },
         { binding: 20, resource: this.shadowNeutralSampler },
+        { binding: 21, resource: { buffer: this.extraLightsNeutralBuffer } },
       ],
     });
 

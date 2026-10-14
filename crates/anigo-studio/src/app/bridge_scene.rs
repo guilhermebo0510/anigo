@@ -412,7 +412,11 @@ impl StudioApp {
             "cone" => PlaceKind::Primitive(PrimitiveShape::Cone),
             "camera" => PlaceKind::Camera,
             "group" => PlaceKind::Group,
-            o => return Err(bad(format!("kind '{o}' desconhecido (cube, sphere, plane, cylinder, cone, camera, group); ativos da Biblioteca: anigo_native_place_asset"))),
+            "point_light" => PlaceKind::Light(anigo_core::LightShape::Point),
+            "spot_light" => PlaceKind::Light(anigo_core::LightShape::Spot),
+            "rect_light" => PlaceKind::Light(anigo_core::LightShape::Rect),
+            "directional_light" => PlaceKind::Light(anigo_core::LightShape::Directional),
+            o => return Err(bad(format!("kind '{o}' desconhecido (cube, sphere, plane, cylinder, cone, camera, group, point_light, spot_light, rect_light, directional_light); ativos da Biblioteca: anigo_native_place_asset"))),
         };
         let at = match m.get("position").filter(|v| !v.is_null()) {
             Some(p) => Some(DropTarget { point: vec3(p, "position", 10_000.0)?, normal: Vec3::Y, on_geometry: false }),

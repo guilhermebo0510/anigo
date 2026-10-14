@@ -424,6 +424,25 @@ fn default_dof_max_radius_px() -> f32 {
     16.0
 }
 
+/// Máximo de luzes de cena (além da principal) que o renderer cel desenha por quadro.
+pub const MAX_RENDER_LIGHTS: usize = 8;
+
+/// Uma luz de cena já resolvida para o render: posição e direção em coordenadas de mundo (a direção é o -Z do nó).
+/// Derivada dos nós `Light` do projeto por [`crate::project::ProjectState::render_lights`]; nunca é gravada.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RenderLight {
+    pub kind: crate::level::LightShape,
+    pub position: [f32; 3],
+    /// Para onde a luz aponta (unitário). Direcional: de onde a luz VEM é o oposto.
+    pub direction: [f32; 3],
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub range: f32,
+    pub spot_angle_deg: f32,
+    pub spot_softness: f32,
+    pub size: [f32; 2],
+}
+
 /// Complete Scene representation containing nodes, camera, lighting, and global parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
@@ -440,6 +459,10 @@ pub struct Scene {
     /// Fase 2 (#53): DoF cinematográfico — default off (sem campo, sem passe).
     #[serde(default)]
     pub dof: DofSettings,
+    /// Luzes de cena (ponto, holofote, painel, direcional extra): ADITIVO e vazio por padrão — com a lista vazia o quadro é
+    /// byte a byte o do motor anterior. Omitido do JSON enquanto vazio.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_lights: Vec<RenderLight>,
 }
 
 impl Default for Scene {
@@ -455,6 +478,7 @@ impl Default for Scene {
             background_color: [0.08, 0.09, 0.13, 1.0], // P0-04: unified with viewport clearColor (was 0.12,0.13,0.16)
             skin: SkinPayload::canonical_base(),
             dof: DofSettings::default(),
+            extra_lights: Vec::new(),
         }
     }
 }
@@ -468,6 +492,7 @@ impl Scene {
             background_color: [0.08, 0.09, 0.13, 1.0],
             skin: SkinPayload::canonical_base(),
             dof: DofSettings::default(),
+            extra_lights: Vec::new(),
         }
     }
 

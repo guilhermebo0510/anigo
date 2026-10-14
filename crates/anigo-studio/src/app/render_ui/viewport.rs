@@ -99,6 +99,7 @@ impl StudioApp {
         let mut cam = project.scene.camera.camera.clone();
         cam.aspect = aspect;
         let orbit = super::super::scene_ui::orbit_from_camera(cam.eye, cam.target, cam.fov_y);
+        cel.set_extra_lights(project.render_lights());
         let mut dirty = cel.sync_level(&nodes, light, &orbit, aspect, [0.0, 0.0, 0.0, 0.0], 0x5245_4e44);
         let dof = project.render.output.dof;
         dirty |= cel.apply_render_view(cam, graph, dof);

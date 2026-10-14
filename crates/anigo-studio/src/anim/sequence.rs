@@ -111,6 +111,7 @@ mod tests {
         s.add_node(c);
         s.camera = project.scene.camera.camera.clone();
         s.light = project.scene.lights.first().map(|l| l.light.clone()).unwrap_or_default();
+        s.extra_lights = project.render_lights();
         s
     }
 

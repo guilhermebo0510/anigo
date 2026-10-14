@@ -86,6 +86,7 @@ pub(crate) enum PlaceKind {
     Primitive(anigo_core::PrimitiveShape),
     Camera,
     Group,
+    Light(anigo_core::LightShape),
 }
 
 #[derive(Debug, Clone)]

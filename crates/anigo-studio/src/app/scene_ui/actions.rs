@@ -266,6 +266,12 @@ impl StudioApp {
                 let rot = if dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::NEG_Z, dir) };
                 level::plan_place_camera(&project, &tr("scene.actor.camera"), Transform { translation: eye, rotation: rot, scale: Vec3::ONE }, NodeSource::default_camera(), &BTreeSet::new())
             }
+            PlaceKind::Light(shape) => {
+                // 2,5 m acima do ponto de soltar; holofote, painel e direcional apontam para baixo (-Z local girado para -Y)
+                let at = Vec3::new(target.point.x, target.point.y.max(0.0) + 2.5, target.point.z);
+                let rot = if shape == anigo_core::LightShape::Point { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::NEG_Z, Vec3::NEG_Y) };
+                level::plan_place_light(&project, &tr(light_label_key(shape)), Transform { translation: at, rotation: rot, scale: Vec3::ONE }, NodeSource::default_light(shape), &BTreeSet::new())
+            }
             PlaceKind::Group => {
                 let t = Transform::from_translation(target.point);
                 let id = level::unique_node_id(&project, &tr("scene.actor.group"), &BTreeSet::new());
@@ -531,6 +537,15 @@ impl StudioApp {
     }
 
 
+}
+
+pub(crate) fn light_label_key(shape: anigo_core::LightShape) -> &'static str {
+    match shape {
+        anigo_core::LightShape::Point => "scene.light.point",
+        anigo_core::LightShape::Spot => "scene.light.spot",
+        anigo_core::LightShape::Rect => "scene.light.rect",
+        anigo_core::LightShape::Directional => "scene.light.directional",
+    }
 }
 
 pub(crate) fn prim_label_key(shape: PrimitiveShape) -> &'static str {
